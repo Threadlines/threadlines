@@ -110,6 +110,8 @@ function runningSession(threadId: ThreadId): OrchestrationSession {
 function makeSnapshotQuery(
   threads: readonly OrchestrationThreadShell[],
   leadThreadId?: ThreadId,
+  /** A thread as read right before its archive, when it changed since the snapshot. */
+  latest: Readonly<Record<string, OrchestrationThreadShell>> = {},
 ): ProjectionSnapshotQueryShape {
   const shellSnapshot = {
     snapshotSequence: 1,
@@ -154,7 +156,10 @@ function makeSnapshotQuery(
     listClaimedSettingsChanges: () => Effect.succeed([]),
     listSecretRequests: () => Effect.succeed([]),
     listThreadShells: () => Effect.succeed([]),
-    getThreadShellById: () => Effect.succeed(Option.none()),
+    getThreadShellById: (threadId) =>
+      Effect.succeed(
+        Option.fromNullishOr(latest[threadId] ?? threads.find((entry) => entry.id === threadId)),
+      ),
     getTurnActivities: () => Effect.succeed([]),
     getThreadMessage: () => Effect.succeed(Option.none()),
     hasAssistantMessageForTurn: () => Effect.succeed(false),
@@ -180,6 +185,7 @@ describe("ThreadAutoArchiveSweeper", () => {
     readonly settingsShape?: ServerSettingsShape;
     /** The children each parent's archive takes along, as the decider would decide. */
     readonly takesAlong?: Readonly<Record<string, readonly string[]>>;
+    readonly latest?: Readonly<Record<string, OrchestrationThreadShell>>;
   }) {
     const dispatched: Array<Extract<OrchestrationCommand, { type: "thread.archive" }>> = [];
     const stopped: string[] = [];
@@ -265,7 +271,7 @@ describe("ThreadAutoArchiveSweeper", () => {
       Layer.provideMerge(
         Layer.succeed(
           ProjectionSnapshotQuery,
-          makeSnapshotQuery(input.threads, input.leadThreadId),
+          makeSnapshotQuery(input.threads, input.leadThreadId, input.latest),
         ),
       ),
       Layer.provideMerge(Layer.succeed(OrchestrationEngineService, orchestrationEngine)),
@@ -355,6 +361,45 @@ describe("ThreadAutoArchiveSweeper", () => {
     // Inactive long enough itself, but archiving it would end its check-back.
     expect(dispatched.map((command) => command.threadId)).not.toContain("check-back-child");
     expect(stopped).not.toContain("check-back-child");
+  });
+
+  it("stops counting a check-back once its time is long past, and checks again right before archiving", async () => {
+    const checkBack = (scheduledForMs: number) => ({
+      id: "cb-1",
+      participantId: null,
+      scheduledFor: new Date(scheduledForMs).toISOString(),
+      exact: true,
+      recurring: false,
+      durable: false,
+    });
+    const staleParent = thread("stale-parent");
+    const changedSince = thread("changed-since");
+    const { dispatched, sweeper } = await createHarness({
+      inactiveDays: 30,
+      threads: [
+        staleParent,
+        // Its runtime ended without the report landing: the entry is two days old.
+        thread("stale-check-back-child", {
+          parentThreadId: staleParent.id,
+          attachedToParent: true,
+          checkBacks: [checkBack(NOW_MS - 2 * 24 * 60 * 60 * 1_000)],
+        }),
+        changedSince,
+      ],
+      // Set a check-back after the sweep's snapshot was taken.
+      latest: {
+        [changedSince.id]: {
+          ...changedSince,
+          updatedAt: new Date(NOW_MS).toISOString(),
+          checkBacks: [checkBack(NOW_MS + 20 * 60 * 1_000)],
+        },
+      },
+    });
+
+    await runtime!.runPromise(sweeper.sweepNow());
+    const archivedIds = dispatched.map((command) => command.threadId);
+    expect(archivedIds).toContain(staleParent.id);
+    expect(archivedIds).not.toContain(changedSince.id);
   });
 
   it("does not archive protected or recently active threads", async () => {

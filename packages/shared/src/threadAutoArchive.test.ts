@@ -123,16 +123,30 @@ describe("thread auto-archive rules", () => {
   });
 
   it("keeps a thread whose agent will check back in a session archiving would stop", () => {
+    const checkBack = (overrides: { durable?: boolean; recurring?: boolean; dueMs?: number }) => ({
+      durable: overrides.durable ?? false,
+      recurring: overrides.recurring ?? false,
+      exact: true,
+      scheduledFor: new Date(overrides.dueMs ?? NOW_MS + 60 * 60 * 1_000).toISOString(),
+    });
     const candidates = selectAutoArchiveCandidates({
       threads: [
-        thread("checks-back", { checkBacks: [{ durable: false }] }),
+        thread("checks-back", { checkBacks: [checkBack({})] }),
         // Saved to disk, it outlives the session.
-        thread("saved-check-back", { checkBacks: [{ durable: true }] }),
+        thread("saved", { checkBacks: [checkBack({ durable: true })] }),
+        // Its runtime ended unreported: long past its time.
+        thread("stale", { checkBacks: [checkBack({ dueMs: NOW_MS - 24 * 60 * 60 * 1_000 })] }),
+        // Claude drops a repeating one after 7 days; this thread was idle 45.
+        thread("stale-repeating", { checkBacks: [checkBack({ recurring: true })] }),
       ],
       inactiveDays: 30,
       nowMs: NOW_MS,
     });
 
-    expect(candidates.map(({ id }) => id)).toEqual(["saved-check-back"]);
+    expect(candidates.map(({ id }) => id).toSorted()).toEqual([
+      "saved",
+      "stale",
+      "stale-repeating",
+    ]);
   });
 });

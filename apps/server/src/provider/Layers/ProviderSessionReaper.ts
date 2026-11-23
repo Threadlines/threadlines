@@ -12,6 +12,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import { runtimeCheckBackOwed } from "@threadlines/shared/checkBacks";
 import {
   parseParticipantSessionKey,
   sessionKeyThreadId,
@@ -37,14 +38,6 @@ import { ProviderService } from "../Services/ProviderService.ts";
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_BACKGROUND_TASK_GRACE_MS = 4 * 60 * 60 * 1000;
-/** How long past a check-back's time its runtime is kept for it. Claude
- *  states a wake-up's exact time but may run a cron job up to 30 minutes
- *  late (its scheduler spreads jobs out). */
-const CHECK_BACK_EXACT_GRACE_MS = 5 * 60 * 1000;
-const CHECK_BACK_SCHEDULE_GRACE_MS = 35 * 60 * 1000;
-/** Claude's repeating jobs expire after 7 days; an idle runtime is not kept
- *  for one longer than that. */
-const RECURRING_CHECK_BACK_IDLE_LIMIT_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The check-backs an agent's runtime keeps alive: ones that die with it. */
 const runtimeCheckBacks = (
@@ -61,14 +54,7 @@ const holdsForCheckBack = (
   checkBacks: ReadonlyArray<OrchestrationCheckBack>,
   nowMs: number,
   idleDurationMs: number,
-) =>
-  checkBacks.some((checkBack) => {
-    if (checkBack.recurring) return idleDurationMs < RECURRING_CHECK_BACK_IDLE_LIMIT_MS;
-    const due =
-      Date.parse(checkBack.scheduledFor) +
-      (checkBack.exact ? CHECK_BACK_EXACT_GRACE_MS : CHECK_BACK_SCHEDULE_GRACE_MS);
-    return Number.isFinite(due) && nowMs < due;
-  });
+) => checkBacks.some((checkBack) => runtimeCheckBackOwed(checkBack, nowMs, idleDurationMs));
 
 type ThreadShellWithSession = {
   readonly session?: OrchestrationSession | null;

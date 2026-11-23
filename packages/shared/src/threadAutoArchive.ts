@@ -1,4 +1,4 @@
-import { holdsRuntimeCheckBack } from "./checkBacks.ts";
+import { runtimeCheckBackOwed, type OwedCheckBackFields } from "./checkBacks.ts";
 
 export const AUTO_ARCHIVE_SUGGESTED_INACTIVE_DAYS = 30 as const;
 
@@ -19,8 +19,8 @@ export interface AutoArchiveThreadFields {
   readonly awaitedChildThreadCount?: number | undefined;
   /** Child threads: threads its agent asked to start wait for the user. */
   readonly pendingChildApproval?: boolean | undefined;
-  /** Times its agents set to come back (holdsRuntimeCheckBack). */
-  readonly checkBacks?: ReadonlyArray<{ readonly durable: boolean }> | undefined;
+  /** Times its agents set to come back (runtimeCheckBackOwed). */
+  readonly checkBacks?: ReadonlyArray<OwedCheckBackFields> | undefined;
   readonly session: {
     readonly status: string;
     readonly orchestrationStatus?: string | undefined;
@@ -35,7 +35,10 @@ export function getAutoArchiveThreadInactiveSince(thread: AutoArchiveThreadField
   return thread.updatedAt ?? thread.latestUserMessageAt ?? thread.createdAt;
 }
 
-export function isAutoArchiveProtectedThread(thread: AutoArchiveThreadFields): boolean {
+export function isAutoArchiveProtectedThread(
+  thread: AutoArchiveThreadFields,
+  nowMs: number = Date.now(),
+): boolean {
   if (thread.archivedAt !== null || thread.pinnedAt !== null || thread.lead === true) {
     return true;
   }
@@ -57,8 +60,14 @@ export function isAutoArchiveProtectedThread(thread: AutoArchiveThreadFields): b
     return true;
   }
 
-  // Its agent will come back in a runtime archiving would stop.
-  if (holdsRuntimeCheckBack(thread)) {
+  // Its agent will come back in a runtime archiving would stop. A stale
+  // entry (its runtime ended unreported) runs out with its time.
+  const idleDurationMs = nowMs - Date.parse(getAutoArchiveThreadInactiveSince(thread));
+  if (
+    (thread.checkBacks ?? []).some((checkBack) =>
+      runtimeCheckBackOwed(checkBack, nowMs, idleDurationMs),
+    )
+  ) {
     return true;
   }
 
@@ -87,10 +96,11 @@ export function selectAutoArchiveCandidates<T extends AutoArchiveThreadFields>(i
     return [];
   }
 
-  const cutoffMs = (input.nowMs ?? Date.now()) - input.inactiveDays * 24 * 60 * 60 * 1_000;
+  const nowMs = input.nowMs ?? Date.now();
+  const cutoffMs = nowMs - input.inactiveDays * 24 * 60 * 60 * 1_000;
   return input.threads
     .flatMap((thread): Array<T & { readonly inactiveSince: string }> => {
-      if (input.isExcluded?.(thread) === true || isAutoArchiveProtectedThread(thread)) {
+      if (input.isExcluded?.(thread) === true || isAutoArchiveProtectedThread(thread, nowMs)) {
         return [];
       }
 

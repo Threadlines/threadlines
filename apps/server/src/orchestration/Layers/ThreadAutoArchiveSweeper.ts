@@ -9,6 +9,7 @@ import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
@@ -82,7 +83,7 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
               thread.attachedToParent &&
               // At work, waiting on the user or set to check back (a pin is
               // not work).
-              isAutoArchiveProtectedThread({ ...thread, pinnedAt: null }) &&
+              isAutoArchiveProtectedThread({ ...thread, pinnedAt: null }, nowMs) &&
               thread.archivedAt === null,
           )
           .map((thread) => thread.parentThreadId),
@@ -103,6 +104,23 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
       let archivedCount = 0;
 
       for (const thread of candidates) {
+        // Read again right before: since the snapshot it may have started
+        // working or set a check-back. A child that did is the decider's to
+        // keep out of the archive (childArchivePlan).
+        const latest = yield* projectionSnapshotQuery.getThreadShellById(thread.id).pipe(
+          Effect.map(Option.getOrNull),
+          Effect.catch(() => Effect.succeed(null)),
+        );
+        if (
+          latest === null ||
+          selectAutoArchiveCandidates({
+            threads: [leadThreadIds.has(latest.id) ? { ...latest, lead: true } : latest],
+            inactiveDays,
+            nowMs,
+          }).length === 0
+        ) {
+          continue;
+        }
         // `thread.archive` carries no timestamp: the decider stamps
         // `archivedAt` from its own clock when it accepts the command.
         const command = {
