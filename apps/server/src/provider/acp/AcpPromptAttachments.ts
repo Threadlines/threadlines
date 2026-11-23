@@ -167,10 +167,11 @@ export const acpAttachmentContent = (input: {
         },
       ] satisfies ReadonlyArray<EffectAcpSchema.ContentBlock>;
     }
-    const cap =
-      delivery === "inline"
-        ? Math.min(deliveryLimit(delivery, mimeType), INLINE_MESSAGE_MAX_BYTES - budget.inlineBytes)
-        : deliveryLimit(delivery, mimeType);
+    // Embedded text counts toward the message's allowance like inline bytes.
+    const cap = Math.min(
+      deliveryLimit(delivery, mimeType),
+      INLINE_MESSAGE_MAX_BYTES - budget.inlineBytes,
+    );
     // A record already past the cap is never read.
     if (cap <= 0 || attachment.sizeBytes > cap) return [note(attachment, path)];
     const bytes = yield* readStaged(path, attachment.name, cap);
@@ -178,6 +179,7 @@ export const acpAttachmentContent = (input: {
     if (delivery === "text") {
       const text = decodeAttachmentText(bytes);
       if (text === undefined) return [note(attachment, path)];
+      budget.inlineBytes += bytes.byteLength;
       return [
         {
           type: "resource",

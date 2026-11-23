@@ -15,6 +15,16 @@
  * read-only, and refuses a path that is a link or anything but a plain file
  * inside the profile Threadlines made.
  *
+ * What this can't rule out, and accepts: SQLite opens the database by its
+ * path, on its own, so a folder swapped and swapped back within that one
+ * open isn't seen (the file is held open meanwhile and checked again after,
+ * which catches a swap that stays). Folder listings (`AntigravityChildRecords`)
+ * read names by path the same way; every file named is then opened through
+ * `openAntigravityProfileFile`, so a swapped listing yields only names. Both
+ * need write access to the agent's own profile and a swap timed inside one
+ * open. The worst result is one wrong failure reading: a turn failed with
+ * words read from another SQLite file.
+ *
  * Layout as of `agy` 1.5.14, matching T3 Code's reader
  * (apps/server/src/provider/acp/AntigravityTurnOutcome.ts).
  *
@@ -49,17 +59,18 @@ export interface AntigravityTurnSteps {
 /**
  * An entry of the CLI's own data in the profile (`antigravity-acp/...`), when
  * every step of its path exists with the expected type and none is a link,
- * with its size; `undefined` otherwise. A link could point at another
- * session's records, or out of the profile. Shared by every reader of the
- * CLI's private files (this one and `AntigravityChildRecords`).
+ * with its size. Otherwise `missing` (nothing there) or `refused` (a link,
+ * or not the expected type): a reader must not take a refused entry for an
+ * empty one. A link could point at another session's records, or out of
+ * the profile. Shared by every reader of the CLI's private files (this one
+ * and `AntigravityChildRecords`).
  */
 export async function antigravityProfileEntry(
   profileDir: string,
   segments: ReadonlyArray<string>,
   kind: "file" | "directory",
-): Promise<{ readonly path: string; readonly size: number } | undefined> {
-  const found = await profileEntry(profileDir, segments, kind);
-  return typeof found === "string" ? undefined : found;
+): Promise<{ readonly path: string; readonly size: number } | "missing" | "refused"> {
+  return profileEntry(profileDir, segments, kind);
 }
 
 /** The entry, or whether it is missing or not what the layout says (a link, another type). */

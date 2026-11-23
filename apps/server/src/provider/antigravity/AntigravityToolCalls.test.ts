@@ -2,7 +2,11 @@ import * as Schema from "effect/Schema";
 import * as EffectAcpSchema from "effect-acp/schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
+import {
+  type AcpToolCallState,
+  makeToolCallState,
+  mergeToolCallState,
+} from "../acp/AcpRuntimeModel.ts";
 import {
   ANTIGRAVITY_TOOL_TEXT_LIMIT,
   antigravityProxiedMcpTool,
@@ -162,5 +166,86 @@ describe("Antigravity call_mcp_tool", () => {
     expect(conflicted.kind).toBe("execute");
     expect(conflicted.data).not.toHaveProperty("server");
     expect(normalizeAntigravityToolCall(shown, { kind: "edit" }).itemType).toBeUndefined();
+  });
+});
+
+describe("Antigravity call_mcp_tool, exactly", () => {
+  it("holds the stated rule: an object Arguments, and the title as sent", () => {
+    const { Arguments: _arguments, ...withoutArguments } = wrapper.rawInput;
+    expect(antigravityProxiedMcpTool({ ...wrapper, rawInput: withoutArguments })).toBeUndefined();
+    expect(antigravityProxiedMcpTool({ ...wrapper, title: ` ${wrapper.title} ` })).toBeUndefined();
+    expect(
+      antigravityProxiedMcpTool({ ...wrapper, rawInput: { ...wrapper.rawInput, ToolName: "" } }),
+    ).toBeUndefined();
+  });
+
+  it("follows later updates: the newest arguments, and an edit when a diff arrives", () => {
+    const first = makeToolCallState({
+      toolCallId: "call",
+      title: wrapper.title,
+      kind: "execute",
+      status: "in_progress",
+      rawInput: wrapper.rawInput,
+    })!;
+    const shown = normalizeAntigravityToolCall(first, wrapper);
+    // The same tool, restated with new arguments: the label says the new ones.
+    const restated = { rawInput: { ...wrapper.rawInput, Arguments: { repo: "a/b" } } };
+    const next = normalizeAntigravityToolCall(
+      mergeToolCallState(shown, makeToolCallState({ toolCallId: "call", ...restated })!),
+      restated,
+    );
+    expect(next.detail).toBe('MCP tool github · list_issues {"repo":"a/b"}');
+    // A completion with a diff and no kind is the edit it shows, not the wrapper's command.
+    const diff = {
+      status: "completed",
+      content: [{ type: "diff", path: "/repo/a.ts", oldText: "a", newText: "b" }],
+    } as const;
+    const edited = normalizeAntigravityToolCall(
+      mergeToolCallState(next, makeToolCallState({ toolCallId: "call", ...diff })!),
+      diff,
+    );
+    expect(edited.kind).toBe("edit");
+    expect(edited.itemType).toBeUndefined();
+    expect(edited.title).not.toBe("list_issues");
+    expect(edited.detail ?? "").not.toContain("MCP tool");
+  });
+});
+
+describe("Antigravity tool text, storage", () => {
+  it("drops inline data links, bounds long links and terminal ids, and budgets the command first", () => {
+    const big = "x".repeat(70_000);
+    const out = normalizeAntigravitySessionUpdate(
+      toolUpdate({
+        title: "Running make",
+        kind: "execute",
+        // Large fields before the command line in the input itself.
+        rawInput: { Notes: big, More: big, CommandLine: "make build" },
+        rawOutput: { output: big },
+        content: [
+          {
+            type: "content",
+            content: { type: "resource_link", uri: "data:text/plain,AAAA", name: "a" },
+          },
+          {
+            type: "content",
+            content: { type: "resource_link", uri: `file:///${big}`, name: "b" },
+          },
+          { type: "terminal", terminalId: big },
+        ],
+      }),
+    );
+    expect(() => decodeNotification(out)).not.toThrow();
+    const update = out.update as {
+      rawInput: { CommandLine: string };
+      content: ReadonlyArray<Record<string, unknown>>;
+    };
+    expect(update.rawInput.CommandLine).toBe("make build");
+    expect(update.content).toHaveLength(2);
+    const link = update.content[0]!.content as { uri: string };
+    expect(link.uri.startsWith("file:///xxx")).toBe(true);
+    expect(link.uri.length).toBeLessThanOrEqual(ANTIGRAVITY_TOOL_TEXT_LIMIT);
+    expect((update.content[1] as { terminalId: string }).terminalId.length).toBeLessThanOrEqual(
+      256,
+    );
   });
 });

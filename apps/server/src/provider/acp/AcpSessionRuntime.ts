@@ -235,6 +235,12 @@ export interface AcpSessionRuntimeShape {
   readonly handleForeignSessionUpdate: (
     handler: (notification: EffectAcpSchema.SessionNotification) => Effect.Effect<void>,
   ) => Effect.Effect<void>;
+  /**
+   * What the session knows of a tool call still open (its updates merged),
+   * so a permission request that restates only part of the call is read
+   * with the rest.
+   */
+  readonly getToolCall: (toolCallId: string) => Effect.Effect<AcpToolCallState | undefined>;
   readonly start: () => Effect.Effect<AcpSessionRuntimeStartResult, EffectAcpErrors.AcpError>;
   readonly getEvents: () => Stream.Stream<AcpSessionRuntimeEvent, never>;
   /**
@@ -588,6 +594,9 @@ const makeAcpSessionRuntime = (
           liveOutsidePromptRef,
           itemIdScope,
           params: notification,
+          // A descriptor classifies a tool call by what the agent sent, not
+          // by the bounded copy (bounding can drop a field that matters).
+          receivedUpdate: received.update,
           ...(nativeControls ? { configOptionsRef } : {}),
           ...(options.normalizeToolCall ? { normalizeToolCall: options.normalizeToolCall } : {}),
           ...(options.trackSilentToolCalls ? { trackSilentToolCalls: true } : {}),
@@ -995,6 +1004,8 @@ const makeAcpSessionRuntime = (
       handleExtRequest: acp.handleExtRequest,
       handleExtNotification: acp.handleExtNotification,
       handleForeignSessionUpdate: (handler) => Ref.set(foreignUpdateHandlerRef, handler),
+      getToolCall: (toolCallId) =>
+        Ref.get(toolCallsRef).pipe(Effect.map((calls) => calls.get(toolCallId))),
       start: () => start,
       getEvents: () => Stream.fromQueue(eventQueue),
       flushEvents: (holdUntil) =>
@@ -1178,6 +1189,7 @@ const handleSessionUpdate = ({
   liveOutsidePromptRef,
   itemIdScope,
   params,
+  receivedUpdate,
   configOptionsRef,
   normalizeToolCall,
   trackSilentToolCalls,
@@ -1192,6 +1204,8 @@ const handleSessionUpdate = ({
   /** Suffix keeping item ids unique across resumes (segment numbering restarts per process). */
   readonly itemIdScope: string;
   readonly params: EffectAcpSchema.SessionNotification;
+  /** The update as the agent sent it, before `normalizeSessionUpdate`. */
+  readonly receivedUpdate?: EffectAcpSchema.SessionNotification["update"];
   /** Given for native controls only: the agent's own option updates land here. */
   readonly configOptionsRef?: Ref.Ref<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly normalizeToolCall?: (
@@ -1236,7 +1250,7 @@ const handleSessionUpdate = ({
         const { previous, merged } = yield* Ref.modify(toolCallsRef, (current) => {
           const previous = current.get(event.toolCall.toolCallId);
           const mergedToolCall = mergeToolCallState(previous, event.toolCall);
-          const report = params.update as AcpToolCallReport;
+          const report = (receivedUpdate ?? params.update) as AcpToolCallReport;
           const nextToolCall = normalizeToolCall?.(mergedToolCall, report) ?? mergedToolCall;
           const next = new Map(current);
           if (nextToolCall.status === "completed" || nextToolCall.status === "failed") {
@@ -1307,6 +1321,11 @@ function shouldEmitToolCallUpdate(
   next: AcpToolCallState,
 ): boolean {
   if (next.status === "completed" || next.status === "failed") {
+    return true;
+  }
+  // A descriptor that retypes a call (`normalizeToolCall`) changes what the
+  // row is, whatever its words; the earlier type must not stay on screen.
+  if (previous !== undefined && previous.itemType !== next.itemType) {
     return true;
   }
   if (!next.detail) {

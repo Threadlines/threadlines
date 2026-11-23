@@ -10,7 +10,8 @@
  *   agent, whose reply follows it);
  * - `turn.completed`: read the records; a turn that completed was held
  *   until its subagents reported, so its launches a complete reading doesn't
- *   name show as done, as a guess a later reading can still correct;
+ *   name show as done (on that reading or any later complete one), as a
+ *   guess a later reading can still correct;
  * - a cancelled turn: Antigravity 1.5.10 stops every subagent on a cancel;
  * - the session's end (`end`): its process took the subagents with it.
  *
@@ -40,6 +41,8 @@ import {
 const SEEN_LAUNCH_LIMIT = 512;
 /** Subagents shown as done on a guess, kept so a later reading can correct them. */
 const GUESSED_LIMIT = 32;
+/** Turns remembered as completed, for guessing their unrecorded launches done later. */
+const ENDED_TURN_LIMIT = 64;
 
 export interface AcpSubagentRoster {
   /** A tool call update: a launch that went through shows as a running subagent, once. */
@@ -75,6 +78,12 @@ export function makeAcpSubagentRoster(input: {
 }): AcpSubagentRoster {
   const entries = new Map<string, Entry>();
   const seen = new Set<string>();
+  /**
+   * Turns that completed. A launch of one that no complete reading names is
+   * guessed done on whichever complete reading comes first, so a reading
+   * that failed right at the turn's end doesn't leave it running for good.
+   */
+  const endedTurns = new Set<TurnId>();
   const running = () =>
     [...entries].flatMap(([id, entry]) => (entry.status === "running" ? [id] : []));
 
@@ -129,10 +138,10 @@ export function makeAcpSubagentRoster(input: {
     });
 
   /**
-   * Brings the kept subagents in line with the records. With `ended`, the
-   * launches of that turn a complete reading doesn't name are guessed done.
+   * Brings the kept subagents in line with the records. Launches of a turn
+   * that completed that a complete reading doesn't name are guessed done.
    */
-  const read = (ended: TurnId | undefined) =>
+  const read = () =>
     Effect.gen(function* () {
       const ids = [...entries.keys()];
       if (ids.length === 0) return;
@@ -144,7 +153,8 @@ export function makeAcpSubagentRoster(input: {
       for (const id of ids) {
         const state = reading.byLaunch.get(id);
         if (state === undefined) {
-          if (reading.complete && ended !== undefined && entries.get(id)?.turnId === ended) {
+          const turnId = entries.get(id)?.turnId;
+          if (reading.complete && turnId !== undefined && endedTurns.has(turnId)) {
             yield* guessDone(id);
           }
           continue;
@@ -157,22 +167,22 @@ export function makeAcpSubagentRoster(input: {
 
   // One read at a time; a request while one runs reads once more after it.
   let reading = false;
-  let again: { ended: TurnId | undefined } | undefined;
-  const requestRead = (ended: TurnId | undefined): Effect.Effect<void> =>
+  let again = false;
+  const requestRead = (): Effect.Effect<void> =>
     Effect.suspend(() => {
       if (entries.size === 0) return Effect.void;
       if (reading) {
-        again = { ended: ended ?? again?.ended };
+        again = true;
         return Effect.void;
       }
       reading = true;
-      const loop: Effect.Effect<void> = read(ended).pipe(
+      const loop: Effect.Effect<void> = read().pipe(
         Effect.ensuring(Effect.sync(() => (reading = false))),
         Effect.andThen(
           Effect.suspend(() => {
-            const next = again;
-            again = undefined;
-            return next === undefined ? Effect.void : requestRead(next.ended);
+            if (!again) return Effect.void;
+            again = false;
+            return requestRead();
           }),
         ),
       );
@@ -187,7 +197,8 @@ export function makeAcpSubagentRoster(input: {
     noteToolCall: (toolCall, turnId) =>
       Effect.gen(function* () {
         const id = toolCall.toolCallId;
-        if (toolCall.status !== "completed" || seen.has(id)) return;
+        // A launch still kept is never shown again, however long ago it began.
+        if (toolCall.status !== "completed" || seen.has(id) || entries.has(id)) return;
         const launches = input.subagents.launches(toolCall);
         if (launches === undefined) return;
         seen.add(id);
@@ -205,11 +216,18 @@ export function makeAcpSubagentRoster(input: {
         event.type === "thread.token-usage.updated" ||
         (event.type === "item.completed" && event.payload.itemType === "assistant_message")
       ) {
-        return requestRead(undefined);
+        return requestRead();
       }
       if (event.type !== "turn.completed") return Effect.void;
       if (event.payload.state === "cancelled") return stopAll;
-      return requestRead(event.payload.state === "completed" ? event.turnId : undefined);
+      if (event.payload.state === "completed" && event.turnId !== undefined) {
+        endedTurns.add(event.turnId);
+        if (endedTurns.size > ENDED_TURN_LIMIT) {
+          const [oldest] = endedTurns;
+          if (oldest !== undefined) endedTurns.delete(oldest);
+        }
+      }
+      return requestRead();
     },
     end: Effect.suspend(() => stopAll.pipe(Effect.andThen(Effect.sync(() => entries.clear())))),
     size: () => entries.size,

@@ -174,7 +174,8 @@ const generated = (conversationId: string, ...rest: ReadonlyArray<string>) => [
 /**
  * A conversation's inbox: the messages that read, and how many didn't (one
  * the CLI is still writing reads as broken JSON). `undefined` when the inbox
- * itself can't be listed, or holds more than the limit. No inbox is empty.
+ * itself can't be listed, is a link or not a folder, or holds more than the
+ * limit. No inbox at all is an empty one.
  */
 async function readInbox(
   profileDir: string,
@@ -183,7 +184,9 @@ async function readInbox(
 ): Promise<{ readonly messages: ReadonlyArray<unknown>; readonly unreadable: number } | undefined> {
   const segments = generated(conversationId, "messages");
   const inbox = await antigravityProfileEntry(profileDir, segments, "directory");
-  if (inbox === undefined) return { messages: [], unreadable: 0 };
+  // No inbox is an empty one; one that isn't what it should be is unread.
+  if (inbox === "missing") return { messages: [], unreadable: 0 };
+  if (inbox === "refused") return undefined;
   // `read.json` (read receipts) and the odd stray file count toward the limit too.
   const names = await listNames(inbox.path, MAX_INBOX_MESSAGES + 1);
   if (names === undefined) return undefined;
@@ -257,7 +260,8 @@ async function readChildren(
     generated(parentId, "subagents"),
     "directory",
   );
-  if (folder === undefined) return { reason: "no-records" };
+  if (folder === "missing") return { reason: "no-records" };
+  if (folder === "refused") return { reason: "unreadable" };
   const names = await listNames(folder.path, MAX_CHILDREN + 1);
   if (names === undefined) return { reason: "unreadable" };
   const childIds = names.flatMap((name) =>

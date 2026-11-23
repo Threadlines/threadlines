@@ -135,6 +135,8 @@ import {
   type AcpSessionModeState,
   type AcpToolCallState,
   acpTurnUsageTotals,
+  describePermissionRequest,
+  mergeToolCallState,
   parsePermissionRequest,
 } from "./AcpRuntimeModel.ts";
 import { THREADLINES_ACP_CLIENT_INFO } from "./acpClientInfo.ts";
@@ -1175,6 +1177,33 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
      * (`normalizeToolCall`): an MCP call the agent runs through a command
      * shows the server, tool and arguments it runs, under the same kind.
      */
+    /**
+     * What an open approval is for once a later update about its call arrived
+     * (`latest`, the call as the session now shows it), or `undefined` when
+     * that hasn't changed. The request keeps its kind, as on first asking.
+     */
+    const reaskedPermissionRequest = (
+      params: EffectAcpSchema.RequestPermissionRequest,
+      current: AcpPermissionRequest,
+      latest: AcpToolCallState,
+    ): AcpPermissionRequest | undefined => {
+      const merged =
+        current.toolCall === undefined ? latest : mergeToolCallState(current.toolCall, latest);
+      // The session's own classification of the call is the newest word on it.
+      const toolCall: AcpToolCallState =
+        latest.itemType !== undefined ? { ...merged, itemType: latest.itemType } : merged;
+      const described = describePermissionRequest(params, toolCall);
+      const detail = toolCall.itemType !== undefined ? toolCall.detail : described.detail;
+      const next: AcpPermissionRequest = {
+        kind: current.kind,
+        ...(detail !== undefined ? { detail } : {}),
+        toolCall,
+      };
+      const same =
+        next.detail === current.detail && next.toolCall?.title === current.toolCall?.title;
+      return same ? undefined : next;
+    };
+
     const normalizedPermissionRequest = (
       request: AcpPermissionRequest,
       report: EffectAcpSchema.RequestPermissionRequest["toolCall"],
@@ -1489,6 +1518,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }
 
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
+          /**
+           * The approvals waiting on the user, by the tool call they ask
+           * about: an update that changes what one is for asks it again.
+           */
+          const openApprovals = new Map<
+            string,
+            { readonly reask: (latest: AcpToolCallState) => Effect.Effect<void> }
+          >();
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           const sessionScope = yield* Scope.make("sequential");
           let sessionScopeTransferred = false;
@@ -1939,8 +1976,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   });
                   return selected(question.optionIdForAnswers(answers));
                 }
+                // A request may restate only part of the call: it is read on
+                // top of what the session's updates already said about it.
+                const known = yield* acp.getToolCall(params.toolCall.toolCallId);
                 const permissionRequest = normalizedPermissionRequest(
-                  parsePermissionRequest(params),
+                  parsePermissionRequest(params, known),
                   params.toolCall,
                 );
                 const planFileWrite =
@@ -1965,10 +2005,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   const once = acpPermissionOptionId("accept", offered);
                   if (once !== undefined) return selected(once);
                 }
-                const requestId = ApprovalRequestId.make(crypto.randomUUID());
-                const runtimeRequestId = RuntimeRequestId.make(requestId);
                 const decision = yield* Deferred.make<ProviderApprovalDecision>();
-                pendingApprovals.set(requestId, { decision, kind: permissionRequest.kind });
+                // The card the user can answer now: asked again under a new
+                // id when what it is for changes, so the old one can't be.
+                const card = {
+                  requestId: ApprovalRequestId.make(crypto.randomUUID()),
+                  permissionRequest,
+                };
+                pendingApprovals.set(card.requestId, { decision, kind: permissionRequest.kind });
                 const warningFor = (kind: EffectAcpSchema.PermissionOption["kind"]) => {
                   const option = offered.find((candidate) => candidate.kind === kind);
                   return option ? descriptor.permissionOptionWarning?.(option) : undefined;
@@ -1985,7 +2029,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       }
                     : undefined;
                 const availableDecisions = acpAvailableDecisions(offered);
-                const shown = yield* showRequest((turnId) =>
+                const openCard = (turnId: TurnId | undefined) =>
                   Effect.gen(function* () {
                     yield* offerRuntimeEvent(
                       makeAcpRequestOpenedEvent({
@@ -1993,10 +2037,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                         provider: PROVIDER,
                         threadId: input.threadId,
                         turnId,
-                        requestId: runtimeRequestId,
-                        permissionRequest,
+                        requestId: RuntimeRequestId.make(card.requestId),
+                        permissionRequest: card.permissionRequest,
                         detail:
-                          permissionRequest.detail ??
+                          card.permissionRequest.detail ??
                           encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
                           "[unserializable params]",
                         args: params,
@@ -2007,14 +2051,48 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                         rawPayload: params,
                       }),
                     );
-                  }),
-                );
+                  });
+                const shown = yield* showRequest(openCard);
+                const toolCallId = params.toolCall.toolCallId;
+                const openApproval = {
+                  reask: (latest: AcpToolCallState) =>
+                    Effect.gen(function* () {
+                      const next = reaskedPermissionRequest(params, card.permissionRequest, latest);
+                      if (next === undefined) return;
+                      if (!(yield* Deferred.isDone(shown))) {
+                        // Not on screen yet: it shows as it now is.
+                        card.permissionRequest = next;
+                        return;
+                      }
+                      const turnId = yield* Deferred.await(shown);
+                      const withdrawn = card.requestId;
+                      pendingApprovals.delete(withdrawn);
+                      yield* offerRuntimeEvent(
+                        makeAcpRequestResolvedEvent({
+                          stamp: yield* makeEventStamp(),
+                          provider: PROVIDER,
+                          threadId: input.threadId,
+                          turnId,
+                          requestId: RuntimeRequestId.make(withdrawn),
+                          permissionRequest: card.permissionRequest,
+                        }),
+                      );
+                      card.requestId = ApprovalRequestId.make(crypto.randomUUID());
+                      card.permissionRequest = next;
+                      pendingApprovals.set(card.requestId, { decision, kind: next.kind });
+                      yield* openCard(turnId);
+                    }),
+                };
+                openApprovals.set(toolCallId, openApproval);
                 // Gone however the wait ends (an interrupted handler included),
                 // or the quiet watch would hold the agent's turn open forever.
                 const resolved = yield* Deferred.await(decision).pipe(
                   Effect.ensuring(
                     Effect.suspend(() => {
-                      pendingApprovals.delete(requestId);
+                      pendingApprovals.delete(card.requestId);
+                      if (openApprovals.get(toolCallId) === openApproval) {
+                        openApprovals.delete(toolCallId);
+                      }
                       return closeMachineRequest(ctx);
                     }),
                   ),
@@ -2026,8 +2104,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     provider: PROVIDER,
                     threadId: input.threadId,
                     turnId,
-                    requestId: runtimeRequestId,
-                    permissionRequest,
+                    requestId: RuntimeRequestId.make(card.requestId),
+                    permissionRequest: card.permissionRequest,
                     decision: resolved,
                   }),
                 );
@@ -2373,6 +2451,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     if (ctx.subagentRoster !== undefined) {
                       yield* ctx.subagentRoster.noteToolCall(event.toolCall, turnId);
                     }
+                    // An approval still open for this call is asked again if
+                    // what it is for has changed.
+                    const openApproval = openApprovals.get(toolCallId);
+                    if (openApproval !== undefined) yield* openApproval.reask(event.toolCall);
                     if (
                       event.toolCall.status === "completed" ||
                       event.toolCall.status === "failed"
