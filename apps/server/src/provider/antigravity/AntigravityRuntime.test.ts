@@ -11,7 +11,15 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 
-import type { AntigravityPlatformRelease } from "./AntigravityRelease.ts";
+import type { AcpRegistryCatalogSnapshot } from "../acpRegistry/AcpRegistryCatalog.ts";
+import { AcpRegistryError } from "@threadlines/contracts";
+import type { AcpRegistryDownloadRecipe } from "../acpRegistry/AcpRegistryRecipe.ts";
+import {
+  type AntigravityPlatformRelease,
+  antigravityArchiveUrl,
+  antigravityReleaseFor,
+} from "./AntigravityRelease.ts";
+import { makeAntigravityReleaseSource } from "./AntigravityReleaseSource.ts";
 import {
   type AntigravityFetch,
   type AntigravityInstallProgress,
@@ -157,14 +165,13 @@ describe("makeAntigravityRuntime", () => {
       const { calls, validate } = recordingValidate();
       const runtime = makeAntigravityRuntime({
         root,
-        release: fixture.release,
         validate,
         fetch: server.fetch,
       });
       assert.isUndefined(yield* runtime.installed);
 
       const progress: Array<AntigravityInstallProgress> = [];
-      const result = yield* runtime.install((update) => progress.push(update));
+      const result = yield* runtime.install(fixture.release, (update) => progress.push(update));
 
       const { releaseId } = fixture;
       const versionDir = path.join(root, "versions", releaseId);
@@ -211,7 +218,7 @@ describe("makeAntigravityRuntime", () => {
       );
 
       // Installing again reuses the files on disk: validated, not downloaded.
-      yield* runtime.install();
+      yield* runtime.install(fixture.release);
       assert.equal(server.requests.length, 1);
       assert.equal(calls.length, 2);
     }),
@@ -227,12 +234,11 @@ describe("makeAntigravityRuntime", () => {
       const { calls, validate } = recordingValidate();
       const runtime = makeAntigravityRuntime({
         root,
-        release: fixture.release,
         validate,
         fetch: server.fetch,
       });
 
-      const error = yield* Effect.flip(runtime.install());
+      const error = yield* Effect.flip(runtime.install(fixture.release));
 
       assert.equal(error.reason, "checksum");
       assert.deepStrictEqual(yield* listDir(path.join(root, "versions")), []);
@@ -262,11 +268,10 @@ describe("makeAntigravityRuntime", () => {
       for (const fixture of fixtures) {
         const runtime = makeAntigravityRuntime({
           root,
-          release: fixture.release,
           validate,
           fetch: server.fetch,
         });
-        const error = yield* Effect.flip(runtime.install());
+        const error = yield* Effect.flip(runtime.install(fixture.release));
         assert.equal(error.reason, "archive", fixture.release.version);
       }
       assert.deepStrictEqual(yield* listDir(path.join(root, "versions")), []);
@@ -282,12 +287,11 @@ describe("makeAntigravityRuntime", () => {
       const server = makeServer({ [fixture.release.asset.url]: oversized });
       const runtime = makeAntigravityRuntime({
         root,
-        release: fixture.release,
         validate: recordingValidate().validate,
         fetch: server.fetch,
       });
 
-      const error = yield* Effect.flip(runtime.install());
+      const error = yield* Effect.flip(runtime.install(fixture.release));
 
       assert.equal(error.reason, "checksum");
       assert.isBelow(server.pulledBytes(), fixture.zip.length + 1024 * 1024);
@@ -314,7 +318,6 @@ describe("makeAntigravityRuntime", () => {
         );
       const runtime = makeAntigravityRuntime({
         root,
-        release: fixture.release,
         validate: recordingValidate().validate,
         fetch,
       });
@@ -324,7 +327,7 @@ describe("makeAntigravityRuntime", () => {
       });
 
       const fiber = yield* runtime
-        .install((update) => {
+        .install(fixture.release, (update) => {
           if (update.receivedBytes) markStarted();
         })
         .pipe(Effect.forkChild);
@@ -345,26 +348,24 @@ describe("makeAntigravityRuntime", () => {
       const { validate } = recordingValidate();
       const runtimeA = makeAntigravityRuntime({
         root,
-        release: a.release,
         validate,
         fetch: server.fetch,
       });
       const runtimeB = makeAntigravityRuntime({
         root,
-        release: b.release,
         validate,
         fetch: server.fetch,
       });
       const versionsDir = path.join(root, "versions");
       const leasesA = path.join(versionsDir, a.releaseId, ".leases");
-      yield* runtimeA.install();
+      yield* runtimeA.install(a.release);
 
       yield* Effect.scoped(
         Effect.gen(function* () {
           const leased = yield* runtimeA.acquire;
           assert.equal(leased.releaseId, a.releaseId);
           // Activating B prunes, but A is in use.
-          yield* runtimeB.install();
+          yield* runtimeB.install(b.release);
           assert.equal((yield* runtimeB.installed)?.releaseId, b.releaseId);
           assert.isTrue(existsSync(leased.executable));
           assert.lengthOf(yield* listDir(leasesA), 1);
@@ -401,20 +402,18 @@ describe("makeAntigravityRuntime", () => {
       const { validate } = recordingValidate();
       const runtimeA = makeAntigravityRuntime({
         root,
-        release: a.release,
         validate,
         fetch: server.fetch,
       });
       const runtimeB = makeAntigravityRuntime({
         root,
-        release: b.release,
         validate,
         fetch: server.fetch,
       });
       const versionsDir = path.join(root, "versions");
       // Both versions on disk, A active.
-      yield* runtimeB.install();
-      yield* Effect.scoped(runtimeB.acquire.pipe(Effect.andThen(runtimeA.install())));
+      yield* runtimeB.install(b.release);
+      yield* Effect.scoped(runtimeB.acquire.pipe(Effect.andThen(runtimeA.install(a.release))));
       assert.equal((yield* runtimeA.installed)?.releaseId, a.releaseId);
       assert.lengthOf(yield* listDir(versionsDir), 2);
 
@@ -423,13 +422,12 @@ describe("makeAntigravityRuntime", () => {
       let raced = false;
       const racing = makeAntigravityRuntime({
         root,
-        release: a.release,
         validate,
         fetch: server.fetch,
         beforeLeaseWritten: () => {
           if (raced) return Effect.void;
           raced = true;
-          return runtimeB.install().pipe(Effect.orDie, Effect.asVoid);
+          return runtimeB.install(b.release).pipe(Effect.orDie, Effect.asVoid);
         },
       });
       const leasesB = path.join(versionsDir, b.releaseId, ".leases");
@@ -456,28 +454,25 @@ describe("makeAntigravityRuntime", () => {
       const { validate } = recordingValidate();
       const runtimeA = makeAntigravityRuntime({
         root,
-        release: a.release,
         validate,
         fetch: server.fetch,
       });
       const runtimeB = makeAntigravityRuntime({
         root,
-        release: b.release,
         validate,
         fetch: server.fetch,
       });
       const versionsDir = path.join(root, "versions");
       const activeFile = path.join(root, "active.json");
-      yield* runtimeB.install();
+      yield* runtimeB.install(b.release);
       const pointerB = yield* Effect.promise(() => NodeFS.readFile(activeFile, "utf8"));
-      yield* Effect.scoped(runtimeB.acquire.pipe(Effect.andThen(runtimeA.install())));
+      yield* Effect.scoped(runtimeB.acquire.pipe(Effect.andThen(runtimeA.install(a.release))));
 
       // Another server switches to B, A stays on disk, and its prune has not
       // run yet: a lease on A now would be one that prune can miss.
       let raced = false;
       const racing = makeAntigravityRuntime({
         root,
-        release: a.release,
         validate,
         fetch: server.fetch,
         beforeLeaseWritten: () =>
@@ -498,6 +493,124 @@ describe("makeAntigravityRuntime", () => {
           );
         }),
       );
+    }),
+  );
+});
+
+describe("makeAntigravityReleaseSource", () => {
+  const builtIn = antigravityReleaseFor("darwin", "arm64")!;
+  const listing = (
+    overrides: Partial<AcpRegistryDownloadRecipe> = {},
+  ): AcpRegistryDownloadRecipe => ({
+    kind: "download",
+    agentId: "antigravity-acp",
+    version: "9.0.0",
+    args: [],
+    env: {},
+    url: antigravityArchiveUrl(overrides.version ?? "9.0.0", "darwin-arm64"),
+    sha256: "0".repeat(64),
+    format: "zip",
+    cmd: EXECUTABLE,
+    ...overrides,
+  });
+  const catalogListing = (
+    recipes: ReadonlyArray<AcpRegistryDownloadRecipe> | "unreadable",
+    quarantineKnown = true,
+  ) => ({
+    get: () =>
+      recipes === "unreadable"
+        ? Effect.fail(new AcpRegistryError({ reason: "catalogUnavailable", detail: "offline" }))
+        : Effect.succeed<AcpRegistryCatalogSnapshot>({
+            entries: [],
+            fetchedAt: null,
+            stale: false,
+            quarantineKnown,
+            unsupportedCount: 0,
+            builtIn: recipes,
+          }),
+    peek: Effect.succeed(undefined),
+  });
+
+  /** Answers range requests with their bytes and the zip's size, like Google's server. */
+  function rangeServer(url: string, body: Buffer) {
+    const ranges: Array<string> = [];
+    const fetch: AntigravityFetch = async (requested, init) => {
+      if (requested !== url) return new Response(null, { status: 404 });
+      const range = new Headers(init.headers).get("range");
+      if (range === null) return new Response(new Uint8Array(body));
+      ranges.push(range);
+      const [, start, end] = /^bytes=(\d+)-(\d+)$/u.exec(range)!;
+      return new Response(new Uint8Array(body.subarray(Number(start), Number(end) + 1)), {
+        status: 206,
+        headers: { "content-range": `bytes ${start}-${end}/${body.length}` },
+      });
+    };
+    return { fetch, ranges };
+  }
+
+  it.live("offers Google's newer release and installs it, sizes read from the zip's index", () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture("listed");
+      const recipe = listing({ version: "9.1.0", sha256: fixture.release.asset.sha256 });
+      const server = rangeServer(recipe.url, fixture.zip);
+      const source = makeAntigravityReleaseSource({
+        builtIn,
+        assetKey: "darwin-arm64",
+        platform: "darwin",
+        catalog: catalogListing([recipe]),
+        fetch: server.fetch,
+      });
+
+      const offer = yield* source.newest;
+      assert.equal(offer.version, "9.1.0");
+      const release = yield* offer.release;
+      assert.deepStrictEqual(release, {
+        version: "9.1.0",
+        asset: { ...fixture.release.asset, url: recipe.url },
+      });
+      // The index only: far less than the whole zip.
+      assert.isAbove(server.ranges.length, 0);
+
+      const root = yield* tempRoot;
+      const runtime = makeAntigravityRuntime({
+        root,
+        validate: recordingValidate().validate,
+        fetch: server.fetch,
+      });
+      yield* runtime.install(release);
+      assert.equal((yield* runtime.installed)?.version, "9.1.0");
+    }),
+  );
+
+  it.live("keeps the built-in release unless Google lists a newer one Threadlines can run", () =>
+    Effect.gen(function* () {
+      const offered = (
+        recipes: ReadonlyArray<AcpRegistryDownloadRecipe> | "unreadable",
+        quarantineKnown = true,
+      ) =>
+        makeAntigravityReleaseSource({
+          builtIn,
+          assetKey: "darwin-arm64",
+          platform: "darwin",
+          catalog: catalogListing(recipes, quarantineKnown),
+        }).newest.pipe(Effect.map((offer) => offer.version));
+
+      assert.equal(yield* offered([listing()]), "9.0.0");
+      // Until the registry's list of pulled releases is known, nothing listed is offered.
+      assert.equal(yield* offered([listing()], false), builtIn.version);
+      const keepsBuiltIn = [
+        "unreadable" as const,
+        [] as const,
+        [listing({ version: "1.0.0" })],
+        [listing({ url: "https://example.com/agy-acp-server-9.0.0-darwin-arm64.zip" })],
+        [listing({ args: ["--debug"] })],
+        [listing({ env: { GEMINI_HOME: "/tmp" } })],
+        [listing({ sha256: null })],
+        [listing({ cmd: "other.par" })],
+      ];
+      for (const recipes of keepsBuiltIn) {
+        assert.equal(yield* offered(recipes), builtIn.version, JSON.stringify(recipes));
+      }
     }),
   );
 });

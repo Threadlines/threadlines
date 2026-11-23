@@ -23,7 +23,15 @@ import {
   validateAntigravityRuntime,
 } from "../acp/AntigravityAcpSupport.ts";
 import { type AcpProviderDriverEnv, makeAcpProviderDriver } from "../acp/AcpProviderDriver.ts";
+import {
+  acpRegistryCacheDir,
+  sharedAcpRegistryCatalog,
+} from "../acpRegistry/AcpRegistryCatalog.ts";
 import { antigravityReleaseFor } from "../antigravity/AntigravityRelease.ts";
+import {
+  type AntigravityReleaseSource,
+  makeAntigravityReleaseSource,
+} from "../antigravity/AntigravityReleaseSource.ts";
 import { makeAntigravityAuthFlows } from "../antigravity/AntigravityAuth.ts";
 import {
   antigravityInstancePaths,
@@ -57,6 +65,29 @@ const decodeAntigravitySettingsOption = Schema.decodeUnknownOption(AntigravitySe
  * its locks then serialize their installs, prunes, and leases.
  */
 const runtimesByRoot = new Map<string, AntigravityRuntime>();
+/** Likewise one release source per state folder, so instances share its hourly check. */
+const releaseSourcesByStateDir = new Map<string, AntigravityReleaseSource>();
+
+const releaseSourceFor = (
+  stateDir: string,
+  builtIn: NonNullable<ReturnType<typeof antigravityReleaseFor>>,
+): AntigravityReleaseSource => {
+  let source = releaseSourcesByStateDir.get(stateDir);
+  if (!source) {
+    source = makeAntigravityReleaseSource({
+      builtIn,
+      assetKey: builtIn.assetKey,
+      platform: process.platform,
+      catalog: sharedAcpRegistryCatalog({
+        cacheDir: acpRegistryCacheDir(stateDir),
+        platform: process.platform,
+        arch: process.arch,
+      }),
+    });
+    releaseSourcesByStateDir.set(stateDir, source);
+  }
+  return source;
+};
 
 export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityDriverEnv> = {
   driverKind: ANTIGRAVITY_DRIVER_KIND,
@@ -78,11 +109,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       if (platformRelease && runtimeRoot && !runtime) {
         runtime = makeAntigravityRuntime({
           root: runtimeRoot,
-          release: platformRelease,
-          validate: (runtimePaths) => validateAntigravityRuntime(runtimePaths, platformRelease),
+          validate: validateAntigravityRuntime,
         });
         runtimesByRoot.set(runtimeRoot, runtime);
       }
+      const releases = platformRelease
+        ? releaseSourceFor(serverConfig.stateDir, platformRelease)
+        : undefined;
       // Leftovers of processes whose server is gone; best effort, off the
       // start path.
       yield* Effect.forkDetach(
@@ -113,7 +146,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const descriptor = makeAntigravityDescriptor({
         paths,
         runtime,
-        release: platformRelease,
+        releases,
         gate,
         signIn,
       });
@@ -124,7 +157,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         descriptor: makeAntigravityDescriptor({
           paths,
           runtime,
-          release: platformRelease,
+          releases,
           signIn,
         }),
         settings: { ...input.config, enabled: input.enabled },

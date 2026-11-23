@@ -40,6 +40,7 @@ import {
   createModelCapabilities,
   getProviderOptionSelectionValue,
 } from "@threadlines/shared/model";
+import { compareSemverVersions } from "@threadlines/shared/semver";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
@@ -47,10 +48,13 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import {
-  ANTIGRAVITY_RELEASE,
   antigravityLaunchArgs,
   type AntigravityPlatformRelease,
 } from "../antigravity/AntigravityRelease.ts";
+import type {
+  AntigravityReleaseOffer,
+  AntigravityReleaseSource,
+} from "../antigravity/AntigravityReleaseSource.ts";
 import {
   acquireAntigravityTempDir,
   recordAntigravityAgent,
@@ -464,7 +468,8 @@ export interface AntigravityDescriptorInput {
   readonly paths: AntigravityInstancePaths;
   /** Undefined where Google publishes no runtime for this machine. */
   readonly runtime: AntigravityRuntime | undefined;
-  readonly release: AntigravityPlatformRelease | undefined;
+  /** The release to install or update to; undefined where there is no runtime. */
+  readonly releases: AntigravityReleaseSource | undefined;
   /** While busy (signing in or out), no agent process starts; each one holds it while it runs. */
   readonly gate?: LaunchGate;
   /** The instance's sign-in method, project and key (fixed for an instance build). */
@@ -474,23 +479,30 @@ export interface AntigravityDescriptorInput {
 export function makeAntigravityDescriptor(
   input: AntigravityDescriptorInput,
 ): AcpProviderDescriptor<AntigravitySettings> {
-  const { paths, runtime, release, gate, signIn } = input;
+  const { paths, runtime, releases, gate, signIn } = input;
   const platform = process.platform;
   const fingerprint = antigravityCredentialFingerprint(signIn);
 
-  const runtimeAction = (verb: "Install" | "Update"): ProviderMaintenanceCommandAction | null =>
-    runtime && release
-      ? {
-          command: `${verb} Antigravity ${release.version} (Threadlines downloads and checks it)`,
-          executable: "threadlines",
-          args: [],
-          lockKey: "antigravity-runtime",
-          run: runtime.install().pipe(
-            Effect.as({ output: `Antigravity ${release.version} is installed.` }),
-            Effect.mapError((error) => ({ message: error.message })),
-          ),
-        }
-      : null;
+  const runtimeAction = (
+    runtime: AntigravityRuntime,
+    verb: "Install" | "Update",
+    offer: AntigravityReleaseOffer,
+  ): ProviderMaintenanceCommandAction => ({
+    command: `${verb} Antigravity ${offer.version} (Threadlines downloads and checks it)`,
+    executable: "threadlines",
+    args: [],
+    lockKey: "antigravity-runtime",
+    // Actions run one at a time (`lockKey`), so a button shown before
+    // another install finished can't put an older version back.
+    run: Effect.gen(function* () {
+      const installed = yield* runtime.installed;
+      if (installed && compareSemverVersions(installed.version, offer.version) >= 0) {
+        return { output: `Antigravity ${installed.version} is already installed.` };
+      }
+      yield* runtime.install(yield* offer.release);
+      return { output: `Antigravity ${offer.version} is installed.` };
+    }).pipe(Effect.mapError((error) => ({ message: error.message }))),
+  });
 
   /**
    * The managed runtime version the next agent runs, or undefined for a
@@ -512,12 +524,15 @@ export function makeAntigravityDescriptor(
     maintenance: MANUAL_ONLY,
     resolveMaintenance: (settings) =>
       Effect.gen(function* () {
-        if (settings.binaryPath.trim() || !runtime || !release) return MANUAL_ONLY;
+        if (settings.binaryPath.trim() || !runtime || !releases) return MANUAL_ONLY;
         const installed = yield* runtime.installed;
-        if (!installed) return { ...MANUAL_ONLY, install: runtimeAction("Install") };
-        return installed.version === release.version
-          ? MANUAL_ONLY
-          : { ...MANUAL_ONLY, update: runtimeAction("Update") };
+        const offer = yield* releases.newest;
+        if (!installed)
+          return { ...MANUAL_ONLY, install: runtimeAction(runtime, "Install", offer) };
+        // Never back: a newer copy stays when only an older release is offered.
+        return compareSemverVersions(installed.version, offer.version) < 0
+          ? { ...MANUAL_ONLY, update: runtimeAction(runtime, "Update", offer) }
+          : MANUAL_ONLY;
       }),
     spawn: (settings, cwd, environment) =>
       Effect.gen(function* () {
@@ -640,7 +655,7 @@ export function makeAntigravityDescriptor(
     probe: (settings, environment) =>
       Effect.gen(function* () {
         const custom = settings.binaryPath.trim();
-        if (!custom && (!runtime || !release)) {
+        if (!custom && (!runtime || !releases)) {
           return {
             installed: false,
             version: null,
@@ -662,7 +677,7 @@ export function makeAntigravityDescriptor(
               : "Antigravity is not installed. Install it to use it in Threadlines.",
           } satisfies AcpProviderProbeOutcome;
         }
-        const latest = custom ? {} : { latestVersion: ANTIGRAVITY_RELEASE.version };
+        const latest = custom ? {} : { latestVersion: (yield* releases!.newest).version };
         const usesGoogleSignIn =
           signIn.method === "oauth-personal" || signIn.method === "oauth-business";
         const signInStatus = antigravitySignInStatus({

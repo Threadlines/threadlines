@@ -95,6 +95,7 @@ const snapshotOf = (
   stale: false,
   quarantineKnown: true,
   unsupportedCount: 0,
+  builtIn: [],
   ...overrides,
 });
 

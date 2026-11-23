@@ -4,6 +4,22 @@ Antigravity is Google's coding agent. Threadlines downloads and checks Google's 
 server for you (`Install` on the Antigravity row in `Settings -> Providers`), so there is nothing to
 install by hand.
 
+## Updates
+
+Threadlines checks Google's listing in the ACP registry for a newer Antigravity at most once an hour.
+When there is one, the Antigravity row shows `Update`; nothing installs until you click it. New
+Gemini models arrive this way, since each Antigravity version lists its own models.
+
+Threadlines only offers a release that comes from Google's own download folder under the usual
+name, with a checksum, launched the usual way. It reads the file sizes from the zip's index before
+downloading, checks the download against the listed checksum and those sizes, and starts the new
+copy once to make sure it's Antigravity at that version before switching to it. If the registry
+can't be read, the version built into Threadlines is offered instead, and an installed copy is
+never replaced by an older one.
+
+A weekly GitHub check (`.github/workflows/upstream-drift.yml`) opens an issue when Google's version
+is ahead of the built-in one, or when Google's listing changes so Threadlines would refuse it.
+
 ## Sign-In Methods
 
 Open `Settings -> Providers`, open the Antigravity row, and pick a method under `Sign-in method` on
