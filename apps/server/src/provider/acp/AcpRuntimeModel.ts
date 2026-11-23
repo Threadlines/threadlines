@@ -1,6 +1,10 @@
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { deriveToolActivityPresentation } from "@threadlines/shared/toolActivity";
-import type { ToolLifecycleItemType, UsageTokenTotals } from "@threadlines/contracts";
+import type {
+  ServerProviderSlashCommand,
+  ToolLifecycleItemType,
+  UsageTokenTotals,
+} from "@threadlines/contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -96,6 +100,11 @@ export type AcpParsedSessionEvent =
       /** The session's running cost in USD so far, from ACP `usage_update`. */
       readonly _tag: "SessionCost";
       readonly totalUsd: number;
+    }
+  | {
+      /** The commands the agent runs on `/<name>`, from ACP `available_commands_update`. */
+      readonly _tag: "AvailableCommandsUpdated";
+      readonly commands: ReadonlyArray<ServerProviderSlashCommand>;
     };
 
 type AcpSessionSetupResponse =
@@ -604,6 +613,31 @@ function sessionInfoStatusMessage(update: { readonly _meta?: unknown }): string 
   return typeof message === "string" && message.trim().length > 0 ? message.trim() : undefined;
 }
 
+/**
+ * An agent's command list in the composer's terms: names without a leading
+ * `/`, each once (the first wins), and none a message could not start with
+ * (empty, or with whitespace inside).
+ */
+export function acpSlashCommands(
+  commands: ReadonlyArray<EffectAcpSchema.AvailableCommand>,
+): ReadonlyArray<ServerProviderSlashCommand> {
+  const seen = new Set<string>();
+  return commands.flatMap((command): Array<ServerProviderSlashCommand> => {
+    const name = command.name.trim().replace(/^\//u, "");
+    if (name.length === 0 || /\s/u.test(name) || seen.has(name)) return [];
+    seen.add(name);
+    const description = command.description.trim();
+    const hint = command.input?.hint.trim();
+    return [
+      {
+        name,
+        ...(description ? { description } : {}),
+        ...(hint ? { input: { hint } } : {}),
+      },
+    ];
+  });
+}
+
 export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotification): {
   readonly modeId?: string;
   readonly events: ReadonlyArray<AcpParsedSessionEvent>;
@@ -712,6 +746,13 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       ) {
         events.push({ _tag: "SessionCost", totalUsd: cost.amount });
       }
+      break;
+    }
+    case "available_commands_update": {
+      events.push({
+        _tag: "AvailableCommandsUpdated",
+        commands: acpSlashCommands(upd.availableCommands),
+      });
       break;
     }
     default:

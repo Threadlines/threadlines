@@ -20,6 +20,7 @@ import {
 } from "../Services/ProjectionThreads.ts";
 import {
   ModelSelection,
+  OrchestrationAgentCommands,
   OrchestrationCheckBack,
   OrchestrationThreadGoal,
   OrchestrationQueuedFollowUp,
@@ -82,6 +83,11 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
       Schema.Record(Schema.String, OrchestrationRoomContextCursor),
     ),
     sentModels: Schema.fromJsonString(Schema.Record(Schema.String, ModelSelection)),
+    agentCommands: Schema.optional(
+      Schema.NullOr(
+        Schema.fromJsonString(Schema.Record(Schema.String, OrchestrationAgentCommands)),
+      ),
+    ),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -122,6 +128,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           side_turn,
           room_context,
           sent_models,
+          agent_commands,
           agent_role,
           agent_requests,
           parent_thread_id,
@@ -191,6 +198,11 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${sideTurnsColumnValue(row.sideTurns)},
           ${JSON.stringify(row.roomContext ?? {})},
           ${JSON.stringify(row.sentModels ?? {})},
+          ${
+            row.agentCommands && Object.keys(row.agentCommands).length > 0
+              ? JSON.stringify(row.agentCommands)
+              : null
+          },
           ${row.agentRole ?? null},
           ${row.agentRequests ? JSON.stringify(row.agentRequests) : null},
           ${row.parentThreadId ?? null},
@@ -264,6 +276,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           side_turn = excluded.side_turn,
           room_context = excluded.room_context,
           sent_models = excluded.sent_models,
+          agent_commands = excluded.agent_commands,
           agent_role = excluded.agent_role,
           agent_requests = excluded.agent_requests,
           parent_thread_id = excluded.parent_thread_id,
@@ -336,6 +349,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           side_turn AS "sideTurns",
           room_context AS "roomContext",
           sent_models AS "sentModels",
+          agent_commands AS "agentCommands",
           agent_role AS "agentRole",
           agent_requests AS "agentRequests",
           parent_thread_id AS "parentThreadId",
@@ -410,6 +424,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           side_turn AS "sideTurns",
           room_context AS "roomContext",
           sent_models AS "sentModels",
+          agent_commands AS "agentCommands",
           agent_role AS "agentRole",
           agent_requests AS "agentRequests",
           parent_thread_id AS "parentThreadId",

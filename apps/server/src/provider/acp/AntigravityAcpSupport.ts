@@ -21,6 +21,8 @@
  *   (High)"); that is still read as a fallback.
  * - `/plan <task>` writes a plan file into the profile and stops for review:
  *   that is plan mode.
+ * - The session lists its own `/` commands and skills, which the composer
+ *   offers; a message starting with one goes as typed.
  * - Edits carry exact ACP `diff` content, and the agent writes the files
  *   itself, so no client file system is offered.
  *
@@ -153,6 +155,16 @@ export function antigravityAgentMode(
  * is 1.5.9, and a prerelease of the minimum (`1.5.14-rc.1`) is below it.
  * Undefined when it isn't a version.
  */
+/**
+ * Antigravity's commands that Threadlines does itself: plan mode is the
+ * composer's `/plan` (sent as the CLI's `/plan`), and signing in or out is on
+ * the provider's row in Settings, where it stops the account's chats.
+ */
+const ANTIGRAVITY_AGENT_COMMANDS = {
+  hidden: new Set(["plan", "login", "logout"]),
+  slashSkills: true,
+} as const;
+
 export function meetsAntigravityMinimum(version: string): boolean | undefined {
   const parse = (value: string) => {
     const match = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/u.exec(
@@ -838,6 +850,8 @@ export function makeAntigravityDescriptor(
         return undefined;
       },
     },
+    // The session's own `/` commands and skills reach the composer.
+    agentCommands: ANTIGRAVITY_AGENT_COMMANDS,
     diffEvidence: true,
     isolateTextGeneration: true,
     onSessionConfigOptions: (settings, configOptions) =>

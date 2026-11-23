@@ -69,6 +69,30 @@ describe("AcpRuntimeModel", () => {
     ]);
   });
 
+  it("reads the agent's command list as typed names, each once", () => {
+    const { events } = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          { name: "goal", description: " Work toward a goal ", input: { hint: "objective" } },
+          { name: "/compact", description: "" },
+          { name: "goal", description: "A second goal" },
+          { name: "two words", description: "Not typeable" },
+        ],
+      },
+    });
+    expect(events).toEqual([
+      {
+        _tag: "AvailableCommandsUpdated",
+        commands: [
+          { name: "goal", description: "Work toward a goal", input: { hint: "objective" } },
+          { name: "compact" },
+        ],
+      },
+    ]);
+  });
+
   it("reads context window fill from usage_update", () => {
     const parsed = parseSessionUpdateEvent({
       sessionId: "session-1",

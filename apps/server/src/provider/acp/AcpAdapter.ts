@@ -549,6 +549,16 @@ function findModeByAliases(
   return undefined;
 }
 
+/**
+ * Whether a message starts with a slash command, as an agent with
+ * `agentCommands` reads it: `/` and a name, then whitespace or the end. A
+ * path (`/tmp/out.log is empty`) has a second `/` in its first word and is
+ * not one.
+ */
+export function startsWithAgentCommand(text: string): boolean {
+  return /^\/[\p{L}\p{N}_][\p{L}\p{N}_.:-]*(?:\s|$)/u.test(text);
+}
+
 function isPlanMode(mode: AcpSessionMode): boolean {
   return findModeByAliases([mode], ACP_PLAN_MODE_ALIASES) !== undefined;
 }
@@ -2177,6 +2187,24 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     });
                     return;
                   }
+                  case "AvailableCommandsUpdated": {
+                    // The composer's `/` list for this thread; a side runtime
+                    // answers no messages of its own, so it lists none.
+                    const agentCommands = descriptor.agentCommands;
+                    if (agentCommands === undefined || ctx.lockdown !== undefined) return;
+                    yield* offerRuntimeEvent({
+                      type: "session.commands.updated",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: ctx.threadId,
+                      payload: {
+                        commands: event.commands.filter(
+                          (command) => !agentCommands.hidden.has(command.name),
+                        ),
+                      },
+                    });
+                    return;
+                  }
                   case "SessionCost":
                     ctx.latestCostUsd = event.totalUsd;
                     // A report between turns marks the boundary exactly.
@@ -2444,13 +2472,22 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const model = turnModelSelection?.model ?? ctx.session.model;
         const resolvedModel = resolveModelId(model);
 
+        const userText = input.input?.trim() ?? "";
+        // The agent runs a command (or a skill) only when the message starts
+        // with it, so one goes as typed: no plan prefix, and the earlier
+        // context and the project brief wait for the next message.
+        const sendsAgentCommand =
+          descriptor.agentCommands !== undefined && startsWithAgentCommand(userText);
         // Prompt-command plan mode (Antigravity's `/plan`) is a text prefix.
         const lockedDown = ctx.lockdown !== undefined;
         const planMode =
-          input.interactionMode === "plan" && !lockedDown ? descriptor.planMode : undefined;
-        const contextPreamble = ctx.pendingContextPreamble;
-        const projectBrief = ctx.projectBrief;
-        const userText = input.input?.trim() ?? "";
+          input.interactionMode === "plan" && !lockedDown && !sendsAgentCommand
+            ? descriptor.planMode
+            : undefined;
+        const contextPreamble = sendsAgentCommand ? undefined : ctx.pendingContextPreamble;
+        const projectBrief: ProjectBriefPreface = sendsAgentCommand
+          ? { text: undefined, hash: ctx.projectBrief.hash }
+          : ctx.projectBrief;
         const contextText =
           contextPreamble !== undefined
             ? withContextSeedPreamble(contextPreamble, userText)
@@ -2520,7 +2557,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         ctx.turnRun = run;
         yield* openPromptPhase(ctx, run);
         resetTurnState(ctx);
-        ctx.pendingContextPreamble = undefined;
+        if (!sendsAgentCommand) ctx.pendingContextPreamble = undefined;
         if (projectBrief.text !== undefined) {
           ctx.projectBriefCarrier = {
             turnId,

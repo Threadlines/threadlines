@@ -98,6 +98,21 @@ export interface AcpPromptPlanMode {
   readonly planMarkdown: (toolCall: AcpToolCallState) => string | undefined;
 }
 
+/** How an agent's own slash commands reach the composer; see `agentCommands`. */
+export interface AcpAgentCommands {
+  /**
+   * Commands Threadlines does itself, left out of the list: plan mode is
+   * Threadlines' `/plan`, a sign-in belongs in Settings. A user who types
+   * one still sends it.
+   */
+  readonly hidden: ReadonlySet<string>;
+  /**
+   * The agent runs a skill when a message starts with `/<skill name>`, so the
+   * skills `listSkills` finds join the `/` list too (`ServerProvider.slashSkills`).
+   */
+  readonly slashSkills: boolean;
+}
+
 export interface AcpConfigUpdate {
   readonly configId: string;
   readonly value: string | boolean;
@@ -480,6 +495,12 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    * a revert trims only Threadlines' turn list, and the agent remembers.
    */
   readonly conversationHistory?: AcpConversationHistory;
+  /**
+   * The agent's slash commands (ACP `available_commands_update`) reach the
+   * composer's `/` list for the session's thread. Absent: the list is
+   * ignored, as for agents whose lists were never checked in Threadlines.
+   */
+  readonly agentCommands?: AcpAgentCommands;
   /**
    * The `session/set_mode` mode for a turn's interaction mode, for an agent
    * that switches modes without listing them (Grok: `plan`, `default`).

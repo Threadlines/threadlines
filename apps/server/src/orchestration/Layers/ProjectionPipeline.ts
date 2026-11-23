@@ -1,4 +1,5 @@
 import { replaceAgentCheckBacks } from "@threadlines/shared/checkBacks";
+import { applyAgentCommands } from "@threadlines/shared/agentCommands";
 import {
   applyLinkedPullRequestSwitches,
   applyPullRequestLinked,
@@ -1301,6 +1302,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             checkBacks: replaceAgentCheckBacks(existingRow.value.checkBacks ?? [], event.payload),
             updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.agent-commands-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          // Not the thread's updatedAt: an agent listing its commands is not
+          // activity in the thread.
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            agentCommands: applyAgentCommands(
+              existingRow.value.agentCommands ?? undefined,
+              event.payload,
+            ),
           });
           return;
         }

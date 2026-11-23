@@ -23,6 +23,7 @@ import {
   ProviderApprovalDecision,
 } from "./orchestration.ts";
 import { RuntimeMcpAppCall } from "./mcpApps.ts";
+import { ServerProviderSlashCommand } from "./slashCommands.ts";
 import { AwaitedWorkflowProgress, WorkflowRunUpdate } from "./workflow.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
@@ -207,6 +208,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "goal.updated",
   "goal.cleared",
   "session.check-backs.updated",
+  "session.commands.updated",
   "thread.realtime.started",
   "thread.realtime.item-added",
   "thread.realtime.audio.delta",
@@ -270,6 +272,7 @@ const ThreadTokenUsageUpdatedType = Schema.Literal("thread.token-usage.updated")
 const GoalUpdatedType = Schema.Literal("goal.updated");
 const GoalClearedType = Schema.Literal("goal.cleared");
 const SessionCheckBacksUpdatedType = Schema.Literal("session.check-backs.updated");
+const SessionCommandsUpdatedType = Schema.Literal("session.commands.updated");
 const ThreadRealtimeStartedType = Schema.Literal("thread.realtime.started");
 const ThreadRealtimeItemAddedType = Schema.Literal("thread.realtime.item-added");
 const ThreadRealtimeAudioDeltaType = Schema.Literal("thread.realtime.audio.delta");
@@ -573,6 +576,17 @@ const SessionCheckBacksUpdatedPayload = Schema.Struct({
   ended: Schema.optional(Schema.Array(RuntimeCheckBack)),
 });
 export type SessionCheckBacksUpdatedPayload = typeof SessionCheckBacksUpdatedPayload.Type;
+
+/**
+ * The commands the session's agent runs when a message starts with
+ * `/<name>`, as it last listed them (ACP `available_commands_update`). Each
+ * report replaces the earlier list. Only drivers that let these reach the
+ * composer send it.
+ */
+const SessionCommandsUpdatedPayload = Schema.Struct({
+  commands: Schema.Array(ServerProviderSlashCommand),
+});
+export type SessionCommandsUpdatedPayload = typeof SessionCommandsUpdatedPayload.Type;
 
 const ThreadRealtimeStartedPayload = Schema.Struct({
   realtimeSessionId: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -1188,6 +1202,14 @@ const ProviderRuntimeSessionCheckBacksUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeSessionCheckBacksUpdatedEvent =
   typeof ProviderRuntimeSessionCheckBacksUpdatedEvent.Type;
 
+const ProviderRuntimeSessionCommandsUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionCommandsUpdatedType,
+  payload: SessionCommandsUpdatedPayload,
+});
+export type ProviderRuntimeSessionCommandsUpdatedEvent =
+  typeof ProviderRuntimeSessionCommandsUpdatedEvent.Type;
+
 const ProviderRuntimeGoalClearedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: GoalClearedType,
@@ -1552,6 +1574,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeGoalUpdatedEvent,
   ProviderRuntimeGoalClearedEvent,
   ProviderRuntimeSessionCheckBacksUpdatedEvent,
+  ProviderRuntimeSessionCommandsUpdatedEvent,
   ProviderRuntimeThreadRealtimeStartedEvent,
   ProviderRuntimeThreadRealtimeItemAddedEvent,
   ProviderRuntimeThreadRealtimeAudioDeltaEvent,

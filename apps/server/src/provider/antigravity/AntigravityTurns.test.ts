@@ -313,6 +313,57 @@ describe("Antigravity turns", () => {
   );
 });
 
+const promptTexts = (frames: ReadonlyArray<Record<string, unknown>>) =>
+  frames.flatMap((frame) => {
+    if (frame.method !== "session/prompt") return [];
+    const prompt = (frame.params as { prompt?: ReadonlyArray<{ type: string; text?: string }> })
+      .prompt;
+    return [(prompt ?? []).flatMap((block) => (block.text ? [block.text] : [])).join("\n")];
+  });
+
+describe("Antigravity commands and edits", () => {
+  it.live("lists the session's own slash commands for its thread, less Threadlines' own", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("simple");
+      yield* agy.waitFor((events) =>
+        events.some((event) => event.type === "session.commands.updated"),
+      );
+      const listed = agy.events.find((event) => event.type === "session.commands.updated");
+      expect(listed).toMatchObject({
+        threadId: agy.threadId,
+        payload: {
+          commands: [
+            { name: "goal", description: "Work toward a goal", input: { hint: "objective" } },
+            { name: "compact", description: "Summarize the conversation" },
+          ],
+        },
+      });
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("sends a command as typed in plan mode, and plans the next message", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("simple");
+      yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "/compact",
+        interactionMode: "plan",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "/tmp/out.log is empty",
+        interactionMode: "plan",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 2);
+      expect(promptTexts(yield* agy.frames())).toEqual(["/compact", "/plan /tmp/out.log is empty"]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+});
+
 describe("Antigravity turn reading", () => {
   const tool = (fields: Partial<AcpToolCallState>): AcpToolCallState => ({
     toolCallId: "call",

@@ -20,6 +20,9 @@
  * - `log-error`: ends `end_turn`, its log's last step an upstream 502 error.
  * - `quota`: fails the prompt with Google's quota error (1.5.9).
  * - `lost-signature`: fails the prompt with the refused-thinking error.
+ *
+ * Every new session lists its slash commands right after it opens
+ * (`available_commands_update`), as the 1.5 CLI does.
  */
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -91,10 +94,26 @@ const program = Effect.gen(function* () {
     }),
   );
   yield* agent.handleCreateSession(() =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       sessionCount += 1;
+      const sessionId = `agy-session-${sessionCount}`;
+      // After the answer, as the CLI sends it.
+      yield* Effect.sleep("20 millis").pipe(
+        Effect.andThen(
+          update(sessionId, {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [
+              { name: "goal", description: "Work toward a goal", input: { hint: "objective" } },
+              { name: "compact", description: "Summarize the conversation" },
+              { name: "plan", description: "Plan before acting" },
+              { name: "logout", description: "Sign out" },
+            ],
+          }),
+        ),
+        Effect.forkDetach,
+      );
       return {
-        sessionId: `agy-session-${sessionCount}`,
+        sessionId,
         modes: {
           currentModeId: "default",
           availableModes: [

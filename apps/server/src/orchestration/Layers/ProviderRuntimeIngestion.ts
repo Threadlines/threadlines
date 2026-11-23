@@ -44,10 +44,12 @@ import * as Stream from "effect/Stream";
 import { countUnifiedDiffStats, type DiffLineStats } from "@threadlines/shared/diffStats";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { sameCheckBacks } from "@threadlines/shared/checkBacks";
+import { sameSlashCommands } from "@threadlines/shared/agentCommands";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { ASSISTANT_STREAM_FLUSH_INTERVAL_MS } from "@threadlines/shared/threadLimits";
 import {
   participantSessionKey,
+  roomAgentKey,
   sessionSlotParticipantId,
 } from "@threadlines/shared/threadParticipants";
 import { turnAdmission } from "../turnAdmission.ts";
@@ -64,6 +66,8 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { isCarriedSessionRejection } from "../../provider/nativeSession.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
 import { checkoutEndsTurnsWithCheckpoints, turnEndStateFromRuntime } from "../turnEnd.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -944,6 +948,7 @@ const make = Effect.gen(function* () {
 
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const projectionThreadRepository = yield* ProjectionThreadRepository;
   // Computer links, when this server has them: see RemoteRequestTurnEnds.
   const remoteRequestTurnEnds = yield* Effect.serviceOption(RemoteRequestTurnEnds);
   // Scheduled tasks, when this server has them: see ScheduledRunTurnEnds.
@@ -2983,6 +2988,42 @@ const make = Effect.gen(function* () {
       }
     });
 
+  /**
+   * The slash commands an agent's session listed, recorded on the thread for
+   * the composer's `/` list. Like check-backs they belong to the agent, so
+   * they are recorded whoever holds the session slot. A session lists them
+   * each time it opens; only a changed list is recorded.
+   */
+  const recordAgentCommands = (
+    event: Extract<ProviderRuntimeEvent, { readonly type: "session.commands.updated" }>,
+    thread: NonNullable<Effect.Success<ReturnType<typeof resolveThreadShell>>>,
+  ) =>
+    Effect.gen(function* () {
+      const providerInstanceId = event.providerInstanceId;
+      if (providerInstanceId === undefined) return;
+      const participantId = event.participantId ?? null;
+      const row = yield* projectionThreadRepository.getById({ threadId: thread.id });
+      const current = Option.isSome(row)
+        ? row.value.agentCommands?.[roomAgentKey(participantId)]
+        : undefined;
+      if (
+        current !== undefined &&
+        current.providerInstanceId === providerInstanceId &&
+        sameSlashCommands(current.commands, event.payload.commands)
+      ) {
+        return;
+      }
+      yield* orchestrationEngine.dispatch({
+        type: "thread.agent-commands.set",
+        commandId: providerCommandId(event, "agent-commands-set"),
+        threadId: thread.id,
+        participantId,
+        providerInstanceId,
+        commands: event.payload.commands,
+        createdAt: event.createdAt,
+      });
+    });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       // Realtime audio/item traffic is intentionally in-memory only. Keep this
@@ -3020,6 +3061,10 @@ const make = Effect.gen(function* () {
       }
       if (event.type === "session.check-backs.updated") {
         yield* recordCheckBacks(event, thread);
+        return;
+      }
+      if (event.type === "session.commands.updated") {
+        yield* recordAgentCommands(event, thread);
         return;
       }
       // A thread moving or moved to another computer is frozen here: its
@@ -4513,4 +4558,4 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(Layer.provide(Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadRepositoryLive)));
