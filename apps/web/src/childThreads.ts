@@ -28,6 +28,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { formatChildThreadCount } from "./components/Sidebar.logic";
+import { useConnectedComputerCapability } from "./environments/computerCapabilities";
 import { useThreadTitle } from "./hooks/useThreadTitle";
 import { toSortableTimestamp } from "./lib/threadSort";
 import type { ProviderInstanceEntry } from "./providerInstances";
@@ -85,6 +86,11 @@ export interface ThreadMessageSource {
   readonly computer: { readonly environmentId: EnvironmentId; readonly lastKnown: string } | null;
   /** This app has the thread to open. */
   readonly openable: boolean;
+  /**
+   * A child on a linked computer this app can't see, which opens read through
+   * the link instead (LinkedThreadView): this thread's computer reads it.
+   */
+  readonly linked: boolean;
 }
 
 /**
@@ -101,6 +107,7 @@ export function useThreadMessageSource(
   const remoteEnvironmentId = origin.environmentId ?? null;
   const sourceEnvironmentId = remoteEnvironmentId ?? environmentId;
   const liveTitle = useThreadTitle(sourceEnvironmentId, origin.threadId);
+  const readsLinked = useConnectedComputerCapability(environmentId, "linkedThreadRead");
   const remoteChildren = useRemoteChildren(
     environmentId,
     remoteEnvironmentId !== null && origin.kind === "report" ? threadId : null,
@@ -118,6 +125,7 @@ export function useThreadMessageSource(
       title: liveTitle,
       computer: null,
       openable: origin.neverMade !== true,
+      linked: false,
     };
   }
   const child = remoteChildren.find((candidate) => candidate.threadId === origin.threadId);
@@ -130,6 +138,7 @@ export function useThreadMessageSource(
       lastKnown: child?.label ?? parent?.environmentLabel ?? "",
     },
     openable: liveTitle !== null,
+    linked: liveTitle === null && child !== undefined && readsLinked,
   };
 }
 

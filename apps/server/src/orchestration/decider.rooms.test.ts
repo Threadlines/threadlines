@@ -26,7 +26,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { liveSideTurns } from "@threadlines/shared/sideTurns";
 
-import { resetAgentRequestsForUser } from "./agentRequestDecisions.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
@@ -815,13 +814,6 @@ describe("decider rooms", () => {
           agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, hold: true },
         }),
       ).toBe(true);
-      // Three requests since the user wrote, hand-offs included.
-      expect(
-        await refused(request("hand_off"), {
-          session: working(),
-          agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, requestsSinceUser: 3 },
-        }),
-      ).toBe(true);
       // Someone is already answering on the side.
       expect(
         await refused(request("ask"), {
@@ -837,7 +829,7 @@ describe("decider rooms", () => {
       ).toBe(true);
     });
 
-    it("runs a council: several agents review at once, counted once, each settling on its own", async () => {
+    it("runs a council: several agents review at once, each settling on its own", async () => {
       const solId = ThreadParticipantId.make("9c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f");
       const grokId = ThreadParticipantId.make("0d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a");
       let model = readModel({
@@ -847,8 +839,6 @@ describe("decider rooms", () => {
           { ...astra, id: solId, handle: "sol" },
           { ...astra, id: grokId, handle: "grok" },
         ],
-        // Two requests made already: the batch is the third and last.
-        agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, requestsSinceUser: 2 },
       });
       const batchId = RoomAgentBatchId.make("batch-council");
       const reviewOf = (participantId: ThreadParticipantId) =>
@@ -857,7 +847,6 @@ describe("decider rooms", () => {
 
       const first = reviewOf(astraId);
       model = await apply(model, await decideEvents(first, model));
-      expect(threadOf(model).agentRequests.requestsSinceUser).toBe(3);
       // The first review finishes before the others are even asked.
       model = await apply(
         model,
@@ -875,14 +864,12 @@ describe("decider rooms", () => {
         ),
       );
       expect(live()).toEqual([]);
-      // The rest of the batch is neither refused by the limit nor counted again.
       for (const participantId of [solId, grokId]) {
         model = await apply(model, await decideEvents(reviewOf(participantId), model));
       }
       expect(live()).toEqual([solId, grokId]);
-      expect(threadOf(model).agentRequests.requestsSinceUser).toBe(3);
-      // A request outside the batch waits for the user.
-      expect(Exit.isFailure(await decide(request("ask"), model))).toBe(true);
+      // Agents keep asking each other without the user writing in between.
+      expect(Exit.isSuccess(await decide(request("ask"), model))).toBe(true);
 
       // One answer settling leaves the other running.
       const [solTurn] = liveSideTurns(threadOf(model));
@@ -901,12 +888,6 @@ describe("decider rooms", () => {
         ),
       );
       expect(live()).toEqual([grokId]);
-      // The user writing clears the count and the batch.
-      expect(
-        resetAgentRequestsForUser(threadOf(model), () => ({}) as never, now).map(
-          (event) => event.type,
-        ),
-      ).toEqual(["thread.agent-requests-reset"]);
     });
 
     it("lets agents answer on the side side by side, one answer each and three at most", async () => {
@@ -957,7 +938,6 @@ describe("decider rooms", () => {
         threadOf(model).messages.find((message) => message.id === handOff.message.messageId)
           ?.agentModels,
       ).toEqual(handOffStamps);
-      expect(threadOf(model).agentRequests.requestsSinceUser).toBe(1);
 
       // The calling turn completed (the reactor's call): the target's turn joins the queue.
       model = await apply(
@@ -1233,7 +1213,6 @@ describe("decider rooms", () => {
           ...threadOf(model),
           session: working(),
           queuedFollowUps: [],
-          agentRequests: { ...threadOf(model).agentRequests, requestsSinceUser: 0 },
         });
 
       // The user stops it, and its answer lands before the stop does.

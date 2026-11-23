@@ -24,6 +24,7 @@ import {
   OutsideAgentsSnapshot,
   OutsideAgentUpdateInput,
 } from "./outsideAgents.ts";
+import { AgentThreadReadResult } from "./peerRpc.ts";
 import { RelayAssistantCodeResult } from "./relayAssistants.ts";
 import {
   ComputerLinkError,
@@ -34,6 +35,7 @@ import {
   LinksCreateInviteInput,
   LinksRemoveInput,
   LinksRemoveResult,
+  LinksReadThreadInput,
   LinksRespondRequestInput,
   LinksSetAccessInput,
   OutboundComputerLink,
@@ -801,6 +803,7 @@ export const WS_METHODS = {
   linksSetAccess: "links.setAccess",
   linksRemove: "links.remove",
   linksRespondRequest: "links.respondRequest",
+  linksReadThread: "links.readThread",
 
   // Scheduled tasks (docs/design/fleet.md, Part 6). Owner and client sessions alike.
   projectContextSubscribe: "projectContext.subscribe",
@@ -2515,6 +2518,24 @@ export const WsMovesRpcGroup = RpcGroup.make(
   WsMovesRespondManyRpc,
 );
 
+/**
+ * A page of a thread a parent here started on a linked computer, read through
+ * the link for a client that can't see that computer (LinksReadThreadInput).
+ * Fails with the reason when that computer can't be reached.
+ */
+export const WsLinksReadThreadRpc = Rpc.make(WS_METHODS.linksReadThread, {
+  payload: LinksReadThreadInput,
+  success: AgentThreadReadResult,
+  error: ComputerLinkError,
+});
+
+/**
+ * Reading threads on linked computers. A group of its own, merged into
+ * WsRpcGroup, for the same reason as the outside agents' group: the main
+ * group sits near TypeScript's cap on type work per statement.
+ */
+export const WsLinkedThreadsRpcGroup = RpcGroup.make(WsLinksReadThreadRpc);
+
 /** On the source computer: what another computer needs to copy this project. */
 export const WsProjectSetupsSourceRpc = Rpc.make(WS_METHODS.projectSetupsSource, {
   payload: ProjectSetupSourceInput,
@@ -3256,4 +3277,5 @@ export const WsRpcGroup = WsCoreRpcGroup.merge(
   WsMovesRpcGroup,
   WsThemeVsCodeRpcGroup,
   WsDeviceRpcGroup,
+  WsLinkedThreadsRpcGroup,
 );

@@ -471,8 +471,12 @@ function UsagePlanLimits({
                             usageMeterColor(meter.usedPercent, meter.warning) ?? fill,
                         }}
                       />
-                      {meter.elapsedPercent !== undefined ? (
-                        <UsagePaceMark elapsedPercent={meter.elapsedPercent} className="h-2" />
+                      {meter.elapsedPercent !== undefined && meter.paceDetail !== undefined ? (
+                        <UsagePaceMark
+                          elapsedPercent={meter.elapsedPercent}
+                          detail={meter.paceDetail}
+                          className="h-2"
+                        />
                       ) : null}
                     </div>
                   </div>

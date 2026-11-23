@@ -3682,12 +3682,15 @@ const make = Effect.gen(function* () {
       }
 
       const checkpointStartedAtMs = yield* Clock.currentTimeMillis;
-      yield* capturePreTurnCheckpointForTurnStart({ threadId: event.payload.threadId }).pipe(
+      const checkpointFailed = yield* capturePreTurnCheckpointForTurnStart({
+        threadId: event.payload.threadId,
+      }).pipe(
+        Effect.as(false),
         Effect.catchCause((cause) =>
           Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
             threadId: event.payload.threadId,
             cause: Cause.pretty(cause),
-          }),
+          }).pipe(Effect.as(true)),
         ),
       );
 
@@ -3751,6 +3754,7 @@ const make = Effect.gen(function* () {
             queueMs,
             prepareMs: checkpointStartedAtMs - prepareStartedAtMs,
             checkpointMs: checkpointEndedAtMs - checkpointStartedAtMs,
+            checkpointFailed,
           },
         })
         .pipe(
@@ -5062,9 +5066,17 @@ const make = Effect.gen(function* () {
       yield* note("Check-back not cancelled: couldn't reach the agent's session", "error");
       return;
     }
-    if (runtime === undefined) {
-      // Nothing is running to come back: the list was stale. Jobs saved to
-      // disk outlive the session, so they stay.
+    // A runtime whose provider sets no check-backs (the agent switched from
+    // Claude, say) holds none of them, so it is left running.
+    const holdsCheckBacks =
+      runtime?.providerInstanceId === undefined ||
+      (yield* providerService.getCapabilities(runtime.providerInstanceId).pipe(
+        Effect.map((capabilities) => capabilities.checkBacks === "supported"),
+        Effect.orElseSucceed(() => true),
+      ));
+    if (runtime === undefined || !holdsCheckBacks) {
+      // Nothing is running that could come back: the list was stale. Jobs
+      // saved to disk outlive the session, so they stay.
       const thread = yield* resolveThread(threadId);
       const kept = (thread?.checkBacks ?? []).filter(
         (checkBack) => checkBack.participantId === participantId && checkBack.durable,

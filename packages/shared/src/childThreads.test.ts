@@ -70,36 +70,23 @@ describe("childStartRefusal", () => {
     expect(refusal).toBeNull();
   });
 
-  it("counts threads still waiting for approval toward the per-message limit", () => {
-    const state = childRequestStateOn.submitted(
-      childRequestStateOn.submitted(
-        EMPTY_CHILD_REQUEST_STATE,
-        request({ status: "awaiting_user", requestId: ChildRequestId.make("a") }),
+  it("lets an agent keep starting and messaging threads without the user writing", () => {
+    // Counts a thread kept from before the per-message limits were removed.
+    let state = { ...EMPTY_CHILD_REQUEST_STATE, startsSinceUser: 40, sendsSinceUser: 40 };
+    for (let index = 0; index < 40; index++) {
+      state = childRequestStateOn.submitted(
+        state,
+        request({ status: "awaiting_user", requestId: ChildRequestId.make(`r${index}`) }),
+      );
+    }
+    const busy = caller({ childRequests: state });
+    expect(childStartRefusal(busy, { from: PRIMARY, callerTurnId: TURN, count: 5 })).toBeNull();
+    expect(
+      childSendRefusal(
+        busy,
+        { id: CHILD, parentThreadId: PARENT, attachedToParent: true, archivedAt: null },
+        { from: PRIMARY, callerTurnId: TURN },
       ),
-      request({ status: "awaiting_user", requestId: ChildRequestId.make("b") }),
-    );
-    expect(
-      childStartRefusal(caller({ childRequests: state }), {
-        from: PRIMARY,
-        callerTurnId: TURN,
-        count: 3,
-      }),
-    ).toBeNull();
-    expect(
-      childStartRefusal(caller({ childRequests: state }), {
-        from: PRIMARY,
-        callerTurnId: TURN,
-        count: 4,
-      })?.outcome,
-    ).toBe("limit");
-    // A project's lead chat gets twice the budget.
-    expect(
-      childStartRefusal(caller({ childRequests: state }), {
-        from: PRIMARY,
-        callerTurnId: TURN,
-        count: 4,
-        isLead: true,
-      }),
     ).toBeNull();
   });
 
@@ -188,12 +175,9 @@ describe("childRequestStateOn", () => {
     expect(childRequestStateOn.notesDelivered(settled, [note.requestId]).pendingNotes).toEqual([]);
   });
 
-  it("starts the counts over when the user writes, keeping open requests", () => {
+  it("keeps open requests when the user writes", () => {
     const open = childRequestStateOn.submitted(EMPTY_CHILD_REQUEST_STATE, request());
-    const reset = childRequestStateOn.reset(open);
-    expect(reset.startsSinceUser).toBe(0);
-    expect(reset.open).toHaveLength(1);
-    expect(childRequestStateOn.reset(reset)).toBe(reset);
+    expect(childRequestStateOn.reset(open)).toBe(open);
   });
 });
 

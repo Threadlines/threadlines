@@ -561,6 +561,8 @@ export interface WsRpcClient {
     readonly setAccess: RpcUnaryMethod<typeof WS_METHODS.linksSetAccess>;
     readonly remove: RpcUnaryMethod<typeof WS_METHODS.linksRemove>;
     readonly respondRequest: RpcUnaryMethod<typeof WS_METHODS.linksRespondRequest>;
+    /** A parent's child on a linked computer, read through the link, where the descriptor reports `linkedThreadRead`. */
+    readonly readThread: RpcUnaryMethod<typeof WS_METHODS.linksReadThread>;
   };
   /**
    * Moving a thread to a linked computer (docs/design/fleet.md, Part 3), on
@@ -1467,6 +1469,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       remove: (input) => transport.request((client) => client[WS_METHODS.linksRemove](input)),
       respondRequest: (input) =>
         transport.request((client) => client[WS_METHODS.linksRespondRequest](input)),
+      readThread: (input) =>
+        transport.request((client) => client[WS_METHODS.linksReadThread](input)),
     },
     // Never replayed on a new socket: the user answers what is on screen, and
     // after a reconnect the fresh snapshot says what still waits.

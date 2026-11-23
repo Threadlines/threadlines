@@ -293,12 +293,14 @@ export type ProviderTurnOrigin = typeof ProviderTurnOrigin.Type;
  * How long the steps before the agent gets a message took, for usage analytics
  * only. `queueMs`: waiting behind the thread's earlier work. `prepareMs`: getting
  * the agent ready, its startup included when it had to start. `checkpointMs`:
- * saving the code snapshot the turn is measured against.
+ * saving the code snapshot the turn is measured against. `checkpointFailed`:
+ * that snapshot was not saved, so the wait bought nothing.
  */
 export const ProviderTurnHandoffSteps = Schema.Struct({
   queueMs: NonNegativeInt,
   prepareMs: NonNegativeInt,
   checkpointMs: NonNegativeInt,
+  checkpointFailed: Schema.optional(Schema.Boolean),
 });
 export type ProviderTurnHandoffSteps = typeof ProviderTurnHandoffSteps.Type;
 

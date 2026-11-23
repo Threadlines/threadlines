@@ -309,12 +309,6 @@ function awaitingInputPill(): ThreadStatusPill {
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
-  /**
-   * Look past waiting on the threads its agent started, to what the thread
-   * itself shows beneath it. Wrapping up reads it this way: those threads keep
-   * running wrapped or not.
-   */
-  ignoreChildThreadWait?: boolean;
 }): ThreadStatusPill | null {
   const { thread } = input;
 
@@ -430,11 +424,7 @@ export function resolveThreadStatusPill(input: {
   // Its own turn is over and the threads its agent started still owe it
   // answers: each one that comes back starts it up again on its own.
   const awaitedChildThreads = thread.awaitedChildThreadCount ?? 0;
-  if (
-    input.ignoreChildThreadWait !== true &&
-    awaitedChildThreads > 0 &&
-    isLatestTurnSettled(thread.latestTurn, thread.session)
-  ) {
+  if (awaitedChildThreads > 0 && isLatestTurnSettled(thread.latestTurn, thread.session)) {
     return {
       label: "Waiting",
       colorClass: WAITING_STATUS_TONE,
@@ -739,10 +729,10 @@ export function hasQueuedTurnStart(
  * A failed thread CAN be marked done after it has been inspected -- that is
  * "I saw it, I'm done with it" rather than an accidental dismissal.
  *
- * Waiting on the threads its agent started does not hold a thread open:
- * wrapping it up never stops them, so the check reads what the thread shows
- * beneath that wait. Nor does a check-back: the agent's turn is over, and
- * wrapping never cancels it. When it fires, that new work outranks the old
+ * Waiting on the threads its agent started holds it like any other wait:
+ * their answers start it up again, so it isn't finished until they report
+ * back. A check-back does not: the agent's turn is over, and wrapping never
+ * cancels it. When it fires, that new work outranks the old
  * word and brings the thread back by itself, like a snoozed email. (A usage
  * reset still holds: that work was cut off, not finished.)
  */
@@ -759,7 +749,7 @@ export function canMarkThreadDone(
 ): boolean {
   // The same status resolution the row uses, so "can't be marked done" and
   // "shows a status that deserves attention" can never drift apart.
-  const status = resolveThreadStatusPill({ thread, ignoreChildThreadWait: true });
+  const status = resolveThreadStatusPill({ thread });
   if (status !== null && status.label !== "Checking back") {
     const handedBack = status.label === "Completed" && options.handedBackCompletionSeen === true;
     if (!handedBack) {
@@ -1660,9 +1650,9 @@ export type InboxRemoteChildPhase = AgentThreadStatusWord | RemoteChildRequestSt
  * A child in a parent's family the app has no thread for, shown from the
  * parent's own record of it: one on a computer this app can't see (its last
  * known status, or a start that has no thread there yet), or one started here
- * that is still being set up. It can't be opened: there is no thread to open,
- * so once wrapped and seen through the parent it has no row until the parent
- * wraps and holds it.
+ * that is still being set up. This app has no thread to open: one on another
+ * computer opens read through the link where the parent's computer can do
+ * that (`linkedRefOf`, LinkedThreadView), and stays in the family while open.
  */
 export interface InboxRemoteChild extends InboxFamilyExit {
   /**
@@ -1680,6 +1670,8 @@ export interface InboxRemoteChild extends InboxFamilyExit {
   readonly computerLabel: string;
   readonly title: string;
   readonly phase: InboxRemoteChildPhase;
+  /** The parent's computer no longer links to that one: nothing can be read from there. */
+  readonly unlinked?: true | undefined;
   /**
    * The user can wrap it up (or reopen it, once done) from here: a thread
    * there that nothing holds in front of them. Absent: a start, or one being
@@ -1907,8 +1899,11 @@ export function liveFamilyOf<E extends InboxFamilyEntry>(input: {
   const children = sortFamilyChildren(input.children).filter((child) =>
     isLiveFamilyMember(child, input.parent, input),
   );
+  // One open in the chat (read through the link) stays, as a child here does.
   const remoteChildren = input.remoteChildren.filter(
-    (child) => !hasLeftLiveFamily(child, input.parent, input.now),
+    (child) =>
+      child.threadKey === input.activeThreadKey ||
+      !hasLeftLiveFamily(child, input.parent, input.now),
   );
   return children.length === 0 && remoteChildren.length === 0 ? null : { children, remoteChildren };
 }
@@ -2005,8 +2000,10 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       : [];
     const remoteChildren: InboxRemoteChild[] = [];
     for (const child of heads ? remoteChildrenOf(entry) : []) {
-      if (hasLeftLiveFamily(child, entry, input.now)) doneRemote.push({ child, startedBy: entry });
-      else remoteChildren.push(child);
+      // One open in the chat (read through the link) stays, as a child here does.
+      if (child.threadKey !== input.activeThreadKey && hasLeftLiveFamily(child, entry, input.now)) {
+        doneRemote.push({ child, startedBy: entry });
+      } else remoteChildren.push(child);
     }
     const open = input.isFamilyOpen(entry.threadKey);
     const shownChildren = open
@@ -2016,7 +2013,9 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
         );
     const shownRemoteChildren = open
       ? remoteChildren
-      : remoteChildren.filter(isChildThreadNeedingYou);
+      : remoteChildren.filter(
+          (child) => isChildThreadNeedingYou(child) || child.threadKey === input.activeThreadKey,
+        );
     return {
       entry,
       children,
@@ -2112,7 +2111,9 @@ export function inboxLiveRowHoldsOpenChild(
   activeThreadKey: string | null,
 ): boolean {
   return (
-    activeThreadKey !== null && row.children.some((child) => child.threadKey === activeThreadKey)
+    activeThreadKey !== null &&
+    (row.children.some((child) => child.threadKey === activeThreadKey) ||
+      row.remoteChildren.some((child) => child.threadKey === activeThreadKey))
   );
 }
 
@@ -2143,7 +2144,8 @@ export function windowInboxDoneRows<E extends InboxFamilyEntry>(
     (row, index) =>
       index < limit ||
       (row.kind === "thread" &&
-        (row.row.openChild !== null || row.row.entry.threadKey === activeThreadKey)),
+        (row.row.openChild !== null || row.row.entry.threadKey === activeThreadKey)) ||
+      (row.kind === "remote" && row.row.child.threadKey === activeThreadKey),
   );
 }
 
@@ -2530,6 +2532,7 @@ export function remoteChildEntry(
     phase,
     // With its link gone, its last word is history, not news.
     status: linked ? status : null,
+    ...(linked ? {} : { unlinked: true as const }),
   };
   const filing = child.filing;
   if (filing === undefined) {

@@ -2,7 +2,7 @@ import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import type { ThreadStatusPill } from "../Sidebar.logic";
+import type { InboxRemoteChild, ThreadStatusPill } from "../Sidebar.logic";
 import type { SidebarThreadSummary } from "../../types";
 import {
   type FamilyTab,
@@ -62,7 +62,35 @@ function entry(
 }
 
 const tabsFor = (open: string, entries: readonly FamilyTabEntry[]) =>
-  familyTabsOf({ openKey: keyOf(open), entries, remoteChildrenOf: () => [], now: NOW });
+  familyTabsOf({
+    openKey: keyOf(open),
+    entries,
+    remoteChildrenOf: () => [],
+    canReadLinked: () => true,
+    now: NOW,
+  });
+
+const windowsId = EnvironmentId.make("environment-windows");
+const windowsKeyOf = (id: string) => scopedThreadKey(scopeThreadRef(windowsId, ThreadId.make(id)));
+function remoteChild(
+  id: string,
+  options: { threadId?: string | null; done?: boolean } = {},
+): InboxRemoteChild {
+  const threadId = options.threadId === undefined ? id : options.threadId;
+  return {
+    threadKey: threadId === null ? `start:${windowsId}:${id}` : windowsKeyOf(threadId),
+    environmentId: windowsId,
+    threadId: threadId === null ? null : ThreadId.make(threadId),
+    computerLabel: "Windows PC",
+    title: `Remote ${id}`,
+    phase: options.done ? "wrapped" : threadId === null ? "sending" : "working",
+    status: options.done ? null : working,
+    isDone: options.done ?? false,
+    // Wrapped and already seen through the parent: gone from the live family.
+    settledAt: "2026-11-16T10:00:00.000Z",
+    seenAt: "2026-11-16T11:00:00.000Z",
+  };
+}
 
 describe("family tabs", () => {
   const family = [
@@ -110,10 +138,63 @@ describe("family tabs", () => {
   });
 });
 
+describe("family tabs with children on a computer this app can't see", () => {
+  const parent = entry("parent");
+  const children = [remoteChild("busy"), remoteChild("asked", { threadId: null })];
+  const tabs = (input: {
+    open: string;
+    parentKey?: string;
+    remote?: readonly InboxRemoteChild[];
+    readsLinked?: boolean;
+  }) =>
+    familyTabsOf({
+      openKey: input.open,
+      parentKey: input.parentKey,
+      entries: [parent],
+      remoteChildrenOf: () => input.remote ?? children,
+      canReadLinked: () => input.readsLinked ?? true,
+      now: NOW,
+    });
+
+  it("opens a child there through the link only where the parent's computer reads it", () => {
+    const reading = tabs({ open: keyOf("parent") });
+    expect(reading?.tabs.map((tab) => tab.linkedRef)).toEqual([
+      null,
+      scopeThreadRef(windowsId, ThreadId.make("busy")),
+      // A start with no thread there yet has nothing to read.
+      null,
+    ]);
+    const older = tabs({ open: keyOf("parent"), readsLinked: false });
+    expect(older?.tabs.every((tab) => tab.linkedRef === null)).toBe(true);
+    // Nor once the parent's computer no longer links there.
+    const unlinked = tabs({
+      open: keyOf("parent"),
+      remote: [{ ...remoteChild("busy"), unlinked: true }],
+    });
+    expect(unlinked?.tabs[1]?.linkedRef).toBeNull();
+  });
+
+  it("shows the row on a child open through the link, and keeps it there once wrapped", () => {
+    const open = tabs({
+      open: windowsKeyOf("finished"),
+      parentKey: keyOf("parent"),
+      remote: [remoteChild("finished", { done: true })],
+    });
+    expect(open?.familyKey).toBe(keyOf("parent"));
+    expect(open?.openKey).toBe(windowsKeyOf("finished"));
+    expect(open?.tabs.map((tab) => tab.key)).toEqual([keyOf("parent"), windowsKeyOf("finished")]);
+    // Not open: it has left the family, so the parent has no row.
+    expect(
+      tabs({ open: keyOf("parent"), remote: [remoteChild("finished", { done: true })] }),
+    ).toBeNull();
+  });
+});
+
 describe("fitting the row", () => {
   const tab = (key: string, needsYou = false): FamilyTab => ({
     key,
     threadRef: null,
+    linkedRef: null,
     kind: "child",
     title: key,
     shortTitle: key,

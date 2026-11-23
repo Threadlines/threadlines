@@ -444,11 +444,13 @@ export const startMuseHost = (
       ),
     );
 
-    const schema = isRecord(initializeResult.schema) ? initializeResult.schema : {};
-    if (schema.version !== MUSE_SCHEMA_VERSION) {
+    // The SDK types this reply, but it is still wire data from whatever Muse is installed.
+    const schema: unknown = initializeResult.schema;
+    const schemaVersion = isRecord(schema) ? schema.version : undefined;
+    if (schemaVersion !== MUSE_SCHEMA_VERSION) {
       return yield* new MuseHostError({
         operation: "initialize",
-        detail: `This Muse Code speaks session protocol version ${String(schema.version)}; Threadlines speaks ${MUSE_SCHEMA_VERSION}.`,
+        detail: `This Muse Code speaks session protocol version ${String(schemaVersion)}; Threadlines speaks ${MUSE_SCHEMA_VERSION}.`,
       });
     }
     connection.notify("initialized");

@@ -806,7 +806,9 @@ function createClaudeProviderWithTokenHistory(): ServerProvider {
       tokenUsage: {
         checkedAt,
         scope: "local",
-        coverageStartDate: utcDateKeyAtOffset(-365),
+        // Claude Code keeps 30 days of transcripts; older usage survives only in files
+        // written since, so the days before are known only where they show usage.
+        coverageStartDate: utcDateKeyAtOffset(-29),
         coverageEndDate: utcDateKeyAtOffset(0),
         completeLifetimeHistory: false,
         dailyBuckets: [
@@ -3661,6 +3663,39 @@ describe("GeneralSettingsPanel observability", () => {
       .getByLabelText("Local token activity daily token activity")
       .last();
     await expect.element(visibleActivityGrid.getByLabelText(`0 tokens on ${today}`)).toBeVisible();
+    // Before the known days: usage still shows, a day without any is unknown, not zero.
+    const earlyUsageDate = formatTokenActivityTestDate(utcDateKeyAtOffset(-40));
+    const earlyQuietDate = formatTokenActivityTestDate(utcDateKeyAtOffset(-39));
+    await expect
+      .element(visibleActivityGrid.getByLabelText(new RegExp(`tokens on ${earlyUsageDate}$`)))
+      .toBeVisible();
+    await expect
+      .element(visibleActivityGrid.getByLabelText(`Usage unavailable on ${earlyQuietDate}`))
+      .toBeVisible();
+
+    // With unknown days behind it, a running total is a floor, never an exact sum.
+    await page.getByRole("button", { name: "Cumulative" }).last().click();
+    const cumulativeGrid = page
+      .getByLabelText("Local token activity cumulative token activity")
+      .last();
+    // A week after the first usage and before the known range still shows the floor.
+    const unknownDayMs = Date.parse(`${utcDateKeyAtOffset(-34)}T00:00:00.000Z`);
+    const unknownWeekStart = new Date(
+      unknownDayMs - new Date(unknownDayMs).getUTCDay() * 86_400_000,
+    )
+      .toISOString()
+      .slice(0, 10);
+    await expect
+      .element(
+        cumulativeGrid.getByLabelText(
+          `At least 4k tokens through week of ${formatTokenActivityTestDate(unknownWeekStart)}`,
+        ),
+      )
+      .toBeVisible();
+    const weekLabels = [
+      ...cumulativeGrid.element().querySelectorAll<HTMLElement>('[role="img"]'),
+    ].map((week) => week.getAttribute("aria-label") ?? "");
+    expect(weekLabels.filter((label) => /^\d/.test(label))).toEqual([]);
   });
 
   it("configures Claude fallback models from the provider models list", async () => {

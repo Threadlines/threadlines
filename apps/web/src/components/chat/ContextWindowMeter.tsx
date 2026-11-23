@@ -37,10 +37,11 @@ function AccountUsageBar(props: {
   usedPercent: number;
   warning: boolean;
   elapsedPercent?: number | undefined;
+  paceDetail?: string | undefined;
   onOpen?: (() => void) | undefined;
 }) {
   const meterColor = usageMeterColor(props.usedPercent, props.warning);
-  const meterLabel = `${props.usageLabel} ${props.rowLabel} ${props.usedPercent}% used${usagePaceLabel(props.elapsedPercent)}`;
+  const meterLabel = `${props.usageLabel} ${props.rowLabel} ${props.usedPercent}% used${usagePaceLabel(props.paceDetail)}`;
   const content = (
     <>
       <span className="flex min-w-0 items-baseline justify-between gap-3 text-xs">
@@ -62,8 +63,8 @@ function AccountUsageBar(props: {
           )}
           style={{ width: `${props.usedPercent}%`, backgroundColor: meterColor }}
         />
-        {props.elapsedPercent !== undefined ? (
-          <UsagePaceMark elapsedPercent={props.elapsedPercent} />
+        {props.elapsedPercent !== undefined && props.paceDetail !== undefined ? (
+          <UsagePaceMark elapsedPercent={props.elapsedPercent} detail={props.paceDetail} />
         ) : null}
       </span>
     </>
@@ -197,7 +198,17 @@ export function ContextWindowMeter(props: {
   const [isPinnedOpen, setIsPinnedOpen] = useState(false);
   const [isHoverOpenSuppressed, setIsHoverOpenSuppressed] = useState(false);
   const [isBreakdownOpen, setIsBreakdownOpen] = useState(false);
-  const accountUsage = props.accountUsage ?? null;
+  // The popover draws no calendar, so usage that is only a token calendar
+  // (an API key, or a restart before the first check) has nothing to show.
+  const accountUsage =
+    props.accountUsage &&
+    (props.accountUsage.windows.length > 0 ||
+      props.accountUsage.notice ||
+      props.accountUsage.spendControl ||
+      props.accountUsage.resetCredits ||
+      props.accountUsage.externalResets)
+      ? props.accountUsage
+      : null;
   const breakdownSegments = buildContextBreakdownSegments(usage);
   const hasContextCategories = (usage?.contextCategories?.length ?? 0) > 0;
   const cachedInputRate = deriveCachedInputRate(usage);
@@ -582,6 +593,7 @@ export function ContextWindowMeter(props: {
                   usedPercent={window.usedPercent}
                   warning={window.warning}
                   elapsedPercent={window.elapsedPercent}
+                  paceDetail={window.paceDetail}
                   onOpen={openUsage}
                 />
               ))}

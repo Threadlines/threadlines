@@ -1117,6 +1117,11 @@ export function withOutsideAgentsFixture(nextFixture: TestFixture): void {
   withPrimaryCapabilities(nextFixture, { outsideAgents: true });
 }
 
+/** This computer's server reads its threads' children on linked computers for the app (`links.readThread`). */
+export function withLinkedThreadReadFixture(nextFixture: TestFixture): void {
+  withPrimaryCapabilities(nextFixture, { computerLinks: true, linkedThreadRead: true });
+}
+
 /** This computer's server, and the computers saved from its config, take links. */
 export function withComputerLinksFixture(nextFixture: TestFixture): void {
   withPrimaryCapabilities(nextFixture, { computerLinks: true });

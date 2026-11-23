@@ -4,12 +4,21 @@
  * list and settings under it are that agent's. Picking a pill keeps the
  * picker open, so its model and effort can be changed in the same visit.
  * "+" adds an agent: the next model picked joins as a new one.
+ *
+ * A pill holds only its icon, name and "main" tag. Pointing at one swaps the
+ * icon for a ⋯ button in the same box, which opens Rename and Remove; so do a
+ * right-click and, on touch, a long press. Nothing appears beside the name, so
+ * a pill never changes size under the pointer: one that grew could wrap to
+ * the next line, out from under it, and flicker between the two.
  */
 import { ROOM_AGENT_ROLE_MAX_LENGTH } from "@threadlines/contracts";
-import { PencilIcon, UserRoundPlusIcon, XIcon } from "lucide-react";
-import { memo, useState } from "react";
+import { EllipsisIcon, UserRoundPlusIcon, XIcon } from "lucide-react";
+import { memo, useCallback, useRef, useState } from "react";
+import type * as React from "react";
 
 import { cn } from "~/lib/utils";
+import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { failureNotice, toastManager } from "../ui/toast";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { roomAgentKey } from "../../rooms";
@@ -20,7 +29,9 @@ import { THREAD_STATUS_DOT_CLASSES } from "../Sidebar.logic";
 const PILL_CLASS =
   "group/agent relative flex h-7 min-w-0 max-w-48 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-9 pointer-coarse:text-sm";
 
-const PILL_ARROW_STEPS: Partial<Record<string, 1 | -1 | "first" | "last">> = {
+type PillStep = 1 | -1 | "first" | "last";
+
+const PILL_ARROW_STEPS: Partial<Record<string, PillStep>> = {
   ArrowRight: 1,
   ArrowDown: 1,
   ArrowLeft: -1,
@@ -29,9 +40,12 @@ const PILL_ARROW_STEPS: Partial<Record<string, 1 | -1 | "first" | "last">> = {
   End: "last",
 };
 
-/** The pill's own small buttons: on the pointed-at, focused, or picked-on-touch pill. */
+/** The "New agent" pill's ×. */
 const PILL_ACTION_CLASS =
   "rounded-sm p-0.5 text-muted-foreground hover:text-foreground focus-visible:text-foreground pointer-coarse:p-1.5";
+
+/** The icon's box, which the ⋯ shares. */
+const PILL_ICON_SIZE = "size-3.5 pointer-coarse:size-4";
 
 export const RoomAgentsBar = memo(function RoomAgentsBar(props: {
   agents: RoomAgents;
@@ -93,158 +107,37 @@ export const RoomAgentsBar = memo(function RoomAgentsBar(props: {
       >
         {agents.rows.map((row, index) => {
           const selected = !props.adding && row.id === agents.recipient.id;
-          // One tab stop for the group: the picked pill, or the first while adding.
-          const tabStop = props.adding ? index === 0 : selected;
           const isRenaming = renaming === roomAgentKey(row.id);
-          const busy = row.status !== null;
-          const canEdit = agents.editable && !isRenaming && !props.adding;
           return (
-            <div
+            <AgentPill
               key={row.id ?? "primary"}
-              role="radio"
-              aria-checked={selected}
-              tabIndex={tabStop ? 0 : -1}
-              data-room-agent-row={row.id ?? "primary"}
-              title={row.id === null ? `${row.name}, the thread's main agent` : row.name}
-              className={cn(
-                PILL_CLASS,
-                selected
-                  ? "bg-control text-foreground shadow-(--control-shadow)"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
-              )}
-              onClick={() => choose(row)}
-              onDoubleClick={() => {
-                if (canEdit) setRenaming(roomAgentKey(row.id));
+              row={row}
+              selected={selected}
+              // One tab stop for the group: the picked pill, or the first while adding.
+              tabStop={props.adding ? index === 0 : selected}
+              isRenaming={isRenaming}
+              hasMenu={agents.editable && !props.adding}
+              onChoose={() => choose(row)}
+              onStep={(step, pill) => {
+                // Like any radio group: arrows move and pick, wrapping round.
+                const count = agents.rows.length;
+                const next =
+                  step === "first"
+                    ? 0
+                    : step === "last"
+                      ? count - 1
+                      : (index + step + count) % count;
+                const nextRow = agents.rows[next];
+                if (!nextRow) return;
+                choose(nextRow);
+                pill.parentElement
+                  ?.querySelector<HTMLElement>(`[data-room-agent-row="${nextRow.id ?? "primary"}"]`)
+                  ?.focus();
               }}
-              onKeyDown={(event) => {
-                // Keys on the pill's own buttons and name box are theirs.
-                if (event.target !== event.currentTarget) return;
-                const step = PILL_ARROW_STEPS[event.key];
-                if (step !== undefined) {
-                  // Like any radio group: arrows move and pick, wrapping round.
-                  event.preventDefault();
-                  const count = agents.rows.length;
-                  const next =
-                    step === "first"
-                      ? 0
-                      : step === "last"
-                        ? count - 1
-                        : (index + step + count) % count;
-                  const nextRow = agents.rows[next];
-                  if (!nextRow) return;
-                  choose(nextRow);
-                  event.currentTarget.parentElement
-                    ?.querySelector<HTMLElement>(
-                      `[data-room-agent-row="${nextRow.id ?? "primary"}"]`,
-                    )
-                    ?.focus();
-                } else if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  choose(row);
-                } else if (event.key === "F2" && canEdit) {
-                  event.preventDefault();
-                  setRenaming(roomAgentKey(row.id));
-                } else if ((event.key === "Delete" || event.key === "Backspace") && canEdit) {
-                  if (row.id !== null && !busy) {
-                    event.preventDefault();
-                    remove(row);
-                  }
-                }
-              }}
-            >
-              {row.entry ? (
-                <span className="relative flex shrink-0">
-                  <ProviderInstanceIcon
-                    instanceId={row.entry.instanceId}
-                    driverKind={row.entry.driverKind}
-                    displayName={row.entry.displayName}
-                    accentColor={row.entry.accentColor}
-                    // An extra account wears its letter, so two accounts on one
-                    // model can be told apart.
-                    showBadge={providerInstanceShowsBadge(row.entry)}
-                    badgeClassName="right-[-0.3rem] bottom-[-0.2rem] h-2.5 min-w-2.5 px-0 text-[6px] shadow-none"
-                    className="size-3.5 pointer-coarse:size-4"
-                    iconClassName="size-3.5 pointer-coarse:size-4"
-                  />
-                  {busy ? (
-                    // "working" reads blue, like the sidebar; amber is for warnings.
-                    <span
-                      data-room-agent-working="true"
-                      className={cn(
-                        "absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full",
-                        THREAD_STATUS_DOT_CLASSES.blue,
-                      )}
-                    />
-                  ) : null}
-                </span>
-              ) : null}
-              {isRenaming ? (
-                // The model's name stays; the user names the agent after it.
-                <input
-                  autoFocus
-                  aria-label={`Name for ${row.modelName}`}
-                  defaultValue={row.role ?? ""}
-                  placeholder="Name"
-                  size={1}
-                  maxLength={ROOM_AGENT_ROLE_MAX_LENGTH}
-                  className="field-sizing-content h-5 min-w-16 max-w-32 rounded-sm border border-border bg-transparent px-1.5 text-xs outline-none focus:border-ring"
-                  onClick={(event) => event.stopPropagation()}
-                  onDoubleClick={(event) => event.stopPropagation()}
-                  onKeyDown={(event) => {
-                    event.stopPropagation();
-                    if (event.key === "Escape") {
-                      event.currentTarget.value = row.role ?? "";
-                      event.currentTarget.blur();
-                    } else if (event.key === "Enter") {
-                      event.preventDefault();
-                      event.currentTarget.blur();
-                    }
-                  }}
-                  onBlur={(event) => rename(row, event.currentTarget.value)}
-                />
-              ) : (
-                <span className="min-w-0 truncate font-medium">{row.role ?? row.modelName}</span>
-              )}
-              {row.id === null && !isRenaming ? (
-                <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
-                  main
-                </span>
-              ) : null}
-              {canEdit ? (
-                <span
-                  className={cn(
-                    "hidden shrink-0 items-center gap-0.5 group-hover/agent:flex group-focus-within/agent:flex",
-                    // No pointer to point with on touch: the picked pill shows them.
-                    selected && "pointer-coarse:flex",
-                  )}
-                >
-                  <button
-                    type="button"
-                    aria-label={`Rename ${row.name}`}
-                    className={PILL_ACTION_CLASS}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setRenaming(roomAgentKey(row.id));
-                    }}
-                  >
-                    <PencilIcon aria-hidden="true" className="size-3" />
-                  </button>
-                  {row.id !== null && !busy ? (
-                    <button
-                      type="button"
-                      aria-label={`Remove ${row.name}`}
-                      className={PILL_ACTION_CLASS}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        remove(row);
-                      }}
-                    >
-                      <XIcon aria-hidden="true" className="size-3" />
-                    </button>
-                  ) : null}
-                </span>
-              ) : null}
-            </div>
+              onStartRename={() => setRenaming(roomAgentKey(row.id))}
+              onRename={(typed) => rename(row, typed)}
+              onRemove={() => remove(row)}
+            />
           );
         })}
         {props.adding ? (
@@ -285,3 +178,263 @@ export const RoomAgentsBar = memo(function RoomAgentsBar(props: {
     </div>
   );
 });
+
+/**
+ * One agent's pill. Its menu (Rename, Remove) opens from the ⋯ that takes the
+ * icon's place under the pointer or keyboard focus, from a right-click, or
+ * from a long press on touch, and always drops from the pill's left edge.
+ */
+function AgentPill(props: {
+  row: RoomAgentRow;
+  selected: boolean;
+  tabStop: boolean;
+  isRenaming: boolean;
+  /** The user may rename and remove agents here (not while adding one). */
+  hasMenu: boolean;
+  onChoose: () => void;
+  onStep: (step: PillStep, pill: HTMLElement) => void;
+  onStartRename: () => void;
+  onRename: (typed: string) => void;
+  onRemove: () => void;
+}) {
+  const { row, selected, isRenaming, hasMenu } = props;
+  const pillRef = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  // Rename from the menu: the menu must not take focus back from the name box.
+  const renameFromMenu = useRef(false);
+  const busy = row.status !== null;
+  const canEdit = hasMenu && !isRenaming;
+  // Events from the menu reach the pill through React's tree, though the menu
+  // sits elsewhere on the page: only the pill's own count as touching it.
+  const onPill = (event: React.SyntheticEvent) =>
+    event.currentTarget.contains(event.target as Node);
+
+  // A held finger opened the menu, which came up under it: when it lifts, the
+  // browser's mouse press at that spot lands outside the menu and would close
+  // it. Set from the hold until the finger has been up for a moment.
+  const hold = useRef<{ liftedAt: number | null } | null>(null);
+  const holdStillDown = () => {
+    const liftedAt = hold.current?.liftedAt;
+    return liftedAt === null || (liftedAt !== undefined && performance.now() - liftedAt < 400);
+  };
+  const openFromHold = useCallback(() => {
+    hold.current = { liftedAt: null };
+    setMenuOpen(true);
+  }, []);
+  const onContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!event.currentTarget.contains(event.target as Node)) return;
+      event.preventDefault();
+      if (!canEdit) return;
+      // Android sends this for a held finger, ahead of the hold's own timer.
+      hold.current =
+        (event.nativeEvent as PointerEvent).pointerType === "touch" ? { liftedAt: null } : null;
+      setMenuOpen(true);
+    },
+    [canEdit],
+  );
+  const touchHold = useTouchHoldMenu<HTMLDivElement>({ open: openFromHold, onContextMenu });
+  const lift = () => {
+    if (hold.current?.liftedAt === null) hold.current.liftedAt = performance.now();
+  };
+  const pillTouchHold = {
+    ...touchHold,
+    // A new press ends the hold. One on the open menu is the menu's own: timed
+    // as another hold on the pill, it would swallow the tap on Rename or Remove.
+    onPointerDownCapture: (event: React.PointerEvent<HTMLDivElement>) => {
+      hold.current = null;
+      touchHold.onPointerDownCapture(event);
+      if (!onPill(event)) touchHold.onPointerCancel();
+    },
+    onPointerUp: () => {
+      lift();
+      touchHold.onPointerUp();
+    },
+    onPointerCancel: () => {
+      lift();
+      touchHold.onPointerCancel();
+    },
+  };
+
+  return (
+    <div
+      ref={pillRef}
+      role="radio"
+      aria-checked={selected}
+      tabIndex={props.tabStop ? 0 : -1}
+      data-room-agent-row={row.id ?? "primary"}
+      data-menu-open={menuOpen || undefined}
+      title={row.id === null ? `${row.name}, the thread's main agent` : row.name}
+      className={cn(
+        PILL_CLASS,
+        selected
+          ? "bg-control text-foreground shadow-(--control-shadow)"
+          : // The menu's backdrop takes the hover: the open menu keeps the fill.
+            "text-muted-foreground hover:bg-accent hover:text-foreground data-menu-open:bg-accent data-menu-open:text-foreground",
+      )}
+      {...(canEdit ? pillTouchHold : {})}
+      onClick={(event) => {
+        if (onPill(event)) props.onChoose();
+      }}
+      onDoubleClick={(event) => {
+        if (onPill(event) && canEdit) props.onStartRename();
+      }}
+      onKeyDown={(event) => {
+        // Keys on the pill's ⋯, its menu and its name box are theirs.
+        if (event.target !== event.currentTarget) return;
+        const step = PILL_ARROW_STEPS[event.key];
+        if (step !== undefined) {
+          event.preventDefault();
+          props.onStep(step, event.currentTarget);
+        } else if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          props.onChoose();
+        } else if (event.key === "F2" && canEdit) {
+          event.preventDefault();
+          props.onStartRename();
+        } else if ((event.key === "Delete" || event.key === "Backspace") && canEdit) {
+          if (row.id !== null && !busy) {
+            event.preventDefault();
+            props.onRemove();
+          }
+        }
+      }}
+    >
+      {row.entry || hasMenu ? (
+        <span className="relative flex shrink-0">
+          {row.entry ? (
+            <span
+              className={cn(
+                "flex",
+                // Swapped for the ⋯ where there's a pointer to point with.
+                canEdit &&
+                  "group-hover/agent:invisible group-focus-visible/agent:invisible group-has-focus-visible/agent:invisible group-data-menu-open/agent:invisible",
+              )}
+            >
+              <ProviderInstanceIcon
+                instanceId={row.entry.instanceId}
+                driverKind={row.entry.driverKind}
+                displayName={row.entry.displayName}
+                accentColor={row.entry.accentColor}
+                // An extra account wears its letter, so two accounts on one
+                // model can be told apart.
+                showBadge={providerInstanceShowsBadge(row.entry)}
+                badgeClassName="right-[-0.3rem] bottom-[-0.2rem] h-2.5 min-w-2.5 px-0 text-[6px] shadow-none"
+                className={PILL_ICON_SIZE}
+                iconClassName={PILL_ICON_SIZE}
+              />
+            </span>
+          ) : (
+            <span aria-hidden="true" className={PILL_ICON_SIZE} />
+          )}
+          {/* Mounted while the name box is open too: a menu that unmounted
+              as Rename opened it would pull focus back from the box. */}
+          {hasMenu ? (
+            <Menu
+              open={menuOpen}
+              onOpenChange={(open, details) => {
+                // The finger that held the pill, lifting. Its press must not
+                // close the menu, nor take the keyboard focus out of it:
+                // Escape would then close the picker around the menu instead.
+                if (!open && details.reason === "outside-press" && holdStillDown()) {
+                  details.cancel();
+                  details.event.preventDefault();
+                  return;
+                }
+                setMenuOpen(open);
+              }}
+            >
+              <MenuTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label={`${row.name} options`}
+                    className={cn(
+                      "absolute inset-0 flex items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:text-foreground",
+                      // Hidden, it can't be focused or tapped; a touch screen
+                      // reaches the menu by a long press instead.
+                      "invisible",
+                      canEdit &&
+                        "group-hover/agent:visible group-focus-visible/agent:visible group-has-focus-visible/agent:visible group-data-menu-open/agent:visible",
+                      // Open, a faint fill 2px past the box, outside the layout.
+                      "before:absolute before:-inset-0.5 before:rounded-sm data-popup-open:text-foreground data-popup-open:before:bg-foreground/10",
+                    )}
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  />
+                }
+              >
+                <EllipsisIcon aria-hidden="true" className={cn("relative", PILL_ICON_SIZE)} />
+              </MenuTrigger>
+              <MenuPopup
+                anchor={pillRef}
+                align="start"
+                finalFocus={() => {
+                  const keepFocus = renameFromMenu.current;
+                  renameFromMenu.current = false;
+                  // Back to the pill: the ⋯ may be hidden again by now.
+                  return keepFocus ? false : pillRef.current;
+                }}
+              >
+                <MenuItem
+                  onClick={() => {
+                    renameFromMenu.current = true;
+                    props.onStartRename();
+                  }}
+                >
+                  Rename…
+                </MenuItem>
+                {row.id !== null ? (
+                  // A working agent can't leave yet: the server refuses it.
+                  <MenuItem disabled={busy} onClick={props.onRemove}>
+                    Remove from thread
+                  </MenuItem>
+                ) : null}
+              </MenuPopup>
+            </Menu>
+          ) : null}
+          {busy ? (
+            // "working" reads blue, like the sidebar; amber is for warnings.
+            <span
+              data-room-agent-working="true"
+              className={cn(
+                "pointer-events-none absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full",
+                THREAD_STATUS_DOT_CLASSES.blue,
+              )}
+            />
+          ) : null}
+        </span>
+      ) : null}
+      {isRenaming ? (
+        // The model's name stays; the user names the agent after it.
+        <input
+          autoFocus
+          aria-label={`Name for ${row.modelName}`}
+          defaultValue={row.role ?? ""}
+          placeholder="Name"
+          size={1}
+          maxLength={ROOM_AGENT_ROLE_MAX_LENGTH}
+          className="field-sizing-content h-5 min-w-16 max-w-32 rounded-sm border border-border bg-transparent px-1.5 text-xs outline-none focus:border-ring"
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === "Escape") {
+              event.currentTarget.value = row.role ?? "";
+              event.currentTarget.blur();
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              event.currentTarget.blur();
+            }
+          }}
+          onBlur={(event) => props.onRename(event.currentTarget.value)}
+        />
+      ) : (
+        <span className="min-w-0 truncate font-medium">{row.role ?? row.modelName}</span>
+      )}
+      {row.id === null && !isRenaming ? (
+        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">main</span>
+      ) : null}
+    </div>
+  );
+}

@@ -13,7 +13,6 @@ import {
   type RoomAgentRef,
   type RoomAgentRequestKind,
   type RoomAgentRequestOutcome,
-  ROOM_AGENT_REQUEST_LIMIT,
   type ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
@@ -37,29 +36,21 @@ export interface AgentRequestInput {
   readonly to: RoomAgentRef;
   readonly callerTurnId: TurnId;
   readonly chainEpoch: number;
-  /** A review asked of several agents in one call (counts once toward the limit). */
+  /** A review asked of several agents in one call. */
   readonly batchId?: RoomAgentBatchId | undefined;
 }
 
 /**
  * Why a request is refused: `busy` (its agent is already answering on the
- * side, or the most side answers run at once),
- * `limit` (agents have used their requests until the user writes), or
- * `refused` (anything else, with a reason the calling agent can act on).
+ * side, or the most side answers run at once), or `refused` (anything else,
+ * with a reason the calling agent can act on). There is no count: agents make
+ * as many requests of each other as they like, until the user stops them
+ * (docs/design/agent-autonomy-no-limits.md).
  */
 export interface AgentRequestRefusal {
-  readonly outcome: "refused" | "busy" | "limit";
+  readonly outcome: "refused" | "busy";
   readonly detail: string;
 }
-
-/**
- * The room shows no notice when agents reach the limit, so the calling
- * agent's reply is where the user learns a request was not made.
- */
-const LIMIT_REFUSAL: AgentRequestRefusal = {
-  outcome: "limit",
-  detail: `Agents have made ${ROOM_AGENT_REQUEST_LIMIT} requests since the user last wrote, so this one was not made. Say so in your reply, and wait for the user to write before asking again.`,
-};
 
 const sameAgent = (left: RoomAgentRef, right: RoomAgentRef) =>
   (left.participantId ?? null) === (right.participantId ?? null);
@@ -100,11 +91,6 @@ export function agentRequestRefusal(
   if (target !== null && !present.some((participant) => participant.id === target)) {
     return { outcome: "refused", detail: "That agent is not in this room." };
   }
-  // A batch already counted is not counted, or refused, again.
-  const counted = input.batchId !== undefined && state.batchesSinceUser.includes(input.batchId);
-  if (!counted && state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT) {
-    return LIMIT_REFUSAL;
-  }
   if (input.kind !== "hand_off") {
     const busy = sideTurnStartRefusal(thread, input.to.participantId ?? null);
     if (busy !== null) return { outcome: "busy", detail: busy };
@@ -119,8 +105,8 @@ export interface AgentInviteInput {
 }
 
 /**
- * Why an invite is refused, or null. The same holder, turn, Stop and limit
- * rules as other requests; besides those, a declined invite silences invites
+ * Why an invite is refused, or null. The same holder, turn and Stop rules as
+ * other requests; besides those, a declined invite silences invites
  * until the user writes, and only one invite waits for the user at a time.
  * A side answer running is no reason: an accepted invite waits its turn.
  */
@@ -159,9 +145,6 @@ export function agentInviteRefusal(
       outcome: "refused",
       detail: "An invite is already waiting for the user. Wait for the user's answer.",
     };
-  }
-  if (state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT) {
-    return LIMIT_REFUSAL;
   }
   if (thread.voiceActive === true) {
     return { outcome: "refused", detail: "Voice is on. Agents cannot invite others while it is." };
@@ -216,16 +199,7 @@ export const agentRequestStateOn = {
   ): OrchestrationAgentRequestState =>
     state.open.some((entry) => entry.requestId === request.requestId)
       ? state
-      : request.batchId !== undefined && state.batchesSinceUser.includes(request.batchId)
-        ? { ...state, open: [...state.open, request] }
-        : {
-            ...state,
-            open: [...state.open, request],
-            requestsSinceUser: state.requestsSinceUser + 1,
-            ...(request.batchId !== undefined
-              ? { batchesSinceUser: [...state.batchesSinceUser, request.batchId] }
-              : {}),
-          },
+      : { ...state, open: [...state.open, request] },
   updated: (
     state: OrchestrationAgentRequestState,
     update: {
@@ -271,18 +245,7 @@ export const agentRequestStateOn = {
   ): OrchestrationAgentRequestState =>
     state.hold && state.chainEpoch === chainEpoch ? state : { ...state, hold: true, chainEpoch },
   reset: (state: OrchestrationAgentRequestState): OrchestrationAgentRequestState =>
-    !state.hold &&
-    state.requestsSinceUser === 0 &&
-    !state.invitesPaused &&
-    state.batchesSinceUser.length === 0
-      ? state
-      : {
-          ...state,
-          hold: false,
-          requestsSinceUser: 0,
-          invitesPaused: false,
-          batchesSinceUser: [],
-        },
+    !state.hold && !state.invitesPaused ? state : { ...state, hold: false, invitesPaused: false },
 };
 
 /**

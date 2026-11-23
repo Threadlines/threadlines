@@ -1,6 +1,6 @@
 import "../../index.css";
 
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -113,6 +113,29 @@ describe("ContextWindowMeter", () => {
     }
   });
 
+  it("leaves out a usage section that would only hold a token calendar", async () => {
+    const { tokenUsage } = TEST_ACCOUNT_USAGE;
+    const screen = await render(
+      <ContextWindowMeter
+        usage={TEST_CONTEXT_WINDOW}
+        accountUsage={{
+          label: "Claude usage",
+          reachedLimit: false,
+          windows: [],
+          ...(tokenUsage ? { tokenUsage } : {}),
+        }}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: /Context window/ }).click();
+      await expect.element(page.getByText(/context used/)).toBeVisible();
+      await expect.element(page.getByText("Claude usage")).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("marks the pace on a usage bar and opens the Usage page from its row", async () => {
     const openUsage = vi.fn();
     const screen = await render(
@@ -121,7 +144,9 @@ describe("ContextWindowMeter", () => {
         accountUsage={{
           ...TEST_ACCOUNT_USAGE,
           windows: TEST_ACCOUNT_USAGE.windows.map((window) =>
-            window.key === "secondary" ? { ...window, elapsedPercent: 14.3 } : window,
+            window.key === "secondary"
+              ? { ...window, elapsedPercent: 14.3, paceDetail: "14% of the week has passed" }
+              : window,
           ),
         }}
         onOpenUsage={openUsage}
@@ -135,7 +160,13 @@ describe("ContextWindowMeter", () => {
       expect(paceMarks).toHaveLength(1);
       expect(paceMarks[0]?.style.left).toBe("14.3%");
 
-      await page.getByRole("button", { name: /Weekly 36% used, 14% of the window passed/ }).click();
+      // Hovering the mark says what it measures.
+      await userEvent.hover(paceMarks[0]!);
+      await expect.element(page.getByText("14% of the week has passed")).toBeVisible();
+
+      await page
+        .getByRole("button", { name: /Weekly 36% used, 14% of the week has passed/ })
+        .click();
       expect(openUsage).toHaveBeenCalledTimes(1);
       // The row closes the popover. Checked on the meter's own state: the popup
       // leaves the page only after its fade-out, which needs frames a busy CI

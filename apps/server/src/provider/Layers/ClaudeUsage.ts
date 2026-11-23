@@ -288,7 +288,8 @@ function hasUsageWindowReset(
  * reading, moved forward to `nowMs`. A window whose reset time has passed
  * starts over: nothing used, and no reset time until it is read again. Each
  * window keeps the time it was read, so the client can say how old it is.
- * `undefined` when there is no window to keep.
+ * The local token calendar comes along as it was. `undefined` when there is
+ * neither a window nor a calendar to keep.
  */
 export function carryClaudeAccountUsageForward(
   previous: ServerProviderAccountUsage | undefined,
@@ -328,7 +329,7 @@ export function carryClaudeAccountUsageForward(
       },
     ];
   });
-  return limits.length > 0 ? { ...previous, limits } : undefined;
+  return limits.length > 0 || previous.tokenUsage ? { ...previous, limits } : undefined;
 }
 
 function isNewerReading(candidate: string | undefined, than: string | undefined): boolean {
