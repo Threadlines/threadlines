@@ -3,31 +3,39 @@
  * folder, read from disk the way the CLI finds them, for the provider
  * snapshot's `skills`.
  *
- * Where the CLI looks, in the order that decides which copy of a name wins
- * (T3 Code's native root order, checked against its tests):
+ * Global skills are read through the instance's profile, which is what the
+ * agent sees: the user's own folders arrive there as links or copies
+ * (`AntigravityUserConfig`), and a folder the agent made in the profile
+ * counts as it does for the agent. Where the CLI looks, in the order that
+ * decides which copy of a name wins (T3 Code's native root order, checked
+ * against its tests):
  *
- * 1. `~/.gemini/config/skills`
+ * 1. `<profile>/config/skills`
  * 2. `<project>/.gemini/skills`
- * 3. `~/.gemini/antigravity-cli/skills`
+ * 3. `<profile>/antigravity-cli/skills`
  * 4. `<project>/.agents/skills`, then the legacy `<project>/.agent/skills`
  * 5. Folders a manifest declares: the project's `.agents/skills.json` (and
  *    legacy `.agent/skills.json`) in every folder from the project up to its
- *    repository root, then `~/.gemini/config/skills.json`. A project
+ *    repository root, then `<profile>/config/skills.json`. A project
  *    manifest's paths resolve against the folder holding `.agents`, any
  *    other manifest's against its own folder.
- * 6. Plugins installed in the instance's own profile
+ * 6. Plugins installed in the profile
  *
  * A root holding a `SKILL.md` is one skill; otherwise each folder directly
  * inside it is. Manifests follow the CLI's rules (changelog 1.4 to 1.5.2):
  * `inherits` reads another manifest, `include_only` and `exclude` match
- * names literally (no patterns) and may be null, a nested item loads only
- * when `include_only` names it (`category/my-skill`), `~` is not expanded,
- * and a project manifest
- * only reaches inside the project or its repository root.
+ * names literally (no patterns), may be null, and apply to a named skill
+ * folder or `SKILL.md` alike, a nested item loads only when `include_only`
+ * names it (`category/my-skill`), and `~` is not expanded.
  *
- * The scan reads front matter only and has a size and entry budget, so a
- * huge skills folder can't stall a status check; past the budget it stops
- * and lists what it found.
+ * Project files are untrusted, so nothing outside the project or its
+ * repository root is listed or even opened for a project: the CLI skips
+ * manifest entries that leave it, and a project skill folder linked from
+ * outside is not listed either (the agent may still load that one).
+ *
+ * Every directory entry, lookup and byte read is charged to a budget, and
+ * the scan stops at a deadline, so a huge or hostile tree can't stall a
+ * status check; past either it keeps what it found.
  *
  * @module provider/antigravity/AntigravitySkills
  */
@@ -36,17 +44,24 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 
 import type { ServerProviderSkill } from "@threadlines/contracts";
 import { fromYaml } from "@threadlines/shared/schemaYaml";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { antigravityUserGeminiDir } from "./AntigravityUserConfig.ts";
+import { openRegularFile, readRegularFile } from "./AntigravityFileReads.ts";
 
 const MAX_SKILL_BYTES = 1_000_000;
 const MAX_SCAN_BYTES = 8_000_000;
 const MAX_SCAN_ENTRIES = 10_000;
 const MAX_INHERIT_DEPTH = 10;
 const READ_CHUNK_BYTES = 4096;
+/** A longer name is no name the CLI offers; it is left out rather than cut. */
+const MAX_NAME_LENGTH = 256;
+/** What is kept of a description: it is sent to every client and searched (as registry agents). */
+export const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
+/** The longest a listing may run; past it the scan stops where it is. */
+const LIST_TIME_LIMIT = Duration.seconds(5);
 
 const SkillFrontMatter = fromYaml(
   Schema.Struct({
@@ -83,6 +98,9 @@ const decodePluginSettings = Schema.decodeUnknownOption(
 
 type Scope = "user" | "project";
 
+/** Whether a path may be opened; a project's scan only reaches inside the project. */
+type Confine = (path: string) => Promise<boolean>;
+
 /** Names a manifest lets through: in every `include_only` list met on the way, in no `exclude`. */
 interface NameFilter {
   readonly includeGroups: ReadonlyArray<ReadonlyArray<string>>;
@@ -117,17 +135,15 @@ const byEscapedPath = (left: string, right: string) => {
 
 const isInside = (root: string, path: string) => {
   const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 };
 
-const statOf = (path: string) => fs.stat(path).catch(() => undefined);
-
-/** The nearest folder at or above `cwd` holding `.git`, or `cwd` when there is none. */
-async function repositoryRoot(cwd: string): Promise<string> {
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    if (await fs.lstat(join(dir, ".git")).catch(() => undefined)) return dir;
-    if (dirname(dir) === dir) return cwd;
-  }
+/** At most `max` UTF-16 units, never ending on half of a surrogate pair. */
+export function capText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
 /** Front matter between the first two `---`, as the CLI finds them (text may come before). */
@@ -141,12 +157,19 @@ function frontMatterOf(text: string): string | undefined {
 class SkillScan {
   private remainingBytes = MAX_SCAN_BYTES;
   private remainingEntries = MAX_SCAN_ENTRIES;
-  /** Set once the budget runs out; the scan stops and keeps what it found. */
+  /** Set once the budget or the time runs out; the scan stops and keeps what it found. */
   exhausted = false;
   readonly skills = new Map<string, ServerProviderSkill>();
 
-  private spendEntries(count: number) {
-    if (count > this.remainingEntries) {
+  private readonly deadline: number;
+
+  constructor(deadline: number) {
+    this.deadline = deadline;
+  }
+
+  /** Charges `count` entries or lookups; false (and the scan over) when they don't fit. */
+  private spend(count: number) {
+    if (this.exhausted || count > this.remainingEntries || Date.now() > this.deadline) {
       this.exhausted = true;
       return false;
     }
@@ -154,17 +177,37 @@ class SkillScan {
     return true;
   }
 
-  private async readDir(dir: string) {
-    const names = await fs.readdir(dir).catch(() => undefined);
-    if (names === undefined || this.exhausted) return undefined;
-    return this.spendEntries(names.length) ? names : undefined;
+  private async stat(path: string) {
+    return this.spend(1) ? fs.stat(path).catch(() => undefined) : undefined;
+  }
+
+  realpath(path: string) {
+    return this.spend(1) ? fs.realpath(path).catch(() => undefined) : Promise.resolve(undefined);
+  }
+
+  /** A folder's names, read one entry at a time so a huge folder costs only the budget. */
+  private async readDir(dir: string): Promise<Array<string> | undefined> {
+    if (!this.spend(1)) return undefined;
+    const handle = await fs.opendir(dir, { bufferSize: 32 }).catch(() => undefined);
+    if (!handle) return undefined;
+    const names: Array<string> = [];
+    try {
+      for await (const entry of handle) {
+        if (!this.spend(1)) return undefined;
+        names.push(entry.name);
+      }
+    } catch {
+      return undefined;
+    }
+    return names;
   }
 
   /** Reads a skill file up to the end of its front matter, within the budget. */
   private async readHead(path: string): Promise<string | undefined> {
+    if (!this.spend(1)) return undefined;
     const limit = Math.min(MAX_SKILL_BYTES, this.remainingBytes);
-    const handle = await fs.open(path, "r").catch(() => undefined);
-    if (!handle) return undefined;
+    const opened = await openRegularFile(path, { followLink: true });
+    if (!opened) return undefined;
     try {
       const chunks: Array<Buffer> = [];
       let total = 0;
@@ -172,7 +215,7 @@ class SkillScan {
       let dashes = 0;
       while (total <= limit) {
         const buffer = Buffer.alloc(READ_CHUNK_BYTES);
-        const { bytesRead } = await handle.read(buffer, 0, READ_CHUNK_BYTES, total);
+        const { bytesRead } = await opened.handle.read(buffer, 0, READ_CHUNK_BYTES, total);
         if (bytesRead === 0) break;
         let end = bytesRead;
         for (let index = 0; index < bytesRead && markers < 2; index += 1) {
@@ -195,8 +238,25 @@ class SkillScan {
       }
       return Buffer.concat(chunks).toString("utf8");
     } finally {
-      await handle.close();
+      await opened.handle.close();
     }
+  }
+
+  /** Reads a small JSON file (a manifest, plugin settings) within the budget. */
+  async readSmall(path: string): Promise<string | undefined> {
+    if (!this.spend(1)) return undefined;
+    const maxBytes = Math.min(MAX_SKILL_BYTES, this.remainingBytes);
+    const opened = await openRegularFile(path, { followLink: true });
+    if (!opened) return undefined;
+    await opened.handle.close();
+    if (opened.size > maxBytes) {
+      if (maxBytes < MAX_SKILL_BYTES) this.exhausted = true;
+      return undefined;
+    }
+    const bytes = await readRegularFile(path, { maxBytes, followLink: true });
+    if (bytes === undefined) return undefined;
+    this.remainingBytes -= bytes.byteLength;
+    return bytes.toString("utf8");
   }
 
   /** Adds the skill at `skillFile` unless a copy with its name came first. */
@@ -209,11 +269,17 @@ class SkillScan {
     // A skill without a name is named after its folder (CLI 1.5.10).
     const name = parsed.value.name || basename(dirname(skillFile));
     // The CLI keeps names as written; one with outer spaces can't be offered by name.
-    if (!name || name !== name.trim() || this.skills.has(name)) return;
-    const description = parsed.value.description?.trim();
+    if (!name || name !== name.trim() || name.length > MAX_NAME_LENGTH) return;
+    if (this.skills.has(name)) return;
+    const description = capText(
+      parsed.value.description?.trim() ?? "",
+      MAX_SKILL_DESCRIPTION_LENGTH,
+    ).trim();
     this.skills.set(name, {
       name,
-      path: skillFile,
+      // Where it really is: for a global skill, the user's own folder rather
+      // than the link in the profile.
+      path: (await this.realpath(skillFile)) ?? skillFile,
       scope,
       enabled: true,
       ...(description ? { description } : {}),
@@ -226,26 +292,26 @@ class SkillScan {
     const found = listed?.toSorted().find((name) => name.toLowerCase() === "skill.md");
     if (found === undefined) return undefined;
     const path = join(dir, found);
-    return (await statOf(path))?.isFile() ? path : undefined;
+    return (await this.stat(path))?.isFile() ? path : undefined;
   }
 
   /**
-   * A skills folder: a skill itself when it holds a `SKILL.md`, otherwise
-   * each folder directly inside it (the ones `filter` lets through) plus
-   * nested items `include_only` names.
+   * A skills folder: a skill itself when it holds a `SKILL.md` (and `filter`
+   * lets its name through), otherwise each folder directly inside it that
+   * `filter` lets through, plus nested items `include_only` names. With
+   * `confine`, nothing outside it is listed or opened.
    */
-  async scanFolder(
-    dir: string,
-    scope: Scope,
-    filter: NameFilter = NO_FILTER,
-    accept?: (path: string) => Promise<boolean>,
-  ) {
-    if (this.exhausted || !(await statOf(dir))?.isDirectory()) return;
+  async scanFolder(dir: string, scope: Scope, filter: NameFilter, confine?: Confine) {
+    if (this.exhausted) return;
+    if (confine && !(await confine(dir))) return;
+    if (!(await this.stat(dir))?.isDirectory()) return;
     const names = await this.readDir(dir);
     if (names === undefined) return;
     const own = await this.skillFileIn(dir, names);
     if (own) {
-      if (!accept || (await accept(own))) await this.addSkill(own, scope);
+      if (passesFilter(basename(dir), filter) && (!confine || (await confine(own)))) {
+        await this.addSkill(own, scope);
+      }
       return;
     }
     const nested = filter.includeGroups
@@ -257,43 +323,36 @@ class SkillScan {
     for (const name of candidates) {
       if (this.exhausted) return;
       const child = join(dir, ...name.split("/"));
-      if (!(await statOf(child))?.isDirectory()) continue;
+      if (confine && !(await confine(child))) continue;
+      if (!(await this.stat(child))?.isDirectory()) continue;
       const skillFile = await this.skillFileIn(child);
-      if (skillFile && (!accept || (await accept(skillFile)))) {
+      if (skillFile && (!confine || (await confine(skillFile)))) {
         await this.addSkill(skillFile, scope);
       }
     }
   }
 
   /** A manifest entry: a skills folder, or a `SKILL.md` named directly. */
-  private async scanEntry(
-    path: string,
-    scope: Scope,
-    filter: NameFilter,
-    accept?: (path: string) => Promise<boolean>,
-  ) {
-    const stat = await statOf(path);
+  private async scanEntry(path: string, scope: Scope, filter: NameFilter, confine?: Confine) {
+    if (confine && !(await confine(path))) return;
+    const stat = await this.stat(path);
     if (stat?.isFile()) {
-      if (!this.spendEntries(1)) return;
       if (basename(path).toLowerCase() !== "skill.md") return;
       if (!passesFilter(basename(dirname(path)), filter)) return;
-      if (!accept || (await accept(path))) await this.addSkill(path, scope);
+      await this.addSkill(path, scope);
       return;
     }
-    await this.scanFolder(path, scope, filter, accept);
+    await this.scanFolder(path, scope, filter, confine);
   }
 
-  /**
-   * A `skills.json`: its `inherits` first, then its `entries`. `accept`
-   * confines a project manifest to the project.
-   */
+  /** A `skills.json`: its `inherits` first, then its `entries`. */
   async scanManifest(input: {
     readonly path: string;
     /** What its relative paths resolve against; the manifest's own folder by default. */
     readonly baseDir?: string;
     readonly scope: Scope;
     readonly filter: NameFilter;
-    readonly accept?: (path: string) => Promise<boolean>;
+    readonly confine?: Confine;
     readonly visited?: ReadonlySet<string>;
     readonly depth?: number;
   }): Promise<void> {
@@ -301,16 +360,9 @@ class SkillScan {
     const visited = input.visited ?? new Set<string>();
     const path = resolve(input.path);
     if (this.exhausted || depth > MAX_INHERIT_DEPTH || visited.has(path)) return;
-    const stat = await statOf(path);
-    if (!stat?.isFile()) return;
-    if (input.accept && !(await input.accept(path))) return;
-    if (stat.size > Math.min(MAX_SKILL_BYTES, this.remainingBytes)) {
-      this.exhausted = true;
-      return;
-    }
-    const raw = await fs.readFile(path, "utf8").catch(() => undefined);
+    if (input.confine && !(await input.confine(path))) return;
+    const raw = await this.readSmall(path);
     if (raw === undefined) return;
-    this.remainingBytes -= Buffer.byteLength(raw, "utf8");
     const manifest = decodeManifest(raw);
     if (Option.isNone(manifest)) return;
     const baseDir = input.baseDir ?? dirname(path);
@@ -323,58 +375,91 @@ class SkillScan {
         path: resolveEntry(inherited.path),
         scope: input.scope,
         filter: narrowFilter(input.filter, inherited),
-        ...(input.accept ? { accept: input.accept } : {}),
+        ...(input.confine ? { confine: input.confine } : {}),
         visited: nextVisited,
         depth: depth + 1,
       });
     }
     for (const entry of manifest.value.entries ?? []) {
       if (this.exhausted) return;
-      const entryPath = resolveEntry(entry.path);
-      if (input.accept && !(await input.accept(entryPath))) continue;
-      await this.scanEntry(entryPath, input.scope, narrowFilter(input.filter, entry), input.accept);
+      await this.scanEntry(
+        resolveEntry(entry.path),
+        input.scope,
+        narrowFilter(input.filter, entry),
+        input.confine,
+      );
     }
+  }
+
+  /** Skills of plugins installed in the profile, unless turned off in its settings. */
+  async scanPlugins(profileDir: string) {
+    const pluginsDir = join(profileDir, "config", "plugins");
+    const plugins = await this.readDir(pluginsDir);
+    if (!plugins || plugins.length === 0) return;
+    const settings = await this.readSmall(join(profileDir, "config", "config.json"));
+    const parsed = settings === undefined ? Option.none() : decodePluginSettings(settings);
+    const states = Option.isSome(parsed) ? (parsed.value.plugins ?? {}) : {};
+    for (const plugin of plugins.toSorted()) {
+      if (this.exhausted) return;
+      if (states[plugin]?.enabled === false) continue;
+      await this.scanFolder(join(pluginsDir, plugin, "skills"), "user", NO_FILTER);
+    }
+  }
+}
+
+/** The nearest folder at or above `cwd` holding `.git`, or `cwd` when there is none. */
+async function repositoryRoot(scan: SkillScan, cwd: string): Promise<string> {
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    if (scan.exhausted) return cwd;
+    if (await fs.lstat(join(dir, ".git")).catch(() => undefined)) return dir;
+    if (dirname(dir) === dir) return cwd;
   }
 }
 
 export interface ListAntigravitySkillsInput {
   /** The folder a session would run in. */
   readonly cwd: string;
-  /** The user's home, whose `.gemini` holds their global skills (`antigravityUserHome`). */
-  readonly userHome: string;
-  /** The instance's profile (`GEMINI_HOME`), where plugins it installed live. */
+  /** The instance's profile (`GEMINI_HOME`), already prepared (`prepareAntigravityProfile`). */
   readonly profileDir: string;
 }
 
 export interface AntigravitySkillListing {
   readonly skills: ReadonlyArray<ServerProviderSkill>;
-  /** The scan hit its budget, so the list may be missing skills. */
+  /** The scan hit its budget or its deadline, so the list may be missing skills. */
   readonly truncated: boolean;
 }
 
 /** Lists the skills Antigravity would load in `cwd`, sorted by name. */
 export async function listAntigravitySkillsNow(
   input: ListAntigravitySkillsInput,
+  options: { readonly timeLimitMs?: number } = {},
 ): Promise<AntigravitySkillListing> {
   const cwd = resolve(input.cwd);
-  const userGemini = antigravityUserGeminiDir(input.userHome);
-  const scan = new SkillScan();
+  const profile = resolve(input.profileDir);
+  const scan = new SkillScan(
+    Date.now() + (options.timeLimitMs ?? Duration.toMillis(LIST_TIME_LIMIT)),
+  );
+
+  // Nothing outside the project or its repository root is opened for it.
+  const root = await repositoryRoot(scan, cwd);
+  const realRoot = (await scan.realpath(root)) ?? root;
+  const insideProject: Confine = async (path) => {
+    const real = await scan.realpath(path);
+    return real !== undefined && isInside(realRoot, real);
+  };
 
   const roots: ReadonlyArray<readonly [string, Scope]> = [
-    [join(userGemini, "config", "skills"), "user"],
+    [join(profile, "config", "skills"), "user"],
     [join(cwd, ".gemini", "skills"), "project"],
-    [join(userGemini, "antigravity-cli", "skills"), "user"],
+    [join(profile, "antigravity-cli", "skills"), "user"],
     [join(cwd, ".agents", "skills"), "project"],
     [join(cwd, ".agent", "skills"), "project"],
   ];
-  for (const [dir, scope] of roots) await scan.scanFolder(dir, scope);
+  for (const [dir, scope] of roots) {
+    await scan.scanFolder(dir, scope, NO_FILTER, scope === "project" ? insideProject : undefined);
+  }
 
-  // Project manifests load from inside the project or its repository root
-  // only: entries leaving it by an absolute path, `..` or a link are skipped.
-  const root = await repositoryRoot(cwd);
-  const realRoot = await fs.realpath(root).catch(() => root);
-  const insideProject = async (path: string) =>
-    isInside(realRoot, await fs.realpath(path).catch(() => resolve(path)));
+  // The CLI skips project manifest entries leaving the project or its repository root.
   for (let dir = cwd; ; dir = dirname(dir)) {
     for (const folder of [".agents", ".agent"]) {
       await scan.scanManifest({
@@ -382,29 +467,17 @@ export async function listAntigravitySkillsNow(
         baseDir: dir,
         scope: "project",
         filter: NO_FILTER,
-        accept: insideProject,
+        confine: insideProject,
       });
     }
-    if (dir === root || dirname(dir) === dir) break;
+    if (dir === root || dirname(dir) === dir || scan.exhausted) break;
   }
   await scan.scanManifest({
-    path: join(userGemini, "config", "skills.json"),
+    path: join(profile, "config", "skills.json"),
     scope: "user",
     filter: NO_FILTER,
   });
-
-  const pluginsDir = join(input.profileDir, "config", "plugins");
-  const plugins = await fs.readdir(pluginsDir).catch(() => [] as Array<string>);
-  if (plugins.length > 0) {
-    const settings = await fs
-      .readFile(join(input.profileDir, "config", "config.json"), "utf8")
-      .then(decodePluginSettings, () => Option.none());
-    const pluginStates = Option.isSome(settings) ? (settings.value.plugins ?? {}) : {};
-    for (const plugin of plugins.toSorted()) {
-      if (pluginStates[plugin]?.enabled === false) continue;
-      await scan.scanFolder(join(pluginsDir, plugin, "skills"), "user");
-    }
-  }
+  await scan.scanPlugins(profile);
 
   return {
     skills: [...scan.skills.values()].toSorted((left, right) =>
@@ -414,20 +487,33 @@ export async function listAntigravitySkillsNow(
   };
 }
 
-/** `listAntigravitySkillsNow` as an effect that never fails; a cut-short scan is logged. */
-export const listAntigravitySkills = (input: ListAntigravitySkillsInput) =>
-  Effect.promise(() =>
-    listAntigravitySkillsNow(input).catch((): AntigravitySkillListing => ({
-      skills: [],
-      truncated: true,
-    })),
-  ).pipe(
-    Effect.tap((listing) =>
-      listing.truncated
-        ? Effect.logWarning("Antigravity's skill list stopped at its scan limit.", {
-            cwd: input.cwd,
-          })
-        : Effect.void,
-    ),
-    Effect.map((listing) => listing.skills),
-  );
+/**
+ * A skills lister for one instance. It never fails and never runs past its
+ * time limit; when a scan is cut short it answers with the last complete
+ * list for the same folders, or what it found if there is none yet.
+ */
+export function makeAntigravitySkillsLister() {
+  const lastComplete = new Map<string, ReadonlyArray<ServerProviderSkill>>();
+  return (input: ListAntigravitySkillsInput) => {
+    const key = `${resolve(input.cwd)}\0${resolve(input.profileDir)}`;
+    return Effect.promise(() =>
+      listAntigravitySkillsNow(input).catch((): AntigravitySkillListing => ({
+        skills: [],
+        truncated: true,
+      })),
+    ).pipe(
+      // The scan stops itself at its deadline; this bounds a stuck file call.
+      Effect.timeoutOption(Duration.sum(LIST_TIME_LIMIT, Duration.seconds(1))),
+      Effect.flatMap((result) => {
+        const listing = Option.getOrUndefined(result);
+        if (listing && !listing.truncated) {
+          lastComplete.set(key, listing.skills);
+          return Effect.succeed(listing.skills);
+        }
+        return Effect.logWarning("Antigravity's skill list was cut short.", {
+          cwd: input.cwd,
+        }).pipe(Effect.as(lastComplete.get(key) ?? listing?.skills ?? []));
+      }),
+    );
+  };
+}
