@@ -66,11 +66,13 @@ export interface AcpPatchedProtocol {
   readonly incoming: Stream.Stream<AcpIncomingNotification>;
   readonly request: (method: string, payload: unknown) => Effect.Effect<unknown, AcpError.AcpError>;
   /**
-   * Sends a request and returns once it is queued for the wire, ahead of
-   * anything sent after. Its answer goes to `onAnswer`, which runs on the
-   * reader as the response is read, before any message that follows it is
-   * handled (notifications run there too), so the answer keeps its place
-   * among them. If the connection ends first, `onAnswer` gets that failure.
+   * Sends a request and returns once the agent's stdin took it (frames go
+   * out in the order they were sent). A request that can't be written
+   * fails here, and `onAnswer` never runs. Its answer goes to `onAnswer`,
+   * which runs on the reader as the response is read, before any message
+   * that follows it is handled (notifications run there too), so the answer
+   * keeps its place among them. If the connection ends first, `onAnswer`
+   * gets that failure.
    */
   readonly requestInOrder: (
     method: string,
@@ -105,7 +107,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const clientQueue = yield* Queue.unbounded<RpcMessage.FromServerEncoded>();
   const notificationQueue = yield* Queue.unbounded<AcpIncomingNotification>();
   const disconnects = yield* Queue.unbounded<number>();
-  const outgoing = yield* Queue.unbounded<string | Uint8Array, Cause.Done<void>>();
+  const outgoing = yield* Queue.unbounded<OutgoingFrame, Cause.Done<void>>();
   const nextRequestId = yield* Ref.make(1);
   const terminationHandled = yield* Ref.make(false);
   const extPending = yield* Ref.make(
@@ -142,6 +144,8 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
 
   const offerOutgoing = Effect.fn("offerOutgoing")(function* (
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
+    written?: Deferred.Deferred<void, AcpError.AcpError>,
+    requestId?: string | number,
   ) {
     // The RPC client's own control messages (an interrupted request, a stream
     // ack) would go out as `@effect/rpc/*` methods no ACP agent knows.
@@ -168,7 +172,9 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         payload: typeof encoded === "string" ? encoded : new TextDecoder().decode(encoded),
       });
 
-      yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
+      yield* Queue.offer(outgoing, { data: encoded, written, requestId }).pipe(Effect.asVoid);
+    } else if (written !== undefined) {
+      yield* Deferred.succeed(written, undefined);
     }
   });
 
@@ -487,7 +493,44 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     Effect.forkScoped,
   );
 
-  yield* Stream.fromQueue(outgoing).pipe(Stream.run(options.stdio.stdout()), Effect.forkScoped);
+  // The writer. The sink asks for the next frame only once `write()` took
+  // the last one without an error it reports at once (a closed pipe makes
+  // it return false, and the sink waits, then fails): that is when the last
+  // frame counts as handed to the agent. When the writer stops, every frame
+  // not handed over fails, and so does every request it carried: none is
+  // left waiting on a write that can no longer happen.
+  let handedOver: OutgoingFrame | undefined;
+  const nextFrame = Effect.gen(function* () {
+    const last = handedOver;
+    handedOver = undefined;
+    if (last?.written !== undefined) yield* Deferred.succeed(last.written, undefined);
+    const next = yield* Queue.take(outgoing);
+    handedOver = next;
+    return next.data;
+  });
+  const failUnwritten = (cause: Cause.Cause<unknown>) =>
+    Effect.gen(function* () {
+      const error = new AcpError.AcpTransportError({
+        detail: "Failed to write to the ACP agent",
+        cause: Cause.squash(cause),
+      });
+      const unwritten = [
+        ...(handedOver === undefined ? [] : [handedOver]),
+        ...(yield* Queue.clear(outgoing).pipe(Effect.orElseSucceed(() => []))),
+      ];
+      handedOver = undefined;
+      for (const frame of unwritten) {
+        if (frame.requestId !== undefined) yield* takeOrderedPending(frame.requestId);
+        if (frame.written !== undefined) yield* Deferred.fail(frame.written, error);
+      }
+      // Requests written earlier can no longer be answered over this pipe.
+      yield* failAllExtPending(error);
+    });
+  yield* Stream.fromEffectRepeat(nextFrame).pipe(
+    Stream.run(options.stdio.stdout()),
+    Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : failUnwritten(exit.cause))),
+    Effect.forkScoped,
+  );
 
   const clientProtocol = RpcClient.Protocol.of({
     run: (_clientId, f) =>
@@ -540,7 +583,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     }
     const encoded = `${exit.value}\n`;
     yield* logProtocol({ direction: "outgoing", stage: "raw", payload: encoded });
-    yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
+    yield* Queue.offer(outgoing, { data: encoded }).pipe(Effect.asVoid);
   });
 
   const sendRequest = Effect.fn("sendRequest")(function* (method: string, payload: unknown) {
@@ -574,13 +617,15 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       (current) => [current, current + 1] as const,
     );
     yield* Ref.update(orderedPending, (pending) => new Map(pending).set(requestId, onAnswer));
-    yield* offerOutgoing({
-      _tag: "Request",
-      id: requestId,
-      tag: method,
-      payload,
-      headers: [],
-    }).pipe(
+    const written = yield* Deferred.make<void, AcpError.AcpError>();
+    // Returns once the agent's stdin took it; a request never written was
+    // never sent, so it fails here and `onAnswer` hears nothing.
+    yield* offerOutgoing(
+      { _tag: "Request", id: requestId, tag: method, payload, headers: [] },
+      written,
+      requestId,
+    ).pipe(
+      Effect.andThen(Deferred.await(written)),
       Effect.catch((error) =>
         takeOrderedPending(requestId).pipe(Effect.andThen(Effect.fail(error))),
       ),
@@ -626,6 +671,14 @@ function asRequestFailure(message: RpcMessage.ResponseExitEncoded): RpcMessage.R
       ),
     },
   };
+}
+
+/** A frame on its way to the agent, and who hears once the agent's stdin took it. */
+interface OutgoingFrame {
+  readonly data: string | Uint8Array;
+  readonly written?: Deferred.Deferred<void, AcpError.AcpError> | undefined;
+  /** An in-order request's id: never written, it is never answered either. */
+  readonly requestId?: string | number | undefined;
 }
 
 /** A response as its caller sees it: the value, or the request's failure. */

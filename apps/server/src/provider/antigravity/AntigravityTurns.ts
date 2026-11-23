@@ -49,7 +49,8 @@ export const ANTIGRAVITY_SILENT_WORK_LIMIT = Duration.minutes(30);
  * Whether a message sent mid-turn steers the running turn (a second
  * `session/prompt`, 1.5.0+). Off, it waits for the turn to end.
  */
-export const ANTIGRAVITY_STEERS = true;
+// Off until this is fixed: a steer is recorded as an accepted follow-up before the sender writes it, so a process exit then shows one the agent never got.
+export const ANTIGRAVITY_STEERS = false;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);

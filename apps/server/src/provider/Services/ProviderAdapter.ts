@@ -373,10 +373,12 @@ export interface ProviderAdapterShape<TError> {
 
   /**
    * Resolves once no runtime of this session key can still act: at once when
-   * none runs or is stopping, otherwise once a stopping runtime's process
-   * (with every child process it started) is gone. A runtime `hasSession`
-   * stopped reporting may still be stopping. A revert waits on it before it
-   * restores files. Absent: a runtime `hasSession` no longer reports is gone.
+   * none exists, otherwise once the runtime's process (with every child
+   * process it started) is gone. `hasSession` turns false as soon as a stop
+   * begins, so a caller that must not touch files the agent may still hold
+   * open (a revert) waits on this after asking for the stop; a live runtime
+   * is waited on until something stops it. Never fails. Absent: a stopped
+   * session is gone when `stopSession` returns.
    */
   readonly whenStopped?: (threadId: ThreadId) => Effect.Effect<void>;
 
