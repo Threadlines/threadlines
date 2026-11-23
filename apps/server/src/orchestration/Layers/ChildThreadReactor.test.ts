@@ -165,6 +165,8 @@ function withReactor<A, E>(
             projects: [],
             threads: [...harness.threads.values()].map((entry) => ({
               id: entry.id,
+              parentThreadId: entry.parentThreadId,
+              attachedToParent: entry.attachedToParent,
               queuedFollowUps: entry.queuedFollowUps ?? [],
               session: entry.session,
               awaitedChildThreadCount: entry.childRequests.open.filter(
@@ -213,6 +215,8 @@ function withReactor<A, E>(
         options.shareWorktrees === true ? { agentThreadsShareWorktrees: true } : {},
       ),
     );
+    // This process starts after everything the fixtures wrote.
+    yield* TestClock.setTime(Date.parse(now) + 60_000);
     return yield* Effect.gen(function* () {
       const reactor = yield* makeChildThreadReactor;
       yield* reactor.start();
@@ -290,6 +294,61 @@ describe("ChildThreadReactor", () => {
         Effect.sync(() => {
           expect(settles(harness)).toMatchObject([{ outcome: "answered" }]);
           expect(settles(harness)[0]?.reply?.text).toBe("Changelog written.");
+        }),
+    ),
+  );
+
+  it.effect("after a restart, settles each report a child still owed, once", () =>
+    withReactor(
+      [
+        parentWith([]),
+        thread(CHILD, {
+          childRequests: {
+            ...EMPTY_CHILD_REQUEST_STATE,
+            owedReports: [
+              // Its turn completed before the crash: delivered.
+              { messageId: CHILD_MESSAGE, deliveryEpoch: 0, attachmentEpoch: 0, createdAt: now },
+              // A check-back the restart cut off.
+              {
+                turnId: TurnId.make("child-turn-2"),
+                deliveryEpoch: 0,
+                attachmentEpoch: 0,
+                createdAt: now,
+              },
+            ],
+          },
+          messages: [
+            {
+              id: MessageId.make("answer"),
+              role: "assistant",
+              text: "Release notes checked again: nothing new.",
+              turnId: TurnId.make("child-turn-1"),
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        }),
+      ],
+      { completedTurnFor: CHILD_MESSAGE },
+      (harness) =>
+        Effect.sync(() => {
+          const reports = harness.dispatched.filter(
+            (command) => command.type === "thread.child-report.settle",
+          );
+          expect(reports).toMatchObject([
+            {
+              threadId: CHILD,
+              owed: { messageId: CHILD_MESSAGE },
+              turnId: TurnId.make("child-turn-1"),
+              text: "Release notes checked again: nothing new.",
+            },
+            {
+              threadId: CHILD,
+              owed: { turnId: TurnId.make("child-turn-2") },
+              text: "'Write the changelog' was interrupted by a Threadlines restart. Send it a message with thread_send to continue.",
+            },
+          ]);
         }),
     ),
   );

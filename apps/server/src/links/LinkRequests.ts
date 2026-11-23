@@ -1917,6 +1917,7 @@ const make = Effect.gen(function* () {
         end: input.end,
         pendingMessageId: input.pendingMessageId,
         awaitedBackgroundTaskCount: input.child.session?.awaitedBackgroundTaskCount ?? 0,
+        continuesWaitingAnswer: true,
       });
       if (delivery === null) return;
       const row = rows.find((entry) => entry.requestId === delivery.requestId);
@@ -2306,11 +2307,17 @@ const make = Effect.gen(function* () {
       const childTurns = yield* turns
         .listByThreadId({ threadId: thread.id })
         .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't read the thread's turns.`)));
-      const finishedTurnId = finishedTurnAfterRestart(childTurns, {
-        ...request,
-        status: row.status === "awaiting_background" ? "awaiting_background" : "running",
+      const finishedTurnId = finishedTurnAfterRestart(
+        childTurns,
+        {
+          ...request,
+          status: row.status === "awaiting_background" ? "awaiting_background" : "running",
+        },
+        { continuesWaitingAnswer: true },
+      );
+      const delivery = childDeliveryAfterRestart(thread, request, finishedTurnId, {
+        continuesWaitingAnswer: true,
       });
-      const delivery = childDeliveryAfterRestart(thread, request, finishedTurnId);
       yield* settleOrFail(
         row,
         toOutcome(delivery.type === "thread.child-request.settle" ? delivery.outcome : "failed"),

@@ -81,7 +81,7 @@ import {
   type ProviderActivityStreamSnapshot,
 } from "./ProviderActivityProjection.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
-import { childDeliveryForTurnEnd } from "../childThreadDelivery.ts";
+import { childDeliveryForEndedTurn } from "../childThreadDelivery.ts";
 import { RemoteRequestTurnEnds } from "../Services/RemoteRequestTurnEnds.ts";
 import { ScheduledRunTurnEnds } from "../Services/ScheduledRunTurnEnds.ts";
 import { RealtimeVoiceDevices } from "../Services/RealtimeVoiceDevices.ts";
@@ -2759,13 +2759,15 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Child threads: a child's turn ended and its words were just flushed. If
-   * that turn answers a request its parent's agent made (the request's message
-   * started it, or it is the follow-up its own background work started), the
-   * answer goes back in one decider step that settles the request, writes the
-   * report into the parent and queues it for the agent that asked. With
-   * background work still owed, the answer waits for it. Never on the session
-   * going idle, which comes before buffered text is final.
+   * Child threads: a child's turn ended and its words were just flushed (or
+   * its runtime exited with the turn). If that turn answers a request its
+   * parent's agent made (the request's message started it), the answer goes
+   * back in one decider step that settles the request, writes the report into
+   * the parent and queues it for the agent that asked; with background work
+   * still owed, the answer waits for it. If the turn owed its parent a report
+   * (docs/design/agent-autonomy-no-limits.md, rule 2), that report is settled
+   * the same way. Never on the session going idle, which comes before
+   * buffered text is final.
    */
   const routeChildReport = Effect.fn("routeChildReport")(function* (input: {
     readonly threadId: ThreadId;
@@ -2808,7 +2810,7 @@ const make = Effect.gen(function* () {
         : parent.childRequests.open.filter(
             (request) => request.childThreadId === child.id && request.remote === undefined,
           );
-    if (parent === undefined || parent === null || owned.length === 0) {
+    if (owned.length === 0 && (child.childRequests.owedReports ?? []).length === 0) {
       return;
     }
     const turn = yield* projectionTurnRepository
@@ -2817,7 +2819,7 @@ const make = Effect.gen(function* () {
         Effect.map(Option.getOrUndefined),
         Effect.orElseSucceed(() => undefined),
       );
-    const delivery = childDeliveryForTurnEnd({
+    const delivery = childDeliveryForEndedTurn({
       owned,
       child,
       end: { turnId: input.turnId, outcome: input.outcome, error: input.error },
@@ -2828,12 +2830,16 @@ const make = Effect.gen(function* () {
       return;
     }
     yield* orchestrationEngine
-      .dispatch({ ...delivery, threadId: parent.id, createdAt: input.createdAt })
+      .dispatch(
+        delivery.type === "thread.child-report.settle"
+          ? { ...delivery, threadId: child.id, createdAt: input.createdAt }
+          : { ...delivery, threadId: child.parentThreadId, createdAt: input.createdAt },
+      )
       .pipe(
         Effect.catch((error) =>
           Effect.logInfo("provider runtime ingestion could not deliver a child thread's answer", {
             threadId: input.threadId,
-            requestId: delivery.requestId,
+            turnId: input.turnId,
             detail: String(error),
           }),
         ),
@@ -3399,6 +3405,29 @@ const make = Effect.gen(function* () {
         }
       }
 
+      // A turn that starts now: the message it was asked with, or none (the
+      // provider started it: a check-back, a goal, background work that
+      // finished), so the decision knows what it owes a parent (rules 2, 3).
+      const turnStartFields = (nextActiveTurnId: TurnId | null) =>
+        Effect.gen(function* () {
+          if (
+            event.type !== "turn.started" ||
+            nextActiveTurnId === null ||
+            (activeTurnId !== null && sameId(activeTurnId, nextActiveTurnId))
+          ) {
+            return {};
+          }
+          const pending =
+            thread.session?.status === "starting"
+              ? yield* projectionTurnRepository
+                  .getPendingTurnStartByThreadId({ threadId: thread.id })
+                  .pipe(Effect.orElseSucceed(() => Option.none()))
+              : Option.none();
+          return Option.isSome(pending)
+            ? { turnMessageId: pending.value.messageId }
+            : { providerStartedTurn: true as const };
+        });
+
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
       const missingTurnForActiveTurn = activeTurnId !== null && eventTurnId === undefined;
@@ -3638,6 +3667,7 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               session,
               ...usageLimitFields,
+              ...(yield* turnStartFields(nextActiveTurnId)),
               createdAt: now,
             });
             yield* Ref.update(unstoredSessionReportAt, (reports) => {
@@ -4230,6 +4260,23 @@ const make = Effect.gen(function* () {
           });
         }
         yield* clearTurnStateForSession(thread.id);
+        // A runtime that exits mid-turn takes the turn with it, and may never
+        // end it: its end goes to the child's parent here, before the next
+        // event can start a new session (docs/design/agent-autonomy-no-limits.md,
+        // rule 6). A turn whose message is sent again on a new runtime goes on.
+        if (
+          activeTurnId !== null &&
+          shouldApplyThreadLifecycle &&
+          event.payload.resendTurn === undefined
+        ) {
+          yield* routeChildReport({
+            threadId: thread.id,
+            turnId: activeTurnId,
+            outcome: "interrupted",
+            error: event.payload.reason ?? "its session exited",
+            createdAt: now,
+          });
+        }
       }
 
       if (event.type === "session.exited" && event.payload.resendTurn !== undefined) {

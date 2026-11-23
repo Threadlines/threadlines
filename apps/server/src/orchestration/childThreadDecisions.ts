@@ -1333,60 +1333,27 @@ export function decideRemoteRequestQueue(
   ];
 }
 
-/**
- * Notes went out with an agent's turn (`thread.child-notes.delivered`), and
- * with them children's late replies (lateReplyOf): each child whose newest
- * turn is still the one told of is recorded as handed back as of it, so it
- * wraps itself. One that moved on since (a newer turn, or it left the family)
- * is left as it is and is told of again when it qualifies.
- */
+/** Notes went out with an agent's turn (`thread.child-notes.delivered`). */
 export function decideChildNotesDelivered(
-  readModel: OrchestrationReadModel,
   parent: OrchestrationThread,
   command: CommandOf<"thread.child-notes.delivered">,
   baseFor: ChildEventBase,
 ): ChildThreadDecision {
-  const notesDelivered = parent.childRequests.pendingNotes.some((note) =>
-    command.requestIds.includes(note.requestId),
-  );
-  const handedBack = (command.lateReplies ?? []).flatMap((reply): ReadonlyArray<PlannedEvent> => {
-    const child = findThread(readModel, reply.childThreadId);
-    if (
-      child === null ||
-      child.parentThreadId !== parent.id ||
-      !child.attachedToParent ||
-      child.latestTurn?.turnId !== reply.turnId ||
-      child.latestTurn.state === "running" ||
-      child.handedBackTurnId === reply.turnId
-    ) {
-      return [];
-    }
-    return [
-      {
-        ...baseFor(child.id),
-        type: "thread.handed-back",
-        payload: { threadId: child.id, turnId: reply.turnId, handedBackAt: command.createdAt },
-      },
-    ];
-  });
-  if (!notesDelivered && handedBack.length === 0) {
+  if (
+    !parent.childRequests.pendingNotes.some((note) => command.requestIds.includes(note.requestId))
+  ) {
     return refuse("Those notes were already delivered.");
   }
   return [
-    ...(notesDelivered
-      ? [
-          {
-            ...baseFor(parent.id),
-            type: "thread.child-notes-delivered" as const,
-            payload: {
-              threadId: parent.id,
-              requestIds: command.requestIds,
-              createdAt: command.createdAt,
-            },
-          },
-        ]
-      : []),
-    ...handedBack,
+    {
+      ...baseFor(parent.id),
+      type: "thread.child-notes-delivered",
+      payload: {
+        threadId: parent.id,
+        requestIds: command.requestIds,
+        createdAt: command.createdAt,
+      },
+    },
   ];
 }
 

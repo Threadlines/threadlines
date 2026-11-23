@@ -908,6 +908,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.child-notes-delivered":
         case "thread.child-deliveries-cancelled":
         case "thread.child-requests-reset":
+        case "thread.child-report-dropped":
         case "thread.lead-pass-recorded":
         case "thread.remote-child-updated":
         case "thread.remote-cancel-queued":
@@ -945,7 +946,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                               )
                             : event.type === "thread.lead-pass-recorded"
                               ? childRequestStateOn.leadPass(state, event.payload)
-                              : childRequestStateOn.reset(state, event.payload);
+                              : event.type === "thread.child-report-dropped"
+                                ? childRequestStateOn.owedRemoved(state, event.payload.owed)
+                                : childRequestStateOn.reset(state, event.payload);
           if (childRequests !== state) {
             yield* projectionThreadRepository.upsert({ ...existingRow.value, childRequests });
           }
@@ -1005,9 +1008,27 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   ...existingRow.value,
                   handedBackAt: event.payload.handedBackAt,
                   handedBackTurnId: event.payload.turnId,
+                  // See the in-memory projector: the report it owed went up.
+                  ...(event.payload.owedReport !== undefined
+                    ? {
+                        childRequests: childRequestStateOn.owedRemoved(
+                          existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+                          event.payload.owedReport,
+                        ),
+                      }
+                    : {}),
                 }
               : {
                   ...existingRow.value,
+                  // See the in-memory projector: a moved epoch ends what it owed.
+                  ...(existingRow.value.parentAttachmentEpoch !== event.payload.attachmentEpoch &&
+                  existingRow.value.childRequests != null
+                    ? {
+                        childRequests: childRequestStateOn.owedCleared(
+                          existingRow.value.childRequests,
+                        ),
+                      }
+                    : {}),
                   attachedToParent: event.payload.attached ? 1 : 0,
                   parentAttachmentEpoch: event.payload.attachmentEpoch,
                   // See the in-memory projector: taken back over its link.
@@ -1119,6 +1140,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     participantId,
                     event.payload.fromOutside,
                     event.payload.createdAt,
+                  ),
+                }
+              : {}),
+            // See the in-memory projector: a turn that owes its parent a report.
+            ...(event.payload.owesReport !== undefined
+              ? {
+                  childRequests: childRequestStateOn.owedAdded(
+                    existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+                    {
+                      messageId: event.payload.messageId,
+                      ...event.payload.owesReport,
+                      createdAt: event.payload.createdAt,
+                    },
                   ),
                 }
               : {}),
@@ -1454,6 +1488,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId: nextLatestTurnId,
+            // See the in-memory projector: a provider-started turn's report.
+            ...(event.payload.owedReport !== undefined
+              ? {
+                  childRequests: childRequestStateOn.owedAdded(
+                    existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+                    event.payload.owedReport,
+                  ),
+                }
+              : {}),
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

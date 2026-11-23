@@ -1344,6 +1344,62 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn.mock.calls.length).toBe(0);
   });
 
+  it("tells a child's parent when a turn that owed it a report could not start (rule 11)", async () => {
+    const harness = await createHarness();
+    const dispatch = (command: OrchestrationCommand) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    const child = ThreadId.make("child-fails");
+    await dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("cmd-child-fails-create"),
+      threadId: child,
+      projectId: asProjectId("project-1"),
+      title: "Watch CI",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      parentThreadId: ThreadId.make("thread-1"),
+      attachedToParent: true,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    harness.startSession.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread.turn.start",
+          detail: "spawn failed in test harness",
+        }),
+      ),
+    );
+    // A turn nobody asked for (an automatic fix): it owes its parent a report.
+    await dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-child-fails-turn"),
+      threadId: child,
+      message: {
+        messageId: asMessageId("child-fails-message"),
+        role: "user",
+        text: "CI failed; fix it.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    const report = async () =>
+      (await harness.readModel()).threads
+        .find((entry) => entry.id === ThreadId.make("thread-1"))
+        ?.messages.find((message) => message.fromThread?.followUp === true);
+    await waitFor(async () => (await report()) !== undefined);
+    expect((await report())?.text).toBe(
+      "'Watch CI' could not start its turn: spawn failed in test harness. Send it a message with thread_send to continue.",
+    );
+    const childThread = (await harness.readModel()).threads.find((entry) => entry.id === child);
+    expect(childThread?.childRequests.owedReports).toBeUndefined();
+  });
+
   it("hides a saved key in a provider's failure text before storing it", async () => {
     const secretScrubber = makeSecretScrubber();
     secretScrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
@@ -6557,6 +6613,86 @@ describe("ProviderCommandReactor", () => {
       ]);
       const thread = (await harness.readModel()).threads.find((entry) => entry.id === remoteThread);
       expect(thread?.queuedFollowUps ?? []).toEqual([]);
+    });
+
+    it("after a failed turn, sends the oldest message an agent queued when a newer one arrives (sequence 7)", async () => {
+      const harness = await createHarness({
+        remoteRequestGate: { messageVerdict: () => Effect.succeed("run") },
+      });
+      const remoteThread = ThreadId.make("remote-thread-failed");
+      const origin = {
+        linkDeviceId: "device-windows",
+        environmentId: EnvironmentId.make("env-windows"),
+        environmentLabel: "Windows PC",
+        threadId: ThreadId.make("windows-parent"),
+        threadTitle: "Ship the release",
+      };
+      const dispatch = (command: OrchestrationCommand) =>
+        Effect.runPromise(harness.engine.dispatch(command));
+      await dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-failed-thread-create"),
+        threadId: remoteThread,
+        projectId: asProjectId("project-1"),
+        title: "Write the changelog",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        remoteOrigin: origin,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const setSession = (status: "running" | "error", at: string) =>
+        dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-failed-session-${status}-${at}`),
+          threadId: remoteThread,
+          session: {
+            threadId: remoteThread,
+            status,
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: status === "running" ? asTurnId("turn-failing") : null,
+            pendingBackgroundTaskCount: 0,
+            lastError: status === "error" ? "Overloaded" : null,
+            updatedAt: at,
+          },
+          createdAt: at,
+        });
+      const queue = (messageId: MessageId, at: string) =>
+        dispatch({
+          type: "thread.remote-request.queue",
+          commandId: CommandId.make(`cmd-failed-queue-${messageId}`),
+          threadId: remoteThread,
+          messageId,
+          text: `message ${messageId}`,
+          fromThread: {
+            threadId: origin.threadId,
+            requestId: ChildRequestId.make(`request-${messageId}`),
+            kind: "request",
+            environmentId: origin.environmentId,
+          },
+          createdAt: at,
+        });
+      await setSession("running", "2026-01-01T00:00:01.000Z");
+      await queue(asMessageId("waited-first"), "2026-01-01T00:00:02.000Z");
+      await harness.drain();
+      await queue(asMessageId("waited-second"), "2026-01-01T00:00:03.000Z");
+      await harness.drain();
+      // The turn fails: the queue isn't sent on by itself.
+      await setSession("error", "2026-01-01T00:00:04.000Z");
+      await harness.drain();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+
+      // A retry arrives: the message that waited longest goes first.
+      await queue(asMessageId("retry"), "2026-01-01T00:00:05.000Z");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        threadId: remoteThread,
+        messageId: asMessageId("waited-first"),
+      });
     });
 
     it("holds a linked computer's queued message while its record can't be read, then sends it", async () => {

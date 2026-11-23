@@ -10,6 +10,7 @@ import {
   TurnId,
   type OrchestrationEvent,
 } from "@threadlines/contracts";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import { isThreadDetailEvent } from "./ws.ts";
@@ -136,5 +137,42 @@ describe("isThreadDetailEvent", () => {
     });
 
     expect(isThreadDetailEvent(event)).toBe(true);
+  });
+
+  it("never streams a dropped report, so a client built before it can replay a thread", () => {
+    const threadId = ThreadId.make("thread-1");
+    const at = "2026-01-01T00:00:00.000Z";
+    const owed = { turnId: TurnId.make("turn-2") };
+    const replay = [
+      makeThreadEvent("thread.child-report-dropped", {
+        threadId,
+        owed,
+        turnId: owed.turnId,
+        createdAt: at,
+      }),
+      makeThreadEvent("thread.handed-back", {
+        threadId,
+        turnId: owed.turnId,
+        handedBackAt: at,
+        owedReport: owed,
+      }),
+    ];
+    const streamed = replay.filter(isThreadDetailEvent);
+    expect(streamed.map((event) => event.type)).toEqual(["thread.handed-back"]);
+    // What a client built before the owed list knew of a handed-back event:
+    // the new field is extra, and extra fields are ignored when decoding.
+    const OlderHandedBack = Schema.Struct({
+      type: Schema.Literal("thread.handed-back"),
+      payload: Schema.Struct({
+        threadId: Schema.String,
+        turnId: Schema.NullOr(Schema.String),
+        handedBackAt: Schema.String,
+      }),
+    });
+    expect(Schema.decodeUnknownSync(OlderHandedBack)(streamed[0]).payload).toEqual({
+      threadId,
+      turnId: owed.turnId,
+      handedBackAt: at,
+    });
   });
 });

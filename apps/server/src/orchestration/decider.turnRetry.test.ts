@@ -1105,11 +1105,12 @@ describe("a usage limit pauses a thread an agent started", () => {
     expect(openRequests(fired.readModel)).toEqual([]);
   });
 
-  it("leaves a request waiting on background work on today's path", async () => {
+  it("arms nothing for a request waiting on background work, which no later turn answers", async () => {
     const armed = await run(model({ requestStatus: "awaiting_background" }), limitHit(true));
-    // Nothing armed for it, and the follow-up's failure settles it as before.
     expect(threadIn(armed.readModel, childId).session?.continueAtReset).toBeUndefined();
     expect(turnEnded(armed.readModel, null as unknown as MessageId)).toBeNull();
+    // The follow-up's start settled the waiting request with its answer so
+    // far (rule 4), so its failure answers nothing.
     expect(
       childDeliveryForTurnEnd({
         owned: openRequests(armed.readModel),
@@ -1118,6 +1119,6 @@ describe("a usage limit pauses a thread an agent started", () => {
         pendingMessageId: null,
         awaitedBackgroundTaskCount: 0,
       }),
-    ).toMatchObject({ type: "thread.child-request.settle", outcome: "failed" });
+    ).toBeNull();
   });
 });

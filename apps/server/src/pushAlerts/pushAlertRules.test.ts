@@ -232,6 +232,17 @@ describe("pushAlertActionsForEvent", () => {
         }),
       ),
     ).toEqual([{ type: "cancel-thread", threadId: CHILD, kinds: ["finished", "failed"] }]);
+    // A later turn it reported on its own: no alert each time a child reports.
+    expect(
+      pushAlertActionsForEvent(
+        event("thread.handed-back", {
+          threadId: CHILD,
+          turnId: "child-turn-2",
+          handedBackAt: "2026-10-23T12:00:00.000Z",
+          owedReport: { turnId: "child-turn-2" },
+        }),
+      ),
+    ).toEqual([{ type: "cancel-thread", threadId: CHILD, kinds: ["finished", "failed"] }]);
     expect(
       pushAlertActionsForEvent(
         event("thread.seen-set", { threadId: THREAD, at: "2026-10-23T12:00:00.000Z" }),

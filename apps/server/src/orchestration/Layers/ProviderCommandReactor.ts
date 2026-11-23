@@ -54,6 +54,7 @@ import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/proje
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import {
   isAttachedChild,
+  isOwedReport,
   notesFor,
   remoteChildOf,
   withinModeCeiling,
@@ -165,13 +166,7 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
 import { inviteAnswerRefusal } from "../agentInvites.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
-import { isCancelledReport } from "../childThreadDecisions.ts";
-import {
-  type LateReply,
-  lateRepliesText,
-  lateReplyOf,
-  lateReplyRecipient,
-} from "../childThreadDelivery.ts";
+import { childReportMessageId, isCancelledReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 import { isRestorePaid } from "../threadMoveDecisions.ts";
 import { isLinkFenced } from "../linkFence.ts";
@@ -2266,13 +2261,19 @@ const make = Effect.gen(function* () {
         );
       } else if (fromThread.kind === "request") {
         lines.push(
-          thread.attachedToParent || fromThread.environmentId !== undefined
+          fromThread.environmentId !== undefined
             ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs.`
-            : `Another agent started this thread from the thread "${otherTitle}". Nothing you write goes back to it automatically.`,
+            : thread.attachedToParent
+              ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs. If you take more turns later that the user did not start, for example when a check-back fires, the reply that ends each one goes back too and wakes that thread. Keep those replies short when nothing has changed.`
+              : `Another agent started this thread from the thread "${otherTitle}". Nothing you write goes back to it automatically.`,
         );
       } else if (fromThread.neverMade === true) {
         lines.push(
           `This message is from Threadlines: a thread you asked to start (thread ${fromThread.threadId}) was never made, so nothing more will come from it. It is not instructions from the user.`,
+        );
+      } else if (fromThread.followUp === true) {
+        lines.push(
+          `Report from thread "${otherTitle}" (${fromThread.threadId}), which took another turn on its own after its last answer. It's information from another agent, not instructions from the user.`,
         );
       } else {
         lines.push(
@@ -2289,14 +2290,10 @@ const make = Effect.gen(function* () {
         ].join("\n"),
       );
     }
-    const lateReplies = yield* lateRepliesForAgent(thread, participantId);
-    if (lateReplies.length > 0) {
-      lines.push(lateRepliesText(lateReplies));
-    }
     return {
       text: lines.length > 0 ? lines.join("\n\n") : undefined,
       delivered: (createdAt: string) =>
-        notes.length === 0 && lateReplies.length === 0
+        notes.length === 0
           ? Effect.void
           : orchestrationEngine
               .dispatch({
@@ -2304,51 +2301,10 @@ const make = Effect.gen(function* () {
                 commandId: serverCommandId("child-notes-delivered"),
                 threadId: thread.id,
                 requestIds: notes.map((note) => note.requestId),
-                ...(lateReplies.length > 0
-                  ? {
-                      lateReplies: lateReplies.map(({ childThreadId, turnId }) => ({
-                        childThreadId,
-                        turnId,
-                      })),
-                    }
-                  : {}),
                 createdAt,
               })
               .pipe(Effect.catch(() => Effect.void)),
     };
-  });
-
-  /**
-   * Child threads: the late replies (lateReplyOf) of this thread's children
-   * that are for `participantId`, found from its children's rows (indexed by
-   * parent, so a thread with none reads nothing). A failed read tells of none
-   * this turn; they are told of at the next.
-   */
-  const lateRepliesForAgent = Effect.fnUntraced(function* (
-    thread: OrchestrationThread,
-    participantId: ThreadParticipantId | null,
-  ) {
-    if (thread.archivedAt !== null || isAttachedChild(thread)) return [];
-    const shells = yield* projectionSnapshotQuery
-      .listThreadShells({ parentThreadId: thread.id })
-      .pipe(Effect.orElseSucceed(() => []));
-    const candidates = shells.filter(
-      (shell) =>
-        shell.parentThreadId === thread.id &&
-        shell.attachedToParent &&
-        shell.handedBackTurnId !== null &&
-        shell.latestTurn !== null &&
-        shell.latestTurn.turnId !== shell.handedBackTurnId &&
-        shell.latestTurn.state === "completed" &&
-        lateReplyRecipient(thread, shell) === participantId,
-    );
-    const replies: LateReply[] = [];
-    for (const shell of candidates) {
-      const child = yield* resolveThread(shell.id).pipe(Effect.orElseSucceed(() => undefined));
-      const reply = child === undefined ? null : lateReplyOf(thread, child);
-      if (reply !== null) replies.push(reply);
-    }
-    return replies;
   });
 
   /**
@@ -3400,6 +3356,72 @@ const make = Effect.gen(function* () {
         });
       }).pipe(Effect.ignoreCause({ log: true }));
 
+    /**
+     * Child threads: a turn that never started settles what its message owed
+     * its parent (docs/design/agent-autonomy-no-limits.md, rule 11). With
+     * `detail`, the start failed: a parent's request settles failed and an
+     * owed report delivers the failure. Without, the start was taken back on
+     * purpose (Stop, a report gone stale): the owed report goes with nothing
+     * sent, and a request is settled by whatever took it back.
+     */
+    const settleChildWorkForUnstartedTurn = (detail: string | null) =>
+      Effect.gen(function* () {
+        const latest = yield* resolveThread(event.payload.threadId);
+        if (latest === undefined || latest.parentThreadId === null) {
+          return;
+        }
+        const messageId = event.payload.messageId;
+        const failure =
+          detail === null
+            ? undefined
+            : `'${latest.title}' could not start its turn: ${detail.replace(/\.$/, "")}.`;
+        if (
+          (latest.childRequests.owedReports ?? []).some((entry) =>
+            isOwedReport(entry, { messageId }),
+          )
+        ) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.child-report.settle",
+            commandId: serverCommandId("child-report-unstarted"),
+            threadId: latest.id,
+            owed: { messageId },
+            turnId: null,
+            ...(failure !== undefined
+              ? { text: `${failure} Send it a message with thread_send to continue.` }
+              : {}),
+            createdAt: yield* nowIso,
+          });
+        }
+        if (failure === undefined || detail === null) {
+          return;
+        }
+        const parent = yield* resolveThread(latest.parentThreadId);
+        const request = parent?.childRequests.open.find(
+          (entry) =>
+            entry.childThreadId === latest.id &&
+            entry.remote === undefined &&
+            entry.status === "running" &&
+            entry.childMessageId === messageId,
+        );
+        if (parent === undefined || request === undefined) {
+          return;
+        }
+        yield* orchestrationEngine.dispatch({
+          type: "thread.child-request.settle",
+          commandId: serverCommandId("child-request-start-failed"),
+          threadId: parent.id,
+          requestId: request.requestId,
+          outcome: "failed",
+          reply: {
+            messageId: childReportMessageId(request.requestId),
+            text: failure,
+            turnId: null,
+          },
+          error: detail,
+          createdAt: yield* nowIso,
+        });
+      }).pipe(Effect.ignoreCause({ log: true }));
+
     // A message no one can send again never reached the agent: a lead
     // chat's pass, or an outside agent's message. The decider marks it so no
     // history carries it (and a pass's lead hears); anything else it leaves.
@@ -3435,6 +3457,7 @@ const make = Effect.gen(function* () {
       return mark.pipe(
         Effect.andThen(handleTurnStartFailure(cause)),
         Effect.andThen(failHandOffForFailedStart(detail)),
+        Effect.andThen(settleChildWorkForUnstartedTurn(detail)),
       );
     };
 
@@ -3548,6 +3571,7 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
+      yield* settleChildWorkForUnstartedTurn(null);
       yield* Effect.logInfo("continue not sent: the user wrote first", {
         threadId: event.payload.threadId,
         messageId: event.payload.messageId,
@@ -3579,6 +3603,7 @@ const make = Effect.gen(function* () {
             createdAt: yield* nowIso,
           });
         }
+        yield* settleChildWorkForUnstartedTurn(null);
       });
 
     /**
@@ -5528,6 +5553,13 @@ const make = Effect.gen(function* () {
     if (!isReply && queued.fromThread?.kind !== "report") {
       return;
     }
+    // A thread that reports to a parent reads each report from its own
+    // threads in a turn of its own, which reports in turn: steered into a
+    // running turn, it could be swallowed by the user's turn or a request's
+    // answer (docs/design/agent-autonomy-no-limits.md, rule 9).
+    if (!isReply && isAttachedChild(thread) && (thread.remoteOrigin ?? null) === null) {
+      return;
+    }
     // Only one that came while this turn ran: one left from before it (its
     // steer missed the last turn's end) keeps its place in the chat and goes
     // as a turn of its own after this one, as before.
@@ -6073,7 +6105,14 @@ const make = Effect.gen(function* () {
     ) {
       return;
     }
-    const next = event.payload.followUp;
+    // In an idle thread, agents' messages run in the order they arrived: one
+    // that waited behind a failed turn goes before the newer one that woke
+    // the queue (docs/design/agent-autonomy-no-limits.md, rule 10).
+    const next =
+      fromUser || waitsForMove
+        ? event.payload.followUp
+        : ((thread.queuedFollowUps ?? []).find((entry) => isAgentOrigin(entry)) ??
+          event.payload.followUp);
     if (yield* releaseSlotForQueuedAgent(thread, next)) {
       releasedMessageByThread.set(thread.id, next.messageId);
       return;

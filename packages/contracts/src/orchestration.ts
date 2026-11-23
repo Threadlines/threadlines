@@ -3079,6 +3079,13 @@ export const OwedChildReport = Schema.Union([
 ]);
 export type OwedChildReport = typeof OwedChildReport.Type;
 
+/** Which owed report: the one keyed by the message that starts its turn, or by the turn. */
+export const OwedReportKey = Schema.Union([
+  Schema.Struct({ messageId: MessageId }),
+  Schema.Struct({ turnId: TurnId }),
+]);
+export type OwedReportKey = typeof OwedReportKey.Type;
+
 export const OrchestrationChildRequestState = Schema.Struct({
   open: Schema.Array(OrchestrationChildRequest),
   deliveryEpoch: NonNegativeInt,
@@ -4796,6 +4803,12 @@ const ThreadSessionSetCommand = Schema.Struct({
    * (docs/design/agent-autonomy-no-limits.md, "Delivery rules", rule 3).
    */
   providerStartedTurn: Schema.optional(Schema.Literal(true)),
+  /**
+   * Ingestion's word that `session.activeTurnId` is the turn this message
+   * asked for. The decision that marks a turn started settles every report
+   * the thread still owes for an earlier turn, and leaves this turn's alone.
+   */
+  turnMessageId: Schema.optional(MessageId),
   createdAt: IsoDateTime,
 });
 
@@ -5649,18 +5662,32 @@ const ThreadChildRequestSettleCommand = Schema.Struct({
 });
 
 /**
- * Child threads: notes went out with an agent's turn, and with them the late
- * replies of children that kept working after their answer (each child's
- * newest turn then counts as handed back).
+ * Child threads, server only: a turn a child owes its parent a report for is
+ * over (docs/design/agent-autonomy-no-limits.md, "Delivery rules", rules 5
+ * to 8). With `text`, the report is written into the parent and queued for
+ * the agent that started the child, unless its delivery was cancelled
+ * meanwhile; without, or when cancelled, it is dropped. Either way the owed
+ * entry goes, so a turn is reported once.
  */
+const ThreadChildReportSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.child-report.settle"),
+  commandId: CommandId,
+  /** The child that owes the report. */
+  threadId: ThreadId,
+  owed: OwedReportKey,
+  /** The child's turn it reports on. Null: a turn that never started. */
+  turnId: Schema.NullOr(TurnId),
+  /** What goes up. Absent: nothing to say (stopped on purpose, no reply, taken back). */
+  text: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
+/** Child threads: notes went out with an agent's turn. */
 const ThreadChildNotesDeliveredCommand = Schema.Struct({
   type: Schema.Literal("thread.child-notes.delivered"),
   commandId: CommandId,
   threadId: ThreadId,
   requestIds: Schema.Array(ChildRequestId),
-  lateReplies: Schema.optional(
-    Schema.Array(Schema.Struct({ childThreadId: ThreadId, turnId: TurnId })),
-  ),
   createdAt: IsoDateTime,
 });
 
@@ -6177,6 +6204,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageNotRunCommand,
   ThreadChildRequestUpdateCommand,
   ThreadChildRequestSettleCommand,
+  ThreadChildReportSettleCommand,
   ThreadChildNotesDeliveredCommand,
   ThreadRemoteChildUpdateCommand,
   ThreadRemoteCancelsDeliveredCommand,
@@ -6276,6 +6304,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.child-notes-delivered",
   "thread.child-deliveries-cancelled",
   "thread.child-requests-reset",
+  "thread.child-report-dropped",
   "thread.lead-pass-recorded",
   "thread.remote-child-updated",
   "thread.remote-cancel-queued",
@@ -6785,6 +6814,19 @@ export const ThreadChildNotesDeliveredPayload = Schema.Struct({
  * Stop, or the thread was wrapped: its delivery epoch moves to
  * `deliveryEpoch`, so no answer asked for before comes back.
  */
+/**
+ * On a child, server only: a report it owed its parent was dropped, so the
+ * owed entry goes (docs/design/agent-autonomy-no-limits.md, rule 7). Never
+ * sent on the thread stream: a client built before it would fail to decode
+ * the batch. A delivered report removes its entry with `thread.handed-back`.
+ */
+export const ThreadChildReportDroppedPayload = Schema.Struct({
+  threadId: ThreadId,
+  owed: OwedReportKey,
+  turnId: Schema.NullOr(TurnId),
+  createdAt: IsoDateTime,
+});
+
 export const ThreadChildDeliveriesCancelledPayload = Schema.Struct({
   threadId: ThreadId,
   deliveryEpoch: NonNegativeInt,
@@ -6836,6 +6878,8 @@ export const ThreadHandedBackPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
   handedBackAt: IsoDateTime,
+  /** A report the child owed went up: its entry on `childRequests.owedReports` goes. */
+  owedReport: Schema.optional(OwedReportKey),
 });
 
 /** On a child: separated from or put back into its parent's family. No `updatedAt`. */
@@ -7595,6 +7639,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.child-requests-reset"),
     payload: ThreadChildRequestsResetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-report-dropped"),
+    payload: ThreadChildReportDroppedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

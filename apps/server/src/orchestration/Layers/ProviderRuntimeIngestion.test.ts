@@ -1383,6 +1383,106 @@ describe("ProviderRuntimeIngestion", () => {
     expect(await cancelsSoFar()).toBe(cancelsAtStop + 1);
   });
 
+  it("reports a child's check-back to its parent, and settles one its exiting runtime took with it once (sequence 6)", async () => {
+    const harness = await createHarness();
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const child = asThreadId("child-1");
+    // thread-1 is the parent; child-1 reports to it.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-child-create"),
+        threadId: child,
+        projectId: asProjectId("project-1"),
+        title: "Watch CI",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        parentThreadId: asThreadId("thread-1"),
+        attachedToParent: true,
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-child-session-seed"),
+        threadId: child,
+        session: {
+          threadId: child,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: createdAt,
+          lastError: null,
+        },
+        createdAt,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: child,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const event = (type: string, id: string, extra: Record<string, unknown> = {}) =>
+      ({
+        type,
+        eventId: asEventId(id),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: child,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        ...extra,
+      }) as never;
+    const reportsIn = async () =>
+      (await harness.readModel()).threads
+        .find((entry) => entry.id === asThreadId("thread-1"))
+        ?.messages.filter((message) => message.fromThread?.followUp === true) ?? [];
+
+    // A check-back fires: the provider starts a turn with no message.
+    harness.emit(
+      event("turn.started", "evt-child-check-back", {
+        turnId: asTurnId("child-turn-1"),
+        payload: { trigger: { kind: "check-back" } },
+      }),
+    );
+    await harness.drain();
+    let childThread = await waitForThread(
+      harness.readModel,
+      (entry) => (entry.childRequests.owedReports ?? []).length === 1,
+      10_000,
+      child,
+    );
+    expect(childThread.childRequests.owedReports).toMatchObject([{ turnId: "child-turn-1" }]);
+
+    // Codex exits with only session.exited: the exit's handler settles it.
+    harness.emit(
+      event("session.exited", "evt-child-exited", {
+        payload: { reason: "Codex app-server exited", exitKind: "error" },
+      }),
+    );
+    await harness.drain();
+    childThread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.childRequests.owedReports === undefined,
+      10_000,
+      child,
+    );
+    expect((await reportsIn()).map((message) => message.text)).toEqual([
+      "'Watch CI' stopped before it finished: Codex app-server exited. Send it a message with thread_send to continue.",
+    ]);
+
+    // The next turn starts: nothing is left to settle, so nothing goes twice.
+    harness.emit(event("turn.started", "evt-child-next", { turnId: asTurnId("child-turn-2") }));
+    await harness.drain();
+    expect(await reportsIn()).toHaveLength(1);
+  });
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

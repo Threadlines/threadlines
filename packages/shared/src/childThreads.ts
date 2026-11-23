@@ -13,6 +13,8 @@ import {
   type ChildRequestStatus,
   type OrchestrationChildRequest,
   type OrchestrationChildRequestState,
+  type OwedChildReport,
+  type OwedReportKey,
   type RemoteChildCancel,
   type RemoteChildRequest,
   type FamilyRemoteChild,
@@ -755,7 +757,46 @@ export const childRequestStateOn = {
       }
     }
   },
+  /** A turn starts that owes the parent a report (docs/design/agent-autonomy-no-limits.md, rule 3). */
+  owedAdded: (
+    state: OrchestrationChildRequestState,
+    entry: OwedChildReport,
+  ): OrchestrationChildRequestState => {
+    const owed = state.owedReports ?? [];
+    return owed.some((listed) => isOwedReport(listed, entry))
+      ? state
+      : { ...state, owedReports: [...owed, entry] };
+  },
+  /** An owed report was settled, delivered or dropped. */
+  owedRemoved: (
+    state: OrchestrationChildRequestState,
+    key: OwedReportKey,
+  ): OrchestrationChildRequestState => {
+    const owed = state.owedReports ?? [];
+    if (!owed.some((listed) => isOwedReport(listed, key))) return state;
+    const rest = owed.filter((listed) => !isOwedReport(listed, key));
+    if (rest.length > 0) return { ...state, owedReports: rest };
+    const { owedReports: _gone, ...without } = state;
+    return without;
+  },
+  /** The thread's attachment epoch moved: nothing it owed is owed any more. */
+  owedCleared: (state: OrchestrationChildRequestState): OrchestrationChildRequestState => {
+    if (state.owedReports === undefined) return state;
+    const { owedReports: _gone, ...without } = state;
+    return without;
+  },
 };
+
+/** Whether an owed report is the one `key` names: by its message, or by its turn. */
+export function isOwedReport(entry: OwedReportKey, key: OwedReportKey): boolean {
+  return "messageId" in key
+    ? "messageId" in entry && entry.messageId === key.messageId
+    : "turnId" in entry && entry.turnId === key.turnId;
+}
+
+/** An owed report's key alone, as events name it. */
+export const owedReportKeyOf = (entry: OwedReportKey): OwedReportKey =>
+  "messageId" in entry ? { messageId: entry.messageId } : { turnId: entry.turnId };
 
 /**
  * Whether a child's latest finished work is exactly what went back to its
