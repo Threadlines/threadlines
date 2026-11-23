@@ -68,6 +68,7 @@ import {
   WsOutsideAgentsRpcGroup,
   WsRpcGroup,
   WsMovesRpcGroup,
+  WsLinkedThreadsRpcGroup,
   WsThemeShowcaseRpcGroup,
   WsThemeVsCodeRpcGroup,
   WsDeviceRpcGroup,
@@ -104,6 +105,8 @@ import { threadsArchivedWith } from "./orchestration/archivedWithParent.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ComputerLinkClient } from "./links/ComputerLinkClient.ts";
+import { makeLinkedThreadRead } from "./links/linkedThreadRead.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
 import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
@@ -823,6 +826,27 @@ const MovesRpcLayer = WsMovesRpcGroup.toLayer(
   }),
 );
 
+/**
+ * Reading a parent's child on a linked computer through the link
+ * (linkedThreadRead.ts): its own RPC group and layer
+ * (WsLinkedThreadsRpcGroup), merged in makeWsRpcLayer. Open to every paired
+ * device, as the parent's own thread is.
+ */
+const LinkedThreadsRpcLayer = WsLinkedThreadsRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const readThread = makeLinkedThreadRead({
+      client: yield* ComputerLinkClient,
+      snapshots: yield* ProjectionSnapshotQuery,
+    });
+    return WsLinkedThreadsRpcGroup.of({
+      [WS_METHODS.linksReadThread]: (input) =>
+        observeRpcEffect(WS_METHODS.linksReadThread, readThread(input), {
+          "rpc.aggregate": "links",
+        }),
+    });
+  }),
+);
+
 /** VS Code themes from the Open VSX store (docs/design/custom-themes.md). */
 const ThemeVsCodeRpcLayer = WsThemeVsCodeRpcGroup.toLayer(
   Effect.gen(function* () {
@@ -902,6 +926,7 @@ const makeWsRpcLayer = (
     MovesRpcLayer,
     ThemeVsCodeRpcLayer,
     makeDeviceRpcLayer(viewerId),
+    LinkedThreadsRpcLayer,
   );
 
 const makeCoreRpcLayer = (

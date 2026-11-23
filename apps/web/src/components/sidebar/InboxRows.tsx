@@ -1722,31 +1722,46 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
  * and title as a child row has them, then under the title the cloud (it
  * isn't on this device) with where it stands ("Mac mini · working", "Waiting for Mac mini to allow
  * it"): a second line, so a narrow list keeps both the title and the
- * computer. The app has no thread to open, so the status line explains
- * itself on hover. One that nothing holds in front of the user can be
- * wrapped up (or reopened) from here, like a child here.
+ * computer. The app has no thread there: where the parent's computer reads
+ * it through the link, a click opens it that way (`onOpen`, LinkedThreadView),
+ * else the status line explains itself on hover. One that nothing holds in
+ * front of the user can be wrapped up (or reopened) from here, like a child here.
  */
 export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
   child,
   shortTitle,
   onSetDone,
+  onOpen,
+  isActive = false,
 }: {
   child: InboxRemoteChild;
   /** See InboxChildRowProps.shortTitle. */
   shortTitle?: string | undefined;
   /** Wraps it up or reopens it; absent: the row has no button. */
   onSetDone?: RemoteChildSetDone | undefined;
+  /** Opens it read through the link; absent: it can't be opened from here. */
+  onOpen?: RemoteChildOpen | undefined;
+  /** It is open in the chat. */
+  isActive?: boolean | undefined;
 }) {
   const statusText = remoteChildStatusText(child);
   const isStart = child.threadId === null;
   const tone = child.isDone ? undefined : child.status?.colorClass;
   const showAction = onSetDone !== undefined && child.canWrap === true;
+  const open = useRemoteChildOpen(child, onOpen);
   return (
     <li className={ROW_ITEM_CLASS_NAME} data-inbox-child-row="remote">
       <div
         data-testid={`remote-child-row-${child.threadKey}`}
         data-wrapped={child.isDone ? "true" : undefined}
-        className="cursor-default px-3 py-[5px] select-none pointer-coarse:py-2"
+        data-active={isActive ? "true" : undefined}
+        {...open}
+        className={cn(
+          "px-3 py-[5px] select-none pointer-coarse:py-2",
+          open.role === undefined
+            ? "cursor-default"
+            : cn(ROW_SURFACE_CLASS_NAME, resolveRowSurfaceTone({ isActive, isSelected: false })),
+        )}
       >
         <span className="flex min-w-0 items-center gap-1.5">
           {child.isDone ? (
@@ -1808,7 +1823,9 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
               ? "Its worktree is being made. It opens here once it starts."
               : isStart
                 ? statusText
-                : `How it stands on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
+                : open.role !== undefined
+                  ? `How it stands on ${child.computerLabel}. Click to read it through the link.`
+                  : `How it stands on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
           </TooltipPopup>
         </Tooltip>
       </div>
@@ -1818,6 +1835,38 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
 
 /** Wraps up (`done`) or reopens (`active`) a child on a computer this app can't see. */
 export type RemoteChildSetDone = (child: InboxRemoteChild, state: "done" | "active") => void;
+
+/** Opens a child on a computer this app can't see, read through the link. */
+export type RemoteChildOpen = (child: InboxRemoteChild) => void;
+
+/** A remote row's props as a button that opens it; none when `onOpen` is absent. */
+function useRemoteChildOpen(
+  child: InboxRemoteChild,
+  onOpen: RemoteChildOpen | undefined,
+): {
+  role?: "button";
+  tabIndex?: number;
+  onClick?: () => void;
+  onKeyDown?: (event: React.KeyboardEvent) => void;
+} {
+  return useMemo(
+    () =>
+      onOpen === undefined
+        ? {}
+        : {
+            role: "button",
+            tabIndex: 0,
+            onClick: () => onOpen(child),
+            onKeyDown: (event: React.KeyboardEvent) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              onOpen(child);
+            },
+          },
+    [child, onOpen],
+  );
+}
 
 /** The Wrap up or Reopen button of a child on a computer this app can't see. */
 function RemoteChildWrapButton({
@@ -1866,26 +1915,37 @@ function RemoteChildWrapButton({
  * A child on a computer this app can't see that left its parent's family for
  * Wrapped (`InboxDoneRemoteRow`): one line like a wrapped thread, the arrow
  * naming the thread that started it, the cloud naming its computer, then
- * when it wrapped. There is no thread here to open; Reopen puts it back
+ * when it wrapped. There is no thread here: a click opens it read through
+ * the link where the parent's computer can (`onOpen`). Reopen puts it back
  * under its parent, on both computers.
  */
 export const InboxRemoteDoneRow = memo(function InboxRemoteDoneRow({
   child,
   startedByTitle,
   onSetDone,
+  onOpen,
+  isActive = false,
 }: {
   child: InboxRemoteChild;
   startedByTitle: string;
   onSetDone?: RemoteChildSetDone | undefined;
+  /** Opens it read through the link; absent: it can't be opened from here. */
+  onOpen?: RemoteChildOpen | undefined;
+  /** It is open in the chat. */
+  isActive?: boolean | undefined;
 }) {
+  const open = useRemoteChildOpen(child, onOpen);
   return (
     <li className={ROW_ITEM_CLASS_NAME} data-inbox-done-row="remote">
       <div
         data-testid={`remote-done-row-${child.threadKey}`}
+        data-active={isActive ? "true" : undefined}
+        {...open}
         className={cn(
           ROW_SURFACE_CLASS_NAME,
-          "flex cursor-default items-center gap-2 px-3 py-1.5",
-          resolveRowSurfaceTone({ isActive: false, isSelected: false }),
+          "flex items-center gap-2 px-3 py-1.5",
+          open.role === undefined && "cursor-default",
+          resolveRowSurfaceTone({ isActive, isSelected: false }),
         )}
       >
         <Tooltip>
@@ -1902,7 +1962,9 @@ export const InboxRemoteDoneRow = memo(function InboxRemoteDoneRow({
             </span>
           </TooltipTrigger>
           <TooltipPopup side="top">
-            {`Started by ${startedByTitle}, on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
+            {open.role !== undefined
+              ? `Started by ${startedByTitle}, on ${child.computerLabel}. Click to read it through the link.`
+              : `Started by ${startedByTitle}, on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
           </TooltipPopup>
         </Tooltip>
         <span className={ROW_META_SLOT_CLASS_NAME}>

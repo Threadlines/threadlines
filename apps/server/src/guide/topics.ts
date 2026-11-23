@@ -119,7 +119,7 @@ A started thread works in a worktree of its own; in a project without git it sha
 
 A started thread gets at most its parent's access level, or a lower one the agent asks for, and the parent's model unless the agent picks another. On a model already in the room it runs at the reasoning you set for that agent there, unless the agent or you name another level; the approval card shows the level. With computers linked in Fleet, an agent can also start a thread on another computer, if that computer allows it ({place:fleet.worksWith}).
 
-A thread on another computer stays under its parent on both computers and shows how it is doing there, even after its answer came back. Once its answer reached the parent it wraps up and moves to Wrapped like any other, unless someone picked it up again there. Its row has Wrap up (and Reopen in Wrapped), which applies on both computers. To open it, connect this app to that computer.
+A thread on another computer stays under its parent on both computers and shows how it is doing there, even after its answer came back. Once its answer reached the parent it wraps up and moves to Wrapped like any other, unless someone picked it up again there. Its row has Wrap up (and Reopen in Wrapped), which applies on both computers. Clicking its row or its tab opens it read through the link, even when this app isn't connected to that computer: you see what was asked and what its agent answered, but not its tool steps, and you can't reply there. Connect this app to that computer to work in it.
 
 A project's lead chat is a thread set up to coordinate the project; see the lead chat topic.`,
   },
