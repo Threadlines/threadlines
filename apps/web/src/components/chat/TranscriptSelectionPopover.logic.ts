@@ -1,19 +1,50 @@
-import type { MessageId } from "@threadlines/contracts";
+import type { AgentPageId, MessageId } from "@threadlines/contracts";
 
-import type { TranscriptHighlightSourceRole } from "~/lib/transcriptHighlightContext";
+/** Where selected text is, so its popover can find it again. */
+export type TranscriptSelectionAnchor =
+  | {
+      readonly kind: "message";
+      readonly messageId: MessageId;
+      readonly role: "user" | "assistant";
+      // Where the selection starts and ends in the message body's text,
+      // counted the way Range.toString() counts it. The virtual list redraws a
+      // row that scrolls far enough away, and these find the same text in the
+      // new one.
+      readonly textStart: number;
+      readonly textEnd: number;
+    }
+  | {
+      // An agent page: its frame is sealed off from the app, so the page
+      // reports the text's box in the frame's viewport, again as it scrolls,
+      // in its own CSS px, and its viewport's width in them to tell the
+      // frame's zoom by.
+      readonly kind: "page";
+      readonly pageId: AgentPageId;
+      readonly frame: HTMLIFrameElement;
+      readonly box: TranscriptSelectionBox;
+      readonly viewportWidth: number | undefined;
+    };
 
-/** Text selected in one transcript message, and what its popover is showing. */
+/** Text selected in one transcript message or agent page, and what its popover is showing. */
 export interface TranscriptSelection {
-  readonly sourceMessageId: MessageId;
-  readonly sourceRole: TranscriptHighlightSourceRole;
+  readonly anchor: TranscriptSelectionAnchor;
   readonly selectedText: string;
-  // Where the selection starts and ends in the message body's text, counted
-  // the way Range.toString() counts it. The virtual list redraws a row that
-  // scrolls far enough away, and these find the same text in the new one.
-  readonly textStart: number;
-  readonly textEnd: number;
   readonly mode: "actions" | "note";
   readonly note: string;
+}
+
+/** Whether two selections are of the same text in the same place, wherever it has scrolled to. */
+export function isSameTranscriptSelection(
+  left: TranscriptSelection,
+  right: TranscriptSelection,
+): boolean {
+  if (left.selectedText !== right.selectedText) return false;
+  const a = left.anchor;
+  const b = right.anchor;
+  if (a.kind === "message" && b.kind === "message") {
+    return a.messageId === b.messageId && a.textStart === b.textStart && a.textEnd === b.textEnd;
+  }
+  return a.kind === "page" && b.kind === "page" && a.frame === b.frame;
 }
 
 /**
@@ -21,12 +52,16 @@ export interface TranscriptSelection {
  * transcript, given what is selected now. A note with text in it stays until
  * it is added or cancelled; the actions and an empty note follow the page's
  * selection, so a click elsewhere closes them and a new selection replaces
- * them.
+ * them. The same text reported again (a page that scrolled under it) keeps
+ * what the popover shows and takes the text's new place.
  */
 export function nextTranscriptSelection(
   current: TranscriptSelection | null,
   selected: TranscriptSelection | null,
 ): TranscriptSelection | null {
+  if (current !== null && selected !== null && isSameTranscriptSelection(current, selected)) {
+    return { ...current, anchor: selected.anchor };
+  }
   if (current?.mode === "note" && current.note.trim().length > 0) {
     return current;
   }

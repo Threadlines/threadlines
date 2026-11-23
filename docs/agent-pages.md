@@ -31,6 +31,9 @@ below.
   Ctrl/⌘-scroll to zoom, and drag to move around. A picture the page made
   clickable itself, such as one inside a link, keeps doing what the page says.
 - Links you click in a page open in your browser.
+- Select text in a page to copy it or add a note on it, as in the chat, in the
+  chat or full size. The note goes with your next message, quoting the text
+  and naming the page.
 
 A page an agent updates in the same turn changes where it stands, like a live
 status board. When a later turn updates it, the new version shows in that turn
@@ -102,7 +105,9 @@ cannot be refused, and a page that navigates away before it has finished
 loading is not stopped at all (the desktop app refuses both). A page that holds
 focus can open a link or show its pictures by itself in the few seconds after
 you click or type anywhere in the app: Threadlines cannot see clicks inside a
-page, only that the app was just used. A determined
+page, only that the app was just used. For the same reason the page itself
+says what text you selected in it, so a page you are in could offer other text
+than you picked; the note shows the quoted text before you add it. A determined
 page can still make a request through browser features no content policy
 covers, such as a DNS prefetch.
 
