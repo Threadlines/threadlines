@@ -22,6 +22,8 @@ import { cn } from "~/lib/utils";
 
 interface CommandPaletteResultsProps {
   emptyStateMessage?: string;
+  /** Lines under the list about the search itself ("Searching messages", a computer that failed). */
+  statusLines?: ReadonlyArray<string>;
   groups: ReadonlyArray<CommandPaletteGroup>;
   highlightedItemValue?: string | null;
   isActionsOnly: boolean;
@@ -39,21 +41,46 @@ const COMMAND_PALETTE_LOADING_ROWS = [
 ] as const;
 
 export function CommandPaletteResults(props: CommandPaletteResultsProps) {
+  const statusLines =
+    props.statusLines && props.statusLines.length > 0 ? (
+      <div className="px-4 pt-1 pb-2" data-testid="command-palette-status">
+        {props.statusLines.map((line) => (
+          <p key={line} className="text-xs text-muted-foreground">
+            {line}
+          </p>
+        ))}
+      </div>
+    ) : null;
   if (props.groups.length === 0) {
     if (props.isLoading) {
       return <CommandPaletteResultsSkeleton />;
     }
+    if (props.emptyStateMessage === "" && statusLines) {
+      return statusLines;
+    }
 
     return (
-      <div className="py-10 text-center text-sm text-muted-foreground">
-        {props.emptyStateMessage ??
-          (props.isActionsOnly
-            ? "No matching actions."
-            : "No matching commands, projects, or threads.")}
-      </div>
+      <>
+        <div className="py-10 text-center text-sm text-muted-foreground">
+          {props.emptyStateMessage ??
+            (props.isActionsOnly
+              ? "No matching actions."
+              : "No matching commands, projects, or threads.")}
+        </div>
+        {statusLines}
+      </>
     );
   }
 
+  return (
+    <>
+      <CommandListWithGroups {...props} />
+      {statusLines}
+    </>
+  );
+}
+
+function CommandListWithGroups(props: CommandPaletteResultsProps) {
   return (
     <CommandList>
       {props.groups.map((group) => (
@@ -184,6 +211,11 @@ function CommandPaletteResultRow(props: {
         </span>
       )}
       {props.item.titleTrailingContent}
+      {props.item.whereLabel ? (
+        <span className="ml-auto max-w-[45%] shrink-0 truncate text-right text-xs text-muted-foreground">
+          {props.item.whereLabel}
+        </span>
+      ) : null}
       {props.item.timestampAt ? (
         <span className="min-w-12 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/70">
           <RelativeTimeLabel at={props.item.timestampAt} />

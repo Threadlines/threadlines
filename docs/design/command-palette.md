@@ -723,6 +723,38 @@ owners register. Where the build differs from sections 1 to 4:
   Requests (each "Open …" here); the title row's Back and Forward (Go back,
   Go forward).
 
+## As built: step 3 (Nov 23 2026)
+
+The search is `apps/web/src/commands/paletteSearch.ts`, pure, with every
+expected order from section 5 as a unit test. Where the build differs from
+section 5 and the thread-visits part of section 6:
+
+- **One availability hook, not a mounted provider.** Settings mounts
+  `SettingsAvailabilityProvider`; the palette calls the same
+  `useSettingsAvailability(surface, host)` with the same inputs. The palette
+  needs the answer inside its own body, where a provider would have to wrap
+  it. The host passes "a search is active" and the palette's open count as
+  its session.
+- **One result opener.** `settingsSearchNavigation.ts` holds where a result
+  goes and where it lives. Settings opens with `replace: true`; the palette
+  pushes, so Back returns to the chat.
+- **Close matches** come from command and setting titles only, uncapped, and
+  only once the message search for that text has answered empty. The three
+  letters don't count digits.
+- **The status covers a project's thread search too** (the sidebar's search
+  of one project): "Searching messages…", the per-computer lines and No
+  matches work there as at the root.
+- **No message search, no wait.** With no computer to ask (no threads yet) or
+  text too short to search messages, No matches shows at once.
+- **The search's group is "Commands"**, as the opening list and `>` call it.
+- **Recent threads** are this device's last visits first
+  (`threadlines:recent-thread-visits:v1`, twenty kept), then latest activity
+  to fill five, never the thread you're on.
+- **The hosted phone app** is told apart through `paletteSettingsSurface()`,
+  the one seam its test replaces.
+- **Startup** went from 904.7 KB to 904.9 KB gzip (118 B). The settings index,
+  the places catalog and the search code are not in it.
+
 ## Rev 2 changes (Sol's review of rev 1)
 
 1. **Older linked computers.** A new field on a search match must be

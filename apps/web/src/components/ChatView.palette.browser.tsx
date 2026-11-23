@@ -10,6 +10,7 @@ import {
   type ThreadId,
   WS_METHODS,
 } from "@threadlines/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -460,6 +461,221 @@ describe("ChatView (full app): command palette and search", () => {
       expect(commits).toBe(0);
     } finally {
       setCommandPaletteCommitListenerForTests(null);
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a setting from the palette on its row, and Back returns to the chat", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-setting-result" as MessageId,
+        targetText: "palette setting result",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      const palette = page.getByTestId("command-palette");
+      await page.getByPlaceholder("Search commands, projects, and threads...").fill("text size");
+      await palette.getByText("Text size", { exact: true }).click();
+
+      await waitForURL(
+        mounted.router,
+        (path) => path === "/settings/general",
+        "A setting result should open its Settings page.",
+      );
+      await waitForElement(
+        () =>
+          document.querySelector(
+            '[data-place="general.terminalTextSize"] > .place-arrival-overlay',
+          ),
+        "The setting's row should be lit on arrival.",
+      );
+
+      // The palette pushed Settings rather than replacing the chat's entry.
+      mounted.router.history.back();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(THREAD_ID),
+        "Back should return to the chat the palette was opened over.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it('says "Searching messages" until the search answers, and only then No matches', async () => {
+    let answerSearch!: (value: { matches: []; truncated: false }) => void;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-searching" as MessageId,
+        targetText: "palette searching",
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.searchThreads) {
+          return new Promise((resolve) => {
+            answerSearch = resolve;
+          });
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      const palette = page.getByTestId("command-palette");
+      await page.getByPlaceholder("Search commands, projects, and threads...").fill("zebracorn");
+
+      await expect.element(palette.getByText("Searching messages…")).toBeInTheDocument();
+      await vi.waitFor(() => expect(answerSearch).toBeTypeOf("function"), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      // Still waiting on the server: nothing says there are no matches yet.
+      expect(document.body.textContent).not.toContain("No matches");
+
+      answerSearch({ matches: [], truncated: false });
+      await expect.element(palette.getByText("No matches", { exact: true })).toBeInTheDocument();
+      await expect
+        .element(palette.getByText("Look in archived threads", { exact: true }))
+        .toBeInTheDocument();
+      await expect.element(palette.getByText("Searching messages…")).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("names a computer whose message search failed", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-search-failed" as MessageId,
+        targetText: "palette search failed",
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.searchThreads) {
+          return Promise.reject(new Error("The search index is busy."));
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openCommandPaletteFromTrigger();
+      await page.getByPlaceholder("Search commands, projects, and threads...").fill("zebracorn");
+      await vi.waitFor(
+        () => {
+          const status = document.querySelector('[data-testid="command-palette-status"]');
+          expect(status?.textContent).toMatch(/Couldn't search \S/);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("says what a project's thread search is waiting on, and names a computer it couldn't search", async () => {
+    let failSearch!: (error: Error) => void;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-project-search-status" as MessageId,
+        targetText: "project search status",
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.searchThreads) {
+          return new Promise((_, reject) => {
+            failSearch = reject;
+          });
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      useCommandPaletteStore.getState().openThreadSearch({
+        projectName: "Project",
+        memberProjectKeys: [scopedProjectKey(scopeProjectRef(LOCAL_ENVIRONMENT_ID, PROJECT_ID))],
+      });
+      const palette = page.getByTestId("command-palette");
+      await page.getByPlaceholder("Search threads in Project...").fill("zebracorn");
+
+      await expect.element(palette.getByText("Searching messages…")).toBeInTheDocument();
+      await vi.waitFor(() => expect(failSearch).toBeTypeOf("function"), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      expect(document.body.textContent).not.toContain("No matches");
+
+      failSearch(new Error("The search index is busy."));
+      await vi.waitFor(
+        () => {
+          const status = document.querySelector('[data-testid="command-palette-status"]');
+          expect(status?.textContent).toMatch(/Couldn't search \S/);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens on the threads last opened here, ahead of ones with newer activity", async () => {
+    const olderThreadId = "thread-visits-older" as ThreadId;
+    const newerThreadId = "thread-visits-newer" as ThreadId;
+    const base = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-recent-visits" as MessageId,
+          targetText: "recent visits",
+        }),
+        olderThreadId,
+      ),
+      newerThreadId,
+    );
+    const snapshot = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === olderThreadId
+          ? { ...thread, title: "Visited plan", updatedAt: "2026-03-01T10:00:00.000Z" }
+          : thread.id === newerThreadId
+            ? { ...thread, title: "Busy plan", updatedAt: "2026-03-02T10:00:00.000Z" }
+            : thread,
+      ),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+
+    try {
+      await waitForServerConfigToApply();
+      // Open the older thread, then come back.
+      await mounted.router.navigate({ to: serverThreadPath(olderThreadId) });
+      await waitForURL(mounted.router, (path) => path === serverThreadPath(olderThreadId), "");
+      await mounted.router.navigate({ to: serverThreadPath(THREAD_ID) });
+      await waitForURL(mounted.router, (path) => path === serverThreadPath(THREAD_ID), "");
+
+      await openCommandPaletteFromTrigger();
+      await vi.waitFor(
+        () => {
+          const titles = Array.from(
+            document.querySelectorAll<HTMLElement>(
+              '[data-testid="command-palette"] [data-slot="command-item"]',
+            ),
+          ).map((row) => row.textContent ?? "");
+          const visited = titles.findIndex((title) => title.includes("Visited plan"));
+          const busy = titles.findIndex((title) => title.includes("Busy plan"));
+          expect(visited).toBeGreaterThanOrEqual(0);
+          expect(visited).toBeLessThan(busy);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
       await mounted.cleanup();
     }
   });

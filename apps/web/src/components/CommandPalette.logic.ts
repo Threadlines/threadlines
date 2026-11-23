@@ -31,6 +31,8 @@ export interface CommandPaletteItem {
   readonly titleLeadingContent?: ReactNode;
   /** Optional content rendered inline after the title text (before the timestamp). */
   readonly titleTrailingContent?: ReactNode;
+  /** Where it lives, on the right of the row ("General › Terminal" for a setting). */
+  readonly whereLabel?: string;
   readonly shortcutCommand?: KeybindingCommand;
   readonly threadRef?: Pick<SidebarThreadSummary, "environmentId" | "id">;
   readonly threadContentMatch?: ThreadContentSearchMatch & { readonly query: string };
@@ -241,9 +243,24 @@ function rankCommandPaletteItemMatch(
   // The visible title is always searchable, and outranks the hidden
   // searchTerms: typing exactly what an item says on screen must find it.
   // Titles can be arbitrary nodes; only plain-string ones can be ranked.
-  const terms = [typeof item.title === "string" ? item.title : "", ...item.searchTerms].filter(
-    (term) => term.length > 0,
+  return rankSearchTerms(
+    [typeof item.title === "string" ? item.title : "", ...item.searchTerms],
+    item.threadContentMatch?.score ?? null,
+    query,
   );
+}
+
+/**
+ * How well a row's terms (title first) and its message match, if any, fit a
+ * query with `searchRanking`: higher is better, -Infinity for no match. The
+ * thread search's matcher, shared by the palette's own search.
+ */
+export function rankSearchTerms(
+  rawTerms: ReadonlyArray<string>,
+  messageScore: number | null,
+  query: ParsedSearchQuery,
+): number {
+  const terms = rawTerms.filter((term) => term.length > 0);
   let bestRank = Number.NEGATIVE_INFINITY;
 
   for (const [index, field] of terms.entries()) {
@@ -261,8 +278,8 @@ function rankCommandPaletteItemMatch(
     bestRank = Math.max(bestRank, SEARCH_COMBINED_FIELD_RANK_BASE - combinedAnalysis.score);
   }
 
-  if (item.threadContentMatch) {
-    bestRank = Math.max(bestRank, SEARCH_THREAD_BODY_RANK_BASE - item.threadContentMatch.score);
+  if (messageScore !== null) {
+    bestRank = Math.max(bestRank, SEARCH_THREAD_BODY_RANK_BASE - messageScore);
   }
 
   return bestRank;
