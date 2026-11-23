@@ -113,6 +113,26 @@ describe("saveComposerDraftAttachments", () => {
       useComposerDraftStore.getState().getComposerDraft(threadRef)?.nonPersistedAttachmentIds,
     ).toEqual([]);
   });
+
+  it("reuses an in-flight save when called concurrently for the same attachment list", async () => {
+    let reads = 0;
+    const item = file("shared", 1_000);
+    const realRead = item.file.arrayBuffer.bind(item.file);
+    Object.defineProperty(item.file, "arrayBuffer", {
+      value: () => {
+        reads += 1;
+        return realRead();
+      },
+    });
+    useComposerDraftStore.getState().addAttachments(threadRef, [item]);
+    const [a, b] = await Promise.all([
+      saveComposerDraftAttachments(threadRef),
+      saveComposerDraftAttachments(threadRef),
+    ]);
+    expect([a, b]).toEqual(["saved", "saved"]);
+    expect(reads).toBe(1);
+    expect(await savedIds()).toEqual(["shared"]);
+  });
 });
 
 describe("drafts kept across tabs and reloads", () => {

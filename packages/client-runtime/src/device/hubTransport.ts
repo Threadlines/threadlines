@@ -137,7 +137,11 @@ function createCreditor(api: DeviceChannelApi, channelId: string) {
     const bytes = owed;
     owed = 0;
     // A credit lost with the connection matters to nobody: the channel went too.
-    void api.credit({ channelId, bytes }).catch(() => undefined);
+    try {
+      void Promise.resolve(api.credit({ channelId, bytes })).catch(() => undefined);
+    } catch {
+      // Ignore synchronous throws from a disconnected API wrapper.
+    }
   };
   return {
     take(bytes: number) {
@@ -171,6 +175,16 @@ function toBytes(data: ArrayBuffer | ArrayBufferView): Uint8Array {
 }
 
 function joinParts(parts: ReadonlyArray<Uint8Array>): ArrayBuffer {
+  if (parts.length === 1) {
+    const only = parts[0]!;
+    if (
+      only.byteOffset === 0 &&
+      only.byteLength === only.buffer.byteLength &&
+      only.buffer instanceof ArrayBuffer
+    ) {
+      return only.buffer;
+    }
+  }
   const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
   const joined = new Uint8Array(total);
   let offset = 0;
@@ -307,7 +321,13 @@ export function createDeviceHubTransport(
                 return;
               }
               case "data": {
-                const bytes = base64ToBytes(event.data);
+                let bytes: Uint8Array;
+                try {
+                  bytes = base64ToBytes(event.data);
+                } catch (cause) {
+                  fail(cause);
+                  return;
+                }
                 if (bytes.byteLength === 0) return;
                 queue.push(bytes);
                 deliver();
@@ -349,6 +369,7 @@ export function createDeviceHubTransport(
     let seq = 0;
     let binaryParts: Uint8Array[] = [];
     let textParts: string[] = [];
+    let messageKind: "binary" | "text" | null = null;
     let partBytes = 0;
     let stop: () => void = () => {};
     const listeners: { [K in keyof DeviceHubSocketEventMap]: Set<DeviceHubSocketListener<K>> } = {
@@ -371,6 +392,8 @@ export function createDeviceHubTransport(
       creditor.close();
       binaryParts = [];
       textParts = [];
+      messageKind = null;
+      partBytes = 0;
       stop();
       if (error !== undefined) dispatch("error", { error });
       dispatch("close", event);
@@ -399,12 +422,18 @@ export function createDeviceHubTransport(
           binary,
           data: binary ? bytesToBase64(toBytes(data)) : data,
         };
-        api.send(message).catch((failure: unknown) => {
+        const onSendFailure = (failure: unknown) => {
+          if (readyState === DEVICE_SOCKET_CLOSED || readyState === DEVICE_SOCKET_CLOSING) return;
           closeWith(
             { code: 1006, reason: channelFailure(failure).message, wasClean: false },
             failure,
           );
-        });
+        };
+        try {
+          void Promise.resolve(api.send(message)).catch(onSendFailure);
+        } catch (failure) {
+          onSendFailure(failure);
+        }
       },
       close(code = 1000, reason = "") {
         if (readyState === DEVICE_SOCKET_CLOSED || readyState === DEVICE_SOCKET_CLOSING) return;
@@ -436,8 +465,22 @@ export function createDeviceHubTransport(
               dispatch("open", {});
               return;
             case "message": {
+              const kind = event.binary ? "binary" : "text";
+              if (messageKind !== null && messageKind !== kind) {
+                const error = new Error("The device stream mixed binary and text message parts.");
+                closeWith({ code: 1002, reason: error.message, wasClean: false }, error);
+                return;
+              }
+              messageKind = kind;
               if (event.binary) {
-                const bytes = base64ToBytes(event.data);
+                let bytes: Uint8Array;
+                try {
+                  bytes = base64ToBytes(event.data);
+                } catch (cause) {
+                  const error = channelFailure(cause);
+                  closeWith({ code: 1002, reason: error.message, wasClean: false }, cause);
+                  return;
+                }
                 binaryParts.push(bytes);
                 partBytes += bytes.byteLength;
               } else {
@@ -447,8 +490,6 @@ export function createDeviceHubTransport(
               if (partBytes > DEVICE_MAX_FRAME_BYTES) {
                 // Parts that never end are a broken or hostile hub; stop holding them.
                 const error = new DeviceFrameTooLargeError("message", partBytes);
-                binaryParts = [];
-                textParts = [];
                 closeWith({ code: 1009, reason: error.message, wasClean: false }, error);
                 return;
               }
@@ -457,6 +498,7 @@ export function createDeviceHubTransport(
               const bytes = partBytes;
               binaryParts = [];
               textParts = [];
+              messageKind = null;
               partBytes = 0;
               try {
                 dispatch("message", { data });
@@ -474,7 +516,7 @@ export function createDeviceHubTransport(
           }
         },
         (failure) => {
-          if (readyState === DEVICE_SOCKET_CLOSED) return;
+          if (readyState === DEVICE_SOCKET_CLOSED || readyState === DEVICE_SOCKET_CLOSING) return;
           const error = failure === undefined ? undefined : channelFailure(failure);
           closeWith(
             {

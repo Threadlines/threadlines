@@ -473,4 +473,196 @@ describe("createDeviceStreamClient", () => {
     ).toEqual(["begin", "end"]);
     client.stop();
   });
+
+  it("keeps an idle iOS stream open past 15s once a first frame has painted", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 118, height: 256, close: vi.fn() })),
+    );
+    const jpeg = new Uint8Array([0xff, 0xd8, 1, 0xff, 0xd9]);
+    const head = new TextEncoder().encode(
+      `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`,
+    );
+    const firstPart = new Uint8Array([...head, ...jpeg, 13, 10]);
+    const hub = fakeTransport(
+      () =>
+        new Response(
+          new ReadableStream({
+            start: (controller) => controller.enqueue(firstPart),
+          }),
+        ),
+    );
+    const watch = events();
+    const client = createDeviceStreamClient(
+      { platform: "ios", deviceId: "SIM-IDLE", transport: hub.transport },
+      { present: () => true },
+      watch,
+    );
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(watch.onStatus).toHaveBeenLastCalledWith("streaming", undefined);
+    const requestsAfterFirstFrame = hub.requests.length;
+
+    // An idle simulator sends no new frames for 30s; the stream must stay open without reconnecting.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(hub.requests.length).toBe(requestsAfterFirstFrame);
+    expect(watch.onStatus).not.toHaveBeenCalledWith("error", expect.anything());
+    client.stop();
+  });
+
+  it("caps iOS sendText at 256 characters", async () => {
+    const hub = fakeTransport(
+      () =>
+        new Response(
+          new ReadableStream({
+            start: (controller) => controller.enqueue(new Uint8Array([0])),
+          }),
+        ),
+    );
+    const client = createDeviceStreamClient(
+      { platform: "ios", deviceId: "SIM-CAP", transport: hub.transport },
+      { present: () => true },
+      events(),
+    );
+    client.start();
+    await vi.waitFor(() => expect(hub.sockets).toHaveLength(1));
+    const input = hub.sockets[0]!;
+    input.dispatch("message", { data: new Uint8Array([0x83]).buffer });
+    client.sendText("a".repeat(300));
+    // Each lowercase ASCII character sends 2 packets (down + up), capped at 256 chars = 512 packets.
+    expect(input.sent).toHaveLength(256 * 2);
+    client.stop();
+  });
+
+  it("falls back to Android stills when WebCodecs rejects H.264, and resets cached state on stop", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 1080, height: 2400, close: vi.fn() })),
+    );
+    class UnsupportedDecoder {
+      static isConfigSupported = async () => ({ supported: false });
+      state = "unconfigured";
+      decodeQueueSize = 0;
+      configure() {}
+      close() {}
+    }
+    vi.stubGlobal("VideoDecoder", UnsupportedDecoder);
+    vi.stubGlobal("EncodedVideoChunk", function EncodedVideoChunk() {});
+
+    const hub = fakeTransport(() => new Response(PNG));
+    const watch = events();
+    const client = createDeviceStreamClient(
+      { platform: "android", deviceId: "emu-fallback", transport: hub.transport },
+      { present: () => true },
+      watch,
+    );
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = hub.sockets[0]!;
+    expect(socket.path).toBe("/vendor/serve-emu/ws?device=emu-fallback&frame-meta=1");
+
+    // Send a SEMU keyframe containing an Annex-B SPS NAL (00 00 00 01 67 64 00 1f).
+    const packet = new Uint8Array(24);
+    const view = new DataView(packet.buffer);
+    view.setUint32(0, 0x53454d55);
+    view.setUint8(4, 1);
+    view.setUint8(5, 1);
+    view.setBigUint64(8, 100n);
+    packet.set([0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f], 16);
+    socket.dispatch("message", { data: packet.buffer });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(watch.onVideoMode).toHaveBeenCalledWith("stills");
+    expect(hub.sockets[1]?.path).toBe("/vendor/serve-emu/ws?device=emu-fallback&video=0");
+    expect(watch.onStatus).toHaveBeenLastCalledWith("streaming", undefined);
+
+    // Stopping resets mode and screen so a restart re-emits them once fallback triggers again.
+    client.stop();
+    watch.onScreen.mockClear();
+    watch.onVideoMode.mockClear();
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    hub.sockets[2]!.dispatch("message", { data: packet.buffer });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(watch.onVideoMode).toHaveBeenCalledWith("stills");
+    expect(watch.onScreen).toHaveBeenCalledWith({
+      width: 1080,
+      height: 2400,
+      orientation: "portrait",
+    });
+    client.stop();
+  });
+
+  it("buffers Android's first keyframe while configuring WebCodecs and throttles reset-video", async () => {
+    vi.useFakeTimers();
+    let resolveSupport: ((result: { supported: boolean }) => void) | null = null;
+    const decoded: unknown[] = [];
+    class FakeDecoder {
+      static isConfigSupported = () =>
+        new Promise<{ supported: boolean }>((resolve) => {
+          resolveSupport = resolve;
+        });
+      state = "unconfigured";
+      decodeQueueSize = 0;
+      configure() {
+        this.state = "configured";
+      }
+      decode(chunk: unknown) {
+        decoded.push(chunk);
+      }
+      close() {
+        this.state = "closed";
+      }
+    }
+    vi.stubGlobal("VideoDecoder", FakeDecoder);
+    vi.stubGlobal(
+      "EncodedVideoChunk",
+      class FakeChunk {
+        readonly init: unknown;
+        constructor(init: unknown) {
+          this.init = init;
+        }
+      },
+    );
+
+    const hub = fakeTransport(() => new Response(PNG));
+    const client = createDeviceStreamClient(
+      { platform: "android", deviceId: "emu-key", transport: hub.transport },
+      { present: () => true },
+      events(),
+    );
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = hub.sockets[0]!;
+
+    const makePacket = (isKey: boolean, payload: number[], ts: bigint) => {
+      const buf = new Uint8Array(16 + payload.length);
+      const view = new DataView(buf.buffer);
+      view.setUint32(0, 0x53454d55);
+      view.setUint8(4, 1);
+      view.setUint8(5, isKey ? 1 : 0);
+      view.setBigUint64(8, ts);
+      buf.set(payload, 16);
+      return buf.buffer;
+    };
+
+    // Two delta frames before SPS should trigger at most one throttled reset-video request.
+    socket.dispatch("message", { data: makePacket(false, [0, 0, 0, 1, 0x41, 0x01], 1n) });
+    socket.dispatch("message", { data: makePacket(false, [0, 0, 0, 1, 0x41, 0x02], 2n) });
+    expect(
+      socket.sent.filter((m) => m === JSON.stringify({ type: "reset-video", ack: false })),
+    ).toHaveLength(1);
+
+    // Keyframe with SPS starts async configure and is buffered until configured.
+    socket.dispatch("message", {
+      data: makePacket(true, [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f, 0, 0, 0, 1, 0x65, 0x88], 10n),
+    });
+    expect(decoded).toHaveLength(0);
+    resolveSupport!({ supported: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(decoded).toHaveLength(1);
+    client.stop();
+  });
 });

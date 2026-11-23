@@ -141,8 +141,11 @@ export function resizeDeviceFloat(
               ? -dx
               : dx
             : byHeight;
-  const width = clampWidth(start.width + delta, aspect, viewport);
   const right = start.x + start.width;
+  const maxAnchoredWidth = fromLeft
+    ? Math.max(SMALLEST_WIDTH, right - DEVICE_FLOAT_MARGIN)
+    : MAX_WIDTH;
+  const width = clampWidth(Math.min(start.width + delta, maxAnchoredWidth), aspect, viewport);
   return fitDeviceFloat({
     position: { x: fromLeft ? right - width : start.x, y: start.y },
     width,

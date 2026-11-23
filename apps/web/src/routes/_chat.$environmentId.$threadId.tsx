@@ -655,10 +655,12 @@ function ChatThreadRouteView() {
         return;
       }
       selectThreadDevice(currentThreadKey, session.deviceId);
+      // On phone/narrow viewports the right panel is a sheet covering the chat, so don't cover it.
+      if (shouldUseDiffSheet) return;
       focusRightPanelTab(currentThreadKey, "device");
       navigateToTab("device");
     });
-  }, [currentThreadKey, deviceTabAvailable, navigateToTab, threadRef]);
+  }, [currentThreadKey, deviceTabAvailable, navigateToTab, shouldUseDiffSheet, threadRef]);
   // A device floating over the chat (docs/design/devices.md). "Open in right
   // panel" docks it on its chip in the Device tab, the way an agent opens one.
   const deviceFloat = useDeviceFloat(currentThreadKey);
@@ -1166,6 +1168,7 @@ function ChatThreadRouteView() {
             fallback={<p className="px-3 py-3 text-xs text-muted-foreground">Loading devices…</p>}
           >
             <DevicePanel
+              key={currentThreadKey}
               environmentId={threadRef.environmentId}
               threadId={threadRef.threadId}
               threadKey={currentThreadKey}

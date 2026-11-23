@@ -98,7 +98,13 @@ export function createDuoControl(options: {
       if (active?.requestId === id) clear("The device did not answer. Its stance is unknown.");
     }, options.timeoutMs ?? 5_000);
     publish();
-    if (!options.send(active)) clear("The device is disconnected.");
+    let sent = false;
+    try {
+      sent = options.send(active);
+    } catch {
+      sent = false;
+    }
+    if (!sent) clear("The device is disconnected.");
   };
   return {
     enqueue(command: DuoCommand) {

@@ -20,11 +20,11 @@ export function observeDeviceStreamInput(
       onInput({ type: "touch", phase, x, y });
       client.sendTouch(phase, x, y);
     },
-    // iPhone Duo touches go to the display's own framebuffer, which is also
-    // what its accessibility tree measures, so they are heard the same way.
-    sendRawTouch: (phase, x, y) => {
-      onInput({ type: "touch", phase, x, y });
-      client.sendRawTouch(phase, x, y);
+    // iPhone Duo touches send raw framebuffer coordinates to the helper; prefer
+    // the visual coordinates when provided so recorded swipes and AX hits match the screen.
+    sendRawTouch: (phase, x, y, visual) => {
+      onInput({ type: "touch", phase, x: visual?.x ?? x, y: visual?.y ?? y });
+      client.sendRawTouch(phase, x, y, visual);
     },
     sendKey: (event, phase) => {
       if (phase === "down") {

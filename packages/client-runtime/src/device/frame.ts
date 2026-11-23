@@ -8,9 +8,11 @@ export function createCanvasFrameSink(
   canvas: HTMLCanvasElement,
   onFrame?: (width: number, height: number) => void,
 ): DeviceFrameSink {
+  let cachedContext: CanvasRenderingContext2D | null = null;
   return {
     present(source, width, height) {
-      const context = canvas.getContext("2d");
+      if (width <= 0 || height <= 0) return false;
+      const context = (cachedContext ??= canvas.getContext("2d", { alpha: false }));
       if (!context) return false;
       if (canvas.width !== width || canvas.height !== height) {
         canvas.width = width;

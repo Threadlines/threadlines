@@ -162,16 +162,18 @@ export function DeviceToolsPanel(props: {
             disabled={disabled}
             onSubmit={(appId) => act({ type: "launchApp", appId })}
           />
-          <div>
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={disabled}
-              onClick={() => void act({ type: "shake" })}
-            >
-              Shake
-            </Button>
-          </div>
+          {ios ? (
+            <div>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={disabled}
+                onClick={() => void act({ type: "shake" })}
+              >
+                Shake
+              </Button>
+            </div>
+          ) : null}
         </Section>
 
         <Section title={ios ? "Simulator" : "Emulator"}>

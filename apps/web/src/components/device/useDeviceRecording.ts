@@ -67,7 +67,7 @@ export function useDeviceRecording(options: {
     recording.unobserve();
     clearTimeout(recording.limitTimer);
     if (!keep) {
-      void recording.recorder.stop();
+      recording.recorder.discard();
       setStateIfMounted({ status: "idle" });
       return;
     }

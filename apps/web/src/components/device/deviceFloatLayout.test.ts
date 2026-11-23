@@ -38,5 +38,16 @@ describe("deviceFloatLayout", () => {
     expect(wider.x + wider.width).toBe(start.x + start.width);
     const huge = resizeDeviceFloat(start, "bottomRight", 2000, 2000, PHONE, viewport);
     expect(inside(huge, viewport)).toBe(true);
+
+    // Dragging the left edge past the left margin clamps width without drifting the right edge.
+    const nearLeft = fitDeviceFloat({
+      position: { x: 40, y: 60 },
+      width: 260,
+      aspect: PHONE,
+      viewport,
+    });
+    const clampedLeft = resizeDeviceFloat(nearLeft, "left", -500, 0, PHONE, viewport);
+    expect(inside(clampedLeft, viewport)).toBe(true);
+    expect(clampedLeft.x + clampedLeft.width).toBe(nearLeft.x + nearLeft.width);
   });
 });

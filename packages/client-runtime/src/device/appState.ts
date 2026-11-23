@@ -5,6 +5,8 @@ import type { DeviceHubTransport } from "./hubTransport.ts";
 
 /** How often the open Tools drawer asks which app is in front. */
 export const FOREGROUND_POLL_MS = 2_000;
+const FOREGROUND_TIMEOUT_MS = 5_000;
+const UNKNOWN_APP = Symbol("unknown");
 
 /**
  * The app in front on an iOS Simulator, as it changes, while the caller
@@ -23,25 +25,41 @@ export function subscribeDeviceForeground(
   let stopped = false;
   let controller: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let last: string | undefined;
+  let last: string | null | typeof UNKNOWN_APP | undefined;
 
   const report = (app: DeviceForegroundApp | null | undefined) => {
-    const key = app === undefined ? "?" : app === null ? "" : app.id;
+    if (stopped) return;
+    const key = app === undefined ? UNKNOWN_APP : app === null ? null : app.id;
     if (key === last) return;
     last = key;
     onChange(app);
   };
 
   const ask = async () => {
-    controller = new AbortController();
+    const request = new AbortController();
+    controller = request;
+    const timeout = setTimeout(() => request.abort(), FOREGROUND_TIMEOUT_MS);
     try {
       const response = await transport.fetch(
         `/vendor/serve-sim/helper/${encodeURIComponent(deviceId)}/foreground`,
-        { signal: controller.signal },
+        { signal: request.signal },
       );
-      report(response.ok ? parseForeground(await response.json()) : undefined);
+      if (stopped) {
+        await response.body?.cancel().catch(() => {});
+        return;
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        report(undefined);
+      } else {
+        const body: unknown = await response.json();
+        report(parseForeground(body));
+      }
     } catch {
-      if (!stopped) report(undefined);
+      report(undefined);
+    } finally {
+      clearTimeout(timeout);
+      if (controller === request) controller = null;
     }
     if (!stopped) timer = setTimeout(() => void ask(), FOREGROUND_POLL_MS);
   };
