@@ -190,7 +190,7 @@ export const GROK_MODEL_OPTION_MAPPING: AcpModelOptionMapping = {
     return {
       ...capabilities,
       optionDescriptors: (capabilities.optionDescriptors ?? []).map((descriptor) =>
-        descriptor.id === GROK_EFFORT_CONFIG_ID
+        descriptor.id === GROK_EFFORT_CONFIG_ID || descriptor.id === REASONING_OPTION_ID
           ? { ...descriptor, id: REASONING_OPTION_ID, label: "Reasoning" }
           : descriptor,
       ),

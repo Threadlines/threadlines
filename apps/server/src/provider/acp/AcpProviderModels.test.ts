@@ -79,6 +79,101 @@ describe("GENERIC_ACP_MODEL_OPTION_MAPPING", () => {
       ]),
     ).toEqual([{ configId: "provider", value: "codex" }]);
   });
+
+  it("maps ACP thought_level options onto reasoningEffort and sends selections back under the agent's id", () => {
+    const antigravityOptions = [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "gemini-4-neon",
+        options: [{ value: "gemini-4-neon", name: "Gemini 4 Neon" }],
+      },
+      {
+        id: "thought_level",
+        name: "Thinking Level",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { value: "xhigh", name: "Extra" },
+          { value: "high", name: "High" },
+          { value: "medium", name: "Medium" },
+          { value: "low", name: "Low" },
+        ],
+      },
+    ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+
+    const capabilities =
+      GENERIC_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(antigravityOptions);
+    const descriptor = capabilities.optionDescriptors?.[0];
+    expect(descriptor).toEqual({
+      id: "reasoningEffort",
+      label: "Thinking Level",
+      type: "select",
+      currentValue: "high",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High", isDefault: true },
+        { id: "xhigh", label: "Extra" },
+      ],
+    });
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(antigravityOptions, [
+        { id: "reasoningEffort", value: "xhigh" },
+      ]),
+    ).toEqual([{ configId: "thought_level", value: "xhigh" }]);
+    // Saved selections written under the old raw id still apply.
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(antigravityOptions, [
+        { id: "thought_level", value: "medium" },
+      ]),
+    ).toEqual([{ configId: "thought_level", value: "medium" }]);
+  });
+
+  it("drops a single-choice thought_level option and keeps already-known reasoning ids", () => {
+    const singleChoice = [
+      {
+        id: "thought_level",
+        name: "Thinking Level",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: [{ value: "high", name: "High" }],
+      },
+    ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(singleChoice)
+        .optionDescriptors,
+    ).toEqual([]);
+
+    const customCommunity = [
+      {
+        id: "thinking_budget",
+        name: "Thinking",
+        category: "thought_level",
+        type: "select",
+        currentValue: "medium",
+        options: [
+          { value: "low", name: "Low" },
+          { value: "medium", name: "Medium" },
+          { value: "high", name: "High" },
+        ],
+      },
+    ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+    expect(
+      NATIVE_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(
+        customCommunity,
+      ).optionDescriptors?.map((d) => d.id),
+    ).toEqual(["reasoningEffort"]);
+    expect(
+      NATIVE_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(customCommunity, [
+        { id: "reasoningEffort", value: "high" },
+      ]),
+    ).toEqual([{ configId: "thinking_budget", value: "high" }]);
+  });
 });
 
 describe("buildAcpModelsFromConfigOptions", () => {

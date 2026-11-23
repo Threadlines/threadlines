@@ -175,10 +175,62 @@ describe("Antigravity reasoning levels", () => {
       "claude-sonnet-4-6",
       "gpt-6-1",
     ]);
-    expect(levels("gemini-4-argon")).toEqual(["thought_level", ["low", "medium", "high"]]);
+    expect(levels("gemini-4-argon")).toEqual(["reasoningEffort", ["low", "medium", "high"]]);
     expect(levels("claude-sonnet-4-6")).toBeUndefined();
     // Not seen yet: the current model's levels stand in (here, none).
     expect(levels("gpt-6-1")).toBeUndefined();
+  });
+
+  it("does not mistake a single parenthesized model name like GPT-OSS 120B (Medium) for a legacy effort-in-name catalog", async () => {
+    const choices = [
+      { value: "gemini-4-neon", name: "Gemini 4 Neon" },
+      { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+    ];
+    expect(
+      isAntigravityCatalogComplete({
+        choices,
+        currentValue: "gemini-4-neon",
+        thoughtLevels: {
+          "gemini-4-neon": {
+            configId: "thought_level",
+            name: "Thinking Level",
+            currentValue: "high",
+            options: [
+              { value: "low", name: "Low" },
+              { value: "high", name: "High" },
+            ],
+          },
+        },
+      }),
+    ).toBe(false);
+
+    let current = "gemini-4-neon";
+    const optionsFor = (slug: string): ReadonlyArray<EffectAcpSchema.SessionConfigOption> => [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: slug,
+        options: choices,
+      },
+      ...(slug === "gemini-4-neon" ? [thought("high", ["low", "high"])] : []),
+    ];
+    const probed = await Effect.runPromise(
+      probeAntigravityModelOptions({
+        getConfigOptions: Effect.sync(() => optionsFor(current)),
+        setConfigOption: (_configId, value) =>
+          Effect.sync(() => {
+            current = String(value);
+            return { configOptions: [...optionsFor(current)] };
+          }),
+      }),
+    );
+    expect(probed?.thoughtLevels["gemini-4-neon"]?.options.map((o) => o.value)).toEqual([
+      "low",
+      "high",
+    ]);
+    expect(probed?.thoughtLevels["gpt-oss-120b-medium"]).toBeNull();
   });
 
   it("falls back to folding names when the agent names the level in the model", () => {

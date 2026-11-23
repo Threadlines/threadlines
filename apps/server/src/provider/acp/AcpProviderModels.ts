@@ -15,8 +15,10 @@ import type {
   ServerProviderModel,
 } from "@threadlines/contracts";
 import {
+  CANONICAL_REASONING_OPTION_ID,
   createModelCapabilities,
   getProviderOptionSelectionValue,
+  isReasoningOptionId,
 } from "@threadlines/shared/model";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
@@ -27,7 +29,11 @@ import type {
   AcpProviderDescriptor,
   AcpProviderSettings,
 } from "./AcpProviderDescriptor.ts";
-import { findModelConfigOption, isModeConfigOption } from "./AcpRuntimeModel.ts";
+import {
+  findModelConfigOption,
+  findThoughtLevelConfigOption,
+  isModeConfigOption,
+} from "./AcpRuntimeModel.ts";
 
 export const EMPTY_ACP_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -64,17 +70,54 @@ export function selectConfigOptionCurrentValue(
 }
 
 /**
- * Mirrors every option but the model one-to-one. `modeOptions: "hidden"`
- * leaves out mode-style options (driven by the runtime mode, never by the
- * model picker); `"shown"` keeps them, for agents driven through their own
- * controls.
+ * Descriptor id for an ACP `thought_level` select option. Keeps ids Threadlines
+ * already recognizes as reasoning (`effort`, `reasoning`, `reasoningEffort`,
+ * `variant`), and maps any other id (`thought_level`, `reasoning_effort`, or a
+ * community agent's custom id) to `reasoningEffort` so the EffortMeter and
+ * reasoning helpers recognize it.
+ */
+export function acpThoughtLevelDescriptorId(
+  optionId: string,
+  otherOptionIds?: ReadonlySet<string>,
+): string {
+  if (isReasoningOptionId(optionId) || otherOptionIds?.has(CANONICAL_REASONING_OPTION_ID)) {
+    return optionId;
+  }
+  return CANONICAL_REASONING_OPTION_ID;
+}
+
+/**
+ * Mirrors every option but the model one-to-one, normalizing an ACP
+ * `thought_level` select onto a recognized reasoning id so the EffortMeter
+ * handles it. `modeOptions: "hidden"` leaves out mode-style options (driven by
+ * the runtime mode, never by the model picker); `"shown"` keeps them, for
+ * agents driven through their own controls.
  */
 const makeAcpModelOptionMapping = (modeOptions: "hidden" | "shown"): AcpModelOptionMapping => {
   const isSessionControlOption = (option: EffectAcpSchema.SessionConfigOption) =>
     modeOptions === "hidden" && isModeConfigOption(option);
+  const descriptorIdFor = (
+    option: EffectAcpSchema.SessionConfigOption,
+    thoughtLevelOption: EffectAcpSchema.SessionConfigOption | undefined,
+    otherOptionIds: ReadonlySet<string>,
+  ) =>
+    option === thoughtLevelOption
+      ? acpThoughtLevelDescriptorId(option.id, otherOptionIds)
+      : option.id;
   return {
     capabilitiesFromConfigOptions: (configOptions) => {
       const modelOption = findModelConfigOption(configOptions);
+      const thoughtLevelOption = findThoughtLevelConfigOption(configOptions);
+      const otherOptionIds = new Set(
+        configOptions
+          .filter(
+            (candidate) =>
+              candidate !== modelOption &&
+              candidate !== thoughtLevelOption &&
+              !isSessionControlOption(candidate),
+          )
+          .map((candidate) => candidate.id),
+      );
       const optionDescriptors: Array<ProviderOptionDescriptor> = [];
       for (const option of configOptions) {
         if (option === modelOption || isSessionControlOption(option)) {
@@ -97,13 +140,13 @@ const makeAcpModelOptionMapping = (modeOptions: "hidden" | "shown"): AcpModelOpt
           continue;
         }
         const choices = flattenSessionConfigSelectOptions(option);
-        if (choices.length === 0) {
+        if (choices.length === 0 || (option === thoughtLevelOption && choices.length < 2)) {
           continue;
         }
         const currentValue = selectConfigOptionCurrentValue(option);
         optionDescriptors.push(
           buildSelectOptionDescriptor({
-            id: option.id,
+            id: descriptorIdFor(option, thoughtLevelOption, otherOptionIds),
             label,
             options: choices.map((choice) => ({
               value: choice.value,
@@ -121,12 +164,28 @@ const makeAcpModelOptionMapping = (modeOptions: "hidden" | "shown"): AcpModelOpt
         return [];
       }
       const modelOption = findModelConfigOption(configOptions);
+      const thoughtLevelOption = findThoughtLevelConfigOption(configOptions);
+      const otherOptionIds = new Set(
+        configOptions
+          .filter(
+            (candidate) =>
+              candidate !== modelOption &&
+              candidate !== thoughtLevelOption &&
+              !isSessionControlOption(candidate),
+          )
+          .map((candidate) => candidate.id),
+      );
       const updates: Array<AcpConfigUpdate> = [];
       for (const option of configOptions) {
         if (option === modelOption || isSessionControlOption(option)) {
           continue;
         }
-        const requested = getProviderOptionSelectionValue(selections, option.id);
+        const descriptorId = descriptorIdFor(option, thoughtLevelOption, otherOptionIds);
+        const requested =
+          getProviderOptionSelectionValue(selections, descriptorId) ??
+          (descriptorId !== option.id
+            ? getProviderOptionSelectionValue(selections, option.id)
+            : undefined);
         if (requested === undefined) {
           continue;
         }

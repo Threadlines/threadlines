@@ -64,6 +64,7 @@ const REASONING_LEVEL_RANK: ReadonlyMap<string, number> = new Map([
   ["xhigh", 5],
   ["extrahigh", 5],
   ["max", 6],
+  ["ultra", 7],
 ]);
 
 const reasoningLevelRank = (id: string) =>
@@ -294,6 +295,14 @@ function migratePromotedSelectChoices(
   return next;
 }
 
+/**
+ * Older option ids that were later mapped onto a canonical descriptor id.
+ * Persisted thread and draft selections keep working until rewritten.
+ */
+const LEGACY_OPTION_ID_ALIASES: Readonly<Record<string, ReadonlyArray<string>>> = {
+  reasoningEffort: ["thought_level"],
+};
+
 export function getProviderOptionDescriptors(input: {
   caps: ModelCapabilities;
   selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
@@ -302,12 +311,17 @@ export function getProviderOptionDescriptors(input: {
   const selections = migratePromotedSelectChoices(caps, input.selections);
   const baseDescriptors = (caps.optionDescriptors ?? []).map(cloneDescriptor);
 
-  return baseDescriptors.map((descriptor) =>
-    withDescriptorCurrentValue(
-      descriptor,
-      getRawSelectionValueById(selections, descriptor.id) ?? descriptor.currentValue,
-    ),
-  );
+  return baseDescriptors.map((descriptor) => {
+    const direct = getRawSelectionValueById(selections, descriptor.id);
+    const aliased =
+      direct === undefined
+        ? (LEGACY_OPTION_ID_ALIASES[descriptor.id] ?? [])
+            .filter((alias) => !baseDescriptors.some((candidate) => candidate.id === alias))
+            .map((alias) => getRawSelectionValueById(selections, alias))
+            .find((value) => value !== undefined)
+        : undefined;
+    return withDescriptorCurrentValue(descriptor, direct ?? aliased ?? descriptor.currentValue);
+  });
 }
 
 export function getProviderOptionCurrentValue(
@@ -345,13 +359,21 @@ export function getProviderOptionCurrentLabel(
   return descriptor.options.find((option) => option.id === currentValue)?.label;
 }
 
+/** Canonical option id for reasoning effort when normalizing provider options. */
+export const CANONICAL_REASONING_OPTION_ID = "reasoningEffort";
+
 /** The option each provider keeps its reasoning level in. */
 const REASONING_OPTION_IDS: ReadonlySet<string> = new Set([
-  "reasoningEffort",
+  CANONICAL_REASONING_OPTION_ID,
   "effort",
   "reasoning",
   "variant",
 ]);
+
+/** Whether an option id is one of Threadlines' recognized reasoning level controls. */
+export function isReasoningOptionId(id: string): boolean {
+  return REASONING_OPTION_IDS.has(id);
+}
 
 /**
  * A model's reasoning setting among its options: Codex calls it

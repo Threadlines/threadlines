@@ -316,6 +316,50 @@ describe("descriptor helpers", () => {
     ).toEqual([{ id: "effort", value: "ultracode" }]);
   });
 
+  it("reads legacy thought_level selections onto a reasoningEffort descriptor", () => {
+    const descriptors = getProviderOptionDescriptors({
+      caps: codexCaps,
+      selections: [{ id: "thought_level", value: "xhigh" }],
+    });
+
+    expect(descriptors[0]?.currentValue).toBe("xhigh");
+    expect(buildProviderOptionSelectionsFromDescriptors(descriptors)).toEqual([
+      { id: "reasoningEffort", value: "xhigh" },
+    ]);
+
+    // An explicit reasoningEffort selection wins over a stale thought_level one.
+    const overridden = getProviderOptionDescriptors({
+      caps: codexCaps,
+      selections: [
+        { id: "thought_level", value: "xhigh" },
+        { id: "reasoningEffort", value: "high" },
+      ],
+    });
+    expect(overridden[0]?.currentValue).toBe("high");
+  });
+
+  it("orders ultra above max in ascending reasoning levels", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "ultra", label: "Ultra" },
+            { id: "low", label: "Low" },
+            { id: "max", label: "Max" },
+          ],
+          currentValue: "max",
+        },
+      ],
+    });
+    const descriptor = caps.optionDescriptors?.[0];
+    expect(
+      descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [],
+    ).toEqual(["low", "max", "ultra"]);
+  });
+
   it("builds wire-format option selections from descriptors", () => {
     const descriptors = getProviderOptionDescriptors({
       caps: codexCaps,
