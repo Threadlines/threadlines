@@ -224,7 +224,6 @@ const MANAGED_NODE_FILE = "apps/server/src/provider/managedRuntime/ManagedNode.t
 const ACP_GENERATE_FILE = "packages/effect-acp/scripts/generate.ts";
 const CODEX_GENERATE_FILE = "packages/effect-codex-app-server/scripts/generate.ts";
 
-const ACP_REGISTRY_URL = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const NODE_INDEX_URL = "https://nodejs.org/dist/index.json";
 const ACP_RELEASES_URL =
   "https://api.github.com/repos/agentclientprotocol/agent-client-protocol/releases?per_page=100";
@@ -273,32 +272,59 @@ export async function loadPins(): Promise<ReadonlyArray<PinnedLookup>> {
       item: {
         id: "antigravity",
         title: "Upstream drift: Antigravity",
-        name: "the Antigravity agent at",
-        source: "The ACP registry",
+        name: "Google's Antigravity CLI at",
+        source: "Google's CLI update feed",
         pinned: antigravity,
         file: ANTIGRAVITY_FILE,
         howToUpdate: ({ version }) => [
-          `Users are already offered ${version} through Settings (\`AntigravityReleaseSource\`) wherever the listing fits; this pin is what installs when the registry can't be read, and the oldest version offered.`,
-          'Check the sign-in behavior noted in `apps/server/src/provider/antigravity/AntigravitySignInMethod.ts` against the new version, and update its "Verified against" line.',
-          `Then set the built-in release to ${version}: the sha256 values are in ${ACP_REGISTRY_URL}, and \`resolveAntigravityListedRelease\` (or any zip index reader) gives the sizes.`,
+          `Users are already offered ${version} through Settings (\`AntigravityReleaseSource\`) wherever the feed's manifest fits; this pin is what installs when the feed can't be read, and the oldest version offered.`,
+          "Read Google's changelog (https://github.com/google-antigravity/antigravity-cli) for `agy acp` changes, and check the sign-in behavior noted in `apps/server/src/provider/antigravity/AntigravitySignInMethod.ts` and `AntigravityAuth.ts` against it.",
+          `Then set the built-in release to ${version}: take each build's url and sha512 from its manifest (\`antigravityFeedUrl\`), and measure each download's size and its unpacked \`antigravity\` file's size.`,
         ],
       },
       lookup: async () => {
-        const registry = await fetchJson(ACP_REGISTRY_URL);
-        const agents = field(registry, "agents");
-        const agent = Array.isArray(agents)
-          ? agents.find((entry: unknown) => field(entry, "id") === "antigravity-acp")
-          : undefined;
-        const version = field(agent, "version");
-        if (typeof version !== "string")
-          throw new Error("no antigravity-acp entry in the registry");
-        const refused = await antigravityBuildsThreadlinesRefuses(version, agent);
+        const module: unknown = await import(pathToFileURL(join(ROOT, ANTIGRAVITY_FILE)).href);
+        const feedUrl = field(module, "antigravityFeedUrl");
+        const parse = field(module, "parseAntigravityFeedManifest");
+        if (typeof feedUrl !== "function" || typeof parse !== "function") {
+          throw new Error(`No feed reader in ${ANTIGRAVITY_FILE}`);
+        }
+        const manifests = await Promise.all(
+          ANTIGRAVITY_BUILDS.map(async (assetKey) => {
+            const manifest = await fetchJson(feedUrl(assetKey) as string);
+            return { assetKey, manifest, fits: parse(manifest, assetKey) !== undefined };
+          }),
+        );
+        const versions = manifests.map(({ manifest }) => field(manifest, "version"));
+        // The newest any build has: a release can reach one platform first.
+        const version = versions
+          .filter(
+            (value): value is string =>
+              typeof value === "string" && parseVersion(value) !== undefined,
+          )
+          .reduce<string | undefined>(
+            (newest, value) =>
+              newest === undefined || compareVersions(value, newest) > 0 ? value : newest,
+            undefined,
+          );
+        if (version === undefined) throw new Error("the feed named no version");
+        const behind = manifests
+          .filter((_, index) => versions[index] !== version)
+          .map(({ assetKey }) => assetKey);
+        const refused = manifests.filter(({ fits }) => !fits).map(({ assetKey }) => assetKey);
         return {
           version,
-          ...(refused.length > 0
+          ...(refused.length > 0 || behind.length > 0
             ? {
                 notes: [
-                  `Threadlines won't offer this release on ${refused.join(", ")}: Google's listing changed (archive name, command, arguments or environment), so \`antigravityListedRelease\` refuses it. Check what changed and teach Threadlines to run it.`,
+                  ...(behind.length > 0
+                    ? [`The feed doesn't list ${version} for ${behind.join(", ")} yet.`]
+                    : []),
+                  ...(refused.length > 0
+                    ? [
+                        `Threadlines won't offer the feed's release on ${refused.join(", ")}: its manifest changed (download host, folder, file name or hash), so \`parseAntigravityFeedManifest\` refuses it. Check what changed and teach Threadlines to install it.`,
+                      ]
+                    : []),
                 ],
               }
             : {}),
@@ -394,50 +420,17 @@ export async function loadPins(): Promise<ReadonlyArray<PinnedLookup>> {
   ];
 }
 
-/** The registry's name for each Antigravity build, by Threadlines' name and Node platform. */
+/** Threadlines' name for each Antigravity build (`AntigravityAssetKey`). */
 const ANTIGRAVITY_BUILDS = [
-  ["darwin-aarch64", "darwin-arm64", "darwin"],
-  ["darwin-x86_64", "darwin-x64", "darwin"],
-  ["linux-aarch64", "linux-arm64", "linux"],
-  ["linux-x86_64", "linux-x64", "linux"],
-  ["windows-aarch64", "win32-arm64", "win32"],
-  ["windows-x86_64", "win32-x64", "win32"],
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "linux-arm64-musl",
+  "linux-x64-musl",
+  "win32-arm64",
+  "win32-x64",
 ] as const;
-
-/**
- * The builds of Google's listing that Threadlines' live update would refuse
- * (`antigravityListedRelease`), so users there never see the new version.
- * Mirrors the registry reader's shaping of a download entry, simplified.
- */
-async function antigravityBuildsThreadlinesRefuses(
-  version: string,
-  agent: unknown,
-): Promise<ReadonlyArray<string>> {
-  const module: unknown = await import(pathToFileURL(join(ROOT, ANTIGRAVITY_FILE)).href);
-  const fits = field(module, "antigravityListedRelease");
-  if (typeof fits !== "function")
-    throw new Error(`No antigravityListedRelease in ${ANTIGRAVITY_FILE}`);
-  const binary = field(field(agent, "distribution"), "binary");
-  return ANTIGRAVITY_BUILDS.flatMap(([registryKey, assetKey, platform]) => {
-    const build = field(binary, registryKey);
-    const archive = field(build, "archive");
-    const cmd = field(build, "cmd");
-    const sha256 = field(build, "sha256");
-    const recipe = {
-      kind: "download",
-      agentId: "antigravity-acp",
-      version,
-      args: field(build, "args") ?? [],
-      env: field(build, "env") ?? {},
-      url: archive,
-      sha256: typeof sha256 === "string" ? sha256.toLowerCase() : null,
-      format: typeof archive === "string" && archive.endsWith(".zip") ? "zip" : "other",
-      cmd: typeof cmd === "string" ? cmd.replace(/^\.\//u, "") : cmd,
-    };
-    const ok = typeof archive === "string" && fits(recipe, assetKey, platform) !== undefined;
-    return ok ? [] : [registryKey];
-  });
-}
 
 // ── I/O ──────────────────────────────────────────────────────────────
 
