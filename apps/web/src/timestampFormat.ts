@@ -270,3 +270,9 @@ export function startOfLocalDayMs(nowMs: number, daysBack = 0): number {
   const now = new Date(nowMs);
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack).getTime();
 }
+
+/** UTC midnight of the day `daysBack` days before `nowMs`'s day (negative: after). */
+export function startOfUtcDayMs(nowMs: number, daysBack = 0): number {
+  const now = new Date(nowMs);
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysBack);
+}
