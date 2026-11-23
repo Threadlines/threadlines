@@ -125,5 +125,19 @@ describe("priceUsage", () => {
     expect(price("gemini-4-argon-high", Date.UTC(2026, 10, 30, 12))).toBeCloseTo(2 + 0.1 + 10, 9);
     expect(price("gemini-4-argon", Date.UTC(2026, 11, 1, 12))).toBeCloseTo(4 + 0.2 + 20, 9);
     expect(price("gemini-4-neon", Date.UTC(2026, 11, 1, 12))).toBeCloseTo(3 + 0.15 + 15, 9);
+    // A fetched table holds only today's rate: earlier days keep theirs.
+    const table = parseRateTable({
+      "gemini-4-argon": {
+        input_cost_per_token: 4e-6,
+        output_cost_per_token: 2e-5,
+        cache_read_input_token_cost: 2e-7,
+      },
+    });
+    expect(lookupRate(table, "gemini-4-argon", Date.UTC(2026, 10, 30))?.inputCostPerToken).toBe(
+      2e-6,
+    );
+    expect(lookupRate(table, "gemini-4-argon", Date.UTC(2026, 11, 2))?.inputCostPerToken).toBe(
+      4e-6,
+    );
   });
 });

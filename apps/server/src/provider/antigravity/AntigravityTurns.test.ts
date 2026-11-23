@@ -13,7 +13,11 @@ import {
   ThreadId,
   type TurnId,
 } from "@threadlines/contracts";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -61,37 +65,56 @@ async function readFrames(file: string): Promise<ReadonlyArray<Record<string, un
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-/** Starts an Antigravity session on the stand-in, collecting every runtime event. */
-const startAgy = (scenario: string) =>
+type AgyDescriptor = ReturnType<typeof makeAntigravityDescriptor>;
+
+/**
+ * Starts an Antigravity session on the stand-in, collecting every runtime
+ * event. `adjust` changes the real descriptor for one test (a paused outcome
+ * check, a shorter limit); `newAdapter` makes another adapter on the same
+ * profile and state, as a server restart would.
+ */
+const startAgy = (
+  scenario: string,
+  adjust?: (descriptor: AgyDescriptor) => AgyDescriptor,
+  runtimeMode: "full-access" | "approval-required" = "full-access",
+) =>
   Effect.gen(function* () {
     const mock = yield* Effect.promise(() => makeAgyMock(scenario));
-    const descriptor = makeAntigravityDescriptor({
+    const base = makeAntigravityDescriptor({
       paths: { profileDir: path.join(mock.dir, "profile"), tempRoot: path.join(mock.dir, "tmp") },
       runtime: undefined,
       releases: undefined,
       signIn: { method: "oauth-personal", project: "", location: "", key: "" },
     });
+    const descriptor = adjust ? adjust(base) : base;
     const usage: Array<UsageLedgerEntry> = [];
-    const adapter = yield* makeAcpAdapter(
-      descriptor,
-      decodeSettings({ enabled: true, binaryPath: mock.wrapper }),
-      { recordTurnUsage: (entry) => Effect.sync(() => void usage.push(entry)) },
-    );
     const events: Array<ProviderRuntimeEvent> = [];
-    yield* adapter.streamEvents.pipe(
-      Stream.runForEach((event) => Effect.sync(() => void events.push(event))),
-      Effect.forkScoped,
-    );
+    const newAdapter = Effect.gen(function* () {
+      const made = yield* makeAcpAdapter(
+        descriptor,
+        decodeSettings({ enabled: true, binaryPath: mock.wrapper }),
+        { recordTurnUsage: (entry) => Effect.sync(() => void usage.push(entry)) },
+      );
+      yield* made.streamEvents.pipe(
+        Stream.runForEach((event) => Effect.sync(() => void events.push(event))),
+        Effect.forkScoped,
+      );
+      return made;
+    });
+    const adapter = yield* newAdapter;
     const threadId = ThreadId.make(`agy-${scenario}`);
     const session = yield* adapter.startSession({
       threadId,
       provider: ProviderDriverKind.make("antigravity"),
       cwd: process.cwd(),
-      runtimeMode: "full-access",
+      runtimeMode,
     });
-    const waitFor = (predicate: (events: ReadonlyArray<ProviderRuntimeEvent>) => boolean) =>
+    const waitFor = (
+      predicate: (events: ReadonlyArray<ProviderRuntimeEvent>) => boolean,
+      attempts = 1_000,
+    ) =>
       Effect.gen(function* () {
-        for (let attempt = 0; attempt < 1_000; attempt += 1) {
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
           if (predicate(events)) return;
           yield* Effect.sleep("10 millis");
         }
@@ -104,6 +127,7 @@ const startAgy = (scenario: string) =>
       threadId,
       session,
       waitFor,
+      newAdapter,
       frames: () => Effect.promise(() => readFrames(mock.log)),
     };
   });
@@ -140,6 +164,8 @@ describe("Antigravity turns", () => {
         expect(completedTurns(agy.events)).toHaveLength(0);
         const [running] = yield* agy.adapter.listSessions();
         expect(running?.status).toBe("running");
+        // The prompt's tokens are written as it answers, not when the hold ends.
+        expect(agy.usage.map((entry) => entry.turnId)).toEqual([turnId]);
 
         yield* agy.waitFor((events) => completedTurns(events).length === 1);
         expect(replyTo(agy.events, turnId)).toContain("The build passed.");
@@ -191,6 +217,9 @@ describe("Antigravity turns", () => {
           payload: { state: "cancelled", stopReason: "cancelled" },
         }),
       ]);
+      // The CLI's cancellation notice, after the stop, opens no turn of its own.
+      expect(agy.events.filter((event) => event.type === "turn.started")).toHaveLength(1);
+      expect(JSON.stringify(agy.events)).not.toContain("cancelled by the client");
       const frames = yield* agy.frames();
       expect(frames.filter((frame) => frame.method === "session/cancel")).toHaveLength(1);
       const [idle] = yield* agy.adapter.listSessions();
@@ -257,7 +286,13 @@ describe("Antigravity turns", () => {
       const frames = yield* agy.frames();
       expect(frames.filter((frame) => frame.method === "session/prompt")).toHaveLength(2);
       expect(frames.some((frame) => frame.method === "session/cancel")).toBe(false);
-      expect(agy.usage.map((entry) => entry.totals.uncachedInputTokens)).toEqual([300]);
+      // Both prompts' tokens count, each under an id of its own.
+      expect(
+        agy.usage.map((entry) => [entry.turnId, entry.totals.uncachedInputTokens]).toSorted(),
+      ).toEqual([
+        [turnId, 100],
+        [`${turnId}:2`, 300],
+      ]);
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
@@ -298,7 +333,9 @@ describe("Antigravity turns", () => {
         expect(completedTurns(agy.events)[0]?.payload).toMatchObject({ state: "failed" });
         yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
 
-        const restarted = yield* agy.adapter.startSession({
+        // A server restart before the next message: a new adapter.
+        const restartedAdapter = yield* agy.newAdapter;
+        const restarted = yield* restartedAdapter.startSession({
           threadId: agy.threadId,
           provider: ProviderDriverKind.make("antigravity"),
           cwd: process.cwd(),
@@ -310,6 +347,177 @@ describe("Antigravity turns", () => {
         expect(frames.filter((frame) => frame.method === "session/new")).toHaveLength(2);
         expect(frames.some((frame) => frame.method === "session/resume")).toBe(false);
       }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+});
+
+describe("Antigravity turns, the hard cases", () => {
+  it.live("keeps a turn open for a scheduled wake whose call never changes until it fires", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("schedule");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "remind me",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("Timer set."));
+      yield* Effect.sleep("2500 millis");
+      expect(completedTurns(agy.events)).toHaveLength(0);
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(replyTo(agy.events, turnId)).toContain("Timer fired.");
+      expect(agy.events.filter((event) => event.type === "turn.started")).toHaveLength(1);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("fails a held turn and stops the session when the agent exits", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("exit");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "build it",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(agy.events)[0]).toMatchObject({
+        turnId,
+        payload: { state: "failed", errorMessage: "Antigravity stopped before its work finished." },
+      });
+      yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
+      expect(agy.events.find((event) => event.type === "session.exited")).toMatchObject({
+        payload: { exitKind: "error" },
+      });
+      expect(yield* agy.adapter.listSessions()).toEqual([]);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("recycles an agent that ignores Stop, even while another message waits", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("ignore-cancel");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "think",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("Thinking hard."));
+      const waiting = yield* agy.adapter
+        .sendTurn({ threadId: agy.threadId, input: "next", attachments: [] })
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.sleep("100 millis");
+      yield* agy.adapter.interruptTurn(agy.threadId);
+      // The cancel deadline (15 seconds) passes and the agent is restarted.
+      yield* agy.waitFor((events) => completedTurns(events).length === 1, 2_500);
+      expect(completedTurns(agy.events)[0]).toMatchObject({
+        turnId,
+        payload: { state: "cancelled" },
+      });
+      expect(Exit.isFailure(yield* Fiber.join(waiting))).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("settles a turn once when a steer comes while its answer is read", () =>
+    Effect.gen(function* () {
+      const reading = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let first = true;
+      // The first prompt's outcome check waits for the test.
+      const agy = yield* startAgy(
+        "permission-second",
+        (descriptor) => ({
+          ...descriptor,
+          promptOutcome: {
+            watch: (sessionId) =>
+              descriptor.promptOutcome!.watch(sessionId).pipe(
+                Effect.map((check) => (answer: Parameters<typeof check>[0]) => {
+                  if (!first) return check(answer);
+                  first = false;
+                  return Deferred.succeed(reading, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                    Effect.andThen(check(answer)),
+                  );
+                }),
+              ),
+          },
+        }),
+        "approval-required",
+      );
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "first",
+        attachments: [],
+      });
+      yield* Deferred.await(reading);
+      const steer = yield* agy.adapter.steerTurn!({
+        threadId: agy.threadId,
+        expectedTurnId: turnId,
+        input: "second",
+      }).pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.sleep("200 millis");
+      yield* Deferred.succeed(release, undefined);
+      // The turn had ended: the steer is turned down, to be sent as a turn of its own.
+      expect(Exit.isFailure(yield* Fiber.join(steer))).toBe(true);
+      expect(completedTurns(agy.events)).toEqual([
+        expect.objectContaining({
+          turnId,
+          payload: expect.objectContaining({ state: "completed" }),
+        }),
+      ]);
+      const next = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "second",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => events.some((event) => event.type === "request.opened"));
+      expect(agy.events.find((event) => event.type === "request.opened")?.turnId).toBe(next.turnId);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("steers without inheriting the error the earlier prompt left in the log", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("steer-log-error");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "go",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => replyTo(events, turnId).includes("Working on it."));
+      yield* agy.adapter.steerTurn!({
+        threadId: agy.threadId,
+        expectedTurnId: turnId,
+        input: "try again",
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(agy.events)[0]?.payload.state).toBe("completed");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("holds a turn until each subagent has reported", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("subagents");
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "research and test",
+        attachments: [],
+      });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(replyTo(agy.events, turnId)).toContain("The tester reported.");
+      expect(agy.events.filter((event) => event.type === "turn.started")).toHaveLength(1);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("frees a subagent whose report never sends its closing usage update", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("subagent-quiet", (descriptor) => ({
+        ...descriptor,
+        heldTurns: { ...descriptor.heldTurns!, replyQuietLimit: Duration.seconds(1) },
+      }));
+      const { turnId } = yield* agy.adapter.sendTurn({
+        threadId: agy.threadId,
+        input: "research",
+        attachments: [],
+      });
+      // Long before the 30-minute silent limit.
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(replyTo(agy.events, turnId)).toContain("The researcher reported.");
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 });
 
