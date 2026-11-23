@@ -29,7 +29,7 @@
 import { spawn as spawnChild } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve as resolvePath, sep } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -73,6 +73,7 @@ import {
   writeAntigravityAgentRefusal,
   writeAntigravityCatalog,
 } from "../antigravity/AntigravityProfile.ts";
+import { antigravityUserHome } from "../antigravity/AntigravityUserConfig.ts";
 import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
 import {
   antigravityCredentialEnvironment,
@@ -641,6 +642,8 @@ export function makeAntigravityDescriptor(
 ): AcpProviderDescriptor<AntigravitySettings> {
   const { paths, runtime, releases, gate, signIn } = input;
   const platform = process.platform;
+  const userHomeFor = (environment: NodeJS.ProcessEnv | undefined) =>
+    antigravityUserHome(platform, environment ?? process.env, homedir());
   const fingerprint = antigravityCredentialFingerprint(signIn);
   const isGoogleAccount = signIn.method === "oauth-personal";
 
@@ -745,7 +748,10 @@ export function makeAntigravityDescriptor(
           }
           executable = leased.executable;
         }
-        yield* prepareAntigravityProfile(paths.profileDir);
+        yield* prepareAntigravityProfile(paths.profileDir, {
+          userHome: userHomeFor(environment),
+          platform,
+        });
         const tempDir = yield* acquireAntigravityTempDir(paths.tempRoot).pipe(
           Effect.mapError(spawnFailure),
         );

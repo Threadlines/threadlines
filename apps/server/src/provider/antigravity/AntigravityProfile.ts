@@ -20,6 +20,7 @@ import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import { ProviderSetupError } from "../Errors.ts";
 import { ANTIGRAVITY_APP_DATA_DIR } from "./AntigravityRelease.ts";
+import { shareAntigravityUserConfig } from "./AntigravityUserConfig.ts";
 
 export interface AntigravityInstancePaths {
   /** `GEMINI_HOME` for this instance. */
@@ -343,11 +344,26 @@ export const writeAntigravityCatalog = (profileDir: string, catalog: Antigravity
     await fs.rename(temp, target);
   }).pipe(Effect.ignore);
 
-/** Creates the profile dirs the agent expects, private to the user. */
-export const prepareAntigravityProfile = (profileDir: string) =>
+/**
+ * Creates the profile dirs the agent expects, private to the user, and
+ * brings in the user's own global rules and skills from `~/.gemini`
+ * (`AntigravityUserConfig`). Runs before every agent start.
+ */
+export const prepareAntigravityProfile = (
+  profileDir: string,
+  user: { readonly userHome: string; readonly platform: NodeJS.Platform },
+) =>
   Effect.promise(() =>
     fs.mkdir(antigravityAgentDir(profileDir), { recursive: true, mode: 0o700 }),
-  ).pipe(Effect.asVoid);
+  ).pipe(
+    Effect.andThen(
+      shareAntigravityUserConfig({
+        profileDir,
+        userHome: user.userHome,
+        platform: user.platform,
+      }),
+    ),
+  );
 
 const agentRefusalPath = (profileDir: string) => join(profileDir, "threadlines-agent-check.json");
 
