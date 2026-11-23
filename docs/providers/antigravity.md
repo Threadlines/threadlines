@@ -73,19 +73,32 @@ is left alone from then on. Something you add later is picked up at the next sta
 hooks, plugins, subagents (`agents.json`) and MCP servers (`mcp_config.json`) stay out, so an
 Antigravity account in Threadlines never runs them.
 
+These files can themselves be links, into a dotfiles repository for example. Threadlines follows a
+link to see where it leads, and skips it when it leads to a sign-in or token file, hooks, MCP or
+plugin settings, anywhere else in `~/.gemini`, or Threadlines' own data folder.
+
+Because the shared folders are links, what Antigravity writes in them lands in your real folders,
+exactly as when you run `agy` in a terminal: a skill it creates in `config/skills` is a skill in
+`~/.gemini/config/skills`. Threadlines itself only adds and removes its own links and copies. It
+keeps a list of them beside the profile and never replaces or deletes anything else, and it skips
+any profile folder that is itself a link, so it can't write into your own `~/.gemini` by accident.
+
 Project rules and skills come from the project as usual: `AGENTS.md` and `GEMINI.md`, and skills in
 `.agents/skills`, `.gemini/skills` and the older `.agent/skills`.
 
 Threadlines reads which skills Antigravity loads, the way Antigravity finds them, and Settings
-search lists them. When two have the same name, the first wins in this order:
+search lists them. Global skills are read through the account's profile, so the list matches what
+that account's agent sees, including skills the agent keeps in its own profile. When two have the same name, the first wins in this order:
 `~/.gemini/config/skills`, the project's `.gemini/skills`, `~/.gemini/antigravity-cli/skills`, the
 project's `.agents/skills`, then `.agent/skills`. Folders a `skills.json` declares come after those: the project's
 `.agents/skills.json` in the project and each folder above it up to the repository root, then
 `~/.gemini/config/skills.json`. Threadlines follows the same rules as Antigravity for these files:
 `inherits` reads another file, `include_only` and `exclude` match names exactly, a nested skill
 loads only when `include_only` names it (`category/my-skill`), `~` is not expanded, and a project's
-file can only point inside the project. Skills of plugins installed in that account's profile are
-listed unless the plugin is turned off. The list is read from the folder Threadlines runs in, like
+file can only point inside the project. A project skill folder that is a link to somewhere outside
+the project is not listed, though Antigravity may still load it: Threadlines doesn't read outside a
+project for it. Skills of plugins installed in that account's profile are listed unless the plugin
+is turned off. Descriptions are cut to 1,024 characters. The list is read from the folder Threadlines runs in, like
 other agents' lists, so a project's own skills show only when Threadlines runs inside it.
 
 To use a skill, start the message with `/` and its name, as in a terminal (`/review this diff`).
@@ -105,8 +118,11 @@ Two limits keep a lost wake from leaving the thread working forever: a turn held
 and subagents ends after 30 minutes without a word from the agent, and a reply the agent started
 by itself ends 2 minutes after its last output if its closing usage update never comes. A timer
 holds the turn until it fires. A subagent holds the turn until it has sent the agent its report or
-the agent stopped it (see Subagents). Where the CLI's records don't say which subagent a launch
-started, the first reply the agent starts by itself frees it, as before.
+the agent stopped it, as the CLI's records say (see Subagents), so several reports in one reply free
+them all and a stopped subagent frees its hold. Where the records don't name every subagent still
+out, each report (a reply no finished command or timer woke) frees one subagent; if the CLI then
+sends several reports in one reply, the turn holds until the 30-minute limit or Stop. If the agent
+exits while a turn is held, the turn fails with that reason and the next message starts it again.
 
 A message sent while Antigravity works steers the turn instead of waiting: Threadlines sends it as
 another prompt, which the CLI takes into the running turn (1.5.0+), leaving its commands and
@@ -211,8 +227,10 @@ Google plan is used: on the Antigravity row in Settings, on the Usage page, in t
 send button, and on each model in the picker. Google meters groups of models apart, so there is a
 row for each: Gemini, each Gemini 4 model that has a limit of its own (such as Gemini 4 Argon), and
 Claude & GPT, which share one. Each has a 5-hour and a weekly window with its reset time. Gemini
-Enterprise accounts are metered per model, with no window length; their rows show each group's
-fullest model. A group that runs out stops only its own models. The row also shows the signed-in
+Enterprise accounts (and accounts Google only reports per model) are metered per model, with no
+window length, so each model gets its own row. A group that runs out stops only its own models.
+When a limit stops a chat and Antigravity doesn't say when it resets, the reset time comes from
+these numbers, so Continue at reset still works. The row also shows the signed-in
 Google account's email (blurred until you show it).
 
 The numbers come from Google, not from Antigravity: Threadlines asks Google's Cloud Code service
@@ -224,7 +242,8 @@ keeps the last numbers.
 When the numbers can be stale:
 
 - They are read every few minutes, when the provider status refreshes, so a chat's usage shows up
-  within about five minutes.
+  within about five minutes. When one of Google's two hosts doesn't answer, the rows only it gave
+  stay from the last read, with their age.
 - Threadlines never renews the sign-in itself. Antigravity renews it while it runs, so after an
   hour or so without a chat the saved sign-in lapses. The last numbers stay, with their age, and a
   line says to start a chat to refresh them.

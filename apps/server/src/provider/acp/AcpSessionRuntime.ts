@@ -156,6 +156,18 @@ export interface AcpSessionRuntimeOptions {
   ) => EffectAcpSchema.SessionNotification;
   /** Rewrites each merged tool call (see `AcpProviderDescriptor.normalizeToolCall`). */
   readonly normalizeToolCall?: (toolCall: AcpToolCallState) => AcpToolCallState;
+  /**
+   * Also hand the reader tool call updates that show nothing new (a status
+   * change with no new detail) as `ToolCallTracked`, for a client that keeps
+   * count of running work (`AcpProviderDescriptor.heldTurns`).
+   */
+  readonly trackSilentToolCalls?: boolean;
+  /**
+   * Text the agent appends when a prompt is cancelled. After a cancel and
+   * until the next prompt, a reply chunk that is just this text is dropped
+   * before it starts a message.
+   */
+  readonly cancellationNotice?: string;
   /** Context fill carried on the agent's own updates (see `AcpProviderDescriptor.contextUsage`). */
   readonly contextUsage?: {
     readonly usedTokens: (notification: EffectAcpSchema.SessionNotification) => number | undefined;
@@ -285,6 +297,12 @@ export interface AcpSessionEventStreamBarrier {
   readonly holdUntil?: Deferred.Deferred<void>;
 }
 
+/** A tool call's state that changed nothing shown (see `trackSilentToolCalls`). */
+export interface AcpSessionToolCallTracked {
+  readonly _tag: "ToolCallTracked";
+  readonly toolCall: AcpToolCallState;
+}
+
 /** Work for the reader to run where it was queued (see `inOrder`). */
 export interface AcpSessionInOrderWork {
   readonly _tag: "InOrder";
@@ -294,7 +312,8 @@ export interface AcpSessionInOrderWork {
 export type AcpSessionRuntimeEvent =
   | AcpParsedSessionEvent
   | AcpSessionEventStreamBarrier
-  | AcpSessionInOrderWork;
+  | AcpSessionInOrderWork
+  | AcpSessionToolCallTracked;
 
 /** Upper bound on waiting for the reader; a dead consumer must not wedge a turn. */
 const EVENT_FLUSH_TIMEOUT = "5 seconds";
@@ -504,6 +523,8 @@ const makeAcpSessionRuntime = (
     // that starts turns of its own, anything after the session opened. A count:
     // an agent steered by a second prompt has two open at once.
     const promptsInFlightRef = yield* Ref.make(0);
+    /** A cancel was sent and no prompt since: the agent's cancellation notice is dropped. */
+    const cancelledRef = yield* Ref.make(false);
     /** Turns the agent started or ended itself so far (`markAgentTurnBoundary`). */
     const agentTurnBoundariesRef = yield* Ref.make(0);
     const liveOutsidePromptRef = yield* Ref.make(false);
@@ -546,6 +567,10 @@ const makeAcpSessionRuntime = (
           params: notification,
           ...(nativeControls ? { configOptionsRef } : {}),
           ...(options.normalizeToolCall ? { normalizeToolCall: options.normalizeToolCall } : {}),
+          ...(options.trackSilentToolCalls ? { trackSilentToolCalls: true } : {}),
+          ...(options.cancellationNotice !== undefined
+            ? { cancellationNotice: { text: options.cancellationNotice, cancelledRef } }
+            : {}),
         });
       }),
     );
@@ -984,6 +1009,7 @@ const makeAcpSessionRuntime = (
             return Effect.gen(function* () {
               yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
               const boundariesBefore = yield* Ref.get(agentTurnBoundariesRef);
+              yield* Ref.set(cancelledRef, false);
               yield* Ref.update(promptsInFlightRef, (count) => count + 1);
               const response = yield* runLoggedRequest(
                 "session/prompt",
@@ -1005,6 +1031,7 @@ const makeAcpSessionRuntime = (
           }),
         ),
       cancel: getStartedState.pipe(
+        Effect.tap(() => Ref.set(cancelledRef, true)),
         Effect.flatMap((started) =>
           acp.agent.cancel({
             sessionId: started.sessionId,
@@ -1101,6 +1128,8 @@ const handleSessionUpdate = ({
   params,
   configOptionsRef,
   normalizeToolCall,
+  trackSilentToolCalls,
+  cancellationNotice,
 }: {
   readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
@@ -1114,6 +1143,8 @@ const handleSessionUpdate = ({
   /** Given for native controls only: the agent's own option updates land here. */
   readonly configOptionsRef?: Ref.Ref<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly normalizeToolCall?: (toolCall: AcpToolCallState) => AcpToolCallState;
+  readonly trackSilentToolCalls?: boolean;
+  readonly cancellationNotice?: { readonly text: string; readonly cancelledRef: Ref.Ref<boolean> };
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (configOptionsRef && params.update.sessionUpdate === "config_option_update") {
@@ -1160,6 +1191,9 @@ const handleSessionUpdate = ({
           return [{ previous, merged: nextToolCall }, next] as const;
         });
         if (!shouldEmitToolCallUpdate(previous, merged)) {
+          if (trackSilentToolCalls) {
+            yield* Queue.offer(queue, { _tag: "ToolCallTracked", toolCall: merged });
+          }
           continue;
         }
         yield* Queue.offer(queue, {
@@ -1170,6 +1204,13 @@ const handleSessionUpdate = ({
         continue;
       }
       if (event._tag === "ContentDelta") {
+        if (
+          cancellationNotice !== undefined &&
+          event.text.trim() === cancellationNotice.text &&
+          (yield* Ref.get(cancellationNotice.cancelledRef))
+        ) {
+          continue;
+        }
         if (event.text.trim().length === 0) {
           const assistantSegmentState = yield* Ref.get(assistantSegmentRef);
           if (!assistantSegmentState.activeItemId) {

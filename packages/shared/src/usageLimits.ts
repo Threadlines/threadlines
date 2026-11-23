@@ -147,6 +147,12 @@ export interface ProviderUsageWindowReading {
   readonly resetsAtMs: number | undefined;
   /** When this window was last read: a reading can carry a window over from an earlier one. */
   readonly readAtMs: number;
+  /**
+   * For a window that covers one family of models (`scopeModels`, Antigravity),
+   * the family: a spent one stops only threads on that family's models.
+   * Undefined for every other window.
+   */
+  readonly family?: string;
 }
 
 /**
@@ -174,6 +180,7 @@ export function listProviderUsageWindows(
       ServerProviderUsageWindow,
       "usedPercent" | "remainingPercent" | "resetsAt" | "checkedAt"
     >,
+    family?: string,
   ) => {
     const resetsAtMs = usageResetTimeMs(window.resetsAt);
     const readAtMs = Date.parse(window.checkedAt ?? accountUsage.checkedAt);
@@ -182,6 +189,7 @@ export function listProviderUsageWindows(
       spent: isUsedUpTo(window, 100) && (resetsAtMs === undefined || resetsAtMs > nowMs),
       resetsAtMs,
       readAtMs: Number.isFinite(readAtMs) ? readAtMs : 0,
+      ...(family !== undefined ? { family } : {}),
     });
   };
   accountUsage.limits.forEach((limit, index) => {
@@ -190,7 +198,11 @@ export function listProviderUsageWindows(
     if (limit.secondary) add(`${limitKey}:secondary`, limit.secondary);
     // One label can name a model's session, daily and weekly windows at once.
     for (const scoped of limit.scoped ?? []) {
-      add(`${limitKey}:scoped:${scoped.scopeLabel}:${scoped.windowDurationMins ?? ""}`, scoped);
+      add(
+        `${limitKey}:scoped:${scoped.scopeLabel}:${scoped.windowDurationMins ?? ""}`,
+        scoped,
+        scoped.scopeModels !== undefined ? scoped.scopeLabel : undefined,
+      );
     }
   });
   return windows;

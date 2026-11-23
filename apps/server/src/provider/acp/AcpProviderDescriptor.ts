@@ -172,7 +172,11 @@ export interface AcpPromptFailure {
  * run when the turn's last prompt answers or fails.
  */
 export interface AcpPromptOutcome {
-  readonly watch: (sessionId: string) => Effect.Effect<
+  /** `model`: the picker slug the turn runs on, when known. */
+  readonly watch: (
+    sessionId: string,
+    model: string | undefined,
+  ) => Effect.Effect<
     (
       answer:
         | { readonly response: EffectAcpSchema.PromptResponse }
@@ -204,6 +208,12 @@ export interface AcpHeldTurns {
    * wake-up holds it with no limit (a timer is silent until it fires).
    */
   readonly silentLimit: Duration.Duration;
+  /**
+   * How long a reply the agent started by itself may go without output
+   * before it counts as ended when its closing `usage_update` never comes
+   * (default 2 minutes).
+   */
+  readonly replyQuietLimit?: Duration.Duration;
 }
 
 /** A subagent a tool call launched, as the launch named it. */

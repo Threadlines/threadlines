@@ -4,8 +4,24 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 
-import { listAntigravitySkillsNow } from "./AntigravitySkills.ts";
+import {
+  listAntigravitySkillsNow as listInProfile,
+  makeAntigravitySkillsLister,
+  MAX_SKILL_DESCRIPTION_LENGTH,
+} from "./AntigravitySkills.ts";
+import { shareAntigravityUserConfigNow } from "./AntigravityUserConfig.ts";
+
+/** Lists as a status check does: the profile is prepared first, then read through. */
+async function listAntigravitySkillsNow(workspace: {
+  readonly cwd: string;
+  readonly userHome: string;
+  readonly profileDir: string;
+}) {
+  await shareAntigravityUserConfigNow({ ...workspace, platform: "linux" });
+  return listInProfile(workspace);
+}
 
 const roots: Array<string> = [];
 
@@ -234,5 +250,129 @@ describe("listAntigravitySkillsNow", () => {
     listing = await listAntigravitySkillsNow(w);
     expect(listing.truncated).toBe(true);
     expect(listing.skills).toHaveLength(20);
+  });
+
+  it("charges every lookup, plugin and manifest entry to the budget", async () => {
+    const w = await makeWorkspace();
+    await writeSkill(path.join(w.gemini, "config", "skills", "kept"), "kept");
+    // Manifest entries that don't exist still cost a lookup each.
+    await writeJson(path.join(w.gemini, "config", "skills.json"), {
+      entries: Array.from({ length: 12_000 }, (_, index) => ({ path: `missing-${index}` })),
+    });
+    const first = await listAntigravitySkillsNow(w);
+    expect(first.truncated).toBe(true);
+    expect(names(first.skills)).toEqual(["kept"]);
+
+    await NodeFS.rm(path.join(w.gemini, "config", "skills.json"));
+    // Plugin names cost an entry each, even for plugins that are turned off.
+    const plugins = path.join(w.profileDir, "config", "plugins");
+    await NodeFS.mkdir(plugins, { recursive: true });
+    const off = Array.from({ length: 10_001 }, (_, index) => `p${index}`);
+    await Promise.all(off.map((name) => NodeFS.writeFile(path.join(plugins, name), "")));
+    await writeJson(path.join(w.profileDir, "config", "config.json"), {
+      plugins: Object.fromEntries(off.map((name) => [name, { enabled: false }])),
+    });
+    expect((await listAntigravitySkillsNow(w)).truncated).toBe(true);
+  });
+
+  it("stops at its deadline, and the lister then answers with the last complete list", async () => {
+    const w = await makeWorkspace();
+    await writeSkill(path.join(w.gemini, "config", "skills", "review"), "review");
+    await shareAntigravityUserConfigNow({ ...w, platform: "linux" });
+    expect(await listInProfile(w, { timeLimitMs: -1 })).toEqual({ skills: [], truncated: true });
+
+    const list = makeAntigravitySkillsLister();
+    expect(names(await Effect.runPromise(list(w)))).toEqual(["review"]);
+    const crowded = path.join(w.cwd, ".agents", "skills");
+    await NodeFS.mkdir(crowded, { recursive: true });
+    await Promise.all(
+      Array.from({ length: 10_001 }, (_, index) =>
+        NodeFS.writeFile(path.join(crowded, `f${index}`), ""),
+      ),
+    );
+    await writeSkill(path.join(w.gemini, "config", "skills", "later"), "later");
+    // Cut short now: the last complete list stands in.
+    expect(names(await Effect.runPromise(list(w)))).toEqual(["review"]);
+  });
+
+  it("never lists or opens a project skill that leads outside the project", async () => {
+    const w = await makeWorkspace();
+    const outside = path.join(w.root, "outside");
+    await writeSkill(path.join(outside, "escape"), "escape");
+    await writeSkill(path.join(outside, "whole-root", "inner"), "inner");
+    await writeSkill(path.join(w.cwd, ".agents", "skills", "inside"), "inside");
+    await NodeFS.symlink(
+      path.join(outside, "escape"),
+      path.join(w.cwd, ".agents", "skills", "escape"),
+    );
+    await NodeFS.mkdir(path.join(w.cwd, ".gemini"), { recursive: true });
+    await NodeFS.symlink(path.join(outside, "whole-root"), path.join(w.cwd, ".gemini", "skills"));
+    // A manifest folder inside the project with a linked child.
+    const listed = path.join(w.repo, "listed");
+    await writeSkill(path.join(listed, "fine"), "fine");
+    await NodeFS.symlink(path.join(outside, "escape"), path.join(listed, "linked"));
+    // Reading this one through the link would spend the whole budget.
+    const crowd = path.join(outside, "crowd");
+    await NodeFS.mkdir(crowd);
+    await Promise.all(
+      Array.from({ length: 10_001 }, (_, index) =>
+        NodeFS.writeFile(path.join(crowd, `f${index}`), ""),
+      ),
+    );
+    await NodeFS.symlink(crowd, path.join(listed, "crowd"));
+    await writeJson(path.join(w.repo, ".agents", "skills.json"), { entries: [{ path: "listed" }] });
+
+    const listing = await listAntigravitySkillsNow(w);
+    expect(names(listing.skills)).toEqual(["fine", "inside"]);
+    expect(listing.truncated).toBe(false);
+  });
+
+  it("lists what the agent sees through its profile, not the user's folder beside it", async () => {
+    const w = await makeWorkspace();
+    await writeSkill(path.join(w.gemini, "config", "skills", "deploy"), "deploy");
+    // The agent's own skills folder in the profile, which sharing leaves alone.
+    await writeSkill(path.join(w.profileDir, "config", "skills", "local-review"), "local-review");
+    expect(names((await listAntigravitySkillsNow(w)).skills)).toEqual(["local-review"]);
+
+    // On Windows skills.json is a copy, so a path relative to it leads where
+    // the copy is, as it does for the agent.
+    const v = await makeWorkspace();
+    await writeSkill(path.join(v.gemini, "shared", "sibling"), "sibling");
+    await writeJson(path.join(v.gemini, "config", "skills.json"), {
+      entries: [{ path: "../shared" }],
+    });
+    await shareAntigravityUserConfigNow({ ...v, platform: "win32" });
+    expect(names((await listInProfile(v)).skills)).toEqual([]);
+  });
+
+  it("applies a manifest's filters to a skill folder named directly, as to its SKILL.md", async () => {
+    const w = await makeWorkspace();
+    const tools = path.join(w.repo, "tools");
+    await writeSkill(path.join(tools, "internal"), "internal");
+    await writeSkill(path.join(tools, "public"), "public");
+    await writeJson(path.join(w.cwd, ".agents", "skills.json"), {
+      entries: [
+        { path: "../tools/internal", exclude: ["internal"] },
+        { path: "../tools/public/SKILL.md", include_only: ["other"] },
+        { path: "../tools/public", include_only: ["public"] },
+      ],
+    });
+    expect(names((await listAntigravitySkillsNow(w)).skills)).toEqual(["public"]);
+  });
+
+  it("caps descriptions without splitting a character, and leaves out absurd names", async () => {
+    const w = await makeWorkspace();
+    const skills = path.join(w.gemini, "config", "skills");
+    // An emoji straddles the cap: it is dropped whole.
+    const description = `${"d".repeat(MAX_SKILL_DESCRIPTION_LENGTH - 1)}\u{1F600}tail`;
+    await writeFile(
+      path.join(skills, "long", "SKILL.md"),
+      `---\nname: long\ndescription: "${description}"\n---\n`,
+    );
+    await writeSkill(path.join(skills, "huge-name"), "n".repeat(300));
+
+    const { skills: listed } = await listAntigravitySkillsNow(w);
+    expect(names(listed)).toEqual(["long"]);
+    expect(listed[0]!.description).toBe("d".repeat(MAX_SKILL_DESCRIPTION_LENGTH - 1));
   });
 });

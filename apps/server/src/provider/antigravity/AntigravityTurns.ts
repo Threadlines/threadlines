@@ -17,7 +17,7 @@
  *
  * @module provider/antigravity/AntigravityTurns
  */
-import type { UsageTokenTotals } from "@threadlines/contracts";
+import type { RuntimeUsageLimit, UsageTokenTotals } from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -214,10 +214,13 @@ function acpErrorText(error: unknown): string | undefined {
 
 /**
  * The descriptor hooks for an Antigravity turn, with the instance's profile
- * (where the CLI keeps its session logs).
+ * (where the CLI keeps its session logs). `readUsageLimit` gives a quota
+ * failure the agent gave no reset time the one the plan meter knows for the
+ * turn's model.
  */
 export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
   profileDir: string,
+  readUsageLimit?: (model: string) => Effect.Effect<RuntimeUsageLimit | undefined>,
 ): Pick<
   AcpProviderDescriptor<Settings>,
   | "agentTurns"
@@ -241,9 +244,18 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
     subagents: antigravitySubagents(profileDir),
     steerWithPrompt: true,
     promptOutcome: {
-      watch: (sessionId) =>
+      watch: (sessionId, model) =>
         Effect.gen(function* () {
           const before = yield* antigravityLogPosition(profileDir, sessionId);
+          const withMeterReset = (failure: AcpPromptFailure | undefined) =>
+            failure?.usageLimit !== undefined &&
+            failure.usageLimit.resetsAt === undefined &&
+            readUsageLimit !== undefined &&
+            model !== undefined
+              ? readUsageLimit(model).pipe(
+                  Effect.map((limit) => (limit ? { ...failure, usageLimit: limit } : failure)),
+                )
+              : Effect.succeed(failure);
           return (answer) =>
             Effect.gen(function* () {
               const nowMs = yield* Clock.currentTimeMillis;
@@ -256,7 +268,9 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
                   (parseApiError(errorText) !== undefined ||
                     QUOTA_EXHAUSTED.test(errorText) ||
                     LOST_THINKING_SIGNATURE.test(errorText));
-                return recognized ? antigravityFailure({ errorText, nowMs }) : undefined;
+                return recognized
+                  ? yield* withMeterReset(antigravityFailure({ errorText, nowMs }))
+                  : undefined;
               }
               // A normal end can hide an upstream error that only the
               // agent's own log records.
@@ -265,12 +279,14 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
                 before === undefined
                   ? undefined
                   : yield* antigravityTurnSteps(profileDir, sessionId, before);
-              return antigravityFailure({
-                errorText: steps?.errorText,
-                stopReason,
-                ...(steps !== undefined ? { reachedModel: steps.reachedModel } : {}),
-                nowMs,
-              });
+              return yield* withMeterReset(
+                antigravityFailure({
+                  errorText: steps?.errorText,
+                  stopReason,
+                  ...(steps !== undefined ? { reachedModel: steps.reachedModel } : {}),
+                  nowMs,
+                }),
+              );
             });
         }),
     },

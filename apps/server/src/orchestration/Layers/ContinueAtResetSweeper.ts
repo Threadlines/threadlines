@@ -4,6 +4,7 @@ import { CommandId, MessageId, type ServerProvider, type ThreadId } from "@threa
 import {
   continueAtResetTimeMs,
   listProviderUsageWindows,
+  type ProviderUsageWindowReading,
   readProviderUsageBlock,
 } from "@threadlines/shared/usageLimits";
 import * as Clock from "effect/Clock";
@@ -119,9 +120,17 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
         return false;
       }
       if (seen === undefined) return false;
-      // Another spent limit would only stop the thread again.
+      // Another spent limit would only stop the thread again, unless it
+      // covers another family of models than every limit that stopped it
+      // (Antigravity's Claude & GPT pool beside a Gemini thread's).
+      const stoppedFamilies = [...seen.readAtMsByWindow.keys()].map(
+        (key) => windows.find((window) => window.key === key)?.family,
+      );
+      const otherFamily = (window: ProviderUsageWindowReading) =>
+        window.family !== undefined &&
+        stoppedFamilies.every((family) => family !== undefined && family !== window.family);
       if (
-        windows.some((window) => window.spent) ||
+        windows.some((window) => window.spent && !otherFamily(window)) ||
         readProviderUsageBlock(provider, nowMs).state === "blocked"
       ) {
         return false;

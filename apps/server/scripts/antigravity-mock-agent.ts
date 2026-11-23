@@ -11,9 +11,27 @@
  * - `simple`: replies and ends.
  * - `background`: starts a command, ends its prompt, and when the command
  *   finishes replies by itself (1.5.10), then a `usage_update` ends the reply.
- * - `hang`: starts a command that never finishes; a cancel fails it.
+ * - `hang`: starts a command that never finishes; a cancel fails it, then
+ *   the CLI's cancellation notice follows.
+ * - `exit`: starts a command, ends its prompt, then the process exits.
+ * - `ignore-cancel`: never answers its prompt, a cancel included.
+ * - `schedule`: sets a timer (a `Running schedule` call that stays as it
+ *   started), ends its prompt, and replies when the timer fires.
+ * - `subagents`: launches two subagents whose reports come 3 seconds apart.
+ * - `subagent-quiet`: launches one subagent whose report never sends the
+ *   closing `usage_update`.
+ * - `permission-second`: answers its first prompt at once; a second asks
+ *   for a permission before it replies.
+ * - `steer-log-error`: as `steer`, but the first prompt's log ends in an
+ *   error before the steer comes; the second answers cleanly.
  * - `subagent`: launches a subagent, ends its prompt, and replies with the
  *   subagent's report later. It writes no subagent records.
+ * - `subagent-records`: as `subagents`, with the children's records (as
+ *   1.5.12+ keeps them under `brain/`) and their reports in them.
+ * - `subagent-records-together`: both children report before one reply.
+ * - `subagent-killed`: launches a subagent and kills it within the prompt.
+ * - `tools`: an MCP call through `call_mcp_tool`, a long command line, and
+ *   a screenshot in a tool's content. It writes no subagent records.
  * - `subagents`: launches two subagents with their records (as 1.5.12+
  *   keeps them under `brain/`); the first reports, the agent replies, and
  *   the second reports a while later.
@@ -195,6 +213,11 @@ const program = Effect.gen(function* () {
           toolCallId: command.toolCallId,
           status: "failed",
         });
+        // The notice lands after the turn was stopped.
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("150 millis");
+          yield* say(String(sessionId), "The request was cancelled by the client.");
+        }).pipe(Effect.forkDetach);
       }
     }),
   );
@@ -203,12 +226,44 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       const sessionId = String(request.sessionId);
       promptsSeen += 1;
-      if (scenario === "steer") {
+      if (scenario === "ignore-cancel") {
+        yield* say(sessionId, "Thinking hard.");
+        return yield* Effect.never;
+      }
+      if (scenario === "permission-second") {
         if (promptsSeen === 1) {
+          yield* say(sessionId, "First done.");
+          yield* modelCallEnds(sessionId);
+          return { stopReason: "end_turn" as const };
+        }
+        yield* agent.client.requestPermission({
+          sessionId,
+          toolCall: {
+            toolCallId: "call_rm",
+            title: "Running rm -rf build",
+            kind: "execute",
+            status: "pending",
+            rawInput: { CommandLine: "rm -rf build" },
+          },
+          options: [
+            { optionId: "allow", name: "Allow", kind: "allow_once" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        });
+        yield* say(sessionId, "Second done.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "steer" || scenario === "steer-log-error") {
+        if (promptsSeen === 1) {
+          if (scenario === "steer-log-error") appendLogSteps(sessionId, [[17, GATEWAY_ERROR]]);
           yield* say(sessionId, "Working on it.");
           // Answered once the steer arrives, as 1.5.11 does.
           yield* Deferred.await(secondPrompt);
-          return { stopReason: "end_turn" as const };
+          return {
+            stopReason: "end_turn" as const,
+            usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105 },
+          };
         }
         yield* Deferred.succeed(secondPrompt, undefined);
         yield* Effect.sleep("50 millis");
@@ -233,10 +288,62 @@ const program = Effect.gen(function* () {
         yield* say(sessionId, "API error: the request failed.");
         return { stopReason: "end_turn" as const };
       }
-      if (scenario === "background" || scenario === "hang") {
+      if (scenario === "schedule") {
+        const timer = {
+          toolCallId: "call_timer",
+          kind: "other" as const,
+          title: "Running schedule",
+        };
+        yield* update(sessionId, { sessionUpdate: "tool_call", ...timer, status: "in_progress" });
+        yield* say(sessionId, "Timer set.");
+        yield* modelCallEnds(sessionId);
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("3000 millis");
+          yield* update(sessionId, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: timer.toolCallId,
+            status: "completed",
+          });
+          yield* say(sessionId, "Timer fired.");
+          yield* modelCallEnds(sessionId);
+        }).pipe(Effect.forkDetach);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "subagents" || scenario === "subagent-quiet") {
+        const launch = (toolCallId: string, Role: string) =>
+          update(sessionId, {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            kind: "other",
+            title: "Running invoke_subagent",
+            status: "completed",
+            rawInput: { Role, Prompt: `Work as ${Role}` },
+          });
+        yield* launch("call_a", "Researcher");
+        if (scenario === "subagents") yield* launch("call_b", "Tester");
+        yield* say(sessionId, "Subagents are on it.");
+        yield* modelCallEnds(sessionId);
+        yield* Effect.gen(function* () {
+          yield* Effect.sleep("1000 millis");
+          yield* say(sessionId, "The researcher reported.");
+          if (scenario === "subagent-quiet") return;
+          yield* modelCallEnds(sessionId);
+          yield* Effect.sleep("3000 millis");
+          yield* say(sessionId, "The tester reported.");
+          yield* modelCallEnds(sessionId);
+        }).pipe(Effect.forkDetach);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "background" || scenario === "hang" || scenario === "exit") {
         yield* update(sessionId, { sessionUpdate: "tool_call", ...command, status: "in_progress" });
         yield* say(sessionId, "I'll report once the build finishes.");
         yield* modelCallEnds(sessionId);
+        if (scenario === "exit") {
+          yield* Effect.gen(function* () {
+            yield* Effect.sleep("400 millis");
+            yield* Effect.sync((): void => process.exit(1));
+          }).pipe(Effect.forkDetach);
+        }
         if (scenario === "background") {
           yield* Effect.gen(function* () {
             yield* Effect.sleep("400 millis");
@@ -280,7 +387,7 @@ const program = Effect.gen(function* () {
         }).pipe(Effect.forkDetach);
         return { stopReason: "end_turn" as const };
       }
-      if (scenario === "subagents") {
+      if (scenario === "subagent-records" || scenario === "subagent-records-together") {
         const launch = (callId: string, child: string, role: string, prompt: string) =>
           Effect.gen(function* () {
             recordChild({
@@ -307,6 +414,13 @@ const program = Effect.gen(function* () {
         yield* Effect.gen(function* () {
           yield* Effect.sleep("400 millis");
           recordReport(sessionId, "child-research", "The flaky test is api.test.ts.");
+          if (scenario === "subagent-records-together") {
+            // Both reports wake one reply.
+            recordReport(sessionId, "child-review", "The fix looks right.");
+            yield* say(sessionId, " Both reported.");
+            yield* modelCallEnds(sessionId);
+            return;
+          }
           yield* say(sessionId, " The researcher found it.");
           yield* modelCallEnds(sessionId);
           // Longer than a held turn's settle: only the records hold it.

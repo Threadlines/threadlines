@@ -68,7 +68,7 @@ describe("Antigravity's family limits", () => {
   it("stop a model only on its own family's spent window", () => {
     const resetsAt = NOW_MS + 3_600_000;
     const usage: ServerProviderAccountUsage = {
-      source: "antigravity-quota",
+      source: "grok-billing",
       checkedAt: "2026-11-06T11:59:00.000Z",
       limits: [
         {

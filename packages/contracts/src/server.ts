@@ -160,6 +160,13 @@ export const ServerProviderAuth = Schema.Struct({
   label: Schema.optional(TrimmedNonEmptyString),
   email: Schema.optional(TrimmedNonEmptyString),
   usageEmail: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * An opaque name for the signed-in account, for a provider that can't
+   * always say its email (Antigravity). Two snapshots with different ones
+   * belong to different accounts, so one's usage never carries over to the
+   * other. Never shown.
+   */
+  accountId: Schema.optional(TrimmedNonEmptyString),
   capabilities: Schema.optional(ServerProviderAuthCapabilities),
   signInEnds: Schema.optional(ServerProviderSignInEnds),
   /** The workspaces this sign-in can switch between (the `switch-workspace` sign-in flow). */
@@ -309,12 +316,18 @@ export const ServerProviderAccountTokenUsage = Schema.Struct({
 export type ServerProviderAccountTokenUsage = typeof ServerProviderAccountTokenUsage.Type;
 
 export const ServerProviderAccountUsage = Schema.Struct({
+  /**
+   * Which kind of reading it is. Closed on the wire: a client from before a
+   * new value rejects it, and with it the whole server config. Add no value;
+   * a new provider reports under one whose handling suits it and names its
+   * reading in its limit's `limitName` (Antigravity: `grok-billing`, which
+   * clients handle by its label alone). Tell providers apart by `driver`.
+   */
   source: Schema.Literals([
     "codex-rate-limits",
     "claude-oauth-usage",
     "muse-subscription-usage",
     "grok-billing",
-    "antigravity-quota",
   ]),
   checkedAt: IsoDateTime,
   primaryLimitId: Schema.optional(TrimmedNonEmptyString),

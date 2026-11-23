@@ -38,6 +38,7 @@ export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> e
   AcpSessionRuntimeOptions,
   | "authMethodId"
   | "authenticateTimeoutMs"
+  | "cancellationNotice"
   | "cancelMeta"
   | "clientCapabilities"
   | "contextUsage"
@@ -130,6 +131,9 @@ export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
           : {}),
         ...(descriptor.normalizeToolCall
           ? { normalizeToolCall: descriptor.normalizeToolCall }
+          : {}),
+        ...(descriptor.cancellationNotice !== undefined
+          ? { cancellationNotice: descriptor.cancellationNotice }
           : {}),
         ...(descriptor.verifyAgent
           ? {

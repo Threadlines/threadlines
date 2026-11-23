@@ -24,17 +24,18 @@
  *
  * Every path is checked the way the session-log reader checks its own (no
  * links, the expected file or folder, inside the profile Threadlines made),
- * files are opened read-only, and every read is bounded. A record this
+ * files are opened read-only without blocking or following a link
+ * (`AntigravityFileReads`), and every read is bounded. A record this
  * cannot read proves nothing: callers fall back to what ACP said.
  *
  * @module provider/antigravity/AntigravityChildRecords
  */
-import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 
 import type { ProviderSubagentTranscriptEntry } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 
+import { openRegularFile, readRegularFile } from "./AntigravityFileReads.ts";
 import { antigravityProfileEntry } from "./AntigravitySessionLog.ts";
 import { boundAntigravityText } from "./AntigravityToolCalls.ts";
 
@@ -114,8 +115,11 @@ async function readRecord(profileDir: string, segments: ReadonlyArray<string>, b
   if (entry === undefined || entry.size > MAX_RECORD_BYTES || entry.size > budget.bytes)
     return undefined;
   budget.bytes -= entry.size;
-  const text = await NodeFSP.readFile(entry.path, "utf8").catch(() => undefined);
-  return text === undefined ? undefined : parseJson(text);
+  const bytes = await readRegularFile(entry.path, {
+    maxBytes: Math.min(MAX_RECORD_BYTES, entry.size + budget.bytes),
+    followLink: false,
+  }).catch(() => undefined);
+  return bytes === undefined ? undefined : parseJson(bytes.toString("utf8"));
 }
 
 const generated = (conversationId: string, ...rest: ReadonlyArray<string>) => [
@@ -368,17 +372,14 @@ async function readTranscriptTail(profileDir: string, childId: string) {
     "file",
   );
   if (entry === undefined) return undefined;
-  const handle = await NodeFSP.open(
-    entry.path,
-    NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NOFOLLOW ?? 0),
-  );
+  const opened = await openRegularFile(entry.path, { followLink: false });
+  if (opened === undefined) return undefined;
+  const { handle, size } = opened;
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile()) return undefined;
-    const start = Math.max(0, stat.size - TRANSCRIPT_TAIL_BYTES);
+    const start = Math.max(0, size - TRANSCRIPT_TAIL_BYTES);
     // One byte more says whether the window starts on a line boundary.
     const readFrom = Math.max(0, start - 1);
-    const buffer = Buffer.alloc(stat.size - readFrom);
+    const buffer = Buffer.alloc(size - readFrom);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, readFrom);
     const bytes = buffer.subarray(0, bytesRead);
     const firstLine = start > 0 ? bytes.indexOf(0x0a) + 1 : 0;
