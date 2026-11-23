@@ -521,7 +521,8 @@ describe("Antigravity plan limits", () => {
     Effect.gen(function* () {
       const { readOnce, google } = yield* setup({
         route: (url) =>
-          url.host.endsWith("cloudcode-pa.googleapis.com")
+          url.host === "cloudcode-pa.googleapis.com" ||
+          url.host === "daily-cloudcode-pa.googleapis.com"
             ? { status: 302, headers: { location: "https://collector.example/steal" } }
             : { status: 404 },
       });
