@@ -55,10 +55,13 @@ async function confirmOrphanedWorktreeDeletion(worktreePath: string): Promise<bo
 }
 
 /**
- * The threads a delete "with its threads" takes along: the thread's attached
- * children that are not archived, as this device knows them. The server
- * deletes exactly these and separates archived ones, so the count the user
- * is shown and what goes are the same.
+ * The threads a delete "with its threads" should take along: the thread's
+ * attached children that are not archived, as this device knows them. The
+ * server applies the same rule to its own state, so the count the user is
+ * shown matches what goes. It can still differ when a child leaves the family
+ * in the meantime, so this list only decides the count and where to navigate.
+ * The server cleans up each thread it actually deletes (ThreadDeletionReactor)
+ * and each client forgets it when its removal arrives.
  */
 function selectDeletableChildThreads(target: ScopedThreadRef): Thread[] {
   return selectThreadsForEnvironment(useStore.getState(), target.environmentId).filter(
@@ -74,21 +77,23 @@ export function countAttachedChildThreads(target: ScopedThreadRef): number {
   return selectDeletableChildThreads(target).length;
 }
 
-/** Stops each thread's session and closes its terminals before the server deletes it. */
-async function windDownThreadsBeforeDelete(
+/**
+ * Stops the named thread's session and closes its terminals before the server
+ * deletes it. Only for the thread the user named: its children are the
+ * server's call, and one it keeps must not lose its terminal history.
+ */
+async function windDownThreadBeforeDelete(
   api: NonNullable<ReturnType<typeof readEnvironmentApi>>,
   environmentId: ScopedThreadRef["environmentId"],
-  threads: ReadonlyArray<Pick<Thread, "id" | "session">>,
+  thread: Pick<Thread, "id" | "session">,
 ): Promise<void> {
-  for (const doomed of threads) {
-    if (doomed.session && doomed.session.status !== "closed") {
-      await stopThreadSession(scopeThreadRef(environmentId, doomed.id)).catch(() => undefined);
-    }
-    try {
-      await api.terminal.close({ threadId: doomed.id, deleteHistory: true });
-    } catch {
-      // Terminal may already be closed.
-    }
+  if (thread.session && thread.session.status !== "closed") {
+    await stopThreadSession(scopeThreadRef(environmentId, thread.id)).catch(() => undefined);
+  }
+  try {
+    await api.terminal.close({ threadId: thread.id, deleteHistory: true });
+  } catch {
+    // Terminal may already be closed.
   }
 }
 
@@ -220,18 +225,13 @@ export function useThreadActions() {
     [queryClient],
   );
 
-  /** Drops what this device keeps for deleted threads: drafts and terminal state. */
-  const forgetDeletedThreads = useCallback(
-    (
-      environmentId: ScopedThreadRef["environmentId"],
-      threads: ReadonlyArray<Pick<Thread, "id" | "projectId">>,
-    ) => {
-      for (const doomed of threads) {
-        const doomedRef = scopeThreadRef(environmentId, doomed.id);
-        clearComposerDraftForThread(doomedRef);
-        clearProjectDraftThreadById(scopeProjectRef(environmentId, doomed.projectId), doomedRef);
-        clearTerminalState(doomedRef);
-      }
+  /** Drops what this device keeps for the deleted thread the user named: drafts and terminal state. */
+  const forgetDeletedThread = useCallback(
+    (environmentId: ScopedThreadRef["environmentId"], thread: Pick<Thread, "id" | "projectId">) => {
+      const threadRef = scopeThreadRef(environmentId, thread.id);
+      clearComposerDraftForThread(threadRef);
+      clearProjectDraftThreadById(scopeProjectRef(environmentId, thread.projectId), threadRef);
+      clearTerminalState(threadRef);
     },
     [clearComposerDraftForThread, clearProjectDraftThreadById, clearTerminalState],
   );
@@ -271,9 +271,9 @@ export function useThreadActions() {
           projectCwd !== undefined &&
           (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
 
-        // An archived parent can still have live threads in its family.
+        // An archived parent can still have live threads in its family. The
+        // server winds down and deletes the ones it takes along.
         const deletedChildren = opts.withChildren ? selectDeletableChildThreads(target) : [];
-        await windDownThreadsBeforeDelete(api, target.environmentId, deletedChildren);
         await api.orchestration.dispatchCommand({
           type: "thread.delete",
           commandId: newCommandId(),
@@ -281,7 +281,6 @@ export function useThreadActions() {
           ...(opts.withChildren ? { withChildren: true } : {}),
         });
         refreshArchivedThreadsForEnvironment(target.environmentId);
-        forgetDeletedThreads(target.environmentId, deletedChildren);
         const currentRouteThreadRef = getCurrentRouteThreadRef();
         if (
           currentRouteThreadRef?.environmentId === target.environmentId &&
@@ -335,10 +334,10 @@ export function useThreadActions() {
         threadProject !== undefined &&
         (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
 
-      // Its family goes with it when asked: each child is wound down the way
-      // the thread itself is, before the server deletes them together.
+      // Its family goes with it when asked. The server decides which children
+      // that is and winds each one down; this device only steers away from them.
       const deletedChildren = opts.withChildren ? selectDeletableChildThreads(threadRef) : [];
-      await windDownThreadsBeforeDelete(api, threadRef.environmentId, [thread, ...deletedChildren]);
+      await windDownThreadBeforeDelete(api, threadRef.environmentId, thread);
 
       const deletedThreadIds = new Set<ThreadId>([
         ...(deletedIds ?? []),
@@ -361,7 +360,7 @@ export function useThreadActions() {
         ...(opts.withChildren ? { withChildren: true } : {}),
       });
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
-      forgetDeletedThreads(threadRef.environmentId, [thread, ...deletedChildren]);
+      forgetDeletedThread(threadRef.environmentId, thread);
 
       if (shouldNavigateToFallback) {
         if (fallbackThreadId) {
@@ -397,7 +396,7 @@ export function useThreadActions() {
       });
     },
     [
-      forgetDeletedThreads,
+      forgetDeletedThread,
       getCurrentRouteThreadRef,
       removeOrphanedWorktree,
       router,

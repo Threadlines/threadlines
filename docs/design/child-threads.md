@@ -363,7 +363,7 @@ Each of these settles open requests and also unqueues the matching queued report
 
   Nothing is restored. Later sends report back again.
 
-- **Delete the parent.** Decider cascade (`decideCommandSequence`, like `project.delete`). Attached children are separated, unless the command carries `withChildren: true`, in which case they're deleted. The confirm dialog gets "Also delete its N threads". Deleting a child settles its open requests `cancelled` and unqueues its reports.
+- **Delete the parent.** Decider cascade (`decideCommandSequence`, like `project.delete`). Attached children are separated, unless the command carries `withChildren: true`, in which case they're deleted. The confirm dialog gets "Also delete its N threads". Deleting a child settles its open requests `cancelled` and unqueues its reports. The client winds down only the thread the user named. The server decides which children go, and a child can leave the family between the dialog and the delete, so the cleanup for each deleted child runs off its own `thread.deleted` event: `ThreadDeletionReactor` stops its runtime and deletes its terminal history, and each client drops its draft and terminal state when the removal arrives. A child the server keeps loses nothing.
 - **Archive the parent.** The cascade is decided on the server:
   - attached children that are settled (no turn in flight, no open requests of their own, no pending approvals, no background work, no command running in their terminal) are archived and stamped `archivedWithParentAt`;
   - live attached children are separated first.
