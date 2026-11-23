@@ -7,11 +7,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
+import type { ServerProvider } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { checkAcpProviderStatus, makeAcpCatalogCache } from "./AcpProvider.ts";
 import {
   groupSessionCommands,
+  withSessionCommands,
   makeAcpProviderMaintenanceResolver,
   resolveAcpBinaryPath,
 } from "./AcpProviderDriver.ts";
@@ -33,6 +35,26 @@ describe("groupSessionCommands", () => {
       { sessions: ["thread-a", "thread-c"], commands: usual },
       { sessions: ["thread-b"], commands: [{ name: "goal" }] },
     ]);
+  });
+});
+
+describe("withSessionCommands", () => {
+  const status = { instanceId: "antigravity", models: [] } as unknown as ServerProvider;
+  const listed = new Map([["thread-a", [{ name: "goal" }]]]);
+
+  it("drops a list the snapshot carried from before the session ended", () => {
+    const stale = withSessionCommands(status, listed);
+    expect(stale.sessionCommands).toBeDefined();
+    expect(withSessionCommands(stale, new Map()).sessionCommands).toBeUndefined();
+  });
+
+  it("keeps the same snapshot when nothing changed, so nothing is published", () => {
+    const current = withSessionCommands(status, listed);
+    expect(withSessionCommands(current, new Map(listed))).toBe(current);
+    expect(withSessionCommands(status, new Map())).toBe(status);
+    expect(withSessionCommands(current, new Map([["thread-a", [{ name: "compact" }]]]))).not.toBe(
+      current,
+    );
   });
 });
 
