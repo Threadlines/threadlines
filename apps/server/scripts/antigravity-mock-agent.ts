@@ -49,7 +49,9 @@
  * - `permission-edit-changed`: asks for an edit; while it waits, the edit's
  *   replacement text changes and nothing else.
  * - `plan-file-permission`: asks for a command naming the plan file, then
- *   for an edit of the plan file. It writes no subagent records.
+ *   for an edit of the plan file.
+ * - `plan-file-foreign`: asks to write another session's plan, then a
+ *   `plan.md ` with a trailing space, then its own plan. It writes no subagent records.
  * - `records-one-reply`: as `subagent-records`, but both children report
  *   before the agent wakes, and it answers both in one reply.
  * - `records-killed`: as `subagent-records`, but in the reply to the first
@@ -397,6 +399,33 @@ const program = Effect.gen(function* () {
           status: "failed",
         });
         yield* say(sessionId, "Asked.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "plan-file-foreign") {
+        const brain = join(profileDir ?? "", "antigravity-acp", "brain");
+        const options = [
+          { optionId: "allow", name: "Allow", kind: "allow_once" as const },
+          { optionId: "deny", name: "Deny", kind: "reject_once" as const },
+        ];
+        const writePlan = (toolCallId: string, path: string) =>
+          agent.client.requestPermission({
+            sessionId,
+            toolCall: {
+              toolCallId,
+              title: "Write plan.md",
+              kind: "edit",
+              status: "pending",
+              content: [{ type: "diff", path, newText: "# Plan\n" }],
+            },
+            options,
+          });
+        // Another session's plan, and a file whose name only looks like it.
+        yield* writePlan("call_other", join(brain, "other-session", "plan.md"));
+        yield* writePlan("call_padded", join(brain, sessionId, "plan.md "));
+        // This session's own plan needs no approval.
+        yield* writePlan("call_own", join(brain, sessionId, "plan.md"));
+        yield* say(sessionId, "Planned.");
         yield* modelCallEnds(sessionId);
         return { stopReason: "end_turn" as const };
       }

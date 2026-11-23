@@ -2057,7 +2057,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 );
                 const planFileWrite =
                   permissionRequest.toolCall !== undefined &&
-                  descriptor.planMode?.isPlanFile(permissionRequest.toolCall) === true;
+                  descriptor.planMode?.isPlanFile(
+                    permissionRequest.toolCall,
+                    // Only this session's own plan: a request from another
+                    // session (a subagent's) never writes it unasked.
+                    ctx !== undefined && String(params.sessionId) === ctx.acpSessionId
+                      ? ctx.acpSessionId
+                      : undefined,
+                  ) === true;
                 if (planFileWrite && permissionRequest.toolCall) {
                   const planMarkdown = descriptor.planMode?.planMarkdown(
                     permissionRequest.toolCall,
@@ -2527,7 +2534,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     yield* closeReasoning(ctx);
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     // The plan card stands for the agent's plan-file writes.
-                    if (descriptor.planMode?.isPlanFile(event.toolCall)) {
+                    if (descriptor.planMode?.isPlanFile(event.toolCall, ctx.acpSessionId)) {
                       const planMarkdown = descriptor.planMode.planMarkdown(event.toolCall);
                       if (planMarkdown !== undefined) ctx.planMarkdown = planMarkdown;
                       return;
