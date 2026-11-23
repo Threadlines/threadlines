@@ -1194,6 +1194,27 @@ function holdCommandOutputOnStop(
 }
 
 /**
+ * Stop: every agent in the thread that set itself a check-back has it
+ * cancelled, so a stopped agent never wakes itself up later. Nothing drops a
+ * schedule from a live runtime, so each such agent's runtime stops, with any
+ * background work it left running (the user asked to stop). Jobs saved to the
+ * project count too: they would fire in that runtime, and they come back
+ * from disk the next time the agent runs.
+ */
+function endCheckBacksOnStop(
+  thread: OrchestrationThread,
+  base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
+  createdAt: string,
+): ReadonlyArray<PlannedOrchestrationEvent> {
+  const agents = new Set((thread.checkBacks ?? []).map((checkBack) => checkBack.participantId));
+  return [...agents].map((participantId) => ({
+    ...base(),
+    type: "thread.check-back-cancel-requested" as const,
+    payload: { threadId: thread.id, participantId, stopBackgroundWork: true, createdAt },
+  }));
+}
+
+/**
  * Clears the lead pointer of every project that names one of `threadIds`
  * (docs/design/lead-chat.md: archive and delete end a lead in the same
  * decision). Reads the raw pointer, so a stale one is cleaned up too.
@@ -4720,11 +4741,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       // In a room, Stop also ends the agents' chain of requests; with child
       // threads, it ends what this thread was owed by its children, and a
-      // parent's requests still queued here are taken back.
+      // parent's requests still queued here are taken back. Every agent's
+      // check-backs end with it.
       const chainStop = [
         ...decideAgentChainStop(thread, base, command.createdAt),
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
+        ...endCheckBacksOnStop(thread, base, command.createdAt),
         // Stop is the user's say: a goal paused for a wait stays as Stop
         // leaves it, never resumed when the waits Stop ends are over.
         ...goalTakenByUser(thread, command),

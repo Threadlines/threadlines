@@ -50,6 +50,7 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
+import { hasLiveCheckBack } from "@threadlines/shared/checkBacks";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
@@ -329,9 +330,11 @@ const remoteLabel = (thread: OrchestrationThread, environmentId: string) =>
     ?.remote?.label ??
   "the other computer";
 
-/** Whether a child has anything to stop: work in flight, or work its parent still waits on. */
+/** Whether a child has anything to stop: work in flight, a check-back that
+ *  would wake it later, or work its parent still waits on. */
 const childHasWork = (child: OrchestrationThread, parent: OrchestrationThread) =>
   child.latestTurn?.state === "running" ||
+  hasLiveCheckBack(child) ||
   (child.session !== null &&
     (child.session.activeTurnId !== null ||
       child.session.status === "running" ||

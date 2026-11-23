@@ -111,7 +111,7 @@ Whether the thread's agent may bring in another model on its own is {place:threa
 
 Once a thread it started has finished, the agent can wrap it up itself (thread_wrap), so you don't have to. It moves to Wrapped as with your own Wrap up, and its answer counts as seen. You can reopen it, and it comes back by itself when it gets new work. A thread still working or waiting for you isn't wrapped up.
 
-A thread that keeps working after its answer went back (a check-back woke it, or a reviewer it asked replied) doesn't wake the parent. Its latest reply is passed to the parent's agent at that agent's next turn, and the thread then wraps up by itself. A thread the agent stops with thread_stop wraps up by itself too.
+A thread that keeps working after its answer went back (a check-back woke it, or a reviewer it asked replied) doesn't wake the parent. Its latest reply is passed to the parent's agent at that agent's next turn, and the thread then wraps up by itself. A thread the agent stops with thread_stop wraps up by itself too, and its check-backs end, as with your Stop.
 
 {place:threads.agentThreads} decides this: Off, Ask me first (a card in the chat lists the threads and you decide), or Automatic. The same setting covers agents creating or changing scheduled tasks. There's no limit on how many threads an agent starts or how many messages it sends them, so an agent can keep a team of threads going for hours without you writing. Stop on the parent stops its agent and its threads' answers coming back, but the threads keep working; "Stop N working threads" in the parent's menu stops them too.
 
@@ -227,7 +227,7 @@ Tasks run while Threadlines is running on that computer. A time missed while it 
 
 Agents can list, create and change scheduled tasks when {place:threads.agentThreads} isn't Off; with Ask me first, a card asks you before a change takes effect. A task an agent sets up on a model already in the room runs at the reasoning you set for that agent, unless the agent or you name another level.
 
-Below the tasks, Check-backs lists the threads an agent set itself to come back to, soonest first, with when and why. A row opens its thread, and Cancel ends the check-back (it stops that agent's session; one saved to the project has no Cancel). A thread with a check-back can still wrap up: in Wrapped its row shows a clock with the time left, and it comes back to the list when the agent does.`,
+Below the tasks, Check-backs lists the threads an agent set itself to come back to, soonest first, with when and why. A row opens its thread, and Cancel ends the check-back (it stops that agent's session; one saved to the project has no Cancel). Stop in the thread ends every check-back its agents set, by stopping each such agent's session, so work it left running in the background stops too. One saved to the project goes quiet but stays listed, and comes back the next time that agent runs; ask the agent to delete it to end it for good. A thread with a check-back can still wrap up: in Wrapped its row shows a clock with the time left, and it comes back to the list when the agent does.`,
   },
   {
     id: "outside-agents",

@@ -4816,6 +4816,61 @@ describe("ProviderCommandReactor", () => {
     ]);
   });
 
+  it("ends every room agent's check-backs on Stop, background work and saved jobs included", async () => {
+    const { harness, threadId, astraId, dispatch, now } =
+      await startRoomWithMessageQueuedForAstra();
+    const astraKey = participantSessionKey(threadId, astraId);
+    const primary = harness.runtimeSessions.find((session) => session.threadId === threadId);
+    if (!primary) throw new Error("expected the primary runtime");
+    // Astra runs a dev server it left behind and set itself a job saved to
+    // the project; the thread's own agent set a repeating check-back.
+    harness.runtimeSessions.push({ ...primary, threadId: astraKey, pendingBackgroundTaskCount: 1 });
+    const checkBack = (
+      id: string,
+      participantId: ThreadParticipantId | null,
+      durable: boolean,
+    ) => ({
+      id,
+      participantId,
+      scheduledFor: "2026-01-01T01:00:00.000Z",
+      exact: false,
+      recurring: true,
+      durable,
+    });
+    await dispatch({
+      type: "thread.check-backs.set",
+      commandId: CommandId.make("cmd-primary-check-backs"),
+      threadId,
+      participantId: null,
+      checkBacks: [checkBack("loop-1", null, false)],
+      createdAt: now,
+    });
+    await dispatch({
+      type: "thread.check-backs.set",
+      commandId: CommandId.make("cmd-astra-saved-check-back"),
+      threadId,
+      participantId: astraId,
+      checkBacks: [checkBack("cron-saved", astraId, true)],
+      createdAt: now,
+    });
+
+    await dispatch({
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("cmd-stop-with-check-backs"),
+      threadId,
+      createdAt: now,
+    });
+    await waitFor(() => harness.stopSession.mock.calls.length >= 2);
+    await harness.drain();
+
+    expect(harness.interruptTurn.mock.calls.length).toBe(1);
+    // Each agent's runtime stops, the one running a dev server included.
+    expect(harness.stopSession.mock.calls.map(([input]) => input)).toEqual(
+      expect.arrayContaining([{ threadId }, { threadId: astraKey }]),
+    );
+    expect(harness.stopSession.mock.calls.length).toBe(2);
+  });
+
   it("clears a stale check-back list but keeps the jobs saved to disk", async () => {
     const { harness, threadId, astraId, dispatch, now } =
       await startRoomWithMessageQueuedForAstra();
