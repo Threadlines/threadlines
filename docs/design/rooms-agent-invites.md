@@ -90,7 +90,7 @@ runtimes).
 ### Requests
 
 Invites reuse room agent requests (`thread.agentRequests`, JSON) with a new
-kind, `invite`, so the limit (3 per user message), Stop's hold and epoch, and
+kind, `invite`, so Stop's hold and epoch, and
 restart recovery apply:
 
 - request fields (optional in the schema): `reason`, `suggestion` ("review" |
@@ -114,7 +114,7 @@ Commands:
 Decisions (agentRequestDecisions.ts, pure):
 
 - submit: caller holds the thread with a turn in flight; refused when paused,
-  held, over the limit, or another invite is awaiting the user.
+  held, or another invite is awaiting the user.
 - respond (and the auto path) revalidates everything that can change while
   the user thinks: the request is `awaiting_user`, the epoch is unchanged,
   voice is off, the caller is still in the thread. Then, in one decision: for
@@ -205,7 +205,7 @@ rules for real rooms are unchanged.
 
 ## Tests (focused)
 
-- decider: submit refusals (paused, held, limit, pending invite), each choice
+- decider: submit refusals (paused, held, pending invite), each choice
   (events and request state), decline pauses until the user writes, invite
   survives the caller's turn ending, Stop cancels it.
 - guest: a guest-only thread is not a room (revert allowed, no room header).

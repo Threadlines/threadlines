@@ -256,3 +256,21 @@ export const LinksRespondRequestInput = Schema.Struct({
   allow: Schema.Boolean,
 });
 export type LinksRespondRequestInput = typeof LinksRespondRequestInput.Type;
+
+/**
+ * Reading a thread a parent here started on a linked computer, for a client
+ * that can't see that computer (`links.readThread`). This server asks the
+ * other one through the link (`peer.thread.read`), so only threads its link
+ * started can be read, and only for a parent that holds the child.
+ * `after`, `limit`, `messageId` and `offset` mean what they mean to thread_read.
+ */
+export const LinksReadThreadInput = Schema.Struct({
+  parentThreadId: ThreadId,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  after: Schema.optional(Schema.Number),
+  limit: Schema.optional(Schema.Number),
+  messageId: Schema.optional(Schema.String),
+  offset: Schema.optional(Schema.Number),
+});
+export type LinksReadThreadInput = typeof LinksReadThreadInput.Type;

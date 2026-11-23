@@ -284,7 +284,6 @@ describe("lead chat passes", () => {
     const lead = threadIn(passed.model, LEAD);
     const target = threadIn(passed.model, OTHER);
     expect(lead.childRequests.open).toEqual([]);
-    expect(lead.childRequests.sendsSinceUser).toBe(1);
     const message = target.messages.find((entry) => entry.id === PASS_MESSAGE);
     expect(message?.fromThread).toMatchObject({
       threadId: LEAD,

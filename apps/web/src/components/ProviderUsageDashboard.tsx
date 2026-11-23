@@ -16,6 +16,7 @@ import { Button } from "./ui/button";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ProviderExternalResetsButton } from "./ProviderRateLimitResetCredit";
+import { UsagePaceMark, usagePaceLabel } from "./usage/UsagePaceMark";
 
 type TokenActivityMode = "daily" | "weekly" | "cumulative";
 type TokenActivityRange = "13-weeks" | "1-year";
@@ -213,7 +214,9 @@ function buildTokenActivityWeeks(
     days.push({
       dateKey,
       ms,
-      reported: ms >= reportedStartMs && ms <= reportedEndMs,
+      // A day outside the known range still shows usage it does have: only
+      // its zero is unknown, since its files may be gone.
+      reported: (ms >= reportedStartMs && ms <= reportedEndMs) || dailyTokens > 0,
       dailyTokens,
       weeklyTokens: weeklyTotals.get(formatDateKey(startOfWeekUtc(ms))) ?? 0,
       cumulativeTokens,
@@ -238,8 +241,12 @@ function buildTokenActivityWeeks(
     const cells: TokenActivityCell[] = [];
     const weekDays = days.slice(weeks.length * 7, weeks.length * 7 + 7);
     const reportedWeekDays = weekDays.filter((day) => day.reported);
+    // A week with an unknown past day can't be called quiet; usage it does
+    // have still shows.
+    const weekPartlyUnknown = weekDays.some((day) => !day.reported && day.ms <= anchorDayMs);
+    const weekQuiet = reportedWeekDays.every((day) => day.dailyTokens === 0);
     const weekValue =
-      reportedWeekDays.length === 0
+      reportedWeekDays.length === 0 || (weekPartlyUnknown && weekQuiet && mode !== "cumulative")
         ? null
         : mode === "weekly"
           ? (reportedWeekDays[0]?.weeklyTokens ?? 0)
@@ -267,7 +274,9 @@ function buildTokenActivityWeeks(
           : mode === "weekly"
             ? day.dailyTokens > 0
               ? day.weeklyTokens
-              : 0
+              : weekPartlyUnknown
+                ? null
+                : 0
             : day.cumulativeTokens > 0
               ? weekValue
               : 0;
@@ -448,16 +457,22 @@ function UsageLimitBar(props: {
       </div>
       <div
         role="meter"
-        aria-label={`${props.usageLabel} ${props.window.label} ${props.window.usedPercent}% used`}
+        aria-label={`${props.usageLabel} ${props.window.label} ${props.window.usedPercent}% used${usagePaceLabel(props.window.paceDetail)}`}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={props.window.usedPercent}
-        className="h-1.5 overflow-hidden rounded-full bg-muted"
+        className="relative h-1.5 rounded-full bg-muted"
       >
         <div
           className={cn("h-full rounded-full transition-[width]", !meterColor && "bg-primary")}
           style={{ width: `${props.window.usedPercent}%`, backgroundColor: meterColor }}
         />
+        {props.window.elapsedPercent !== undefined && props.window.paceDetail !== undefined ? (
+          <UsagePaceMark
+            elapsedPercent={props.window.elapsedPercent}
+            detail={props.window.paceDetail}
+          />
+        ) : null}
       </div>
     </div>
   );

@@ -12,6 +12,7 @@
  * `baseFor`. The rules for who may ask live in `@threadlines/shared/childThreads`,
  * shared with the room MCP server.
  */
+import { holdsRuntimeCheckBack } from "@threadlines/shared/checkBacks";
 import { hasLiveCommandRun } from "@threadlines/shared/commandRuns";
 import { hasLiveSideTurn } from "@threadlines/shared/sideTurns";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
@@ -415,7 +416,6 @@ export function decideChildStart(
     from: command.from,
     callerTurnId: command.callerTurnId,
     count: command.children.length,
-    isLead: isProjectLeadThread(readModel, parent),
   });
   if (refusal !== null) {
     return refuse(refusal.detail);
@@ -570,13 +570,7 @@ export function decideChildSend(
 ): ChildThreadDecision {
   const remoteChild = remoteChildOf(parent.childRequests, command.childThreadId);
   if (remoteChild !== undefined) {
-    return decideRemoteChildSend(
-      parent,
-      command,
-      baseFor,
-      remoteChild,
-      isProjectLeadThread(readModel, parent),
-    );
+    return decideRemoteChildSend(parent, command, baseFor, remoteChild);
   }
   if (pendingChildRequest(parent, command.childThreadId) !== undefined) {
     return refuse("That thread is still being set up. Send it a message once it has started.");
@@ -585,7 +579,6 @@ export function decideChildSend(
   const refusal = childSendRefusal(parent, child, {
     from: command.from,
     callerTurnId: command.callerTurnId,
-    isLead: isProjectLeadThread(readModel, parent),
   });
   if (refusal !== null || child === null) {
     return refuse(refusal?.detail ?? "That thread is gone.");
@@ -815,7 +808,6 @@ function decideRemoteChildSend(
   command: CommandOf<"thread.child.send">,
   baseFor: ChildEventBase,
   remoteChild: NonNullable<ReturnType<typeof remoteChildOf>>,
-  isLead: boolean,
 ): ChildThreadDecision {
   const refusal = childSendRefusal(
     parent,
@@ -825,7 +817,7 @@ function decideRemoteChildSend(
       attachedToParent: true,
       archivedAt: null,
     },
-    { from: command.from, callerTurnId: command.callerTurnId, isLead },
+    { from: command.from, callerTurnId: command.callerTurnId },
   );
   if (refusal !== null) {
     return refuse(refusal.detail);
@@ -1724,7 +1716,10 @@ function separationEvents(
  * nobody waits on (a dev server) and a command still going in its terminal.
  * Ask for it where the thread is about to be stopped and its terminals
  * closed (archiving a parent's family). A thread's move waits on the same
- * pieces (threadMoveDecisions.ts, workWaits).
+ * pieces (threadMoveDecisions.ts, workWaits). A check-back is not work
+ * here: it doesn't keep a thread from wrapping up or being reported idle.
+ * Archiving, which stops the runtime it fires in, checks for one itself
+ * (childArchivePlan).
  */
 export function childHasLiveWork(
   thread: OrchestrationThread,
@@ -2087,9 +2082,13 @@ export function childArchivePlan(
   // A child its parent still has a request open for is at work for it, even
   // one with nothing running yet because it is still being set up. Archiving
   // stops a child's runtime and closes its terminals, so a dev server or a
-  // command still going in its terminal keeps it out too.
+  // command still going in its terminal keeps it out too, and so does a
+  // check-back its agent set that would die with the runtime: unarchiving
+  // brings the thread back, not the promise to come back.
   const live = (child: OrchestrationThread) =>
-    childHasLiveWork(child, { running: true }) || requestsFor(parent, child.id).length > 0;
+    childHasLiveWork(child, { running: true }) ||
+    requestsFor(parent, child.id).length > 0 ||
+    holdsRuntimeCheckBack(child);
   return {
     archive: children.filter((child) => !live(child)),
     separate: children.filter(live),

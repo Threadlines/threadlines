@@ -76,6 +76,7 @@ import { useShallow } from "zustand/react/shallow";
 import {
   selectBootstrapCompleteForActiveEnvironment,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadSummaryByRef,
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../../store";
@@ -2404,6 +2405,23 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
 
     try {
       for (const thread of inactiveThreadCandidates) {
+        // Checked again as each goes: while the confirmation was open it may
+        // have started working or set a check-back.
+        const state = useStore.getState();
+        const latest = selectSidebarThreadSummaryByRef(
+          state,
+          scopeThreadRef(thread.environmentId, thread.id),
+        );
+        if (
+          latest === undefined ||
+          selectAutoArchiveCandidates({
+            threads: [latest],
+            projects: selectProjectsAcrossEnvironments(state),
+            inactiveDays: autoArchivePreviewDays,
+          }).length === 0
+        ) {
+          continue;
+        }
         const api = readEnvironmentApi(thread.environmentId);
         if (!api) {
           failedCount += 1;

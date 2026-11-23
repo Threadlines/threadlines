@@ -290,7 +290,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       // same transcripts as the main instance; only one row counts them.
       const readTokenUsage = accountFolder?.sharesMainHistory
         ? undefined
-        : yield* makeClaudeTokenUsageHistoryReader(effectiveConfig, processEnv);
+        : yield* makeClaudeTokenUsageHistoryReader(effectiveConfig, processEnv, {
+            stateDir: serverConfig.stateDir,
+          });
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,

@@ -543,6 +543,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                 handoffQueueMs: latency.handoffSteps.queueMs,
                 handoffPrepareMs: latency.handoffSteps.prepareMs,
                 handoffCheckpointMs: latency.handoffSteps.checkpointMs,
+                ...(latency.handoffSteps.checkpointFailed !== undefined
+                  ? { handoffCheckpointFailed: latency.handoffSteps.checkpointFailed }
+                  : {}),
               }
             : {}),
           firstOutputMs: latency.firstOutputMs,
@@ -1726,6 +1729,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                 "provider.turn.handoff_queue_ms": input.handoffSteps.queueMs,
                 "provider.turn.handoff_prepare_ms": input.handoffSteps.prepareMs,
                 "provider.turn.handoff_checkpoint_ms": input.handoffSteps.checkpointMs,
+                "provider.turn.handoff_checkpoint_failed":
+                  input.handoffSteps.checkpointFailed === true,
               }
             : {}),
         });

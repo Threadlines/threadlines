@@ -76,6 +76,7 @@ import {
   fixture,
   rpcHarness,
   createUserMessage,
+  withLinkedThreadReadFixture,
 } from "./ChatView.browser-harness";
 import { selectSidebarThreadSummaryByRef, useStore } from "../store";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
@@ -568,6 +569,41 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       picker.click();
       await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
 
+      // Pointing at a pill swaps its icon for ⋯ without resizing it: a pill
+      // that grew could wrap onto the next line, out from under the pointer,
+      // and flicker between the two. (offsetWidth: the picker's opening
+      // animation scales bounding boxes.)
+      const options = () =>
+        pill(astraId)!.querySelector<HTMLButtonElement>('button[aria-label$=" options"]')!;
+      const widthBefore = pill(astraId)!.offsetWidth;
+      // At rest no pill shows its ⋯, the picked one included.
+      for (const button of document.querySelectorAll(
+        '[data-room-agents-bar] button[aria-label$=" options"]',
+      )) {
+        expect(getComputedStyle(button).visibility).toBe("hidden");
+      }
+      await userEvent.hover(pill(astraId)!);
+      await vi.waitFor(() => expect(getComputedStyle(options()).visibility).toBe("visible"));
+      expect(pill(astraId)!.offsetWidth).toBe(widthBefore);
+
+      // Its menu renames without closing the picker or changing who is picked.
+      options().click();
+      const menuItem = (text: string) =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === text,
+        ) ?? null;
+      (await waitForElement(() => menuItem("Rename…"), "The pill's menu should open.")).click();
+      const nameBox = await waitForElement(
+        () => pill(astraId)!.querySelector<HTMLInputElement>("input"),
+        "Rename should open the pill's name box.",
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(nameBox));
+      expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+      expect(pill("primary")?.getAttribute("aria-checked")).toBe("true");
+      expect(pill(astraId)?.getAttribute("aria-checked")).toBe("false");
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(pill(astraId)!.querySelector("input")).toBeNull());
+
       // "+" starts adding; picking an agent instead means not a new one after
       // all, and the list below is that agent's again.
       document
@@ -597,6 +633,28 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       });
       // Still open: picking an agent doesn't close the picker.
       expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+
+      // A right-click opens the same menu, which removes the agent.
+      pill(astraId)!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }),
+      );
+      (
+        await waitForElement(
+          () => menuItem("Remove from thread"),
+          "Right-click should open the menu.",
+        )
+      ).click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (request as { type?: string }).type === "thread.participant.remove",
+          ),
+        ).toMatchObject({ participantId: astraId }),
+      );
+      expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+      expect(pill("primary")?.getAttribute("aria-checked")).toBe("true");
     } finally {
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();
@@ -1368,6 +1426,117 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
     }
   });
 
+  it("opens a thread started on a computer this app can't see, read through the link", async () => {
+    const windows = EnvironmentId.make("environment-windows");
+    const childId = "thread-child-windows" as ThreadId;
+    const childKey = scopedThreadKey(scopeThreadRef(windows, childId));
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-linked-child" as MessageId,
+      targetText: "linked child target",
+    });
+    const reads: Array<Record<string, unknown>> = [];
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                childRequests: {
+                  ...EMPTY_CHILD_REQUEST_STATE,
+                  remoteChildren: [
+                    {
+                      environmentId: windows,
+                      label: "Windows PC",
+                      threadId: childId,
+                      handle: "Codex",
+                      title: "Check the Windows build",
+                      attachmentEpoch: 0,
+                      cachedStatus: "working",
+                      updatedAt: isoAt(300),
+                    },
+                  ],
+                },
+              }
+            : thread,
+        ),
+      },
+      configureFixture: withLinkedThreadReadFixture,
+      resolveRpc: (body) => {
+        if (body._tag !== WS_METHODS.linksReadThread) return undefined;
+        reads.push(body);
+        return {
+          outcome: "ok",
+          messages: [
+            {
+              messageId: "m-ask",
+              sequence: 1,
+              at: isoAt(301),
+              role: "user",
+              author: "Browser test thread (on Local environment)",
+              origin: "thread_request",
+              text: "Check the Windows build.",
+            },
+            {
+              messageId: "m-answer",
+              sequence: 2,
+              at: isoAt(302),
+              role: "assistant",
+              author: "Codex",
+              origin: "agent",
+              text: "The Windows build passes.",
+            },
+          ],
+          next: 2,
+          more: false,
+        };
+      },
+    });
+    try {
+      const tab = page.getByTestId(`family-tab-${childKey}`);
+      await vi.waitFor(() => expect(tab.element()).not.toHaveAttribute("disabled"), {
+        timeout: 10_000,
+      });
+      await tab.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/linked/${windows}/${childId}`),
+        "The tab should open the thread read through the link.",
+      );
+      await expect.element(page.getByText("The Windows build passes.")).toBeVisible();
+      await expect.element(page.getByText("Check the Windows build.")).toBeVisible();
+      await vi.waitFor(() =>
+        expect(
+          document
+            .querySelector('[data-testid="linked-thread-place"]')
+            ?.textContent?.replace(/\s+/g, " "),
+        ).toBe("Windows PC·working"),
+      );
+      expect(reads[0]).toMatchObject({
+        parentThreadId: THREAD_ID,
+        environmentId: windows,
+        threadId: childId,
+        limit: 50,
+      });
+      // The family row stays, with this thread's tab open.
+      await vi.waitFor(() =>
+        expect(page.getByTestId(`family-tab-${childKey}`).element()).toHaveAttribute(
+          "aria-selected",
+          "true",
+        ),
+      );
+      await page.getByTestId(`family-tab-${THREAD_KEY}`).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${THREAD_ID}`),
+        "The parent's tab should open the parent again.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps the lead's tab whole on a crowded row, drops a shared topic, and cuts long tabs to one width", async () => {
     const titles = [
       "Panel Jam animation timing review",
@@ -1650,6 +1819,130 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         { timeout: 8_000, interval: 16 },
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a pill's menu on a long press in the phone drawer, and keeps it open when the finger lifts", async () => {
+    const astraId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-hold" as MessageId,
+      targetText: "room hold target",
+    });
+    // What a phone sends for a finger held on an element and lifted: touch
+    // pointer events on it, then a mouse press and a click on whatever is
+    // under the finger by then. For a held pill that is the menu's backdrop,
+    // which came up under the finger. (Replayed by hand: real touches would
+    // put the whole test browser in touch mode.)
+    const touch = async (element: Element, holdMs: number) => {
+      const box = element.getBoundingClientRect();
+      const at = {
+        clientX: box.left + box.width / 2,
+        clientY: box.top + box.height / 2,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      };
+      const finger = { ...at, pointerId: 7, pointerType: "touch", isPrimary: true };
+      element.dispatchEvent(new PointerEvent("pointerdown", finger));
+      await new Promise((resolve) => setTimeout(resolve, holdMs));
+      element.dispatchEvent(new PointerEvent("pointerup", finger));
+      const under = document.elementFromPoint(at.clientX, at.clientY) ?? element;
+      // A real mouse press moves the keyboard focus to what it lands on,
+      // unless the page takes the press.
+      const pressTaken = !under.dispatchEvent(new MouseEvent("mousedown", at));
+      for (const type of ["mouseup", "click"]) {
+        under.dispatchEvent(new MouseEvent(type, at));
+      }
+      // Let what those did reach the page.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return { pressTaken };
+    };
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      configureFixture: withCodexModels,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: astraId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const pill = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-room-agent-row="${id}"]`);
+      const sheet = () => document.querySelector('[data-model-picker-sheet="true"]');
+      const menuItem = (text: string) =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === text,
+        ) ?? null;
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      picker.click();
+      await waitForElement(sheet, "A phone should open the picker as a drawer.");
+      const astra = await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
+      // The drawer slides in: a touch is aimed at where the pill comes to rest.
+      await vi.waitFor(async () => {
+        const top = astra.getBoundingClientRect().top;
+        await nextFrames(2);
+        expect(astra.getBoundingClientRect().top).toBe(top);
+      });
+
+      // The hold opens the menu, and lifting the finger leaves it open,
+      // without picking the pill or closing the drawer.
+      const lift = await touch(astra, 700);
+      expect(astra.hasAttribute("data-menu-open")).toBe(true);
+      expect(menuItem("Rename…")).not.toBeNull();
+      expect(pill(astraId)?.getAttribute("aria-checked")).toBe("false");
+      expect(sheet()).not.toBeNull();
+
+      // The lift's press is taken, so the keyboard focus stays in the menu:
+      // Escape closes the menu, not the drawer around it.
+      expect(lift.pressTaken).toBe(true);
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(astra.hasAttribute("data-menu-open")).toBe(false));
+      expect(sheet()).not.toBeNull();
+      await touch(astra, 700);
+      expect(astra.hasAttribute("data-menu-open")).toBe(true);
+
+      // A tap outside the menu still closes it, and only it.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await touch(document.querySelector('[data-slot="menu-backdrop"]')!, 40);
+      expect(astra.hasAttribute("data-menu-open")).toBe(false);
+      await vi.waitFor(() => expect(menuItem("Rename…")).toBeNull());
+      expect(sheet()).not.toBeNull();
+
+      // A tap on Rename, even a slow one, opens the name box, focused, in the
+      // open drawer: it is not taken for another hold on the pill.
+      await touch(astra, 700);
+      await touch(menuItem("Rename…")!, 600);
+      const nameBox = await waitForElement(
+        () => pill(astraId)!.querySelector<HTMLInputElement>("input"),
+        "Rename should open the pill's name box.",
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(nameBox));
+      expect(sheet()).not.toBeNull();
+    } finally {
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();
     }
   });

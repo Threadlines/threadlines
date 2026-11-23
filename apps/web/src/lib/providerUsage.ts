@@ -36,6 +36,11 @@ export interface ProviderAccountUsageWindowPresentation {
    */
   readonly elapsedPercent?: number;
   /**
+   * The pace mark's hover text, "44% of the week has passed". Set exactly
+   * when `elapsedPercent` is.
+   */
+  readonly paceDetail?: string;
+  /**
    * Set on a window that caps one model, not the whole account (Claude's
    * per-model weekly limits): the name the provider gives it ("Fable"), its
    * period ("Weekly"), and when it resets ("resets in 3d 16h").
@@ -248,6 +253,34 @@ export function usageWindowElapsedPercent(
   const remainingMs = resetMs - nowMs;
   if (remainingMs <= 0 || remainingMs > durationMs) return undefined;
   return Math.round((1 - remainingMs / durationMs) * 1000) / 10;
+}
+
+/** "the week", "the day", "the 5-hour window": the span a pace mark measures. */
+function formatUsageWindowSpan(minutes: number): string {
+  if (minutes === 10_080) return "the week";
+  if (minutes === 1_440) return "the day";
+  if (minutes % 1_440 === 0) return `the ${minutes / 1_440}-day window`;
+  if (minutes % 60 === 0) return `the ${minutes / 60}-hour window`;
+  return `the ${minutes}-minute window`;
+}
+
+/** "44% of the week has passed", for the pace mark's hover text. */
+function formatUsagePaceDetail(
+  window: Pick<ServerProviderUsageWindow, "windowDurationMins">,
+  elapsedPercent: number | undefined,
+): string | null {
+  const minutes = window.windowDurationMins;
+  if (elapsedPercent === undefined || minutes === undefined) return null;
+  return `${Math.round(elapsedPercent)}% of ${formatUsageWindowSpan(minutes)} has passed`;
+}
+
+/** The pace fields of a window presentation: both or neither. */
+function usagePaceFields(
+  window: Pick<ServerProviderUsageWindow, "windowDurationMins">,
+  elapsedPercent: number | undefined,
+): Pick<ProviderAccountUsageWindowPresentation, "elapsedPercent" | "paceDetail"> {
+  const paceDetail = formatUsagePaceDetail(window, elapsedPercent);
+  return elapsedPercent !== undefined && paceDetail !== null ? { elapsedPercent, paceDetail } : {};
 }
 
 /**
@@ -463,7 +496,7 @@ function formatUsageWindowPresentation(
     remainingPercent,
     reachedLimit: windowReachedLimit,
     warning: windowReachedLimit || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
-    ...(elapsedPercent !== undefined ? { elapsedPercent } : {}),
+    ...usagePaceFields(window, elapsedPercent),
   };
 }
 
@@ -503,7 +536,7 @@ function formatScopedUsageWindowPresentation(
     remainingPercent,
     reachedLimit,
     warning: reachedLimit || severityWarning || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
-    ...(elapsedPercent !== undefined ? { elapsedPercent } : {}),
+    ...usagePaceFields(window, elapsedPercent),
     scope: {
       name: window.scopeLabel,
       ...(window.scopeModels ? { models: window.scopeModels } : {}),

@@ -806,7 +806,9 @@ function createClaudeProviderWithTokenHistory(): ServerProvider {
       tokenUsage: {
         checkedAt,
         scope: "local",
-        coverageStartDate: utcDateKeyAtOffset(-365),
+        // Claude Code keeps 30 days of transcripts; older usage survives only in files
+        // written since, so the days before are known only where they show usage.
+        coverageStartDate: utcDateKeyAtOffset(-29),
         coverageEndDate: utcDateKeyAtOffset(0),
         completeLifetimeHistory: false,
         dailyBuckets: [
@@ -3661,6 +3663,15 @@ describe("GeneralSettingsPanel observability", () => {
       .getByLabelText("Local token activity daily token activity")
       .last();
     await expect.element(visibleActivityGrid.getByLabelText(`0 tokens on ${today}`)).toBeVisible();
+    // Before the known days: usage still shows, a day without any is unknown, not zero.
+    const earlyUsageDate = formatTokenActivityTestDate(utcDateKeyAtOffset(-40));
+    const earlyQuietDate = formatTokenActivityTestDate(utcDateKeyAtOffset(-39));
+    await expect
+      .element(visibleActivityGrid.getByLabelText(new RegExp(`tokens on ${earlyUsageDate}$`)))
+      .toBeVisible();
+    await expect
+      .element(visibleActivityGrid.getByLabelText(`Usage unavailable on ${earlyQuietDate}`))
+      .toBeVisible();
   });
 
   it("configures Claude fallback models from the provider models list", async () => {

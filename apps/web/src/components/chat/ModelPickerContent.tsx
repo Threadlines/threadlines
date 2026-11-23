@@ -752,11 +752,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         return;
       }
 
-      // A dropdown open over the settings rows, or an agent's name being
-      // typed, owns the keys: a jump would change the model underneath it.
+      // A dropdown open over the settings rows, an agent pill's menu, or an
+      // agent's name being typed, owns the keys: a jump would change the model
+      // underneath it.
       if (
         event.target instanceof Element &&
-        event.target.closest("[data-slot='select-popup'], [data-room-agents-bar] input")
+        event.target.closest(
+          "[data-slot='select-popup'], [data-slot='menu-popup'], [data-room-agents-bar] input",
+        )
       ) {
         return;
       }

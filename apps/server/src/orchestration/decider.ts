@@ -331,10 +331,9 @@ function childEventBase(
 }
 
 /**
- * The user wrote: the per-message child thread counts start over, and a
- * lead chat's pass no longer blocks starting threads. A turn Threadlines
- * started for the user (`keepsPassBlock`: a continue, a restart) resets the
- * counts but keeps that block (docs/design/lead-chat.md, "No fan-out").
+ * The user wrote: a lead chat's pass no longer blocks starting threads. A
+ * turn Threadlines started for the user (`keepsPassBlock`: a continue, a
+ * restart) keeps that block (docs/design/lead-chat.md, "No fan-out").
  */
 function resetChildRequestsForUser(
   thread: OrchestrationThread,
@@ -342,22 +341,16 @@ function resetChildRequestsForUser(
   createdAt: string,
   options?: { readonly keepsPassBlock?: boolean },
 ): ReadonlyArray<PlannedOrchestrationEvent> {
-  const state = thread.childRequests;
-  const keepsPassBlock = options?.keepsPassBlock === true;
-  const liftsBlock = state.passCeiling !== undefined && !keepsPassBlock;
-  return state.startsSinceUser === 0 && state.sendsSinceUser === 0 && !liftsBlock
-    ? []
-    : [
-        {
-          ...base(),
-          type: "thread.child-requests-reset",
-          payload: {
-            threadId: thread.id,
-            ...(keepsPassBlock ? { keepsPassBlock: true as const } : {}),
-            createdAt,
-          },
-        },
-      ];
+  if (thread.childRequests.passCeiling === undefined || options?.keepsPassBlock === true) {
+    return [];
+  }
+  return [
+    {
+      ...base(),
+      type: "thread.child-requests-reset",
+      payload: { threadId: thread.id, createdAt },
+    },
+  ];
 }
 
 /**
@@ -1197,6 +1190,27 @@ function holdCommandOutputOnStop(
       progress: { runId: run.runId, autoSend: false, heldReason: "stopped" as const },
       createdAt,
     },
+  }));
+}
+
+/**
+ * Stop: every agent in the thread that set itself a check-back has it
+ * cancelled, so a stopped agent never wakes itself up later. Nothing drops a
+ * schedule from a live runtime, so each such agent's runtime stops, with any
+ * background work it left running (the user asked to stop). Jobs saved to the
+ * project count too: they would fire in that runtime, and they come back
+ * from disk the next time the agent runs.
+ */
+function endCheckBacksOnStop(
+  thread: OrchestrationThread,
+  base: () => Omit<OrchestrationEvent, "sequence" | "type" | "payload">,
+  createdAt: string,
+): ReadonlyArray<PlannedOrchestrationEvent> {
+  const agents = new Set((thread.checkBacks ?? []).map((checkBack) => checkBack.participantId));
+  return [...agents].map((participantId) => ({
+    ...base(),
+    type: "thread.check-back-cancel-requested" as const,
+    payload: { threadId: thread.id, participantId, stopBackgroundWork: true, createdAt },
   }));
 }
 
@@ -4727,11 +4741,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       // In a room, Stop also ends the agents' chain of requests; with child
       // threads, it ends what this thread was owed by its children, and a
-      // parent's requests still queued here are taken back.
+      // parent's requests still queued here are taken back. Every agent's
+      // check-backs end with it.
       const chainStop = [
         ...decideAgentChainStop(thread, base, command.createdAt),
         ...childStopEvents(readModel, thread, command, command.createdAt),
         ...holdCommandOutputOnStop(thread, base, command.createdAt),
+        ...endCheckBacksOnStop(thread, base, command.createdAt),
         // Stop is the user's say: a goal paused for a wait stays as Stop
         // leaves it, never resumed when the waits Stop ends are over.
         ...goalTakenByUser(thread, command),

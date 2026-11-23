@@ -2948,18 +2948,51 @@ const make = Effect.gen(function* () {
       const current = (thread.checkBacks ?? []).filter(
         (checkBack) => checkBack.participantId === participantId,
       );
-      if (!sameCheckBacks(current, event.payload.checkBacks)) {
+      const reported = event.payload.checkBacks.map((checkBack) => ({
+        ...checkBack,
+        participantId,
+      }));
+      // A runtime that hasn't reported its own list yet may not know the jobs
+      // saved to the project it restored: the ones listed stay.
+      const next = event.payload.partial
+        ? [
+            ...reported,
+            ...current.filter(
+              (listed) =>
+                listed.durable && !reported.some((checkBack) => checkBack.id === listed.id),
+            ),
+          ].toSorted((left, right) => left.scheduledFor.localeCompare(right.scheduledFor))
+        : reported;
+      if (!sameCheckBacks(current, next)) {
         yield* orchestrationEngine.dispatch({
           type: "thread.check-backs.set",
           commandId: providerCommandId(event, "check-backs-set"),
           threadId: thread.id,
           participantId,
-          checkBacks: event.payload.checkBacks.map((checkBack) => ({
-            ...checkBack,
-            participantId,
-          })),
+          checkBacks: next,
           createdAt: event.createdAt,
         });
+      }
+      // A check-back set by the turn the user just stopped, reported after
+      // Stop read the list: it ends as Stop's own would have.
+      const session = thread.session;
+      const added = next.some((checkBack) => !current.some((listed) => listed.id === checkBack.id));
+      if (
+        added &&
+        session !== null &&
+        (session.stopRequestedTurnId ?? null) !== null &&
+        sessionSlotParticipantId(session) === participantId
+      ) {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.check-back.cancel",
+            commandId: providerCommandId(event, "check-back-cancel-after-stop"),
+            threadId: thread.id,
+            participantId,
+            stopBackgroundWork: true,
+            createdAt: event.createdAt,
+          })
+          .pipe(Effect.ignoreCause({ log: true }));
       }
       // A move's stop ends them on purpose: it carries them (docs/design/fleet.md, Part 3e, (b)).
       const movingTo = (thread.pendingMove ?? thread.move ?? null)?.target.label;

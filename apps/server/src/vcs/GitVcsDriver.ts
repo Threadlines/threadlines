@@ -1260,15 +1260,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         tree: headCommit,
         env: commitEnv,
         git: (args, env, options) => execute({ operation, cwd: input.cwd, args, env, ...options }),
+        stageCheckout: true,
         use: (env) =>
           Effect.gen(function* () {
-            yield* execute({
-              operation,
-              cwd: input.cwd,
-              args: ["add", "-A", "--", "."],
-              env,
-            });
-
             const writeTreeResult = yield* execute({
               operation,
               cwd: input.cwd,

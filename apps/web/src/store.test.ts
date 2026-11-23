@@ -2200,7 +2200,6 @@ describe("incremental orchestration updates", () => {
     });
     expect(running?.agentRequests).toMatchObject({
       open: [{ requestId, status: "running" }],
-      requestsSinceUser: 1,
     });
 
     state = apply(
@@ -2226,7 +2225,6 @@ describe("incremental orchestration updates", () => {
       open: [],
       hold: true,
       chainEpoch: 1,
-      requestsSinceUser: 1,
     });
     // The outcome stays on the message, beside what the review was given.
     expect(stopped?.messages[0]).toMatchObject({ requestOutcome: "stopped", reviewInput });
@@ -2241,7 +2239,6 @@ describe("incremental orchestration updates", () => {
     expect(selectThreadByRef(state, ref)?.agentRequests).toMatchObject({
       hold: false,
       chainEpoch: 1,
-      requestsSinceUser: 0,
     });
   });
 
@@ -2325,9 +2322,9 @@ describe("incremental orchestration updates", () => {
       awaitedChildThreadCount: 1,
       pendingChildApproval: true,
     });
-    expect(selectThreadByRef(state, scopeThreadRef(localEnvironmentId, parentId))).toMatchObject({
-      childRequests: { startsSinceUser: 2 },
-    });
+    expect(
+      selectThreadByRef(state, scopeThreadRef(localEnvironmentId, parentId))?.childRequests?.open,
+    ).toHaveLength(2);
 
     // The parent's request lands in the child as another thread's message.
     state = apply(

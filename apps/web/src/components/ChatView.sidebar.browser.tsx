@@ -24,6 +24,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
+import { useComposerDraftStore } from "../composerDraftStore";
 import type { SidebarThreadSummary } from "../types";
 import {
   makeBrowserTab,
@@ -537,6 +538,69 @@ describe("ChatView (full app): sidebar", () => {
       await expect.element(card).toMatchTextContent(/Drop work here\./u);
       await card.getByTestId("lead-chat-card-stop").click();
       await vi.waitFor(() => expect(leadSetsSent()).toEqual([THREAD_ID, null]));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("deleting a thread with its threads leaves a child's terminal and draft to the server's answer", async () => {
+    const childId = "thread-lead-child" as ThreadId;
+    const childRef = scopeThreadRef(LOCAL_ENVIRONMENT_ID, childId);
+    const mounted = await mountFamily(null);
+    try {
+      useComposerDraftStore.getState().setPrompt(childRef, "half-written reply");
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "The parent's sidebar row should be on screen.",
+      );
+      const rect = row.getBoundingClientRect();
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 20,
+          clientY: rect.top + 8,
+        }),
+      );
+      await page.getByRole("button", { name: "Delete", exact: true }).click();
+      await page.getByTestId("thread-delete-with-children").click();
+      await page.getByTestId("thread-delete-confirm").click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.delete" &&
+              request.threadId === THREAD_ID &&
+              request.withChildren === true,
+          ),
+        ).toBe(true);
+      });
+
+      // The server decides which children go. This one is still here (it was
+      // separated in the meantime), so nothing of it may be wiped locally.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(
+        wsRequests.filter(
+          (request) =>
+            request.threadId === childId &&
+            (request._tag === WS_METHODS.terminalClose ||
+              (request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.session.stop")),
+        ),
+      ).toEqual([]);
+      expect(useComposerDraftStore.getState().getComposerDraft(childRef)?.prompt).toBe(
+        "half-written reply",
+      );
+      // The thread the user named is wound down here as before.
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === WS_METHODS.terminalClose &&
+            request.threadId === THREAD_ID &&
+            request.deleteHistory === true,
+        ),
+      ).toBe(true);
     } finally {
       await mounted.cleanup();
     }

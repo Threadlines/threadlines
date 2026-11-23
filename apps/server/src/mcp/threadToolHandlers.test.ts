@@ -247,7 +247,6 @@ const makeTools = (options: {
                 childRequests: {
                   ...caller.childRequests,
                   open: [...caller.childRequests.open, ...open],
-                  startsSinceUser: caller.childRequests.startsSinceUser + open.length,
                 },
               };
             }
@@ -472,25 +471,6 @@ describe("thread_start", () => {
         first.threads?.map((thread) => thread.threadId),
       );
       expect(ofType(tools.dispatched, "thread.child.start")).toHaveLength(1);
-    }),
-  );
-
-  it.effect("refuses past the per-message limit, counting what was already asked", () =>
-    Effect.gen(function* () {
-      const tools = yield* makeTools({
-        caller: makeThread({
-          childRequests: { ...EMPTY_CHILD_REQUEST_STATE, startsSinceUser: 4 },
-        }),
-      });
-      const result = yield* tools.handlers.thread_start(mainCaller(), {
-        threads: [
-          { title: "One", prompt: "First." },
-          { title: "Two", prompt: "Second." },
-        ],
-      });
-
-      expect(result.outcome).toBe("limit");
-      expect(tools.dispatched).toHaveLength(0);
     }),
   );
 

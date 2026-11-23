@@ -39,6 +39,7 @@ import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draf
 import { Route as ChatFleetIndexRouteImport } from './routes/_chat.fleet.index'
 import { Route as ChatFleetEnvironmentIdRouteImport } from './routes/_chat.fleet.$environmentId'
 import { Route as ChatFleetDeviceDeviceIdRouteImport } from './routes/_chat.fleet.device.$deviceId'
+import { Route as ChatLinkedComputerIdLinkedThreadIdRouteImport } from './routes/_chat.linked.$computerId.$linkedThreadId'
 
 const ChatRoute = ChatRouteImport.update({
   id: '/_chat',
@@ -190,6 +191,12 @@ const ChatFleetDeviceDeviceIdRoute = ChatFleetDeviceDeviceIdRouteImport.update({
   path: '/device/$deviceId',
   getParentRoute: () => ChatFleetRoute,
 } as any)
+const ChatLinkedComputerIdLinkedThreadIdRoute =
+  ChatLinkedComputerIdLinkedThreadIdRouteImport.update({
+    id: '/linked/$computerId/$linkedThreadId',
+    path: '/linked/$computerId/$linkedThreadId',
+    getParentRoute: () => ChatRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
@@ -221,6 +228,7 @@ export interface FileRoutesByFullPath {
   '/fleet/$environmentId': typeof ChatFleetEnvironmentIdRoute
   '/fleet/': typeof ChatFleetIndexRoute
   '/fleet/device/$deviceId': typeof ChatFleetDeviceDeviceIdRoute
+  '/linked/$computerId/$linkedThreadId': typeof ChatLinkedComputerIdLinkedThreadIdRoute
 }
 export interface FileRoutesByTo {
   '/join': typeof JoinRoute
@@ -250,6 +258,7 @@ export interface FileRoutesByTo {
   '/fleet/$environmentId': typeof ChatFleetEnvironmentIdRoute
   '/fleet': typeof ChatFleetIndexRoute
   '/fleet/device/$deviceId': typeof ChatFleetDeviceDeviceIdRoute
+  '/linked/$computerId/$linkedThreadId': typeof ChatLinkedComputerIdLinkedThreadIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -283,6 +292,7 @@ export interface FileRoutesById {
   '/_chat/fleet/$environmentId': typeof ChatFleetEnvironmentIdRoute
   '/_chat/fleet/': typeof ChatFleetIndexRoute
   '/_chat/fleet/device/$deviceId': typeof ChatFleetDeviceDeviceIdRoute
+  '/_chat/linked/$computerId/$linkedThreadId': typeof ChatLinkedComputerIdLinkedThreadIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -316,6 +326,7 @@ export interface FileRouteTypes {
     | '/fleet/$environmentId'
     | '/fleet/'
     | '/fleet/device/$deviceId'
+    | '/linked/$computerId/$linkedThreadId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/join'
@@ -345,6 +356,7 @@ export interface FileRouteTypes {
     | '/fleet/$environmentId'
     | '/fleet'
     | '/fleet/device/$deviceId'
+    | '/linked/$computerId/$linkedThreadId'
   id:
     | '__root__'
     | '/_chat'
@@ -377,6 +389,7 @@ export interface FileRouteTypes {
     | '/_chat/fleet/$environmentId'
     | '/_chat/fleet/'
     | '/_chat/fleet/device/$deviceId'
+    | '/_chat/linked/$computerId/$linkedThreadId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -599,6 +612,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatFleetDeviceDeviceIdRouteImport
       parentRoute: typeof ChatFleetRoute
     }
+    '/_chat/linked/$computerId/$linkedThreadId': {
+      id: '/_chat/linked/$computerId/$linkedThreadId'
+      path: '/linked/$computerId/$linkedThreadId'
+      fullPath: '/linked/$computerId/$linkedThreadId'
+      preLoaderRoute: typeof ChatLinkedComputerIdLinkedThreadIdRouteImport
+      parentRoute: typeof ChatRoute
+    }
   }
 }
 
@@ -628,6 +648,7 @@ interface ChatRouteChildren {
   ChatIndexRoute: typeof ChatIndexRoute
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
   ChatDraftDraftIdRoute: typeof ChatDraftDraftIdRoute
+  ChatLinkedComputerIdLinkedThreadIdRoute: typeof ChatLinkedComputerIdLinkedThreadIdRoute
 }
 
 const ChatRouteChildren: ChatRouteChildren = {
@@ -640,6 +661,8 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatIndexRoute: ChatIndexRoute,
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,
   ChatDraftDraftIdRoute: ChatDraftDraftIdRoute,
+  ChatLinkedComputerIdLinkedThreadIdRoute:
+    ChatLinkedComputerIdLinkedThreadIdRoute,
 }
 
 const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)

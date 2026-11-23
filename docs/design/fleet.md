@@ -361,7 +361,7 @@ The environment descriptor's `capabilities` gains `computerLinks`, `scheduledTas
 
 ### Client
 
-- The parent's child list (the option B family line) includes remote children. When the client is connected to B, the row is B's real thread and opens it. Otherwise it shows A's cached status.
+- The parent's child list (the option B family line) includes remote children. When the client is connected to B, the row is B's real thread and opens it. Otherwise it shows A's cached status and opens the thread read through the link (docs/design/child-threads.md, "Opening a child on a computer the app can't see").
 - Fleet draws cross-computer work on the line between the two computers.
 
 ### Filing a child on another computer (Oct 30)

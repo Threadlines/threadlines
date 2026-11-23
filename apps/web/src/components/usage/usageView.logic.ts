@@ -993,6 +993,8 @@ export interface UsagePlanLimitMeter {
   readonly reachedLimit: boolean;
   /** How much of the window has passed, for the pace mark; see the shared presentation. */
   readonly elapsedPercent?: number;
+  /** The pace mark's hover text, set with `elapsedPercent`. */
+  readonly paceDetail?: string;
 }
 
 export interface UsagePlanLimitRow {
@@ -1038,7 +1040,9 @@ export function buildUsagePlanLimitRows(
       usedPercent: window.usedPercent,
       warning: window.warning,
       reachedLimit: window.reachedLimit,
-      ...(window.elapsedPercent !== undefined ? { elapsedPercent: window.elapsedPercent } : {}),
+      ...(window.elapsedPercent !== undefined && window.paceDetail !== undefined
+        ? { elapsedPercent: window.elapsedPercent, paceDetail: window.paceDetail }
+        : {}),
     }));
     if (presentation.spendControl) {
       meters.push({

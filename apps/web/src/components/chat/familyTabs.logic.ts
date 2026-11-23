@@ -27,6 +27,11 @@ export interface FamilyTab {
   readonly key: string;
   /** What a click opens; null for a child this app has no thread for. */
   readonly threadRef: ScopedThreadRef | null;
+  /**
+   * A child on a computer this app can't see that a click opens read through
+   * the link instead (`/linked/...`, LinkedThreadView); null otherwise.
+   */
+  readonly linkedRef: ScopedThreadRef | null;
   readonly kind: "parent" | "child";
   readonly title: string;
   /**
@@ -70,17 +75,25 @@ export interface FamilyTabEntry extends InboxFamilyEntry {
  * on each member while its parent is live. The parent first, then its
  * threads in the order the sidebar draws them. Null for a thread with no
  * family, a child the user made its own, or one whose parent is wrapped.
+ *
+ * The open thread may also be a child on a computer this app can't see, read
+ * through the link: `parentKey` then names the parent that holds it.
+ * `canReadLinked` says whether a parent's computer reads such children for
+ * this app (its `linkedThreadRead` capability).
  */
 export function familyTabsOf<E extends FamilyTabEntry>(input: {
   readonly openKey: string;
+  readonly parentKey?: string | undefined;
   readonly entries: readonly E[];
   readonly remoteChildrenOf: (parent: E) => readonly InboxRemoteChild[];
+  readonly canReadLinked: (parent: E) => boolean;
   readonly now: string;
 }): FamilyTabs | null {
   const byKey = new Map(input.entries.map((entry) => [entry.threadKey, entry] as const));
   const open = byKey.get(input.openKey);
-  if (open === undefined) return null;
-  const parentKey = familyParentKeyOf(open.thread) ?? open.threadKey;
+  const parentKey =
+    open !== undefined ? (familyParentKeyOf(open.thread) ?? open.threadKey) : input.parentKey;
+  if (parentKey === undefined) return null;
   const parent = byKey.get(parentKey);
   if (parent === undefined) return null;
   const family = liveFamilyOf({
@@ -97,13 +110,16 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
   // The open child must be one of them (it always is while its parent is live).
   if (
     parent.threadKey !== input.openKey &&
-    !family.children.some((child) => child.threadKey === input.openKey)
+    !family.children.some((child) => child.threadKey === input.openKey) &&
+    !family.remoteChildren.some((child) => child.threadKey === input.openKey)
   ) {
     return null;
   }
+  const readsLinked = input.canReadLinked(parent);
   const childTab = (child: E): FamilyTab => ({
     key: child.threadKey,
     threadRef: scopeThreadRef(child.thread.environmentId, child.thread.id),
+    linkedRef: null,
     kind: "child",
     title: child.thread.title,
     shortTitle: child.thread.title,
@@ -118,6 +134,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
   const remoteTab = (child: InboxRemoteChild): FamilyTab => ({
     key: child.threadKey,
     threadRef: null,
+    linkedRef: readsLinked ? linkedRefOf(child) : null,
     kind: "child",
     title: child.title,
     shortTitle: child.title,
@@ -138,6 +155,7 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
       {
         key: parent.threadKey,
         threadRef: scopeThreadRef(parent.thread.environmentId, parent.thread.id),
+        linkedRef: null,
         kind: "parent",
         title: parent.thread.title,
         shortTitle: parent.thread.title,
@@ -154,6 +172,17 @@ export function familyTabsOf<E extends FamilyTabEntry>(input: {
   };
 }
 
+/**
+ * The thread a child on a computer this app can't see would be read as
+ * through the link: one that has a thread there. A start with no thread yet,
+ * a child being set up here, and one whose link is gone have nothing to read.
+ */
+export function linkedRefOf(child: InboxRemoteChild): ScopedThreadRef | null {
+  return child.threadId === null || child.phase === "setting_up" || child.unlinked === true
+    ? null
+    : scopeThreadRef(child.environmentId, child.threadId);
+}
+
 /** Whether two rows draw the same: the row skips a redraw when nothing it shows changed. */
 export function sameFamilyTabs(left: FamilyTabs | null, right: FamilyTabs | null): boolean {
   if (left === right) return true;
@@ -166,6 +195,7 @@ export function sameFamilyTabs(left: FamilyTabs | null, right: FamilyTabs | null
       const other = right.tabs[index]!;
       return (
         tab.key === other.key &&
+        (tab.linkedRef === null) === (other.linkedRef === null) &&
         tab.title === other.title &&
         tab.shortTitle === other.shortTitle &&
         tab.lead === other.lead &&

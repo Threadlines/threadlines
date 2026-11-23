@@ -1650,9 +1650,9 @@ export type InboxRemoteChildPhase = AgentThreadStatusWord | RemoteChildRequestSt
  * A child in a parent's family the app has no thread for, shown from the
  * parent's own record of it: one on a computer this app can't see (its last
  * known status, or a start that has no thread there yet), or one started here
- * that is still being set up. It can't be opened: there is no thread to open,
- * so once wrapped and seen through the parent it has no row until the parent
- * wraps and holds it.
+ * that is still being set up. This app has no thread to open: one on another
+ * computer opens read through the link where the parent's computer can do
+ * that (`linkedRefOf`, LinkedThreadView), and stays in the family while open.
  */
 export interface InboxRemoteChild extends InboxFamilyExit {
   /**
@@ -1670,6 +1670,8 @@ export interface InboxRemoteChild extends InboxFamilyExit {
   readonly computerLabel: string;
   readonly title: string;
   readonly phase: InboxRemoteChildPhase;
+  /** The parent's computer no longer links to that one: nothing can be read from there. */
+  readonly unlinked?: true | undefined;
   /**
    * The user can wrap it up (or reopen it, once done) from here: a thread
    * there that nothing holds in front of them. Absent: a start, or one being
@@ -1897,8 +1899,11 @@ export function liveFamilyOf<E extends InboxFamilyEntry>(input: {
   const children = sortFamilyChildren(input.children).filter((child) =>
     isLiveFamilyMember(child, input.parent, input),
   );
+  // One open in the chat (read through the link) stays, as a child here does.
   const remoteChildren = input.remoteChildren.filter(
-    (child) => !hasLeftLiveFamily(child, input.parent, input.now),
+    (child) =>
+      child.threadKey === input.activeThreadKey ||
+      !hasLeftLiveFamily(child, input.parent, input.now),
   );
   return children.length === 0 && remoteChildren.length === 0 ? null : { children, remoteChildren };
 }
@@ -1995,8 +2000,10 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       : [];
     const remoteChildren: InboxRemoteChild[] = [];
     for (const child of heads ? remoteChildrenOf(entry) : []) {
-      if (hasLeftLiveFamily(child, entry, input.now)) doneRemote.push({ child, startedBy: entry });
-      else remoteChildren.push(child);
+      // One open in the chat (read through the link) stays, as a child here does.
+      if (child.threadKey !== input.activeThreadKey && hasLeftLiveFamily(child, entry, input.now)) {
+        doneRemote.push({ child, startedBy: entry });
+      } else remoteChildren.push(child);
     }
     const open = input.isFamilyOpen(entry.threadKey);
     const shownChildren = open
@@ -2006,7 +2013,9 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
         );
     const shownRemoteChildren = open
       ? remoteChildren
-      : remoteChildren.filter(isChildThreadNeedingYou);
+      : remoteChildren.filter(
+          (child) => isChildThreadNeedingYou(child) || child.threadKey === input.activeThreadKey,
+        );
     return {
       entry,
       children,
@@ -2102,7 +2111,9 @@ export function inboxLiveRowHoldsOpenChild(
   activeThreadKey: string | null,
 ): boolean {
   return (
-    activeThreadKey !== null && row.children.some((child) => child.threadKey === activeThreadKey)
+    activeThreadKey !== null &&
+    (row.children.some((child) => child.threadKey === activeThreadKey) ||
+      row.remoteChildren.some((child) => child.threadKey === activeThreadKey))
   );
 }
 
@@ -2133,7 +2144,8 @@ export function windowInboxDoneRows<E extends InboxFamilyEntry>(
     (row, index) =>
       index < limit ||
       (row.kind === "thread" &&
-        (row.row.openChild !== null || row.row.entry.threadKey === activeThreadKey)),
+        (row.row.openChild !== null || row.row.entry.threadKey === activeThreadKey)) ||
+      (row.kind === "remote" && row.row.child.threadKey === activeThreadKey),
   );
 }
 
@@ -2520,6 +2532,7 @@ export function remoteChildEntry(
     phase,
     // With its link gone, its last word is history, not news.
     status: linked ? status : null,
+    ...(linked ? {} : { unlinked: true as const }),
   };
   const filing = child.filing;
   if (filing === undefined) {

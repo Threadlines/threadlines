@@ -574,11 +574,14 @@ export type RuntimeCheckBack = typeof RuntimeCheckBack.Type;
 /**
  * The session's pending check-backs, whole (an authoritative level signal).
  * `ended`: ones that will not fire because the runtime stopped while they
- * were pending.
+ * were pending. `partial`: the runtime hasn't reported its own list yet, so
+ * jobs saved to the project that it restored may be missing; ones already
+ * listed as saved are kept.
  */
 const SessionCheckBacksUpdatedPayload = Schema.Struct({
   checkBacks: Schema.Array(RuntimeCheckBack),
   ended: Schema.optional(Schema.Array(RuntimeCheckBack)),
+  partial: Schema.optional(Schema.Boolean),
 });
 export type SessionCheckBacksUpdatedPayload = typeof SessionCheckBacksUpdatedPayload.Type;
 

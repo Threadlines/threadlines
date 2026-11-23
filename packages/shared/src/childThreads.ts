@@ -7,8 +7,6 @@
  */
 import {
   CHILD_REQUEST_NOTE_LIMIT,
-  CHILD_THREAD_SEND_LIMIT,
-  CHILD_THREAD_START_LIMIT,
   CHILD_THREADS_PER_CALL,
   type ChildRequestId,
   type ChildRequestNote,
@@ -49,12 +47,13 @@ export interface ChildRequestCaller {
 }
 
 /**
- * Why a call is refused: `limit` (the per-message budget is used up),
- * `not_allowed` (this thread or agent may not do it), or `refused` (anything
- * else, with a reason the calling agent can act on).
+ * Why a call is refused: `not_allowed` (this thread or agent may not do it),
+ * or `refused` (anything else, with a reason the calling agent can act on).
+ * There is no count: agents start and message as many threads as they like,
+ * until the user stops them (docs/design/agent-autonomy-no-limits.md).
  */
 export interface ChildRequestRefusal {
-  readonly outcome: "refused" | "limit" | "not_allowed";
+  readonly outcome: "refused" | "not_allowed";
   readonly detail: string;
 }
 
@@ -102,23 +101,6 @@ function callerRefusal(
   return null;
 }
 
-/** Threads a project's lead chat may start, and messages it may send, per user message. */
-export const LEAD_THREAD_START_LIMIT = 10;
-export const LEAD_THREAD_SEND_LIMIT = 20;
-
-/**
- * A thread's budget for starting and messaging threads per user message. The
- * project's lead chat (docs/design/lead-chat.md) gets twice the usual.
- */
-export function childRequestLimits(input: { readonly isLead: boolean }): {
-  readonly starts: number;
-  readonly sends: number;
-} {
-  return input.isLead
-    ? { starts: LEAD_THREAD_START_LIMIT, sends: LEAD_THREAD_SEND_LIMIT }
-    : { starts: CHILD_THREAD_START_LIMIT, sends: CHILD_THREAD_SEND_LIMIT };
-}
-
 /** Why starting `count` threads is refused, or null when every rule allows it. */
 export function childStartRefusal(
   thread: ChildRequestCaller,
@@ -126,8 +108,6 @@ export function childStartRefusal(
     readonly from: RoomAgentRef;
     readonly callerTurnId: TurnId;
     readonly count: number;
-    /** The caller is its project's lead chat. */
-    readonly isLead?: boolean;
   },
 ): ChildRequestRefusal | null {
   const caller = callerRefusal(thread, input);
@@ -151,14 +131,6 @@ export function childStartRefusal(
       detail: `Start between 1 and ${CHILD_THREADS_PER_CALL} threads at a time.`,
     };
   }
-  const used = thread.childRequests.startsSinceUser;
-  const limit = childRequestLimits({ isLead: input.isLead === true }).starts;
-  if (used + input.count > limit) {
-    return {
-      outcome: "limit",
-      detail: `${input.isLead === true ? "The lead chat" : "Agents"} can start ${limit} threads per user message, and ${used} were already asked for since the user last wrote, so these were not started. Say so in your reply, and wait for the user before starting more.`,
-    };
-  }
   return null;
 }
 
@@ -180,8 +152,6 @@ export function childSendRefusal(
   input: {
     readonly from: RoomAgentRef;
     readonly callerTurnId: TurnId;
-    /** The caller is its project's lead chat. */
-    readonly isLead?: boolean;
   },
 ): ChildRequestRefusal | null {
   const caller = callerRefusal(thread, input);
@@ -215,13 +185,6 @@ export function childSendRefusal(
           "This thread is working on something the lead chat passed on, and that thread has more access than the lead chat. Do the work here, or tell the user, who can send it there.",
       };
     }
-  }
-  const limit = childRequestLimits({ isLead: input.isLead === true }).sends;
-  if (thread.childRequests.sendsSinceUser >= limit) {
-    return {
-      outcome: "limit",
-      detail: `${input.isLead === true ? "The lead chat" : "Agents"} can send ${limit} messages to their threads per user message, and that many were sent since the user last wrote, so this one was not. Say so in your reply, and wait for the user before sending more.`,
-    };
   }
   return null;
 }
@@ -416,13 +379,6 @@ export function leadPassRefusal(
     return {
       outcome: "refused",
       detail: "That thread's last turn failed. It takes work again once the user writes there.",
-    };
-  }
-  const limit = childRequestLimits({ isLead: true }).sends;
-  if (lead.childRequests.sendsSinceUser >= limit) {
-    return {
-      outcome: "limit",
-      detail: `The lead chat can send ${limit} messages to threads per user message, and that many were sent since the user last wrote, so this one was not. Say so in your reply, and wait for the user before sending more.`,
     };
   }
   return null;
@@ -623,13 +579,7 @@ export const childRequestStateOn = {
   ): OrchestrationChildRequestState =>
     state.open.some((entry) => entry.requestId === request.requestId)
       ? state
-      : {
-          ...state,
-          open: [...state.open, request],
-          ...(request.kind === "start"
-            ? { startsSinceUser: state.startsSinceUser + 1 }
-            : { sendsSinceUser: state.sendsSinceUser + 1 }),
-        },
+      : { ...state, open: [...state.open, request] },
   updated: (
     state: OrchestrationChildRequestState,
     update: {
@@ -755,24 +705,20 @@ export const childRequestStateOn = {
   ): OrchestrationChildRequestState =>
     state.deliveryEpoch === deliveryEpoch ? state : { ...state, deliveryEpoch },
   /**
-   * The user wrote (or, with `keepsPassBlock`, Threadlines started a turn for
-   * them): the per-message counts start over, and unless kept, a pass's
-   * block on starting threads lifts.
+   * The user wrote: a pass's block on starting threads lifts. With
+   * `keepsPassBlock` (a turn Threadlines started for them, recorded before
+   * agents could message threads freely) nothing changes.
    */
   reset: (
     state: OrchestrationChildRequestState,
     options?: { readonly keepsPassBlock?: boolean | undefined },
   ): OrchestrationChildRequestState => {
     const liftsBlock = state.passCeiling !== undefined && options?.keepsPassBlock !== true;
-    if (state.startsSinceUser === 0 && state.sendsSinceUser === 0 && !liftsBlock) {
+    if (!liftsBlock) {
       return state;
     }
     const { passCeiling: _block, ...rest } = state;
-    return {
-      ...(liftsBlock ? rest : state),
-      startsSinceUser: 0,
-      sendsSinceUser: 0,
-    };
+    return rest;
   },
   /** The lead chat's passes (`thread.lead-pass-recorded`); see its payload. */
   leadPass: (
@@ -784,9 +730,8 @@ export const childRequestStateOn = {
     },
   ): OrchestrationChildRequestState => {
     switch (pass.kind) {
-      case "sent":
-        return { ...state, sendsSinceUser: state.sendsSinceUser + 1 };
       // Its mark is on the message, not on the thread's requests.
+      case "sent":
       case "not-run":
         return state;
       case "started": {
