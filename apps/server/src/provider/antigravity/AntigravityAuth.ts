@@ -383,6 +383,7 @@ export function makeAntigravityAuthFlows(input: {
       // method's sign-in: one Google refuses a session (no plan, unverified)
       // stays signed out.
       yield* emit("Checking the sign-in…");
+      let verifiedSessionId: string | undefined;
       yield* Effect.scoped(
         Effect.gen(function* () {
           const acp = yield* makeAcpProviderRuntime(input.descriptor, {
@@ -392,9 +393,22 @@ export function makeAntigravityAuthFlows(input: {
             cwd: input.profileDir,
             clientInfo: THREADLINES_ACP_CLIENT_INFO,
           });
-          yield* acp.start();
+          const started = yield* acp.start();
+          verifiedSessionId = started.sessionId;
+          // Reuse this already-open session to capture every model's own
+          // `thought_level` options so the picker is accurate right away.
+          if (input.descriptor.discoverModelOptions) {
+            yield* input.descriptor.discoverModelOptions(acp).pipe(Effect.ignore);
+          }
         }),
       ).pipe(
+        Effect.ensuring(
+          Effect.suspend(() =>
+            verifiedSessionId !== undefined && input.descriptor.onEphemeralSessionClosed
+              ? input.descriptor.onEphemeralSessionClosed(verifiedSessionId).pipe(Effect.ignore)
+              : Effect.void,
+          ),
+        ),
         Effect.timeoutOrElse({
           duration: VERIFY_TIMEOUT,
           orElse: () =>

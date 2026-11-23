@@ -595,11 +595,20 @@ function checkWorld(world: World, steer: boolean): void {
     expect(step.state.turn).toBeUndefined();
     expect(step.commands.some((command) => command.type === "startTurn")).toBe(false);
   }
-  // A hold ends through timers alone once the agent's work is done.
+  // A hold ends through timers (and its final outcome check, when the agent
+  // spoke during the hold) once the agent's work is done.
   if (state.turn?.phase.tag === "waiting" && state.requestsOpen === 0) {
     const heldId = state.turn.id;
     let current = state;
     for (let round = 0; round < 8 && current.turn?.id === heldId; round += 1) {
+      if (current.turn.phase.tag === "settling" && current.turn.newest !== undefined) {
+        current = stepTurnMachine(current, {
+          type: "outcomeRead",
+          prompt: current.turn.newest,
+          outcome: outcome("completed"),
+        }).state;
+        continue;
+      }
       const armed = current.timers.find(
         ([timer]) => timer !== "cancelDeadline" && timer !== "stopCheck",
       );
@@ -730,7 +739,13 @@ describe("AcpTurnMachine, the reviewed races", () => {
     expect(state.subagents).toBe(0);
     expect(state.wakesOwed).toBe(0);
     const settled = stepTurnMachine(state, fire(state, "settle"));
-    expect(ends(settled.commands).map((end) => end.turnId)).toEqual(["u1"]);
+    expect(settled.commands).toContainEqual({ type: "readOutcome", prompt: 1 });
+    const rechecked = stepTurnMachine(settled.state, {
+      type: "outcomeRead",
+      prompt: 1,
+      outcome: outcome("completed"),
+    });
+    expect(ends(rechecked.commands).map((end) => end.turnId)).toEqual(["u1"]);
   });
 
   /** A turn holding two subagents, its answer read. */
@@ -971,5 +986,34 @@ describe("AcpTurnMachine, the reviewed races", () => {
     expect(ends(commands)).toEqual([]);
     expect(state.turn?.newest).toBe(2);
     expect(state.turn?.phase.tag).toBe("prompting");
+  });
+
+  it("re-checks the outcome before settling when the agent spoke after its prompt answered", () => {
+    const held = run([
+      { type: "send", sendId: "s1", turnId: "u1" },
+      { type: "workStarted", id: "c1", kind: "command" },
+      { type: "promptAnswered", prompt: 1 },
+      { type: "outcomeRead", prompt: 1, outcome: outcome("completed") },
+      { type: "workEnded", id: "c1" },
+      { type: "agentOutput", newTurnId: "a1" },
+      { type: "replyEnded" },
+    ]).state;
+    const settling = stepTurnMachine(held, fire(held, "settle"));
+    expect(settling.commands).toContainEqual({ type: "readOutcome", prompt: 1 });
+    expect(ends(settling.commands)).toEqual([]);
+    const failed = stepTurnMachine(settling.state, {
+      type: "outcomeRead",
+      prompt: 1,
+      outcome: outcome("failed", true),
+    });
+    expect(ends(failed.commands)).toEqual([
+      {
+        type: "endTurn",
+        turnId: "u1",
+        end: { kind: "answered", outcome: outcome("failed", true) },
+      },
+    ]);
+    expect(failed.commands).toContainEqual({ type: "markSessionLost" });
+    expect(failed.commands).toContainEqual({ type: "stopSession", reason: "sessionLost" });
   });
 });

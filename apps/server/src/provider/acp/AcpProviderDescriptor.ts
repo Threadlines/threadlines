@@ -84,6 +84,36 @@ export interface AcpPermissionQuestion {
   readonly optionIdForAnswers: (answers: ProviderUserInputAnswers) => string | undefined;
 }
 
+/** An ACP form elicitation request (`elicitation/create` or `session/elicitation`). */
+export interface AcpElicitationFormRequest {
+  readonly sessionId?: string;
+  readonly mode?: string | null;
+  readonly message: string;
+  readonly requestedSchema?: {
+    readonly type?: string | null;
+    readonly title?: string | null;
+    readonly description?: string | null;
+    readonly properties?: Readonly<Record<string, unknown>> | null;
+    readonly required?: ReadonlyArray<string> | null;
+  } | null;
+}
+
+export type AcpElicitationFormResponse =
+  | {
+      readonly action: "accept";
+      readonly content: Readonly<Record<string, string | number | boolean | ReadonlyArray<string>>>;
+    }
+  | { readonly action: "decline" | "cancel" };
+
+/**
+ * An ACP form elicitation recognized as questions for the user (Antigravity's
+ * `ask_question`, pairing `qN` choices with `qN_other` free-text fields).
+ */
+export interface AcpElicitationQuestions {
+  readonly questions: ReadonlyArray<UserInputQuestion>;
+  readonly responseForAnswers: (answers: ProviderUserInputAnswers) => AcpElicitationFormResponse;
+}
+
 /**
  * Plan mode for agents that plan through a prompt command and a plan file
  * rather than an ACP session mode (Antigravity's `/plan`).
@@ -651,6 +681,27 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
     request: EffectAcpSchema.RequestPermissionRequest,
   ) => AcpPermissionQuestion | undefined;
   /**
+   * Recognizes an agent's own question form inside an ACP form elicitation
+   * (Antigravity's `ask_question`) so it renders as a single question card
+   * instead of a raw form. Anything else falls back to the generic form UI.
+   */
+  readonly classifyElicitationForm?: (
+    request: AcpElicitationFormRequest,
+  ) => AcpElicitationQuestions | undefined;
+  /**
+   * The agent accepts `type: "http"` MCP servers in `session/new` /
+   * `session/resume` / `session/load` even though its `initialize` answer
+   * omits `agentCapabilities.mcpCapabilities.http` (Antigravity 1.5,
+   * google-antigravity/antigravity-cli#1604).
+   */
+  readonly assumeHttpMcp?: boolean;
+  /**
+   * Called after an ephemeral probe, sign-in verification, or text-generation
+   * session has closed and its process has exited, so the descriptor can clean
+   * up throwaway conversation records the agent wrote to its profile.
+   */
+  readonly onEphemeralSessionClosed?: (sessionId: string) => Effect.Effect<void>;
+  /**
    * A permission option whose "always" outlives the session (Grok's
    * `always-allow` saves a grant for the whole project). Never offered or
    * chosen; "Accept for session" then appears only for a real session grant.
@@ -806,6 +857,16 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    * switching through the catalog, and probes no further when it fails.
    */
   readonly listModelOptions?: (
+    acp: AcpSessionRuntimeShape,
+  ) => Effect.Effect<ReadonlyArray<AcpModelOptions> | undefined, EffectAcpErrors.AcpError>;
+  /**
+   * Probes every model's own options inside the single discovery (or sign-in
+   * verification) session, for an agent that starts slowly and switches models
+   * in milliseconds (Antigravity's per-model `thought_level`). Unlike
+   * `listModelOptions`, this runs during initial discovery rather than opening
+   * a second background probe session.
+   */
+  readonly discoverModelOptions?: (
     acp: AcpSessionRuntimeShape,
   ) => Effect.Effect<ReadonlyArray<AcpModelOptions> | undefined, EffectAcpErrors.AcpError>;
   /**

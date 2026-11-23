@@ -36,6 +36,7 @@ import {
 
 export interface AcpProviderRuntimeInput<Settings extends AcpProviderSettings> extends Omit<
   AcpSessionRuntimeOptions,
+  | "assumeHttpMcp"
   | "authMethodId"
   | "authenticateTimeoutMs"
   | "cancellationNotice"
@@ -120,6 +121,7 @@ export const makeAcpProviderRuntime = <Settings extends AcpProviderSettings>(
                   : acpSignInRequiredMessage(descriptor.presentation.displayName),
             }
           : {}),
+        ...(descriptor.assumeHttpMcp ? { assumeHttpMcp: true } : {}),
         ...(descriptor.clientCapabilities
           ? { clientCapabilities: descriptor.clientCapabilities }
           : {}),

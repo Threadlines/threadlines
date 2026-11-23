@@ -85,8 +85,8 @@ export interface AcpMachineTurn<Answer> {
   readonly newest: number | undefined;
   readonly phase:
     | { readonly tag: "prompting" }
-    | { readonly tag: "settling" }
-    | { readonly tag: "waiting"; readonly end: AcpTurnEnd<Answer> };
+    | { readonly tag: "settling"; readonly final?: true }
+    | { readonly tag: "waiting"; readonly end: AcpTurnEnd<Answer>; readonly recheck?: true };
   readonly stopRequested: boolean;
 }
 
@@ -445,7 +445,12 @@ export function stepTurnMachine<Answer>(
       commands.push({ type: "startTurn", turnId: newTurnId });
       return;
     }
-    if (turn.phase.tag !== "prompting") state.replyOpen = true;
+    if (turn.phase.tag !== "prompting") {
+      state.replyOpen = true;
+      if (turn.phase.tag === "waiting" && turn.phase.recheck !== true) {
+        state.turn = { ...turn, phase: { ...turn.phase, recheck: true } };
+      }
+    }
   };
 
   /**
@@ -475,10 +480,31 @@ export function stepTurnMachine<Answer>(
     commands.push({ type: "readChildren", generation, launches });
   };
 
-  /** A held turn whose work is all done and quiet, or that went silent, ends. */
+  /** A held turn ends directly (interrupted by a new send). */
   const endWaiting = () => {
     const turn = state.turn;
     if (turn?.phase.tag === "waiting") endTurn(turn.phase.end);
+  };
+
+  /**
+   * A held turn whose work is all done and quiet, or that went silent, ends.
+   * When the agent spoke after its prompt answered, the outcome is checked one
+   * last time so an upstream error written during a wake-up reply isn't hidden.
+   */
+  const finishWaiting = () => {
+    const turn = state.turn;
+    if (turn?.phase.tag !== "waiting") return;
+    if (
+      turn.phase.recheck === true &&
+      turn.newest !== undefined &&
+      turn.phase.end.kind === "answered" &&
+      turn.phase.end.outcome.state === "completed"
+    ) {
+      state.turn = { ...turn, phase: { tag: "settling", final: true } };
+      commands.push({ type: "readOutcome", prompt: turn.newest });
+      return;
+    }
+    endTurn(turn.phase.end);
   };
 
   switch (event.type) {
@@ -575,11 +601,11 @@ export function stepTurnMachine<Answer>(
         endTurn(end);
         break;
       }
-      if (event.outcome.state === "completed" && workPending(state)) {
+      if (turn.phase.final !== true && event.outcome.state === "completed" && workPending(state)) {
         state.turn = { ...turn, phase: { tag: "waiting", end } };
         break;
       }
-      if (event.outcome.state !== "completed") clearWork();
+      if (event.outcome.state !== "completed" || turn.phase.final === true) clearWork();
       endTurn(end);
       break;
     }
@@ -719,11 +745,11 @@ export function stepTurnMachine<Answer>(
           else if (state.wakesOwed > 0) state.wakesOwed -= 1;
           break;
         case "settle":
-          if (!workPending(state)) endWaiting();
+          if (!workPending(state)) finishWaiting();
           break;
         case "silent":
           clearWork();
-          endWaiting();
+          finishWaiting();
           break;
         case "noticeExpiry":
           state.noticesExpected = 0;

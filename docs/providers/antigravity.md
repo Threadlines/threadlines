@@ -46,7 +46,12 @@ thread's earlier turns as context.
 ## Models and Access Levels
 
 The model picker lists the models your account has, Claude and GPT models included where your plan
-has them. The reasoning level is its own choice next to the model.
+has them. The reasoning level is its own choice next to the model, probed per model in a single
+session during sign-in or the first status check and cached per account and Antigravity version.
+Questions asked via Antigravity's `ask_question` tool appear as normal multi-step question cards
+(supporting single-select, multi-select, and custom answers). Threadlines' built-in HTTP MCP tools
+(browser panel, rooms, pages, commands, devices) are attached to every session even though
+`agy acp` omits `mcpCapabilities.http` in its `initialize` response.
 
 | Access level      | What Antigravity runs                                                          |
 | ----------------- | ------------------------------------------------------------------------------ |
@@ -242,21 +247,25 @@ never through a link, up to each kind's limit and 50 MB inline per message.
 
 ### When a turn fails
 
-Antigravity sometimes ends a turn normally while the reply is really an upstream error. Threadlines
+Antigravity sometimes ends a turn normally while the reply is really an upstream error (including
+during a reply it started by itself after a background command or subagent finished). Threadlines
 reads the error the CLI reports (1.5.9+) and, where the CLI reports none, the last step of the
 turn in the CLI's own session log (`antigravity-acp/conversations/<id>.db` in the profile, a
-private format read only for this). The log doesn't say which prompt wrote a step, so an error
+private format read only for this), checking again before a held turn settles if the agent spoke
+after its prompt answered. The log doesn't say which prompt wrote a step, so an error
 counts for the newest prompt when it is the log's last step and was written after that prompt went
 out. That never hides the newest prompt's own failure; the cost is that an older prompt's late
 error, with nothing written after it, fails a turn whose steer was answered. When the log can't be
 read, the prompt's own answer stands (the agent's words about the error stay in its reply). The turn then fails with Google's words and a
-Retry. An
+Retry (or Google's account verification link when `VALIDATION_REQUIRED` is returned). An
 exhausted quota fails with its reset time, so the usage-limit notice above the composer says when
 it resets and can continue then. A conversation Google can no longer continue (a model rejected a
 saved thinking block) stops its session, and the next message starts a new one with the thread's
 history, also one sent in the moment the session is stopping. A message whose mode or model couldn't be
 set never reaches Antigravity: its turn fails, and the earlier conversation Threadlines had put in
-front of it goes with the next message instead.
+front of it goes with the next message instead. Throwaway sessions opened for sign-in checks,
+model discovery, or text generation have their conversation files cleaned up from the profile once
+they exit.
 
 ### Editing an Earlier Message
 

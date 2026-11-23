@@ -11,6 +11,7 @@
 import {
   ApprovalRequestId,
   EventId,
+  type McpElicitation,
   type ProviderApprovalDecision,
   type ProviderFailureCategory,
   type ProviderInteractionMode,
@@ -27,6 +28,7 @@ import {
   type UsageTokenTotals,
   type ServerProviderSlashCommand,
 } from "@threadlines/contracts";
+import { mcpElicitationPrompt, mcpElicitationResponse } from "../mcpElicitation.ts";
 import { withFailureCategory } from "../providerFailureCategory.ts";
 import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
 import {
@@ -256,6 +258,7 @@ interface PendingApproval {
 
 interface PendingUserInput {
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
+  readonly elicitation?: McpElicitation;
 }
 
 interface AcpSessionContext {
@@ -433,6 +436,15 @@ interface AcpMachineSession {
     }
   >;
   readonly prompts: Map<number, AcpMachinePromptSent>;
+  /** Outcome watch kept past prompt deletion so a held turn can re-check after a wake-up reply. */
+  readonly watches: Map<
+    number,
+    {
+      readonly watch: AcpPromptOutcomeWatch | undefined;
+      readonly stopReason: EffectAcpSchema.StopReason;
+      readonly fallback: AcpTurnCompletedPayload;
+    }
+  >;
   readonly turns: Map<
     string,
     {
@@ -1871,7 +1883,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
           // A side runtime never reaches the user: its questions go unanswered
           // at once (no answers reads as declined), and nothing is shown.
-          const requestUserInput: AcpExtensionContext["requestUserInput"] = (request) =>
+          const requestUserInput = (request: {
+            readonly method: string;
+            readonly payload: unknown;
+            readonly questions: Parameters<AcpExtensionContext["requestUserInput"]>[0]["questions"];
+            readonly elicitation?: McpElicitation;
+          }): Effect.Effect<ProviderUserInputAnswers> =>
             Effect.gen(function* () {
               if (lockdown !== undefined) {
                 yield* logNative(input.threadId, `${request.method} (declined: side answer)`, {});
@@ -1880,7 +1897,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               const requestId = ApprovalRequestId.make(crypto.randomUUID());
               const runtimeRequestId = RuntimeRequestId.make(requestId);
               const answers = yield* Deferred.make<ProviderUserInputAnswers>();
-              pendingUserInputs.set(requestId, { answers });
+              pendingUserInputs.set(requestId, {
+                answers,
+                ...(request.elicitation ? { elicitation: request.elicitation } : {}),
+              });
               const shown = yield* showRequest((turnId) =>
                 Effect.gen(function* () {
                   yield* offerRuntimeEvent({
@@ -1890,7 +1910,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     threadId: input.threadId,
                     turnId,
                     requestId: runtimeRequestId,
-                    payload: { questions: request.questions },
+                    payload: {
+                      questions: request.questions,
+                      ...(request.elicitation ? { elicitation: request.elicitation } : {}),
+                    },
                     ...(extensionSource
                       ? {
                           raw: {
@@ -2027,7 +2050,111 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               }),
           };
 
+          const ElicitationCreatePayload = Schema.Struct({
+            sessionId: Schema.optionalKey(Schema.String),
+            mode: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
+            message: Schema.String,
+            requestedSchema: Schema.optionalKey(
+              Schema.Union([
+                Schema.Struct({
+                  type: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
+                  title: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
+                  description: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
+                  properties: Schema.optionalKey(
+                    Schema.Union([Schema.Record(Schema.String, Schema.Unknown), Schema.Null]),
+                  ),
+                  required: Schema.optionalKey(
+                    Schema.Union([Schema.Array(Schema.String), Schema.Null]),
+                  ),
+                }),
+                Schema.Null,
+              ]),
+            ),
+          });
+
+          const handleFormElicitation = (
+            method: string,
+            params: {
+              readonly sessionId?: string;
+              readonly mode?: string | null;
+              readonly message: string;
+              readonly requestedSchema?: {
+                readonly type?: string | null;
+                readonly title?: string | null;
+                readonly description?: string | null;
+                readonly properties?: Readonly<Record<string, unknown>> | null;
+                readonly required?: ReadonlyArray<string> | null;
+              } | null;
+            },
+          ): Effect.Effect<
+            | {
+                readonly action: "accept";
+                readonly content: Readonly<
+                  Record<string, string | number | boolean | ReadonlyArray<string>>
+                >;
+              }
+            | { readonly action: "decline" | "cancel" }
+          > =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, method, params);
+              if (
+                side !== undefined ||
+                (params.mode !== undefined && params.mode !== null && params.mode !== "form")
+              ) {
+                return { action: "decline" as const };
+              }
+              const classified = descriptor.classifyElicitationForm?.(params);
+              if (classified) {
+                const answers = yield* requestUserInput({
+                  method,
+                  payload: params,
+                  questions: classified.questions,
+                });
+                return classified.responseForAnswers(answers);
+              }
+              const elicitation = mcpElicitationPrompt({
+                serverName: descriptor.presentation.displayName,
+                message: params.message,
+                mode: "form",
+                requestedSchema: params.requestedSchema,
+              });
+              if (!elicitation) {
+                return { action: "decline" as const };
+              }
+              const answers = yield* requestUserInput({
+                method,
+                payload: params,
+                questions: [],
+                elicitation,
+              });
+              const response = yield* Effect.try(() =>
+                mcpElicitationResponse(elicitation, answers),
+              ).pipe(Effect.orElseSucceed(() => ({ action: "cancel" as const, content: null })));
+              if (response.action !== "accept") {
+                return { action: response.action };
+              }
+              const content =
+                typeof response.content === "object" &&
+                response.content !== null &&
+                !Array.isArray(response.content)
+                  ? (response.content as Readonly<
+                      Record<string, string | number | boolean | ReadonlyArray<string>>
+                    >)
+                  : {};
+              return { action: "accept" as const, content };
+            });
+
           const started = yield* Effect.gen(function* () {
+            yield* acp.handleExtRequest("elicitation/create", ElicitationCreatePayload, (params) =>
+              handleFormElicitation("elicitation/create", params),
+            );
+            yield* acp.handleElicitation((params) =>
+              params.mode === "form"
+                ? handleFormElicitation("session/elicitation", params).pipe(
+                    Effect.map((action) => ({ action })),
+                  )
+                : Effect.succeed({ action: { action: "decline" as const } }),
+            );
             if (descriptor.extensions) {
               yield* descriptor.extensions.register(extensionContext);
             }
@@ -2253,11 +2380,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               : { text: undefined, hash: projectBriefHash };
           const now = yield* nowIso;
           // ACP passes an HTTP server only to an agent that says it speaks
-          // HTTP MCP (see supportedMcpServers); without that, it has no room
-          // tools, and says so.
+          // HTTP MCP (see supportedMcpServers) or declares `assumeHttpMcp`;
+          // without that, it has no room tools, and says so.
           const roomToolsAttached =
             credential !== undefined &&
-            started.initializeResult.agentCapabilities?.mcpCapabilities?.http === true;
+            (descriptor.assumeHttpMcp === true ||
+              started.initializeResult.agentCapabilities?.mcpCapabilities?.http === true);
           const session: ProviderSession = {
             provider: PROVIDER,
             providerInstanceId: boundInstanceId,
@@ -2352,6 +2480,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     state: initialTurnMachineState(),
                     callers: new Map(),
                     prompts: new Map(),
+                    watches: new Map(),
                     turns: new Map(),
                     timers: new Map(),
                     lastActivityMs: yield* Clock.currentTimeMillis,
@@ -3204,13 +3333,68 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }
           case "readOutcome": {
             const sent = machine.prompts.get(command.prompt);
-            if (sent === undefined) return;
             const seen = { turnText: ctx.activeTurnText, providerStatus: ctx.lastProviderStatus };
+            if (sent !== undefined) {
+              const retainedWatch = sent.watch;
+              const retainedStopReason =
+                sent.exit !== undefined && Exit.isSuccess(sent.exit)
+                  ? sent.exit.value.stopReason
+                  : undefined;
+              yield* seam({ point: "outcomeRead", prompt: command.prompt }).pipe(
+                Effect.andThen(readMachineOutcome(ctx, sent, seen)),
+                Effect.flatMap((outcome) => {
+                  if (retainedStopReason !== undefined && outcome.state === "completed") {
+                    machine.watches.set(command.prompt, {
+                      watch: retainedWatch,
+                      stopReason: retainedStopReason,
+                      fallback: outcome.answer,
+                    });
+                  }
+                  return postTurnEvent(ctx, {
+                    type: "outcomeRead",
+                    prompt: command.prompt,
+                    outcome,
+                  });
+                }),
+                Effect.forkIn(ctx.scope),
+              );
+              return;
+            }
+            // Post-settle re-check: the prompt's payload is already freed, so
+            // re-run its watch against the session log for any error written
+            // during a wake-up reply.
+            const retained = machine.watches.get(command.prompt);
+            machine.watches.delete(command.prompt);
             yield* seam({ point: "outcomeRead", prompt: command.prompt }).pipe(
-              Effect.andThen(readMachineOutcome(ctx, sent, seen)),
-              Effect.flatMap((outcome) =>
-                postTurnEvent(ctx, { type: "outcomeRead", prompt: command.prompt, outcome }),
+              Effect.andThen(
+                retained?.watch === undefined
+                  ? Effect.succeed<AcpPromptFailure | undefined>(undefined)
+                  : retained.watch.check({ response: { stopReason: retained.stopReason } }).pipe(
+                      Effect.timeoutOption(ACP_OUTCOME_CHECK_TIMEOUT),
+                      Effect.map(Option.getOrUndefined),
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("acp.prompt-outcome.recheck-failed", {
+                          provider: PROVIDER,
+                          cause: Cause.pretty(cause),
+                        }).pipe(Effect.as(undefined)),
+                      ),
+                    ),
               ),
+              Effect.flatMap((hidden) => {
+                const outcome: AcpPromptOutcomeRead<AcpTurnCompletedPayload> =
+                  hidden !== undefined
+                    ? {
+                        state: "failed",
+                        answer: failedTurnPayload(hidden, retained?.stopReason ?? null),
+                        sessionLost: hidden.sessionLost === true,
+                      }
+                    : {
+                        state: "completed",
+                        answer: retained?.fallback ?? { state: "completed", stopReason: null },
+                        sessionLost: false,
+                      };
+                return postTurnEvent(ctx, { type: "outcomeRead", prompt: command.prompt, outcome });
+              }),
               Effect.forkIn(ctx.scope),
             );
             return;
@@ -3376,6 +3560,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const id = TurnId.make(turnId);
         const data = machine.turns.get(turnId);
         machine.turns.delete(turnId);
+        machine.watches.clear();
         const closedItem = yield* ctx.acp.closeAssistantSegmentNow;
         if (closedItem !== undefined) {
           yield* offerRuntimeEvent(
@@ -4014,6 +4199,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             provider: PROVIDER,
             method: "user-input",
             detail: `Unknown pending user-input request: ${requestId}`,
+          });
+        }
+        if (pending.elicitation !== undefined) {
+          const elicitation = pending.elicitation;
+          yield* Effect.try({
+            try: () => mcpElicitationResponse(elicitation, answers),
+            catch: (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "elicitation/create",
+                detail: cause instanceof Error ? cause.message : String(cause),
+                cause,
+              }),
           });
         }
         yield* Deferred.succeed(pending.answers, answers);

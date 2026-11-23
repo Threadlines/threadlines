@@ -43,8 +43,10 @@ import {
   ProviderDriverKind,
   type ProviderInteractionMode,
   type ProviderOptionSelection,
+  type ProviderUserInputAnswers,
   type RuntimeMode,
   type ServerProviderModel,
+  type UserInputQuestion,
 } from "@threadlines/contracts";
 import {
   createModelCapabilities,
@@ -64,6 +66,7 @@ import {
 } from "../antigravity/AntigravityRelease.ts";
 import type { AntigravityReleaseSource } from "../antigravity/AntigravityReleaseSource.ts";
 import { antigravityAttachmentDelivery } from "../antigravity/AntigravityAttachments.ts";
+import { removeAntigravitySessionFiles } from "../antigravity/AntigravitySessionLog.ts";
 import { antigravitySubagents } from "../antigravity/AntigravitySubagents.ts";
 import {
   normalizeAntigravitySessionUpdate,
@@ -110,12 +113,20 @@ import type {
   ProviderMaintenanceCommandAction,
 } from "../providerMaintenance.ts";
 import { THREADLINES_ACP_CLIENT_INFO } from "./acpClientInfo.ts";
-import type { AcpProviderDescriptor, AcpProviderProbeOutcome } from "./AcpProviderDescriptor.ts";
+import type {
+  AcpElicitationFormRequest,
+  AcpElicitationFormResponse,
+  AcpElicitationQuestions,
+  AcpModelOptions,
+  AcpProviderDescriptor,
+  AcpProviderProbeOutcome,
+} from "./AcpProviderDescriptor.ts";
 import {
   flattenSessionConfigSelectOptions,
   selectConfigOptionCurrentValue,
 } from "./AcpProviderModels.ts";
 import { type AcpToolCallState, findModelConfigOption } from "./AcpRuntimeModel.ts";
+import type { AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 import { ProviderSetupError } from "../Errors.ts";
 
 const decodeAntigravitySettings = Schema.decodeSync(AntigravitySettings);
@@ -245,9 +256,10 @@ export function parseAntigravitySignInUrl(line: string): string | undefined {
 
 // ── Models: one family per model, effort as an option ────────────────
 
-const EFFORT_NAME = /^(.*\S)\s*\((High|Medium|Low|Minimal)\)$/iu;
-const EFFORT_ORDER = ["high", "medium", "low", "minimal"];
+const EFFORT_NAME = /^(.*\S)\s*\((Extra High|XHigh|High|Medium|Low|Minimal)\)$/iu;
+const EFFORT_ORDER = ["extra high", "xhigh", "high", "medium", "low", "minimal"];
 export const ANTIGRAVITY_EFFORT_OPTION_ID = "effort";
+const ANTIGRAVITY_MODEL_PROBE_STEP_TIMEOUT = "4 seconds";
 
 export interface AntigravityModelFamily {
   readonly slug: string;
@@ -410,12 +422,87 @@ export function nextAntigravityCatalog(
   if (currentValue && (current || Object.keys(thoughtLevels).length > 0)) {
     thoughtLevels[currentValue] = current ?? null;
   }
+  const previousListed = new Set((previous?.choices ?? []).map((choice) => choice.value));
+  const probed =
+    previous?.probed === true && choices.every((choice) => previousListed.has(choice.value));
   return {
     choices,
     ...(currentValue ? { currentValue } : {}),
     ...(Object.keys(thoughtLevels).length > 0 ? { thoughtLevels } : {}),
+    ...(probed ? { probed: true } : {}),
   };
 }
+
+/**
+ * Whether a saved catalog already has per-model reasoning levels for every
+ * listed model (or came from an older effort-in-name agent). An incomplete
+ * catalog triggers one discovery pass so every model's own options are known.
+ */
+export function isAntigravityCatalogComplete(catalog: AntigravityCatalogCache): boolean {
+  if (catalog.probed === true) return true;
+  if (catalog.choices.some((choice) => EFFORT_NAME.test(choice.name.trim()))) return true;
+  const levels = catalog.thoughtLevels;
+  if (!levels) return false;
+  return catalog.choices.every((choice) => choice.value in levels);
+}
+
+/**
+ * Cycles through every listed model inside one open ACP session to capture
+ * each model's own `thought_level` options, then restores the initial model.
+ * Returns `undefined` for older effort-in-name agents or sessions without a
+ * model option.
+ */
+export const probeAntigravityModelOptions = (
+  acp: Pick<AcpSessionRuntimeShape, "getConfigOptions" | "setConfigOption">,
+) =>
+  Effect.gen(function* () {
+    const initialOptions = yield* acp.getConfigOptions;
+    const modelOption = findModelConfigOption(initialOptions);
+    const choices = flattenSessionConfigSelectOptions(modelOption);
+    if (!modelOption || choices.length === 0) return undefined;
+    if (choices.some((choice) => EFFORT_NAME.test(choice.name.trim()))) return undefined;
+
+    const currentValue = selectConfigOptionCurrentValue(modelOption);
+    const modelOptions: Array<AcpModelOptions> = [];
+    const thoughtLevels: Record<string, AntigravityThoughtLevels | null> = {};
+    let switched = false;
+
+    if (currentValue) {
+      modelOptions.push({ slug: currentValue, configOptions: initialOptions });
+      thoughtLevels[currentValue] = antigravityThoughtLevels(initialOptions) ?? null;
+    }
+
+    for (const choice of choices) {
+      if (choice.value === currentValue) continue;
+      const nextOptions = yield* acp.setConfigOption(modelOption.id, choice.value).pipe(
+        Effect.flatMap((response) =>
+          response.configOptions && response.configOptions.length > 0
+            ? Effect.succeed(response.configOptions)
+            : acp.getConfigOptions,
+        ),
+        Effect.timeout(ANTIGRAVITY_MODEL_PROBE_STEP_TIMEOUT),
+        Effect.catchCause(() => Effect.succeed(undefined)),
+      );
+      if (nextOptions) {
+        switched = true;
+        modelOptions.push({ slug: choice.value, configOptions: nextOptions });
+        thoughtLevels[choice.value] = antigravityThoughtLevels(nextOptions) ?? null;
+      }
+    }
+
+    if (switched && currentValue) {
+      yield* acp
+        .setConfigOption(modelOption.id, currentValue)
+        .pipe(Effect.timeout(ANTIGRAVITY_MODEL_PROBE_STEP_TIMEOUT), Effect.ignore);
+    }
+
+    return {
+      choices,
+      ...(currentValue ? { currentValue } : {}),
+      thoughtLevels,
+      modelOptions,
+    };
+  });
 
 /**
  * The agent's model id for a family slug and the selected effort; agent ids
@@ -489,6 +576,214 @@ function antigravityOptionWarning(option: EffectAcpSchema.PermissionOption): str
     .map((part) => part.trim().replace(/\.$/u, ""))
     .join(". ");
   return text.length > 0 ? `${text.slice(0, 500)}.` : undefined;
+}
+
+interface AntigravityElicitationOption {
+  readonly const: string;
+  readonly label: string;
+  readonly description: string;
+}
+
+const QUESTION_KEY = /^q([1-9]\d*)$/u;
+const QUESTION_OTHER_KEY = /^q([1-9]\d*)_other$/u;
+
+function parseElicitationOptions(
+  raw: unknown,
+): ReadonlyArray<AntigravityElicitationOption> | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const seenValues = new Set<string>();
+  const seenLabels = new Set<string>();
+  const options: Array<AntigravityElicitationOption> = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) return undefined;
+    const candidate = entry as { const?: unknown; title?: unknown; description?: unknown };
+    if (typeof candidate.const !== "string" || candidate.const.length === 0) return undefined;
+    const label =
+      typeof candidate.title === "string" && candidate.title.trim().length > 0
+        ? candidate.title.trim()
+        : candidate.const;
+    if (seenValues.has(candidate.const) || seenLabels.has(label)) return undefined;
+    seenValues.add(candidate.const);
+    seenLabels.add(label);
+    const description =
+      typeof candidate.description === "string" && candidate.description.trim().length > 0
+        ? candidate.description.trim()
+        : label;
+    options.push({ const: candidate.const, label, description });
+  }
+  return options;
+}
+
+/**
+ * Folds Antigravity 1.5's `ask_question` ACP form elicitation (paired `qN`
+ * choice fields + `qN_other` free-text fields, sorted numerically from Go's
+ * lexicographic map order) into Threadlines' standard question card.
+ * Returns `undefined` for any other form so the generic form UI handles it.
+ */
+export function extractAntigravityElicitationForm(
+  request: AcpElicitationFormRequest,
+): AcpElicitationQuestions | undefined {
+  if (request.mode !== undefined && request.mode !== null && request.mode !== "form") {
+    return undefined;
+  }
+  const schema = request.requestedSchema;
+  if (!schema || typeof schema.properties !== "object" || schema.properties === null) {
+    return undefined;
+  }
+  if (Array.isArray(schema.required) && schema.required.length > 0) return undefined;
+
+  const properties = schema.properties;
+  const keys = Object.keys(properties);
+  if (keys.length === 0) return undefined;
+
+  const questionNumbers = new Set<number>();
+  const otherNumbers = new Set<number>();
+  for (const key of keys) {
+    const qMatch = QUESTION_KEY.exec(key);
+    if (qMatch) {
+      questionNumbers.add(Number(qMatch[1]));
+      continue;
+    }
+    const otherMatch = QUESTION_OTHER_KEY.exec(key);
+    if (otherMatch) {
+      otherNumbers.add(Number(otherMatch[1]));
+      continue;
+    }
+    return undefined;
+  }
+  if (questionNumbers.size === 0 || questionNumbers.size !== otherNumbers.size) return undefined;
+  for (const num of questionNumbers) {
+    if (!otherNumbers.has(num)) return undefined;
+  }
+
+  const orderedNumbers = [...questionNumbers].toSorted((a, b) => a - b);
+  const parsed: Array<{
+    readonly key: string;
+    readonly otherKey: string;
+    readonly multiSelect: boolean;
+    readonly options: ReadonlyArray<AntigravityElicitationOption>;
+    readonly question: UserInputQuestion;
+  }> = [];
+
+  for (const [index, num] of orderedNumbers.entries()) {
+    const key = `q${num}`;
+    const otherKey = `q${num}_other`;
+    const field = properties[key];
+    const other = properties[otherKey];
+    if (
+      typeof field !== "object" ||
+      field === null ||
+      typeof other !== "object" ||
+      other === null
+    ) {
+      return undefined;
+    }
+    const otherRecord = other as { type?: unknown; enum?: unknown; oneOf?: unknown };
+    if (otherRecord.type !== "string" || otherRecord.enum != null || otherRecord.oneOf != null) {
+      return undefined;
+    }
+
+    const fieldRecord = field as {
+      type?: unknown;
+      title?: unknown;
+      oneOf?: unknown;
+      items?: unknown;
+    };
+    const title =
+      typeof fieldRecord.title === "string" && fieldRecord.title.trim().length > 0
+        ? fieldRecord.title.trim()
+        : undefined;
+    if (!title) return undefined;
+
+    let multiSelect = false;
+    let options: ReadonlyArray<AntigravityElicitationOption> | undefined;
+    if (fieldRecord.type === "string") {
+      options = parseElicitationOptions(fieldRecord.oneOf);
+    } else if (
+      fieldRecord.type === "array" &&
+      typeof fieldRecord.items === "object" &&
+      fieldRecord.items !== null
+    ) {
+      multiSelect = true;
+      options = parseElicitationOptions((fieldRecord.items as { anyOf?: unknown }).anyOf);
+    }
+    if (!options) return undefined;
+
+    parsed.push({
+      key,
+      otherKey,
+      multiSelect,
+      options,
+      question: {
+        id: key,
+        header: `Question ${index + 1}`,
+        question: title,
+        options: options.map((option) => ({
+          label: option.label,
+          description: option.description,
+        })),
+        multiSelect,
+      },
+    });
+  }
+
+  const responseForAnswers = (answers: ProviderUserInputAnswers): AcpElicitationFormResponse => {
+    if (Object.keys(answers).length === 0) return { action: "cancel" };
+    const content: Record<string, string | ReadonlyArray<string>> = {};
+    for (const item of parsed) {
+      const raw = answers[item.key];
+      if (raw === undefined || raw === null) continue;
+      const findOption = (value: string) =>
+        item.options.find((option) => option.const === value || option.label === value);
+
+      if (!item.multiSelect) {
+        const text =
+          typeof raw === "string"
+            ? raw.trim()
+            : Array.isArray(raw) && raw.length === 1 && typeof raw[0] === "string"
+              ? raw[0].trim()
+              : "";
+        if (!text) continue;
+        const matched = findOption(text);
+        if (matched) content[item.key] = matched.const;
+        else content[item.otherKey] = text;
+        continue;
+      }
+
+      if (typeof raw === "string") {
+        const text = raw.trim();
+        if (!text) continue;
+        const matched = findOption(text);
+        if (matched) content[item.key] = [matched.const];
+        else content[item.otherKey] = text;
+        continue;
+      }
+
+      if (Array.isArray(raw)) {
+        const selected: Array<string> = [];
+        const custom: Array<string> = [];
+        for (const entry of raw) {
+          if (typeof entry !== "string") continue;
+          const text = entry.trim();
+          if (!text) continue;
+          const matched = findOption(text);
+          if (matched) {
+            if (!selected.includes(matched.const)) selected.push(matched.const);
+          } else {
+            custom.push(text);
+          }
+        }
+        if (selected.length > 0) content[item.key] = selected;
+        if (custom.length > 0) content[item.otherKey] = custom.join("\n");
+      }
+    }
+    return Object.keys(content).length > 0 ? { action: "accept", content } : { action: "cancel" };
+  };
+
+  return {
+    questions: parsed.map((item) => item.question),
+    responseForAnswers,
+  };
 }
 
 // ── Plan mode: `/plan` writes a plan file into the profile ───────────
@@ -757,19 +1052,26 @@ export function makeAntigravityDescriptor(
    * custom binary its path, size and change time, so replacing the file
    * lists models afresh.
    */
+  let lastAgentTag: string | undefined;
   const agentTag = (settings: AntigravitySettings) => {
     const custom = settings.binaryPath.trim();
-    if (custom) {
-      return Effect.promise(() =>
-        fs.stat(custom).then(
-          (stat) => `custom:${resolvePath(custom)}:${stat.size}:${Math.trunc(stat.mtimeMs)}`,
-          () => undefined,
-        ),
-      );
-    }
-    return runtime
-      ? runtime.installed.pipe(Effect.map((installed) => installed?.version))
-      : Effect.succeed(undefined);
+    const read = custom
+      ? Effect.promise(() =>
+          fs.stat(custom).then(
+            (stat) => `custom:${resolvePath(custom)}:${stat.size}:${Math.trunc(stat.mtimeMs)}`,
+            () => undefined,
+          ),
+        )
+      : runtime
+        ? runtime.installed.pipe(Effect.map((installed) => installed?.version))
+        : Effect.succeed(undefined);
+    return read.pipe(
+      Effect.tap((tag) =>
+        Effect.sync(() => {
+          if (tag !== undefined) lastAgentTag = tag;
+        }),
+      ),
+    );
   };
 
   const readCatalog = (agentVersion: string | undefined) =>
@@ -871,8 +1173,16 @@ export function makeAntigravityDescriptor(
       : {}),
     agentModeFor: ({ runtimeMode, interactionMode, availableModeIds }) =>
       antigravityAgentMode(runtimeMode, interactionMode, availableModeIds),
+    // `agy acp` 1.5 accepts `type: "http"` MCP servers in `session/new` /
+    // `session/resume` / `session/load` while omitting `mcpCapabilities.http`
+    // in `initialize` (google-antigravity/antigravity-cli#1604).
+    assumeHttpMcp: true,
+    clientCapabilities: { elicitation: { form: {} } },
     classifyPermissionRequest: antigravityQuestion,
+    classifyElicitationForm: extractAntigravityElicitationForm,
     permissionOptionWarning: antigravityOptionWarning,
+    onEphemeralSessionClosed: (sessionId) =>
+      removeAntigravitySessionFiles(paths.profileDir, sessionId),
     cancellationNotice: "The request was cancelled by the client.",
     // Tool text bounded, no inline images, `call_mcp_tool` shown as the MCP tool.
     normalizeSessionUpdate: normalizeAntigravitySessionUpdate,
@@ -1025,7 +1335,9 @@ export function makeAntigravityDescriptor(
           version,
           ...signInStatus,
           ...latest,
-          ...(catalog ? { models: antigravityModelsFromCatalog(catalog) } : {}),
+          ...(catalog && isAntigravityCatalogComplete(catalog)
+            ? { models: antigravityModelsFromCatalog(catalog) }
+            : {}),
         } satisfies AcpProviderProbeOutcome;
         return usage ? withAntigravityUsage(outcome, yield* usage.status) : outcome;
       }),
@@ -1041,9 +1353,24 @@ export function makeAntigravityDescriptor(
         ),
       ),
     modelDiscoveryTimeoutMs: ANTIGRAVITY_DISCOVERY_TIMEOUT_MS,
-    // Discovery mirrors the selected model's options (its reasoning levels)
-    // onto every model; the next status check reads each model's own from
-    // the saved list. Older agents name the level in the model: fold those.
+    discoverModelOptions: (acp) =>
+      Effect.gen(function* () {
+        const probed = yield* probeAntigravityModelOptions(acp);
+        if (!probed) return undefined;
+        const init = yield* acp.getInitializeResult;
+        const agentVersion = lastAgentTag ?? init?.agentInfo?.version?.trim() ?? undefined;
+        yield* writeAntigravityCatalog(paths.profileDir, {
+          choices: probed.choices,
+          ...(probed.currentValue ? { currentValue: probed.currentValue } : {}),
+          thoughtLevels: probed.thoughtLevels,
+          probed: true,
+          fingerprint,
+          ...(agentVersion ? { agentVersion } : {}),
+        });
+        return probed.modelOptions;
+      }),
+    // Older agents name the level in the model: fold those. Newer agents are
+    // probed once per catalog in `listModelOptions` and read from disk thereafter.
     enrichDiscoveredModels: (models) =>
       Effect.succeed(
         models.some((model) => EFFORT_NAME.test(model.name.trim()))

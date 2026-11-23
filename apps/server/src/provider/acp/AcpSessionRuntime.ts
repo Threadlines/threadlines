@@ -48,15 +48,20 @@ const SESSION_CLOSE_TIMEOUT = Duration.seconds(3);
 /** Short option lists (effort, mode) are worth spelling out in a rejection. */
 const MAX_LISTED_CONFIG_OPTION_VALUES = 8;
 
-/** ACP lets a client pass HTTP/SSE MCP servers only to agents that advertise them. */
+/**
+ * ACP lets a client pass HTTP/SSE MCP servers only to agents that advertise
+ * them, unless `assumeHttpMcp` is set for an agent that accepts HTTP servers
+ * without advertising the capability (Antigravity 1.5).
+ */
 export function supportedMcpServers(
   servers: ReadonlyArray<EffectAcpSchema.McpServer>,
   capabilities: EffectAcpSchema.McpCapabilities | null | undefined,
+  assumeHttpMcp = false,
 ): Array<EffectAcpSchema.McpServer> {
   return servers.filter((server) =>
     "type" in server
       ? server.type === "http"
-        ? capabilities?.http === true
+        ? assumeHttpMcp || capabilities?.http === true
         : capabilities?.sse === true
       : true,
   );
@@ -126,6 +131,8 @@ export interface AcpSessionRuntimeOptions {
    * speaks that transport, as ACP requires.
    */
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  /** Pass `type: "http"` MCP servers even when `initialize` omits `mcpCapabilities.http`. */
+  readonly assumeHttpMcp?: boolean;
   /** Each line the agent writes to stderr (see `AcpClientOptions.onStderrLine`). */
   readonly onStderrLine?: (line: string) => Effect.Effect<void, never>;
   /**
@@ -891,6 +898,7 @@ const makeAcpSessionRuntime = (
       const mcpServers = supportedMcpServers(
         options.mcpServers ?? [],
         initializeResult.agentCapabilities?.mcpCapabilities,
+        options.assumeHttpMcp === true,
       );
 
       let sessionId: string;

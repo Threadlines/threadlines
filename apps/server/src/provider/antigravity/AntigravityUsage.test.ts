@@ -197,6 +197,7 @@ const signedInSnapshot = (method: AntigravityAuthMethod) =>
 const setup = (input: {
   route: Route;
   method?: AntigravityAuthMethod;
+  project?: string;
   token?: Parameters<typeof writeToken>[1] | false;
   timeouts?: { request: Duration.Input; read: Duration.Input };
   models?: ServerProvider["models"];
@@ -210,6 +211,7 @@ const setup = (input: {
       profileDir,
       method,
       fingerprint: "fingerprint-a",
+      ...(input.project ? { project: input.project } : {}),
       fetch: google.fetch,
       ...(input.timeouts ? { timeouts: input.timeouts } : {}),
     });
@@ -741,6 +743,22 @@ describe("Antigravity plan limits", () => {
         window: "weekly",
         resetsAt: "2026-10-10T15:28:22.000Z",
       });
+    }),
+  );
+
+  it.effect("sends the configured Google Cloud project in Cloud Code requests for Enterprise", () =>
+    Effect.gen(function* () {
+      const { readOnce, google } = yield* setup({
+        method: "oauth-business",
+        project: "acme-enterprise-proj",
+        route: googleRoute({ summary: { body: SUMMARY } }),
+      });
+      yield* readOnce;
+      const posts = google.sent.filter((request) => request.method === "POST");
+      assert.isAbove(posts.length, 0);
+      for (const request of posts) {
+        assert.equal(request.body, JSON.stringify({ project: "acme-enterprise-proj" }));
+      }
     }),
   );
 });

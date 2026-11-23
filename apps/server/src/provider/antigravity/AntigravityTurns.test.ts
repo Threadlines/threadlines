@@ -437,6 +437,94 @@ describe("Antigravity turns", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
+  it.live(
+    "fails a held turn when an upstream error lands during its post-prompt wake-up reply",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("background-log-error");
+        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "build it", attachments: [] });
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+        expect(completedTurns(agy.events)[0]?.payload).toMatchObject({
+          state: "failed",
+          failureCategory: "server_error",
+          errorMessage:
+            "Antigravity: Bad Gateway: Failed to connect to backend API (502 Bad Gateway)",
+        });
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live(
+    "folds ask_question form elicitations into a question card and returns flat ACP answers",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("ask-question");
+        const { turnId } = yield* agy.adapter.sendTurn({
+          threadId: agy.threadId,
+          input: "ask me",
+          attachments: [],
+        });
+        yield* agy.waitFor((events) =>
+          events.some((event) => event.type === "user-input.requested"),
+        );
+        const requested = agy.events.find(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "user-input.requested" }> =>
+            event.type === "user-input.requested",
+        )!;
+        expect(requested.payload.questions).toEqual([
+          {
+            id: "q1",
+            header: "Question 1",
+            question: "Which runtime should we target?",
+            options: [
+              { label: "Node.js", description: "Default runtime" },
+              { label: "Deno", description: "Deno" },
+            ],
+            multiSelect: false,
+          },
+          {
+            id: "q2",
+            header: "Question 2",
+            question: "Which checks should run?",
+            options: [
+              { label: "Typecheck", description: "Typecheck" },
+              { label: "Unit tests", description: "Unit tests" },
+              { label: "Lint", description: "Lint" },
+            ],
+            multiSelect: true,
+          },
+        ]);
+        yield* agy.adapter.respondToUserInput(
+          agy.threadId,
+          ApprovalRequestId.make(String(requested.requestId)),
+          { q1: "Bun instead", q2: ["Typecheck", "Lint"] },
+        );
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+        expect(replyTo(agy.events, turnId)).toContain(
+          JSON.stringify({
+            action: "accept",
+            content: { q1_other: "Bun instead", q2: ["1", "3"] },
+          }),
+        );
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("attaches HTTP MCP servers even when agy omits mcpCapabilities.http in initialize", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("simple");
+      const frames = yield* agy.frames();
+      const initFrame = frames.find((frame) => frame.method === "initialize") as
+        | { params?: { clientCapabilities?: { elicitation?: unknown } } }
+        | undefined;
+      expect(initFrame?.params?.clientCapabilities?.elicitation).toEqual({ form: {} });
+      const newSessionFrame = frames.find((frame) => frame.method === "session/new") as
+        | { params?: { mcpServers?: ReadonlyArray<{ type?: string; name?: string }> } }
+        | undefined;
+      expect(newSessionFrame?.params?.mcpServers?.some((server) => server.type === "http")).toBe(
+        true,
+      );
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
   it.live("carries an exhausted quota's reset time to the usage-limit notice", () =>
     Effect.gen(function* () {
       const agy = yield* startAgy("quota");
@@ -1472,6 +1560,60 @@ describe("Antigravity turn reading", () => {
         nowMs,
       })?.failureCategory,
     ).toBe("model_unavailable");
+    // 1.5 JSON quota details + retryDelay + protobuf length byte prefix before status name.
+    expect(
+      antigravityFailure({
+        errorText:
+          'PRESOURCE_EXHAUSTED (code 429): Exhausted. {"details":[{"reason":"QUOTA_EXHAUSTED","metadata":{"quotaResetTimeStamp":"2026-11-23T11:00:00Z","retryDelay":"45.2s"}}]}',
+        nowMs,
+      }),
+    ).toEqual({
+      errorMessage: "You've reached your Antigravity quota for now.",
+      failureCategory: "rate_limit",
+      usageLimit: { resetsAt: "2026-11-23T12:00:45.200Z" },
+    });
+    expect(
+      antigravityFailure({
+        errorText: "PRESOURCE_EXHAUSTED (code 429): Too many requests.",
+        nowMs,
+      }),
+    ).toEqual({
+      errorMessage: "Antigravity: Too many requests. (429 RESOURCE_EXHAUSTED)",
+      failureCategory: "rate_limit",
+    });
+    // VALIDATION_REQUIRED surfaces only allowlisted Google verification URLs.
+    expect(
+      antigravityFailure({
+        errorText:
+          'PERMISSION_DENIED: Verify your account. {"reason":"VALIDATION_REQUIRED","validation_url":"https://accounts.google.com/v3/signin/continue?plt=xyz"}',
+        nowMs,
+      }),
+    ).toEqual({
+      errorMessage:
+        "Google needs you to verify this account before Antigravity can continue. Verify it at https://accounts.google.com/v3/signin/continue?plt=xyz, then try again.",
+      failureCategory: "auth",
+    });
+    expect(
+      antigravityFailure({
+        errorText: "VALIDATION_REQUIRED https://evil.example/v3/signin/continue",
+        nowMs,
+      })?.errorMessage,
+    ).not.toContain("evil.example");
+    // Mid-turn 401 after the model already answered is retryable; initial 401 is auth.
+    expect(
+      antigravityFailure({
+        errorText: "UNAUTHENTICATED (code 401): Request had invalid authentication credentials.",
+        reachedModel: true,
+        nowMs,
+      })?.failureCategory,
+    ).toBe("server_error");
+    expect(
+      antigravityFailure({
+        errorText: "UNAUTHENTICATED (code 401): Request had invalid authentication credentials.",
+        reachedModel: false,
+        nowMs,
+      })?.failureCategory,
+    ).toBe("auth");
   });
 
   it.effect(
