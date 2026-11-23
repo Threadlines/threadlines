@@ -209,25 +209,50 @@ function AgentPill(props: {
   const onPill = (event: React.SyntheticEvent) =>
     event.currentTarget.contains(event.target as Node);
 
-  const openMenu = useCallback(() => setMenuOpen(true), []);
+  // A held finger opened the menu, which came up under it: when it lifts, the
+  // browser's mouse press at that spot lands outside the menu and would close
+  // it. Set from the hold until the finger has been up for a moment.
+  const hold = useRef<{ liftedAt: number | null } | null>(null);
+  const holdStillDown = () => {
+    const liftedAt = hold.current?.liftedAt;
+    return liftedAt === null || (liftedAt !== undefined && performance.now() - liftedAt < 400);
+  };
+  const openFromHold = useCallback(() => {
+    hold.current = { liftedAt: null };
+    setMenuOpen(true);
+  }, []);
   const onContextMenu = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       if (!event.currentTarget.contains(event.target as Node)) return;
       event.preventDefault();
-      if (canEdit) openMenu();
+      if (!canEdit) return;
+      // Android sends this for a held finger, ahead of the hold's own timer.
+      hold.current =
+        (event.nativeEvent as PointerEvent).pointerType === "touch" ? { liftedAt: null } : null;
+      setMenuOpen(true);
     },
-    [canEdit, openMenu],
+    [canEdit],
   );
-  const touchHold = useTouchHoldMenu<HTMLDivElement>({ open: openMenu, onContextMenu });
-  // A press on the open menu is the menu's: as a hold on the pill it would
-  // swallow the tap on Rename or Remove.
+  const touchHold = useTouchHoldMenu<HTMLDivElement>({ open: openFromHold, onContextMenu });
+  const lift = () => {
+    if (hold.current?.liftedAt === null) hold.current.liftedAt = performance.now();
+  };
   const pillTouchHold = {
     ...touchHold,
+    // A new press ends the hold. One on the open menu is the menu's own: timed
+    // as another hold on the pill, it would swallow the tap on Rename or Remove.
     onPointerDownCapture: (event: React.PointerEvent<HTMLDivElement>) => {
-      if (onPill(event)) touchHold.onPointerDownCapture(event);
+      hold.current = null;
+      touchHold.onPointerDownCapture(event);
+      if (!onPill(event)) touchHold.onPointerCancel();
     },
-    onClickCapture: (event: React.MouseEvent<HTMLDivElement>) => {
-      if (onPill(event)) touchHold.onClickCapture(event);
+    onPointerUp: () => {
+      lift();
+      touchHold.onPointerUp();
+    },
+    onPointerCancel: () => {
+      lift();
+      touchHold.onPointerCancel();
     },
   };
 
@@ -305,7 +330,17 @@ function AgentPill(props: {
           {/* Mounted while the name box is open too: a menu that unmounted
               as Rename opened it would pull focus back from the box. */}
           {hasMenu ? (
-            <Menu open={menuOpen} onOpenChange={setMenuOpen}>
+            <Menu
+              open={menuOpen}
+              onOpenChange={(open, details) => {
+                // The finger that held the pill, lifting.
+                if (!open && details.reason === "outside-press" && holdStillDown()) {
+                  details.cancel();
+                  return;
+                }
+                setMenuOpen(open);
+              }}
+            >
               <MenuTrigger
                 render={
                   <button

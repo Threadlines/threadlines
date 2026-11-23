@@ -28,7 +28,7 @@ import { createModelCapabilities } from "@threadlines/shared/model";
 import { secretAnswerMessageId } from "@threadlines/shared/secretRequests";
 import * as Effect from "effect/Effect";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
-import { page, userEvent } from "vite-plus/test/browser";
+import { cdp, page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
@@ -1819,6 +1819,111 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         { timeout: 8_000, interval: 16 },
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a pill's menu on a long press in the phone drawer, and keeps it open when the finger lifts", async () => {
+    const astraId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-hold" as MessageId,
+      targetText: "room hold target",
+    });
+    // Real touches, so the browser follows a lifted finger with the mouse
+    // press and click a phone sends: those land on whatever is under the
+    // finger by then, which is the menu's backdrop.
+    const session = cdp() as unknown as {
+      send: (method: string, params?: object) => Promise<unknown>;
+    };
+    await session.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+    const frame = window.frameElement?.getBoundingClientRect();
+    const touch = async (element: Element, holdMs: number) => {
+      const box = element.getBoundingClientRect();
+      const point = {
+        x: box.left + box.width / 2 + (frame?.left ?? 0),
+        y: box.top + box.height / 2 + (frame?.top ?? 0),
+      };
+      await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+      await new Promise((resolve) => setTimeout(resolve, holdMs));
+      await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      // The mouse press and click that follow a lifted finger.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    };
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      configureFixture: withCodexModels,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: astraId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const pill = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-room-agent-row="${id}"]`);
+      const sheet = () => document.querySelector('[data-model-picker-sheet="true"]');
+      const menuItem = (text: string) =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === text,
+        ) ?? null;
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      await touch(picker, 40);
+      await waitForElement(sheet, "A tap should open the picker as a drawer.");
+      const astra = await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
+      // The drawer slides in: a touch is aimed at where the pill comes to rest.
+      await vi.waitFor(async () => {
+        const top = astra.getBoundingClientRect().top;
+        await nextFrames(2);
+        expect(astra.getBoundingClientRect().top).toBe(top);
+      });
+
+      // The hold opens the menu, and lifting the finger leaves it open,
+      // without picking the pill or closing the drawer.
+      await touch(astra, 700);
+      expect(menuItem("Rename…")).not.toBeNull();
+      expect(pill(astraId)?.getAttribute("aria-checked")).toBe("false");
+      expect(sheet()).not.toBeNull();
+
+      // A tap outside the menu still closes it, and only it.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await touch(document.querySelector('[data-slot="menu-backdrop"]')!, 40);
+      await vi.waitFor(() => expect(menuItem("Rename…")).toBeNull());
+      expect(sheet()).not.toBeNull();
+
+      // A tap on Rename, even a slow one, opens the name box, focused, in the
+      // open drawer: it is not taken for another hold on the pill.
+      await touch(astra, 700);
+      await touch(menuItem("Rename…")!, 600);
+      const nameBox = await waitForElement(
+        () => pill(astraId)!.querySelector<HTMLInputElement>("input"),
+        "Rename should open the pill's name box.",
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(nameBox));
+      expect(sheet()).not.toBeNull();
+    } finally {
+      await session.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();
     }
   });
