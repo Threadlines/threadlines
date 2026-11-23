@@ -492,6 +492,15 @@ export function makeAntigravityDescriptor(
         }
       : null;
 
+  /**
+   * The managed runtime version the next agent runs, or undefined for a
+   * custom binary. Tags the saved model list (`readAntigravityCatalog`).
+   */
+  const managedAgentVersion = (settings: AntigravitySettings) =>
+    settings.binaryPath.trim() || !runtime
+      ? Effect.succeed(undefined)
+      : runtime.installed.pipe(Effect.map((installed) => installed?.version));
+
   const spawnFailure = (cause: unknown) =>
     new EffectAcpErrors.AcpSpawnError({ command: "agy_acp_server", cause });
 
@@ -604,16 +613,19 @@ export function makeAntigravityDescriptor(
     },
     diffEvidence: true,
     isolateTextGeneration: true,
-    onSessionConfigOptions: (_settings, configOptions) => {
-      const choices = modelChoices(configOptions);
-      if (choices.length === 0) return Effect.void;
-      const currentValue = selectConfigOptionCurrentValue(findModelConfigOption(configOptions));
-      return writeAntigravityCatalog(paths.profileDir, {
-        choices,
-        ...(currentValue ? { currentValue } : {}),
-        fingerprint,
-      });
-    },
+    onSessionConfigOptions: (settings, configOptions) =>
+      Effect.gen(function* () {
+        const choices = modelChoices(configOptions);
+        if (choices.length === 0) return;
+        const currentValue = selectConfigOptionCurrentValue(findModelConfigOption(configOptions));
+        const agentVersion = yield* managedAgentVersion(settings);
+        yield* writeAntigravityCatalog(paths.profileDir, {
+          choices,
+          ...(currentValue ? { currentValue } : {}),
+          fingerprint,
+          ...(agentVersion ? { agentVersion } : {}),
+        });
+      }),
     notInstalledMessage: "Antigravity is not installed. Install it to use it in Threadlines.",
     // The same test the probe makes: a custom binary only has to exist; the
     // managed runtime is found when a complete copy is on disk. Both read the
@@ -676,6 +688,7 @@ export function makeAntigravityDescriptor(
         const catalog = yield* readAntigravityCatalog(paths.profileDir, {
           fingerprint,
           isGoogleAccount: signIn.method === "oauth-personal",
+          agentVersion: version ?? undefined,
         });
         return {
           installed: true,

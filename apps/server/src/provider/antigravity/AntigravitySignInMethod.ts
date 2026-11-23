@@ -308,7 +308,7 @@ export const writeAntigravitySignInCheck = (profileDir: string, check: Antigravi
 
 // ── Which Google sign-in the profile holds ──────────────────────────
 
-/** The OAuth clients Antigravity 1.3.0 signs in with, per method. */
+/** The OAuth clients Antigravity signs in with, per method (same in 1.3.0 and 1.5.2). */
 const GOOGLE_ACCOUNT_CLIENT_ID =
   "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const GEMINI_ENTERPRISE_CLIENT_ID =

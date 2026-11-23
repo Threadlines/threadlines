@@ -213,6 +213,8 @@ export interface AntigravityCatalogCache {
   readonly currentValue?: string;
   /** The sign-in it was listed for (`antigravityCredentialFingerprint`). */
   readonly fingerprint?: string;
+  /** The managed runtime version that listed it; absent for a custom binary. */
+  readonly agentVersion?: string;
 }
 
 const catalogPath = (profileDir: string) => join(profileDir, "threadlines-models.json");
@@ -221,11 +223,16 @@ const catalogPath = (profileDir: string) => join(profileDir, "threadlines-models
  * The model list from the last session, so status checks need not start the
  * agent. A list from another sign-in (method, project or key) doesn't count:
  * what a sign-in may use differs. Lists saved before sign-in methods existed
- * count for a Google account.
+ * count for a Google account. A list from another agent version doesn't count
+ * either: each release names its own models, so an update lists them afresh.
  */
 export const readAntigravityCatalog = (
   profileDir: string,
-  sign: { readonly fingerprint: string; readonly isGoogleAccount: boolean },
+  sign: {
+    readonly fingerprint: string;
+    readonly isGoogleAccount: boolean;
+    readonly agentVersion: string | undefined;
+  },
 ) =>
   Effect.promise(async (): Promise<AntigravityCatalogCache | undefined> => {
     const raw = await fs.readFile(catalogPath(profileDir), "utf8").catch(() => undefined);
@@ -236,7 +243,7 @@ export const readAntigravityCatalog = (
         parsed.fingerprint === undefined
           ? sign.isGoogleAccount
           : parsed.fingerprint === sign.fingerprint;
-      if (!matches) return undefined;
+      if (!matches || parsed.agentVersion !== sign.agentVersion) return undefined;
       const choices = Array.isArray(parsed.choices)
         ? parsed.choices.filter(
             (choice): choice is AntigravityModelChoice =>
@@ -250,6 +257,7 @@ export const readAntigravityCatalog = (
               ? { currentValue: parsed.currentValue }
               : {}),
             fingerprint: sign.fingerprint,
+            ...(sign.agentVersion ? { agentVersion: sign.agentVersion } : {}),
           }
         : undefined;
     } catch {

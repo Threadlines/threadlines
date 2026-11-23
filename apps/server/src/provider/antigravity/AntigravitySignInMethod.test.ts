@@ -7,7 +7,11 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { FetchHttpClient } from "effect/http";
 
-import { antigravityEnvironment } from "./AntigravityProfile.ts";
+import {
+  antigravityEnvironment,
+  readAntigravityCatalog,
+  writeAntigravityCatalog,
+} from "./AntigravityProfile.ts";
 import {
   antigravityAdcPath,
   antigravityCredentialEnvironment,
@@ -333,6 +337,27 @@ describe("checkGeminiApiKey", () => {
       // The key goes in a header, never the address.
       assert.deepEqual(seen, ["good", "bad", "busy"]);
       yield* Effect.promise(() => new Promise<void>((done) => server.close(() => done())));
+    }),
+  );
+});
+
+describe("readAntigravityCatalog", () => {
+  it.live("drops a model list another sign-in or agent version saved", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => fs.mkdtemp(join(tmpdir(), "agy-catalog-")));
+      const choices = [{ value: "gemini-4-neon", name: "Gemini 4 Neon" }];
+      const sign = { fingerprint: "fp-a", isGoogleAccount: true, agentVersion: "1.5.2" };
+      yield* writeAntigravityCatalog(dir, { choices, fingerprint: "fp-a", agentVersion: "1.5.2" });
+      assert.deepEqual((yield* readAntigravityCatalog(dir, sign))?.choices, choices);
+      assert.isUndefined(yield* readAntigravityCatalog(dir, { ...sign, fingerprint: "fp-b" }));
+      assert.isUndefined(yield* readAntigravityCatalog(dir, { ...sign, agentVersion: "1.6.0" }));
+
+      // A list saved before versions were recorded came from an older agent.
+      yield* Effect.promise(() =>
+        fs.writeFile(join(dir, "threadlines-models.json"), JSON.stringify({ choices })),
+      );
+      assert.isUndefined(yield* readAntigravityCatalog(dir, sign));
+      yield* Effect.promise(() => fs.rm(dir, { recursive: true, force: true }));
     }),
   );
 });
