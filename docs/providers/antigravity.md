@@ -110,27 +110,31 @@ Antigravity also picks a skill on its own when the task matches its description.
 ## Commands and Skills in the Composer
 
 Typing `/` in the composer lists Antigravity's skills and its own commands, under Threadlines' own
-(`/model`, `/plan`, `/theme`, `/default`). Picking one puts `/name ` in the message.
+(`/model`, `/plan`, `/theme`, `/default`). Picking one puts `/name ` in the message. In a room, the
+list is the one of the agent the message goes to.
 
-- Before a chat has started, the list has the skills Threadlines found (above).
-- Once Antigravity has started in a thread, it sends the commands that session offers
-  (`available_commands_update`, the list Google fixed in 1.5.2 to be the session's agent's). They
-  join the list, and where a command and a skill share a name, Antigravity's entry is the one shown.
-  `/goal` and `/compact` show only when Antigravity offers them. Each thread keeps its own list,
-  saved with the thread, so it is there again after a restart, before Antigravity starts again; a
-  new list from the agent replaces it.
+- Before Antigravity runs in a thread, the list has the skills Threadlines found (above).
+- While it runs, it sends the commands that session offers (`available_commands_update`, the list
+  Google fixed in 1.5.2 to be the session's agent's). They join the list, and where a command and a
+  skill share a name, Antigravity's entry is the one shown. `/goal` and `/compact` show only when
+  Antigravity offers them. The list lives only as long as the session: Threadlines doesn't save
+  it, and after a restart the skills fill the list until Antigravity sends its own again.
 - Antigravity's `/plan`, `/login` and `/logout` are left out: plan mode is the composer's `/plan`,
   and signing in or out is on the Antigravity row in Settings, where it also stops that account's
   chats. Typed by hand, they still go to Antigravity.
+- Threadlines keeps at most 200 commands from a list, only names made of letters, digits, `_`,
+  `.`, `:` and `-`, and short descriptions. A list that keeps changing reaches the composer at most
+  every 5 seconds.
 
-A message that starts with `/` and a name goes to Antigravity exactly as typed, since Antigravity
-only runs a command at the very start of the message. In plan mode it goes without the `/plan`
-prefix, and the project's instructions Threadlines sends with a new chat's first message wait for
-the next message. A message that starts with a path (`/tmp/out.log is empty`) is plain text.
-
-The first message after Threadlines starts Antigravity over with the thread's history (a moved
-thread, a conversation Google can't continue, an edited earlier message) carries that history in
-front of the words, so a command there arrives as text. Send it again on its own.
+A message runs one of Antigravity's commands when the words you typed start with `/` and the name
+of a command that session offers or a skill Threadlines lists. That message goes to Antigravity
+alone, exactly as typed, since Antigravity only runs a command at the very start of a message: in
+plan mode without the `/plan` prefix, and without what Threadlines would put in front of your words
+(the project's instructions, the thread's history after a switch, an edit or a move, notes from
+other threads). That waits for your next ordinary message, also across a restart. Everything else
+is ordinary text: a name Antigravity doesn't offer (`/etc is missing`), a path
+(`/tmp/out.log is empty`), a message that starts with a space, one sent as plain text, and one an
+agent or a scheduled task wrote.
 
 ## Turns
 
@@ -167,12 +171,14 @@ history.
 ### Editing an Earlier Message
 
 Antigravity can't rewind its own conversation. When you edit an earlier message (or undo back to
-one), Threadlines restores the files, stops anything Antigravity still runs for the thread (a
-running turn, its commands and subagents, by a cancel, then a moment to wind down), and ends that
-session. The next message starts a new Antigravity session and sends it the turns that are left,
-so Antigravity no longer remembers the removed ones, also when Threadlines restarts before that
-message. This also works when no Antigravity was running for the thread: Threadlines opens the
-saved session just to end it, since the next message would otherwise continue it as it was.
+one), Threadlines first stops anything Antigravity still runs for the thread (a running turn, its
+commands and subagents, by a cancel, then a moment to wind down) and ends that session, so nothing
+it ran can write over the files being restored. Then it restores the files. It also drops the
+saved conversation from its own record of the thread, so the next message starts a new Antigravity
+session and sends it the turns that are left: Antigravity no longer remembers the removed ones,
+also when Threadlines restarts before that message. Nothing is started to do this when Antigravity
+wasn't running. If Threadlines can't update that record, the thread says Antigravity still
+remembers the reverted turns.
 
 ### Tokens
 

@@ -414,8 +414,6 @@ describe("ProviderRuntimeIngestion", () => {
       engine,
       workspaceRoot,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
-      threadDetail: (threadId: ThreadId) =>
-        Effect.runPromise(snapshotQuery.getThreadDetailById(threadId)).then(Option.getOrUndefined),
       emit: provider.emit,
       setProviderSession: provider.setSession,
       interruptedThreadIds: provider.interruptedThreadIds,
@@ -1205,45 +1203,6 @@ describe("ProviderRuntimeIngestion", () => {
       harness.mcpAppCalls.get({ threadId, toolCallId: "call-side-counter" }),
     );
     expect(Option.getOrThrow(side).providerThreadId).toBeNull();
-  });
-
-  it("records the slash commands a session lists on its thread, once per change", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
-    const threadId = asThreadId("thread-1");
-    const listed = (eventId: string, commands: ReadonlyArray<{ name: string }>) => {
-      harness.emit({
-        type: "session.commands.updated",
-        eventId: asEventId(eventId),
-        provider: ProviderDriverKind.make("antigravity"),
-        providerInstanceId: ProviderInstanceId.make("antigravity"),
-        threadId,
-        createdAt: now,
-        payload: { commands },
-      });
-    };
-    listed("evt-commands-1", [{ name: "goal" }, { name: "compact" }]);
-    // The session lists them again as it reopens: nothing changed.
-    listed("evt-commands-2", [{ name: "goal" }, { name: "compact" }]);
-    listed("evt-commands-3", [{ name: "goal" }]);
-    await harness.drain();
-
-    const recorded = await Effect.runPromise(
-      Stream.runCollect(harness.engine.readEvents(0)).pipe(
-        Effect.map((events) =>
-          Array.from(events).filter((event) => event.type === "thread.agent-commands-set"),
-        ),
-      ),
-    );
-    expect(recorded).toHaveLength(2);
-    const detail = await harness.threadDetail(threadId);
-    expect(detail?.agentCommands).toEqual({
-      primary: {
-        providerInstanceId: ProviderInstanceId.make("antigravity"),
-        commands: [{ name: "goal" }],
-        updatedAt: now,
-      },
-    });
   });
 
   it("keeps a room agent's check-backs while another agent works, and notes one it had to skip", async () => {

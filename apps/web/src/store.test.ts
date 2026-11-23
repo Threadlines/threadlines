@@ -1031,33 +1031,6 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(reverted)[0]?.workflowRuns?.map((run) => run.taskId)).toEqual(["task-a"]);
   });
 
-  it("keeps each agent's slash command list from its session's latest report", () => {
-    const threadId = ThreadId.make("thread-1");
-    const instanceId = ProviderInstanceId.make("antigravity");
-    const listed = (sequence: number, names: ReadonlyArray<string>) =>
-      makeEvent(
-        "thread.agent-commands-set",
-        {
-          threadId,
-          participantId: null,
-          providerInstanceId: instanceId,
-          commands: names.map((name) => ({ name })),
-          updatedAt: "2026-02-27T00:00:01.000Z",
-        },
-        { sequence },
-      );
-    let state = makeState(makeThread());
-    state = applyOrchestrationEvent(state, listed(1, ["goal", "compact"]), localEnvironmentId);
-    state = applyOrchestrationEvent(state, listed(2, ["goal"]), localEnvironmentId);
-    expect(threadsOf(state)[0]?.agentCommands).toEqual({
-      primary: {
-        providerInstanceId: instanceId,
-        commands: [{ name: "goal" }],
-        updatedAt: "2026-02-27T00:00:01.000Z",
-      },
-    });
-  });
-
   it("projects realtime voice state into thread detail and shell state", () => {
     const state = makeState(makeThread());
 

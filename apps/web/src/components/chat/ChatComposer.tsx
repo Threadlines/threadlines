@@ -208,7 +208,11 @@ import {
   useRoomRecipientStore,
 } from "../../rooms";
 import { getPickerModelName } from "./providerIconUtils";
-import { composerProviderSlashList } from "./composerAgentCommands";
+import {
+  composerProviderSlashList,
+  composerSlashAgent,
+  sessionSlashCommands,
+} from "./composerAgentCommands";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import { shownSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { activeParticipants, hasAgentRecords } from "@threadlines/shared/threadParticipants";
@@ -1329,22 +1333,46 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Commands this thread will act on: the built-ins plus whatever the selected
   // provider reports. The editor tints the leading token so typed-past-the-menu
   // commands still read as commands.
-  // The provider's part of the `/` list: for an agent that lists its own
-  // commands per session (Antigravity), the list this thread's session sent.
-  const sessionCommandsKey = roomAgentKey(addressingRoomAgent ? roomRecipientId : null);
-  const sessionCommands = activeThread?.agentCommands?.[sessionCommandsKey];
+  // The provider's part of the `/` list describes the agent the next message
+  // goes to: in a room, an added agent's own provider, its skills and, for an
+  // agent that lists its own commands per session (Antigravity), the list its
+  // running session put on that provider's status.
+  const slashRecipientId = addressingRoomAgent ? roomRecipientId : null;
+  const slashRecipientInstanceId =
+    slashRecipientId === null
+      ? undefined
+      : (activeThread?.participants ?? []).find((entry) => entry.id === slashRecipientId)
+          ?.modelSelection.instanceId;
+  const slashAgent = composerSlashAgent({
+    threadId: activeThread?.id ?? null,
+    recipient:
+      slashRecipientId !== null && slashRecipientInstanceId !== undefined
+        ? { id: slashRecipientId, instanceId: slashRecipientInstanceId }
+        : null,
+    entries: providerInstanceEntries,
+    selected: {
+      status: selectedProviderStatus,
+      driverKind: selectedProvider,
+      label: selectedProviderDisplayName,
+    },
+  });
+  const slashProviderStatus = slashAgent.status;
+  const slashProvider = slashAgent.driverKind;
+  const slashProviderLabel = slashAgent.label;
+  const sessionCommands = sessionSlashCommands(slashProviderStatus, slashAgent.sessionKey);
   const providerSlashList = useMemo(
     () =>
       composerProviderSlashList({
-        provider: selectedProviderStatus,
-        instanceId: selectedInstanceId,
+        provider: slashProviderStatus,
         sessionCommands,
         threadlinesCommands: goalSupported
           ? THREADLINES_SLASH_COMMANDS_WITH_GOAL
           : THREADLINES_SLASH_COMMANDS,
       }),
-    [goalSupported, selectedInstanceId, selectedProviderStatus, sessionCommands],
+    [goalSupported, sessionCommands, slashProviderStatus],
   );
+  // Codex's `$` skills belong to the thread's own Codex, not an added agent.
+  const slashListCodexSkills = slashAgent.addedAgent ? EMPTY_PROVIDER_SKILLS : composerSkills;
   const recognizedSlashCommands = useMemo(
     () => [
       "plan",
@@ -1505,9 +1533,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         // Claude lists its own /goal; the goal bar's stands in for it.
         .filter((command) => !(goalSupported && command.name === "goal"))
         .map((command) => ({
-          id: `provider-slash-command:${selectedProvider}:${command.name}`,
+          id: `provider-slash-command:${slashProvider}:${command.name}`,
           type: "provider-slash-command" as const,
-          provider: selectedProvider,
+          provider: slashProvider,
           command,
           label: `/${command.name}`,
           description: command.description ?? command.input?.hint ?? "Run provider command",
@@ -1521,10 +1549,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       // the two kinds score on different scales, so a shared ranker would
       // interleave them arbitrarily.
       const skillItems = [
-        ...buildComposerSkillItems(searchProviderSkills(composerSkills, query), selectedProvider),
+        ...buildComposerSkillItems(
+          searchProviderSkills(slashListCodexSkills, query),
+          selectedProvider,
+        ),
         ...buildComposerSkillItems(
           searchProviderSkills(providerSlashList.slashSkills, query),
-          selectedProvider,
+          slashProvider,
           "slash",
         ),
       ];
@@ -1557,6 +1588,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     goalSupported,
     providerSlashList,
     selectedProvider,
+    slashListCodexSkills,
+    slashProvider,
     threadGoal,
     workspaceEntries,
   ]);
@@ -4108,7 +4141,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       resolvedTheme={resolvedTheme}
                       isLoading={isComposerMenuLoading}
                       triggerKind={composerTriggerKind}
-                      providerGroupLabel={selectedProviderDisplayName}
+                      providerGroupLabel={slashProviderLabel}
                       emptyStateText={composerMenuEmptyState}
                       activeItemId={activeComposerMenuItem?.id ?? null}
                       onHighlightedItemChange={onComposerMenuItemHighlighted}

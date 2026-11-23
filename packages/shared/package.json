@@ -239,9 +239,9 @@
       "types": "./src/queuedFollowUps.ts",
       "import": "./src/queuedFollowUps.ts"
     },
-    "./agentCommands": {
-      "types": "./src/agentCommands.ts",
-      "import": "./src/agentCommands.ts"
+    "./slashCommands": {
+      "types": "./src/slashCommands.ts",
+      "import": "./src/slashCommands.ts"
     },
     "./checkBacks": {
       "types": "./src/checkBacks.ts",

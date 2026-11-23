@@ -90,11 +90,19 @@ const startAgy = (
     const descriptor = adjust ? adjust(base) : base;
     const usage: Array<UsageLedgerEntry> = [];
     const events: Array<ProviderRuntimeEvent> = [];
+    // What the adapter put on the provider status (`onSessionCommands`).
+    const commandReports: Array<ReadonlyArray<string> | undefined> = [];
     const newAdapter = Effect.gen(function* () {
       const made = yield* makeAcpAdapter(
         descriptor,
         decodeSettings({ enabled: true, binaryPath: mock.wrapper }),
-        { recordTurnUsage: (entry) => Effect.sync(() => void usage.push(entry)) },
+        {
+          recordTurnUsage: (entry) => Effect.sync(() => void usage.push(entry)),
+          onSessionCommands: (_sessionKey, commands) =>
+            Effect.sync(() => void commandReports.push(commands?.map((command) => command.name))),
+          // The status lists one skill.
+          skillNames: Effect.succeed(new Set(["review"])),
+        },
       );
       yield* made.streamEvents.pipe(
         Stream.runForEach((event) => Effect.sync(() => void events.push(event))),
@@ -125,6 +133,7 @@ const startAgy = (
       adapter,
       events,
       usage,
+      commandReports,
       threadId,
       session,
       waitFor,
@@ -324,30 +333,19 @@ describe("Antigravity turns", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live(
-    "starts a new session with the thread's history when Google can't continue the old one",
-    () =>
-      Effect.gen(function* () {
-        const agy = yield* startAgy("lost-signature");
-        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "hi", attachments: [] });
-        yield* agy.waitFor((events) => completedTurns(events).length === 1);
-        expect(completedTurns(agy.events)[0]?.payload).toMatchObject({ state: "failed" });
-        yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
-
-        // A server restart before the next message: a new adapter.
-        const restartedAdapter = yield* agy.newAdapter;
-        const restarted = yield* restartedAdapter.startSession({
-          threadId: agy.threadId,
-          provider: ProviderDriverKind.make("antigravity"),
-          cwd: process.cwd(),
-          runtimeMode: "full-access",
-          resumeCursor: agy.session.resumeCursor,
-        });
-        expect(restarted.resumeFailed).toBe(true);
-        const frames = yield* agy.frames();
-        expect(frames.filter((frame) => frame.method === "session/new")).toHaveLength(2);
-        expect(frames.some((frame) => frame.method === "session/resume")).toBe(false);
-      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  it.live("ends a session Google can't continue, saying its conversation is lost", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("lost-signature");
+      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "hi", attachments: [] });
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(agy.events)[0]?.payload).toMatchObject({ state: "failed" });
+      yield* agy.waitFor((events) => events.some((event) => event.type === "session.exited"));
+      // ProviderService forgets the conversation off this (see its tests),
+      // so the next start opens a new one seeded with the thread's history.
+      expect(agy.events.find((event) => event.type === "session.exited")).toMatchObject({
+        payload: { conversationLost: true },
+      });
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 });
 
@@ -531,79 +529,78 @@ const promptTexts = (frames: ReadonlyArray<Record<string, unknown>>) =>
   });
 
 describe("Antigravity commands and edits", () => {
-  it.live("lists the session's own slash commands for its thread, less Threadlines' own", () =>
+  it.live(
+    "puts the session's own commands on the status, less Threadlines' own, and clears them",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("simple");
+        yield* agy.waitFor(() => agy.commandReports.length > 0);
+        expect(agy.commandReports).toEqual([["goal", "compact"]]);
+        yield* agy.adapter.stopSession(agy.threadId);
+        expect(agy.commandReports.at(-1)).toBeUndefined();
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("reports a list that keeps changing at most once per interval, the newest last", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("simple");
-      yield* agy.waitFor((events) =>
-        events.some((event) => event.type === "session.commands.updated"),
-      );
-      const listed = agy.events.find((event) => event.type === "session.commands.updated");
-      expect(listed).toMatchObject({
-        threadId: agy.threadId,
-        payload: {
-          commands: [
-            { name: "goal", description: "Work toward a goal", input: { hint: "objective" } },
-            { name: "compact", description: "Summarize the conversation" },
-          ],
-        },
-      });
+      const agy = yield* startAgy("flapping");
+      yield* agy.waitFor(() => agy.commandReports.length > 0);
+      yield* Effect.sleep("1 second");
+      // The first list went at once; the nine changes after it wait.
+      expect(agy.commandReports).toHaveLength(1);
+      yield* agy.waitFor(() => agy.commandReports.length > 1, 700);
+      yield* Effect.sleep("500 millis");
+      expect(agy.commandReports).toEqual([["goal", "compact"], ["goal"]]);
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live("sends a command as typed in plan mode, and plans the next message", () =>
+  it.live("runs only the person's typed command the session lists, as typed, in plan mode", () =>
     Effect.gen(function* () {
       const agy = yield* startAgy("simple");
-      yield* agy.adapter.sendTurn({
-        threadId: agy.threadId,
-        input: "/compact",
-        interactionMode: "plan",
-        attachments: [],
+      yield* agy.waitFor(() => agy.commandReports.length > 0);
+      const send = (input: string, typed?: { text: string; context?: string; indented?: true }) =>
+        Effect.gen(function* () {
+          const before = completedTurns(agy.events).length;
+          const turn = yield* agy.adapter.sendTurn({
+            threadId: agy.threadId,
+            input,
+            interactionMode: "plan",
+            attachments: [],
+            ...(typed ? { typed } : {}),
+          });
+          yield* agy.waitFor((events) => completedTurns(events).length === before + 1);
+          return turn;
+        });
+      // Advertised, and a skill the status lists: commands.
+      yield* send("/compact", { text: "/compact" });
+      yield* send("/review the diff", { text: "/review the diff" });
+      // Not listed, a path, plain text and an indented one: ordinary text.
+      yield* send("/etc is missing", { text: "/etc is missing" });
+      yield* send("/tmp/out.log is empty", { text: "/tmp/out.log is empty" });
+      yield* send("/compact");
+      yield* send("/compact", { text: "/compact", indented: true });
+      // The server's context in front: the command goes alone, its context deferred.
+      const deferred = yield* send("Earlier turns\n\n---\n\n/compact", {
+        text: "/compact",
+        context: "Earlier turns",
       });
-      yield* agy.waitFor((events) => completedTurns(events).length === 1);
-      yield* agy.adapter.sendTurn({
-        threadId: agy.threadId,
-        input: "/tmp/out.log is empty",
-        interactionMode: "plan",
-        attachments: [],
-      });
-      yield* agy.waitFor((events) => completedTurns(events).length === 2);
-      expect(promptTexts(yield* agy.frames())).toEqual(["/compact", "/plan /tmp/out.log is empty"]);
+      expect(deferred.contextDeferred).toBe(true);
+      expect(promptTexts(yield* agy.frames())).toEqual([
+        "/compact",
+        "/review the diff",
+        "/plan /etc is missing",
+        "/plan /tmp/out.log is empty",
+        "/plan /compact",
+        "/plan /compact",
+        "/compact",
+      ]);
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live("forgets reverted turns by ending the session and starting a new one", () =>
-    Effect.gen(function* () {
-      const agy = yield* startAgy("simple");
-      expect(agy.adapter.capabilities.conversationRollback).toBe("new-session");
-      yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "first", attachments: [] });
-      yield* agy.waitFor((events) => completedTurns(events).length === 1);
-      const [beforeRevert] = yield* agy.adapter.listSessions();
-
-      const rolledBack = yield* agy.adapter.rollbackThread(agy.threadId, 1);
-      expect(rolledBack.conversationRolledBack).toBe(true);
-      expect(agy.events.some((event) => event.type === "session.exited")).toBe(true);
-      expect(yield* agy.adapter.hasSession(agy.threadId)).toBe(false);
-
-      // The next message opens a new conversation the thread seeds, also
-      // after a server restart (a new adapter).
-      const restartedAdapter = yield* agy.newAdapter;
-      const restarted = yield* restartedAdapter.startSession({
-        threadId: agy.threadId,
-        provider: ProviderDriverKind.make("antigravity"),
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-        resumeCursor: beforeRevert?.resumeCursor,
-      });
-      expect(restarted.resumeFailed).toBe(true);
-      const frames = yield* agy.frames();
-      expect(frames.filter((frame) => frame.method === "session/new")).toHaveLength(2);
-      expect(frames.some((frame) => frame.method === "session/resume")).toBe(false);
-    }).pipe(Effect.scoped, Effect.provide(testServices)),
-  );
-
-  it.live("stops the agent's running work, and its turn once, before a revert ends it", () =>
+  it.live("ends the session on a revert, its running work and turn stopped first", () =>
     Effect.gen(function* () {
       const agy = yield* startAgy("hang");
+      expect(agy.adapter.capabilities.conversationRollback).toBe("new-session");
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
         input: "build it",
@@ -612,7 +609,8 @@ describe("Antigravity commands and edits", () => {
       yield* agy.waitFor((events) => replyTo(events, turnId).includes("I'll report"));
       yield* Effect.sleep("300 millis");
 
-      yield* agy.adapter.rollbackThread(agy.threadId, 1);
+      const rolledBack = yield* agy.adapter.rollbackThread(agy.threadId, 1);
+      expect(rolledBack.conversationRolledBack).toBe(true);
       expect(completedTurns(agy.events)).toEqual([
         expect.objectContaining({
           turnId,
@@ -622,6 +620,7 @@ describe("Antigravity commands and edits", () => {
       const frames = yield* agy.frames();
       expect(frames.filter((frame) => frame.method === "session/cancel")).toHaveLength(1);
       expect(agy.events.some((event) => event.type === "session.exited")).toBe(true);
+      expect(yield* agy.adapter.hasSession(agy.threadId)).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 });
