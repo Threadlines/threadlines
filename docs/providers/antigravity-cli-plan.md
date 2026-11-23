@@ -151,6 +151,11 @@ The registry package we install today is the old channel: it is at 1.5.2 while t
   stripped, everything else as a file path.
 - The agent's own slash commands list in the composer (`available_commands`), including `/goal`
   and `/compact` when offered.
+- Antigravity runs a skill when a message starts with `/<skill name>`, so its skills belong in
+  the same `/` list. The provider status already lists them (stage 2), but the composer's skill
+  menu only asks for Codex's today. Stage 3 shows the status's skills in the `/` list before a
+  session has opened and merges the agent's own list once it has. A `$name` chip is wrong for
+  Antigravity: it would arrive as plain text.
 - Editing an earlier message starts a fresh Antigravity session seeded with the kept turns,
   since the agent cannot rewind.
 
