@@ -1848,11 +1848,15 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       await new Promise((resolve) => setTimeout(resolve, holdMs));
       element.dispatchEvent(new PointerEvent("pointerup", finger));
       const under = document.elementFromPoint(at.clientX, at.clientY) ?? element;
-      for (const type of ["mousedown", "mouseup", "click"]) {
+      // A real mouse press moves the keyboard focus to what it lands on,
+      // unless the page takes the press.
+      const pressTaken = !under.dispatchEvent(new MouseEvent("mousedown", at));
+      for (const type of ["mouseup", "click"]) {
         under.dispatchEvent(new MouseEvent(type, at));
       }
       // Let what those did reach the page.
       await new Promise((resolve) => setTimeout(resolve, 100));
+      return { pressTaken };
     };
     const mounted = await mountChatView({
       viewport: PHONE_VIEWPORT,
@@ -1905,11 +1909,20 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
 
       // The hold opens the menu, and lifting the finger leaves it open,
       // without picking the pill or closing the drawer.
-      await touch(astra, 700);
+      const lift = await touch(astra, 700);
       expect(astra.hasAttribute("data-menu-open")).toBe(true);
       expect(menuItem("Rename…")).not.toBeNull();
       expect(pill(astraId)?.getAttribute("aria-checked")).toBe("false");
       expect(sheet()).not.toBeNull();
+
+      // The lift's press is taken, so the keyboard focus stays in the menu:
+      // Escape closes the menu, not the drawer around it.
+      expect(lift.pressTaken).toBe(true);
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(astra.hasAttribute("data-menu-open")).toBe(false));
+      expect(sheet()).not.toBeNull();
+      await touch(astra, 700);
+      expect(astra.hasAttribute("data-menu-open")).toBe(true);
 
       // A tap outside the menu still closes it, and only it.
       await new Promise((resolve) => setTimeout(resolve, 500));
