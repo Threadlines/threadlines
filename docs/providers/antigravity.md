@@ -55,7 +55,10 @@ has them. The reasoning level is its own choice next to the model.
 | Auto              | The CLI's own `auto` where your session offers it, otherwise `accept-edits`    |
 | Full access       | `default`, and Threadlines approves each request; questions still wait for you |
 
-Plan mode sends the task as `/plan`, and the plan shows on the plan card for review. A message
+Plan mode sends the task as `/plan`, and the plan shows on the plan card for review. Writing that
+plan (`brain/<session>/plan.md` in the account's profile) is the one thing approved without asking,
+and only an edit of that file alone qualifies; anything else Antigravity asks to do in Supervised
+mode waits for you, even if it names the plan file. A message
 that starts with one of Antigravity's own commands or skills goes as typed instead (see Commands and
 Skills in the Composer).
 
@@ -215,6 +218,10 @@ turn stays open (see Turns above).
   as a shell command, and doesn't hold the turn like a command. Only a call that is plainly that
   wrapper does: one that also carries a command or an edit stays a command or an edit. Its approval
   is asked the same way as any command's, and names the server, the tool and its arguments.
+  If a later update shows the call is something else, it goes back to what that update says.
+- An approval shows everything known about its call, even when Antigravity's request names only
+  the call. If an update while you decide shows the approval is for something else, the card is
+  withdrawn and asked again in the new words; the old card can't be answered.
 - A command line longer than 8,000 characters keeps its start; output keeps its end. A cut never
   splits a character, and the timeline keeps a long command's start too.
 - Screenshots and other inline images in a tool's result are left out of what Threadlines stores.

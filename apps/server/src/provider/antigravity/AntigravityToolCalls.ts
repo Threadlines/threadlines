@@ -20,7 +20,7 @@
 import * as Schema from "effect/Schema";
 import * as EffectAcpSchema from "effect-acp/schema";
 
-import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
+import { type AcpToolCallState, makeToolCallState } from "../acp/AcpRuntimeModel.ts";
 
 /** The most characters one tool text field keeps, its cut marker included. */
 export const ANTIGRAVITY_TOOL_TEXT_LIMIT = 8_000;
@@ -109,12 +109,22 @@ function boundValue(value: unknown, budget: Budget, depth: number, field?: strin
   }
   if (!isRecord(value)) return value;
   const image = isInlineImage(value);
-  const kept: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
+  // A command line is budgeted before any other field, so a large field
+  // beside it can never leave it just the cut marker. The keys keep their order.
+  const entries = Object.entries(value);
+  const bounded = new Map<string, unknown>();
+  for (const [key, entry] of [
+    ...entries.filter(([key]) => COMMAND_LINE_FIELDS.has(key)),
+    ...entries.filter(([key]) => !COMMAND_LINE_FIELDS.has(key)),
+  ]) {
     if (budget.nodes <= 0) break;
     if (image && (key === "data" || key === "blob")) continue;
-    const bounded = boundValue(entry, budget, depth + 1, key);
-    if (bounded !== undefined) kept[key] = bounded;
+    bounded.set(key, boundValue(entry, budget, depth + 1, key));
+  }
+  const kept: Record<string, unknown> = {};
+  for (const [key] of entries) {
+    const entry = bounded.get(key);
+    if (entry !== undefined) kept[key] = entry;
   }
   return kept;
 }
@@ -142,6 +152,11 @@ function boundContentEntry(
   entry: EffectAcpSchema.ToolCallContent,
   budget: { text: number },
 ): EffectAcpSchema.ToolCallContent | undefined {
+  if (entry.type === "terminal") {
+    const terminalId = boundAntigravityCommandLine(entry.terminalId, 256);
+    budget.text -= terminalId.length;
+    return { type: "terminal", terminalId };
+  }
   if (entry.type !== "content") return entry;
   const block = entry.content;
   let bounded: EffectAcpSchema.ToolCallContent;
@@ -156,11 +171,13 @@ function boundContentEntry(
       };
       break;
     case "resource_link":
+      // A `data:` link is the bytes themselves, like an image.
+      if (/^data:/iu.test(block.uri)) return undefined;
       bounded = {
         type: "content",
         content: {
           type: "resource_link",
-          uri: block.uri,
+          uri: boundField(block.uri, budget, "command"),
           name: boundField(block.name, budget),
           ...(typeof block.mimeType === "string" ? { mimeType: block.mimeType } : {}),
           ...(typeof block.title === "string" ? { title: boundField(block.title, budget) } : {}),
@@ -170,13 +187,13 @@ function boundContentEntry(
       break;
     case "resource": {
       const resource = block.resource;
-      if (!("text" in resource)) return undefined;
+      if (!("text" in resource) || /^data:/iu.test(resource.uri)) return undefined;
       bounded = {
         type: "content",
         content: {
           type: "resource",
           resource: {
-            uri: resource.uri,
+            uri: boundField(resource.uri, budget, "command"),
             text: boundField(resource.text, budget),
             ...(typeof resource.mimeType === "string" ? { mimeType: resource.mimeType } : {}),
           },
@@ -201,7 +218,16 @@ export function normalizeAntigravitySessionUpdate(
   if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") {
     return notification;
   }
+  // What says what runs (the input) is budgeted first, then what it printed.
   const budget = { text: UPDATE_TEXT_BUDGET };
+  const rawInput =
+    update.rawInput !== undefined
+      ? boundAntigravityToolPayload(update.rawInput, budget)
+      : undefined;
+  const rawOutput =
+    update.rawOutput !== undefined
+      ? boundAntigravityToolPayload(update.rawOutput, budget)
+      : undefined;
   const content = update.content?.flatMap((entry) => {
     const bounded = boundContentEntry(entry, budget);
     return bounded === undefined ? [] : [bounded];
@@ -215,12 +241,8 @@ export function normalizeAntigravitySessionUpdate(
     update: {
       ...update,
       ...(typeof update.title === "string" ? { title: boundAntigravityText(update.title) } : {}),
-      ...(update.rawInput !== undefined
-        ? { rawInput: boundAntigravityToolPayload(update.rawInput, budget) }
-        : {}),
-      ...(update.rawOutput !== undefined
-        ? { rawOutput: boundAntigravityToolPayload(update.rawOutput, budget) }
-        : {}),
+      ...(update.rawInput !== undefined ? { rawInput } : {}),
+      ...(update.rawOutput !== undefined ? { rawOutput } : {}),
       ...(update.content !== undefined && update.content !== null
         ? { content: content ?? [] }
         : {}),
@@ -264,12 +286,17 @@ function commandOrEditEvidence(update: AntigravityToolCallUpdate): boolean {
   );
 }
 
+/** Server and tool names kept, at most this long. */
+const NAME_LIMIT = 256;
+
 /**
- * The MCP tool this update positively says it runs through `call_mcp_tool`:
- * an `execute` call titled "MCP Tool <ToolName>" whose input is exactly
- * `ServerName`, `ToolName` and optional object `Arguments` (agy 1.5.12, T3
- * Code 7f928416b2), with no command or edit about it. Anything else is
- * `undefined` and stays what the agent called it.
+ * The MCP tool this update positively says it runs through `call_mcp_tool`,
+ * read from the update exactly as the agent sent it (before any bounding):
+ * an `execute` call titled exactly "MCP Tool <ToolName>", whose input holds
+ * exactly `ServerName` and `ToolName` (non-empty text) and `Arguments` (an
+ * object), with no command or edit about it (agy 1.5.12, T3 Code
+ * 7f928416b2). Anything else is `undefined` and stays what the agent
+ * called it.
  */
 export function antigravityProxiedMcpTool(
   update: AntigravityToolCallUpdate,
@@ -277,31 +304,48 @@ export function antigravityProxiedMcpTool(
   const input = update.rawInput;
   if (!isRecord(input) || commandOrEditEvidence(update)) return undefined;
   if (update.kind !== "execute") return undefined;
-  if (!Object.keys(input).every((key) => WRAPPER_INPUT_KEYS.has(key))) return undefined;
-  const server = typeof input.ServerName === "string" ? input.ServerName.trim() : "";
-  const tool = typeof input.ToolName === "string" ? input.ToolName.trim() : "";
-  if (!server || !tool) return undefined;
-  if (input.Arguments !== undefined && !isRecord(input.Arguments)) return undefined;
-  if (update.title?.trim() !== `MCP Tool ${tool}`) return undefined;
-  return { server, tool, ...(isRecord(input.Arguments) ? { arguments: input.Arguments } : {}) };
+  const keys = Object.keys(input);
+  if (keys.length !== WRAPPER_INPUT_KEYS.size || !keys.every((key) => WRAPPER_INPUT_KEYS.has(key)))
+    return undefined;
+  const { ServerName: server, ToolName: tool, Arguments: args } = input;
+  if (typeof server !== "string" || typeof tool !== "string" || !server || !tool) return undefined;
+  if (!isRecord(args)) return undefined;
+  if (update.title !== `MCP Tool ${tool}`) return undefined;
+  return { server, tool, arguments: args };
 }
 
-/** What an approval for the call shows: the server, the tool and its arguments. */
+/**
+ * What an approval for the call shows: the server and the tool first, then
+ * its arguments, so a cut short loses the arguments' tail, never the target.
+ */
 export function antigravityMcpToolLabel(mcp: AntigravityProxiedMcpTool): string {
   const args = mcp.arguments === undefined ? "" : ` ${JSON.stringify(mcp.arguments)}`;
   return boundAntigravityCommandLine(`MCP tool ${mcp.server} · ${mcp.tool}${args}`);
 }
 
 /** The MCP tool a call was already shown as, from the fields `asMcpToolCall` set. */
-function shownMcpTool(toolCall: AcpToolCallState): AntigravityProxiedMcpTool | undefined {
-  const { server, tool, arguments: args } = toolCall.data;
-  if (typeof server !== "string" || typeof tool !== "string") return undefined;
-  return { server, tool, ...(isRecord(args) ? { arguments: args } : {}) };
+function shownMcpTool(toolCall: AcpToolCallState): { server: string; tool: string } | undefined {
+  const { server, tool } = toolCall.data;
+  return typeof server === "string" && typeof tool === "string" ? { server, tool } : undefined;
 }
 
-function asMcpToolCall(toolCall: AcpToolCallState, mcp: AntigravityProxiedMcpTool) {
+/**
+ * The call as that MCP tool. Its arguments come from the merged, bounded
+ * input (the newest restatement of them), never from the unbounded report.
+ */
+function asMcpToolCall(
+  toolCall: AcpToolCallState,
+  names: { readonly server: string; readonly tool: string },
+): AcpToolCallState {
   const { item: _item, command: _command, ...data } = toolCall.data;
   const { command: _shown, ...rest } = toolCall;
+  const input = isRecord(data.rawInput) ? data.rawInput : undefined;
+  const mcp: AntigravityProxiedMcpTool = {
+    server: boundAntigravityCommandLine(names.server, NAME_LIMIT),
+    tool: boundAntigravityCommandLine(names.tool, NAME_LIMIT),
+    ...(isRecord(input?.Arguments) ? { arguments: input.Arguments } : {}),
+  };
+  const { arguments: _old, ...withoutArguments } = data;
   return {
     ...rest,
     kind: "other",
@@ -310,31 +354,55 @@ function asMcpToolCall(toolCall: AcpToolCallState, mcp: AntigravityProxiedMcpToo
     title: mcp.tool,
     detail: antigravityMcpToolLabel(mcp),
     data: {
-      ...data,
+      ...withoutArguments,
       kind: "other",
       server: mcp.server,
       tool: mcp.tool,
       ...(mcp.arguments !== undefined ? { arguments: mcp.arguments } : {}),
     },
-  } satisfies AcpToolCallState;
+  };
 }
 
 /**
- * The merged call without the MCP fields an earlier update gave it, back to
- * the kind the agent gives it (a wrapper was an `execute` call).
+ * The merged call as the core would show it without the MCP look an earlier
+ * update gave it: rebuilt from its merged data, so neither the MCP title nor
+ * its label stays. Its kind is the report's, else an edit when a diff says
+ * it changed a file (so the diff still counts as file-change evidence), else
+ * the `execute` a wrapper was.
  */
-function withoutMcpTool(toolCall: AcpToolCallState, kind: string): AcpToolCallState {
-  const { server: _server, tool: _tool, arguments: _args, ...data } = toolCall.data;
+function withoutMcpTool(
+  toolCall: AcpToolCallState,
+  update: AntigravityToolCallUpdate,
+): AcpToolCallState {
+  const { server: _server, tool: _tool, arguments: _args, item: _item, ...data } = toolCall.data;
+  const diff =
+    (update.content ?? []).some((entry) => entry.type === "diff") ||
+    (Array.isArray(data.content) &&
+      data.content.some((entry) => isRecord(entry) && entry.type === "diff"));
+  const kind = update.kind ?? (diff ? "edit" : "execute");
+  const rebuilt = makeToolCallState({
+    toolCallId: toolCall.toolCallId,
+    title: update.title,
+    kind: kind as EffectAcpSchema.ToolKind,
+    ...(toolCall.status !== undefined
+      ? { status: toolCall.status === "inProgress" ? "in_progress" : toolCall.status }
+      : {}),
+    rawInput: data.rawInput,
+    rawOutput: data.rawOutput,
+    content: data.content as ReadonlyArray<EffectAcpSchema.ToolCallContent> | undefined,
+    locations: data.locations as ReadonlyArray<EffectAcpSchema.ToolCallLocation> | undefined,
+  });
   const { itemType: _itemType, ...rest } = toolCall;
-  return { ...rest, kind, data: { ...data, kind } };
+  return rebuilt ?? { ...rest, kind, data: { ...data, kind } };
 }
 
 /**
  * A tool call as the timeline should show it, given the update that just
- * arrived. A call the update positively shows to be `call_mcp_tool` is that
- * MCP tool, with its server and tool, not a command; a later update with no
- * command or edit about it keeps it so. Anything else stays as the agent
- * described it.
+ * arrived, as the agent sent it. A call the update positively shows to be
+ * `call_mcp_tool` is that MCP tool, with its server and tool, not a command;
+ * a later update with no command or edit about it keeps it so, with the
+ * newest arguments. Anything else stays, or goes back to, what the agent
+ * described.
  */
 export function normalizeAntigravityToolCall(
   toolCall: AcpToolCallState,
@@ -348,11 +416,13 @@ export function normalizeAntigravityToolCall(
   const conflicting =
     commandOrEditEvidence(update) ||
     (update.kind !== undefined && update.kind !== null && update.kind !== "execute") ||
+    (update.title !== undefined &&
+      update.title !== null &&
+      update.title !== `MCP Tool ${shown.tool}`) ||
     (restated !== undefined &&
       (!Object.keys(restated).every((key) => WRAPPER_INPUT_KEYS.has(key)) ||
         restated.ServerName !== shown.server ||
-        restated.ToolName !== shown.tool));
-  return conflicting
-    ? withoutMcpTool(toolCall, update.kind ?? "execute")
-    : asMcpToolCall(toolCall, shown);
+        restated.ToolName !== shown.tool ||
+        (restated.Arguments !== undefined && !isRecord(restated.Arguments))));
+  return conflicting ? withoutMcpTool(toolCall, update) : asMcpToolCall(toolCall, shown);
 }

@@ -34,7 +34,7 @@ import { spawn as spawnChild } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve as resolvePath, sep } from "node:path";
+import { isAbsolute, join, normalize, relative, resolve as resolvePath, sep } from "node:path";
 import { createInterface } from "node:readline";
 
 import {
@@ -115,7 +115,7 @@ import {
   flattenSessionConfigSelectOptions,
   selectConfigOptionCurrentValue,
 } from "./AcpProviderModels.ts";
-import { findModelConfigOption } from "./AcpRuntimeModel.ts";
+import { type AcpToolCallState, findModelConfigOption } from "./AcpRuntimeModel.ts";
 import { ProviderSetupError } from "../Errors.ts";
 
 const decodeAntigravitySettings = Schema.decodeSync(AntigravitySettings);
@@ -516,14 +516,49 @@ function toolCallPaths(data: Record<string, unknown>): ReadonlyArray<string> {
   return paths;
 }
 
-const isInside = (path: string, dir: string) => {
-  const target = resolvePath(path);
-  const root = resolvePath(dir);
-  return target.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
-};
-
 /** The agent's artifact store (plans, task lists): inside the profile, never the workspace. */
 const brainDir = (profileDir: string) => join(profileDir, "antigravity-acp", "brain");
+
+/** Input fields that say a call runs a command (as the core reads them). */
+const COMMAND_FIELDS = ["command", "commandLine", "CommandLine", "command_line", "cmd"];
+
+/**
+ * Whether a tool call is the agent writing its own plan, and nothing else:
+ * an edit whose every change is a diff of a `plan.md` directly in one of the
+ * session folders under the profile's `brain` (`/plan` writes
+ * `brain/<session>/plan.md`), with no command about it. Such a write is
+ * approved without asking and shows as the plan card, so a call that runs
+ * anything, or touches any other file, never passes.
+ */
+export function isAntigravityPlanFileEdit(toolCall: AcpToolCallState, brain: string): boolean {
+  if (toolCall.kind !== "edit" || toolCall.command !== undefined) return false;
+  const { content, rawInput } = toolCall.data;
+  if (
+    typeof rawInput === "object" &&
+    rawInput !== null &&
+    COMMAND_FIELDS.some((field) => field in rawInput)
+  ) {
+    return false;
+  }
+  const isPlanPath = (path: string) => {
+    if (!isAbsolute(path)) return false;
+    const parts = relative(brain, normalize(path)).split(sep);
+    return parts.length === 2 && parts[0] !== ".." && parts[0] !== "" && parts[1] === "plan.md";
+  };
+  // Every change is a diff, and every path the call names (diffs,
+  // locations, its target) is the plan file.
+  const diffsOnly =
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        (entry as { type?: unknown }).type === "diff",
+    );
+  const paths = toolCallPaths(toolCall.data);
+  return diffsOnly && paths.length > 0 && paths.every(isPlanPath);
+}
 
 // ── Install check ────────────────────────────────────────────────────
 
@@ -837,13 +872,7 @@ export function makeAntigravityDescriptor(
     ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir, usage?.usageLimitFor),
     planMode: {
       promptPrefix: "/plan ",
-      isPlanFile: (toolCall) => {
-        const filePaths = toolCallPaths(toolCall.data);
-        return (
-          filePaths.length > 0 &&
-          filePaths.every((filePath) => isInside(filePath, brainDir(paths.profileDir)))
-        );
-      },
+      isPlanFile: (toolCall) => isAntigravityPlanFileEdit(toolCall, brainDir(paths.profileDir)),
       planMarkdown: (toolCall) => {
         const content = toolCall.data.content;
         if (!Array.isArray(content)) return undefined;
