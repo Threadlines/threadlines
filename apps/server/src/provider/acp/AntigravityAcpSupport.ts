@@ -89,6 +89,10 @@ import type {
   AntigravityInstalledRuntime,
   AntigravityRuntime,
 } from "../antigravity/AntigravityRuntime.ts";
+import {
+  type AntigravityUsageReader,
+  withAntigravityUsage,
+} from "../antigravity/AntigravityUsage.ts";
 import { detectionAt } from "../providerDetection.ts";
 import type {
   ProviderMaintenanceCapabilities,
@@ -638,12 +642,14 @@ export interface AntigravityDescriptorInput {
   readonly signIn: AntigravitySignInConfig;
   /** The folder whose project skills the status lists (the server's, as for other agents). */
   readonly skillsCwd?: string;
+  /** Plan limits and email for a Google sign-in; the status check shows its last reading. */
+  readonly usage?: AntigravityUsageReader;
 }
 
 export function makeAntigravityDescriptor(
   input: AntigravityDescriptorInput,
 ): AcpProviderDescriptor<AntigravitySettings> {
-  const { paths, runtime, releases, gate, signIn } = input;
+  const { paths, runtime, releases, gate, signIn, usage } = input;
   const platform = process.platform;
   const userHomeFor = (environment: NodeJS.ProcessEnv | undefined) =>
     antigravityUserHome(platform, environment ?? process.env, homedir());
@@ -936,13 +942,14 @@ export function makeAntigravityDescriptor(
           } satisfies AcpProviderProbeOutcome;
         }
         const catalog = yield* readCatalog(tag);
-        return {
+        const outcome = {
           installed: true,
           version,
           ...signInStatus,
           ...latest,
           ...(catalog ? { models: antigravityModelsFromCatalog(catalog) } : {}),
         } satisfies AcpProviderProbeOutcome;
+        return usage ? withAntigravityUsage(outcome, yield* usage.status) : outcome;
       }),
     listSkills: (_settings, environment) =>
       listAntigravitySkills({

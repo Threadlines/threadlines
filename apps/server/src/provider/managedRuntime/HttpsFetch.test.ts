@@ -297,4 +297,28 @@ describe("makeHttpsFetch", () => {
     );
     expect(seen).toEqual(["/file", "/elsewhere"]);
   });
+
+  it("sends a POST's body and headers, and never follows its redirect", async () => {
+    const seen: Array<string> = [];
+    const origin = await serve((request, response) => {
+      let body = "";
+      request.on("data", (chunk: Buffer) => (body += chunk.toString()));
+      request.on("end", () => {
+        seen.push(
+          `${request.method} ${request.url} ${request.headers.authorization} ${request.headers["content-length"]} ${body}`,
+        );
+        if (request.url === "/moved") {
+          response.writeHead(307, { location: "/answer" }).end();
+        } else {
+          response.writeHead(200).end('{"ok":true}');
+        }
+      });
+    });
+    const fetch = makeHttpsFetch({ allowHttp: true, proxyEnv: {} });
+    const init = { method: "POST", headers: { authorization: "Bearer t" }, body: "{}" };
+
+    expect(await (await fetch(`${origin}/answer`, init)).json()).toEqual({ ok: true });
+    await expect(fetch(`${origin}/moved`, init)).rejects.toThrow(/redirect of a request/u);
+    expect(seen).toEqual(["POST /answer Bearer t 2 {}", "POST /moved Bearer t 2 {}"]);
+  });
 });

@@ -198,6 +198,19 @@ export const ServerProviderScopedUsageWindow = Schema.Struct({
   // Provider-reported severity (e.g. "normal" | "warning"); anything other
   // than "normal" should surface ambient warning affordances.
   severity: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * The models this window holds, for a limit that covers a family of models
+   * (Antigravity's "Claude & GPT" pool): a model whose name has one of these
+   * as whole words. Absent: a model whose name has `scopeLabel` (Claude's
+   * per-model limits).
+   */
+  scopeModels: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  /**
+   * Models left out even when `scopeModels` holds them, by the same rule:
+   * those with a window of their own (Antigravity's Gemini 4 Argon beside
+   * the default Gemini pool).
+   */
+  scopeExcludes: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   /** When this window was last read from the provider; see `ServerProviderUsageWindow`. */
   checkedAt: Schema.optional(IsoDateTime),
 });
@@ -301,6 +314,7 @@ export const ServerProviderAccountUsage = Schema.Struct({
     "claude-oauth-usage",
     "muse-subscription-usage",
     "grok-billing",
+    "antigravity-quota",
   ]),
   checkedAt: IsoDateTime,
   primaryLimitId: Schema.optional(TrimmedNonEmptyString),

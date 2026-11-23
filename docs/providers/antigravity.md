@@ -129,6 +129,37 @@ wants you to verify the account first (with a link to Google's page).
 
 Running chats stop when you switch, as with any change to a provider's settings.
 
+### Plan Limits
+
+An account signed in with Google (Google account or Gemini Enterprise) shows how much of the
+Google plan is used: on the Antigravity row in Settings, on the Usage page, in the ring beside the
+send button, and on each model in the picker. Google meters groups of models apart, so there is a
+row for each: Gemini, each Gemini 4 model that has a limit of its own (such as Gemini 4 Argon), and
+Claude & GPT, which share one. Each has a 5-hour and a weekly window with its reset time. Gemini
+Enterprise accounts are metered per model, with no window length; their rows show each group's
+fullest model. A group that runs out stops only its own models. The row also shows the signed-in
+Google account's email (blurred until you show it).
+
+The numbers come from Google, not from Antigravity: Threadlines asks Google's Cloud Code service
+(`retrieveUserQuotaSummary`, the call Google's own Antigravity apps make) with the sign-in
+Antigravity saved in this account's profile, under Threadlines' own name. Google doesn't publish
+this API, so it can change or stop answering; the row then says it couldn't read the limits and
+keeps the last numbers.
+
+When the numbers can be stale:
+
+- They are read every few minutes, when the provider status refreshes, so a chat's usage shows up
+  within about five minutes.
+- Threadlines never renews the sign-in itself. Antigravity renews it while it runs, so after an
+  hour or so without a chat the saved sign-in lapses. The last numbers stay, with their age, and a
+  line says to start a chat to refresh them.
+- A Gemini API key or Vertex AI bills per request and has no plan to meter, even if an earlier
+  Google sign-in is still in the profile.
+
+Requests go only to `daily-cloudcode-pa.googleapis.com`, `cloudcode-pa.googleapis.com` and, for the
+email when the sign-in doesn't carry it, `www.googleapis.com`. Redirects are refused, so the
+sign-in can't be carried anywhere else. The code is `apps/server/src/provider/antigravity/AntigravityUsage.ts`.
+
 ### Per-Use Billing
 
 With a Gemini API key or Vertex AI, Google bills every request to you. These requests don't show on

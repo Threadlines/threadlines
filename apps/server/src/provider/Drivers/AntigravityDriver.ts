@@ -47,6 +47,7 @@ import {
   type AntigravityRuntime,
   makeAntigravityRuntime,
 } from "../antigravity/AntigravityRuntime.ts";
+import { makeAntigravityUsageReader } from "../antigravity/AntigravityUsage.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import type { ProviderDriver } from "../ProviderDriver.ts";
 import { AntigravitySettings } from "@threadlines/contracts";
@@ -139,6 +140,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       // Sign-in and sign-out close the instance while they run; their own
       // process starts from a descriptor that ignores the gate.
       const gate = makeLaunchGate();
+      const fingerprint = antigravityCredentialFingerprint(signIn);
+      // Plan limits and email, for a Google sign-in (AntigravityUsage.ts).
+      const usage = yield* makeAntigravityUsageReader({
+        profileDir: paths.profileDir,
+        method: signIn.method,
+        fingerprint,
+      });
       const descriptor = makeAntigravityDescriptor({
         paths,
         runtime,
@@ -146,9 +154,10 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         gate,
         signIn,
         skillsCwd: serverConfig.cwd,
+        usage,
       });
       const instance = yield* makeAcpProviderDriver(descriptor).create(input);
-      const fingerprint = antigravityCredentialFingerprint(signIn);
+      usage.publishTo(instance.snapshot.patchSnapshot);
       const builtEnvironment = providerInstanceEnvironmentKey(input.environment);
       const authFlows = makeAntigravityAuthFlows({
         descriptor: makeAntigravityDescriptor({
@@ -171,6 +180,10 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         ...instance,
         authFlows: {
           ...authFlows,
+          // A sign-in or sign-out cancels a limits read and forgets the old
+          // account's numbers, before and after.
+          run: (flow) =>
+            usage.reset.pipe(Effect.andThen(authFlows.run(flow)), Effect.ensuring(usage.reset)),
           // The sign-in settings and every variable (ADC paths included)
           // match what this build was created from.
           builtFrom: (entry) => {
