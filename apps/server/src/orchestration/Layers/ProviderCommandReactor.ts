@@ -119,7 +119,7 @@ import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { makeSessionLaunchGenerations, withoutLaunchMark } from "../sessionLaunches.ts";
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { messageSentFromNote, previousMessageSentFrom } from "../messageSentFrom.ts";
-import { turnMessageOrigin } from "../turnOrigin.ts";
+import { shouldSuggestNextMessage, turnMessageOrigin } from "../turnOrigin.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
 import { isContinueTrigger, latestTurnStartFor } from "../continueTurns.ts";
@@ -3968,14 +3968,24 @@ const make = Effect.gen(function* () {
       let providerTookTurn = false;
       // None of the context in front of the message went (see below).
       let contextDeferred = false;
+      const suggestionThread =
+        origin === "person" ? thread : ((yield* resolveThread(event.payload.threadId)) ?? thread);
       yield* providerService
         .sendTurn({
           ...turnRequest,
           requestedAt,
           origin,
           lane: "main",
-          // Its sender reads the reply here: Codex suggests their next message.
-          ...(origin === "person" ? { suggestNextMessage: true } : {}),
+          // The user reads the reply here: Codex and Antigravity suggest their next message.
+          ...(shouldSuggestNextMessage({
+            origin,
+            message,
+            fromThread: event.payload.fromThread,
+            participantId: event.payload.participantId,
+            thread: suggestionThread,
+          })
+            ? { suggestNextMessage: true }
+            : {}),
           ...(resend !== undefined ? { resend } : {}),
           handoffSteps: {
             queueMs,
