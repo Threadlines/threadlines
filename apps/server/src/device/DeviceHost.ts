@@ -146,8 +146,11 @@ export class DeviceHost extends Context.Service<
      * and can try again.
      */
     readonly releaseAgentSession: (session: string) => Effect.Effect<boolean>;
-    /** Stops the agent-device daemon through its own CLI. */
-    readonly stopAgent: Effect.Effect<void>;
+    /**
+     * Stops the agent-device daemon through its own CLI. True once no daemon
+     * runs for this state folder; false when one may still be running.
+     */
+    readonly stopAgent: Effect.Effect<boolean>;
     /** Stops the hub and the daemon. Simulators and emulators keep running; the user owns those. */
     readonly stop: Effect.Effect<void>;
   }

@@ -90,7 +90,14 @@ const DeviceClaim = Schema.Struct({
   agentSession: Schema.String,
 });
 type DeviceClaim = typeof DeviceClaim.Type;
-const ClaimsFile = Schema.Struct({ version: Schema.Literal(1), claims: Schema.Array(DeviceClaim) });
+const ClaimsFile = Schema.Struct({
+  version: Schema.Literal(1),
+  claims: Schema.Array(DeviceClaim),
+  /** agent-device sessions whose close the daemon did not confirm: tried again later. */
+  pendingReleases: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed([] as ReadonlyArray<string>)),
+  ),
+});
 const decodeClaimsFile = Schema.decodeUnknownEffect(Schema.fromJsonString(ClaimsFile));
 const encodeClaimsFile = Schema.encodeUnknownEffect(Schema.fromJsonString(ClaimsFile));
 
@@ -120,6 +127,8 @@ export interface DeviceServiceShape {
     readonly threadId: ThreadId;
     readonly deviceId: DeviceId;
     readonly platform: DevicePlatform;
+    /** Skip the initial listing when the caller just refreshed devices. */
+    readonly alreadyListed?: boolean;
   }) => Effect.Effect<DeviceAgentOpened, DeviceError>;
   /** Every session a thread holds, oldest first. */
   readonly sessionsForThread: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<DeviceSession>>;
@@ -194,24 +203,78 @@ export const make = Effect.gen(function* () {
   );
 
   // Claims a previous run left. A file that can't be read is kept as it is and treated as none.
-  const loadedClaims = yield* fs.readFileString(claimsPath).pipe(
+  const loaded = yield* fs.readFileString(claimsPath).pipe(
     Effect.flatMap(decodeClaimsFile),
-    Effect.map((file) => file.claims),
-    Effect.catch(() => Effect.succeed([] as ReadonlyArray<DeviceClaim>)),
+    Effect.catch(() =>
+      Effect.succeed({
+        claims: [] as ReadonlyArray<DeviceClaim>,
+        pendingReleases: [] as ReadonlyArray<string>,
+      }),
+    ),
   );
-  const claims = new Map<string, DeviceClaim>(
-    loadedClaims.map((claim) => [claim.agentSession, claim]),
+  // What claims.json holds. Changed only once the file says the same, so a
+  // failed write never leaves memory and disk telling different stories.
+  let claims: ReadonlyMap<string, DeviceClaim> = new Map(
+    loaded.claims.map((claim) => [claim.agentSession, claim]),
   );
+  let pendingReleases: ReadonlySet<string> = new Set(loaded.pendingReleases);
   const claimsLock = yield* Semaphore.make(1);
-  const persistClaims = claimsLock.withPermit(
-    Effect.suspend(() => encodeClaimsFile({ version: 1, claims: [...claims.values()] })).pipe(
-      Effect.flatMap((contents) => writeFileStringAtomically({ filePath: claimsPath, contents })),
-      services,
+  const saveClaims = (update: {
+    readonly claims?: ReadonlyMap<string, DeviceClaim>;
+    readonly pendingReleases?: ReadonlySet<string>;
+  }) =>
+    Effect.gen(function* () {
+      const nextClaims = update.claims ?? claims;
+      const nextPending = update.pendingReleases ?? pendingReleases;
+      const contents = yield* encodeClaimsFile({
+        version: 1,
+        claims: [...nextClaims.values()],
+        pendingReleases: [...nextPending],
+      });
+      yield* writeFileStringAtomically({ filePath: claimsPath, contents }).pipe(services);
+      claims = nextClaims;
+      pendingReleases = nextPending;
+    }).pipe(
       Effect.mapError(
         () => new DeviceOperationError({ operation: "save claim", reason: "settings_failed" }),
       ),
-    ),
-  );
+    );
+  /** Changes the claims under their lock, from the latest ones. */
+  const changeClaims = (
+    change: (current: {
+      readonly claims: ReadonlyMap<string, DeviceClaim>;
+      readonly pendingReleases: ReadonlySet<string>;
+    }) => {
+      readonly claims?: ReadonlyMap<string, DeviceClaim>;
+      readonly pendingReleases?: ReadonlySet<string>;
+    },
+  ) => claimsLock.withPermit(Effect.suspend(() => saveClaims(change({ claims, pendingReleases }))));
+
+  /**
+   * Ends every agent-device session on the pending list that the daemon now
+   * confirms. A session the daemon would not close stays listed, so the next
+   * close, agent tools starting, or the next server tries again.
+   */
+  const retryPendingReleases = Effect.suspend(() => {
+    const names = [...pendingReleases];
+    if (names.length === 0) return Effect.void;
+    return Effect.forEach(
+      names,
+      (name) => host.releaseAgentSession(name).pipe(Effect.map((done) => (done ? name : null))),
+      { concurrency: 4 },
+    ).pipe(
+      Effect.flatMap((results) => {
+        const done = new Set(results.filter((name): name is string => name !== null));
+        if (done.size === 0) return Effect.void;
+        return changeClaims((current) => ({
+          pendingReleases: new Set([...current.pendingReleases].filter((name) => !done.has(name))),
+        }));
+      }),
+      Effect.catch((error) =>
+        Effect.logWarning("Could not save device claims", { detail: error.message }),
+      ),
+    );
+  });
 
   const toSession = ({ agentSession: _agentSession, ...session }: DeviceClaim): DeviceSession =>
     session;
@@ -328,14 +391,24 @@ export const make = Effect.gen(function* () {
             "Agents can't use devices on this computer. Ask the user to turn on Use devices and Agents can use devices in Settings → Devices.",
         });
       }
+      const wasReady = (yield* currentState).hostStatus === "ready";
       const ready = yield* host
         .ensureAgentReady((phase, detail) => setHostStatus(phase, detail).pipe(Effect.asVoid))
         .pipe(
-          Effect.tapError((error) => setHostStatus("failed", error.message)),
+          Effect.tapError((error) =>
+            wasReady
+              ? host.current.pipe(
+                  Effect.flatMap((hub) =>
+                    hub !== null ? setHostStatus("ready") : setHostStatus("failed", error.message),
+                  ),
+                )
+              : setHostStatus("failed", error.message),
+          ),
           Effect.mapError(hostUnavailable),
         );
       yield* setHostStatus("ready");
       yield* publishSummary;
+      yield* retryPendingReleases;
       return ready;
     }).pipe(lifecycleLock.withPermit, Effect.withSpan("DeviceService.agentReadiness")),
   );
@@ -433,9 +506,15 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
 
   const recordSession = (session: DeviceSession, releasesAtStart: number) =>
     Effect.gen(function* () {
-      if (!(yield* readDeviceSettings).enabled) {
+      const deviceSettings = yield* readDeviceSettings;
+      if (!deviceSettings.enabled) {
         return yield* new DeviceHostUnavailableError({
           reason: "Devices were turned off while the device was opening.",
+        });
+      }
+      if (session.openedBy === "agent" && !deviceSettings.agentAccessEnabled) {
+        return yield* new DeviceHostUnavailableError({
+          reason: "Agent device access was turned off while the device was opening.",
         });
       }
       if ((releaseCounts.get(session.threadId) ?? 0) !== releasesAtStart) {
@@ -444,8 +523,9 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
         });
       }
       const agentSession = agentDeviceSession(session.threadId, session.deviceId);
-      claims.set(agentSession, { ...session, agentSession });
-      yield* persistClaims;
+      yield* changeClaims((current) => ({
+        claims: new Map([...current.claims, [agentSession, { ...session, agentSession }]]),
+      }));
       yield* publish((state) => ({
         ...state,
         sessions: [
@@ -455,7 +535,11 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
       }));
     }).pipe(lifecycleLock.withPermit);
 
-  const open: DeviceServiceShape["open"] = (input, openedBy = "user") =>
+  const openInternal = (
+    input: DeviceOpenInput,
+    openedBy: "user" | "agent",
+    skipInitialRefresh = false,
+  ) =>
     Effect.gen(function* () {
       const startedNanos = yield* Clock.monotonicTimeNanos;
       const elapsedMs = Clock.monotonicTimeNanos.pipe(
@@ -468,8 +552,12 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
         const releasesAtStart = releaseCounts.get(input.threadId) ?? 0;
         yield* ensurePlatform(input.platform);
         const ready = yield* readiness;
-        let state = yield* refresh(ready);
-        let device = findDevice(state, input.deviceId);
+        let state = yield* currentState;
+        let device = skipInitialRefresh ? findDevice(state, input.deviceId) : undefined;
+        if (!device) {
+          state = yield* refresh(ready);
+          device = findDevice(state, input.deviceId);
+        }
         if (!device) return yield* new DeviceNotFoundError({ deviceId: input.deviceId });
         if (device.platform === "android" && !device.physical) yield* requireAndroidVideo(ready);
         let bootedNow = false;
@@ -535,6 +623,9 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
       );
     }).pipe(Effect.withSpan("DeviceService.open"));
 
+  const open: DeviceServiceShape["open"] = (input, openedBy = "user") =>
+    openInternal(input, openedBy, false);
+
   /** Removes launchers whose session is gone. Under the launcher lock, so binding never races it. */
   const pruneLaunchers = launcherLock.withPermit(
     Effect.gen(function* () {
@@ -547,30 +638,20 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
   );
 
   /**
-   * Ends sessions: their agent-device sessions first (which quits the app the
-   * agent opened and frees the device for others), then the claims, then the
-   * state and launchers.
+   * Ends sessions: drops their claims and queues their agent-device sessions on
+   * `pendingReleases` in one disk write, then updates state, prunes launchers,
+   * and tries to release them on the daemon.
    */
-  const endSessions = (requested: ReadonlyArray<DeviceSession>) =>
+  const endSessions = (ending: ReadonlyArray<DeviceSession>) =>
     Effect.gen(function* () {
-      let ending = requested;
       if (ending.length === 0) return;
-      const released = yield* Effect.forEach(
-        ending,
-        (session) =>
-          host.releaseAgentSession(agentDeviceSession(session.threadId, session.deviceId)),
-        { concurrency: 4 },
-      );
-      // A session whose close the daemon did not confirm stays claimed and open,
-      // so closing again (or the next startup's sweep) retries it.
-      ending = ending.filter((_, index) => released[index]);
-      if (ending.length === 0) return;
-      for (const session of ending) {
-        claims.delete(agentDeviceSession(session.threadId, session.deviceId));
-      }
-      yield* persistClaims.pipe(
-        Effect.catch((error) => Effect.logWarning("Could not save device claims", { error })),
-      );
+      const names = ending.map((session) => agentDeviceSession(session.threadId, session.deviceId));
+      // The claims go first, and as one write: a session reported closed is closed on disk too.
+      // Their agent-device sessions wait on the pending list until the daemon confirms them.
+      yield* changeClaims((current) => ({
+        claims: new Map([...current.claims].filter(([name]) => !names.includes(name))),
+        pendingReleases: new Set([...current.pendingReleases, ...names]),
+      }));
       yield* publish((state) => ({
         ...state,
         sessions: state.sessions.filter(
@@ -578,6 +659,7 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
         ),
       }));
       yield* pruneLaunchers;
+      yield* retryPendingReleases;
     });
 
   const shutdownDevice = Effect.fn("DeviceService.shutdownDevice")(function* (
@@ -683,17 +765,10 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
     Effect.gen(function* () {
       // Consent and agent tools first, before anything boots or a session is recorded.
       const agentReady = yield* agentReadiness;
-      const session = yield* open(input, "agent");
+      const session = yield* openInternal(input, "agent", input.alreadyListed === true);
       const device = findDevice(yield* currentState, session.deviceId);
       if (!device) return yield* new DeviceNotFoundError({ deviceId: session.deviceId });
       const configPath = agentDeviceConfigPath(path, stateDir);
-      yield* writeAgentDeviceConfig(configPath, agentReady.agentDevice).pipe(
-        services,
-        Effect.mapError(
-          () =>
-            new DeviceOperationError({ operation: "configure agent", reason: "settings_failed" }),
-        ),
-      );
       const agentSession = agentDeviceSession(session.threadId, session.deviceId);
       const targetArgs = [
         ...agentTargetArgs(device),
@@ -704,9 +779,23 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
       ];
       const command = yield* launcherLock.withPermit(
         Effect.gen(function* () {
+          const deviceSettings = yield* readDeviceSettings;
+          if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) {
+            return Option.none<string>();
+          }
           const { sessions } = yield* currentState;
           // Closed while it opened: no launcher for a session that is gone.
           if (!sessions.some((live) => sameSession(live, session))) return Option.none<string>();
+          yield* writeAgentDeviceConfig(configPath, agentReady.agentDevice).pipe(
+            services,
+            Effect.mapError(
+              () =>
+                new DeviceOperationError({
+                  operation: "configure agent",
+                  reason: "settings_failed",
+                }),
+            ),
+          );
           return Option.some(
             yield* bindAgentDeviceLauncher({
               stateDir,
@@ -731,7 +820,7 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
       if (Option.isNone(command)) {
         return yield* new DeviceHostUnavailableError({
           reason:
-            "The device was closed while it was opening. Call device_open again only if you still need it.",
+            "The device was closed or agent access was turned off while it was opening. Call device_open again only if you still need it.",
         });
       }
       return { device, session, command: command.value, agentSession };
@@ -773,6 +862,35 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
       return yield* publishSummary;
     }).pipe(lifecycleLock.withPermit, Effect.withSpan("DeviceService.updateTool"));
 
+  /**
+   * Agent access off: every agent-device session is ended, every launcher and
+   * the daemon config they read are removed, then the daemon stops. A daemon
+   * that would not stop is reported, never assumed gone.
+   */
+  const withdrawAgentAccess = Effect.gen(function* () {
+    yield* changeClaims((current) => ({
+      pendingReleases: new Set([...current.pendingReleases, ...current.claims.keys()]),
+    })).pipe(Effect.ignore);
+    yield* retryPendingReleases;
+    yield* launcherLock.withPermit(
+      Effect.gen(function* () {
+        yield* pruneAgentDeviceLaunchers({ stateDir, live: new Set() }).pipe(services);
+        yield* fs
+          .remove(agentDeviceConfigPath(path, stateDir), { force: true })
+          .pipe(Effect.ignore);
+      }),
+    );
+    const stopped = yield* host.stopAgent;
+    if (stopped) {
+      yield* retryPendingReleases;
+    } else {
+      yield* setHostStatus(
+        (yield* currentState).hostStatus,
+        `Agent tools did not stop. Their logs are in ${path.join(deviceStateDir(path, stateDir), "agent-device")}; restarting Threadlines stops them.`,
+      );
+    }
+  });
+
   /** "Use devices" off stops the hub and daemon (devices keep running); agent access off stops the daemon. */
   const applySettings = (next: {
     readonly enabled: boolean;
@@ -811,12 +929,22 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
       if (!next.enabled) {
         yield* lifecycleLock.withPermit(
           Effect.gen(function* () {
-            yield* endSessions(previous.sessions);
+            const activeClaims = [...claims.values()].map(toSession);
+            yield* endSessions(activeClaims).pipe(Effect.ignore);
+            yield* launcherLock.withPermit(
+              Effect.gen(function* () {
+                yield* pruneAgentDeviceLaunchers({ stateDir, live: new Set() }).pipe(services);
+                yield* fs
+                  .remove(agentDeviceConfigPath(path, stateDir), { force: true })
+                  .pipe(Effect.ignore);
+              }),
+            );
             yield* host.stop;
+            yield* retryPendingReleases;
           }),
         );
       } else if (!next.agentAccessEnabled && previous.agentAccessEnabled) {
-        yield* host.stopAgent;
+        yield* lifecycleLock.withPermit(withdrawAgentAccess);
       }
       // Agent access turned on: fetch agent-device now, in the background, so the
       // first device_open is quick. Nothing starts until an agent asks.
@@ -836,13 +964,22 @@ process.exitCode = result.error ? 1 : (result.status ?? 1);`,
       enabled: value.enableDevices,
       agentAccessEnabled: value.agentDeviceAccess,
     })),
-    Stream.runForEach(applySettings),
+    // One change that fails (a claims write, say) must not end the watcher.
+    Stream.runForEach((next) =>
+      applySettings(next).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not apply device settings", { cause }),
+        ),
+      ),
+    ),
     Effect.catchCause((cause) => Effect.logWarning("Device settings watcher stopped", { cause })),
     Effect.forkIn(scope),
   );
 
-  // Launchers for sessions that no longer exist (the claims file is the record).
+  // Launchers for sessions that no longer exist (the claims file is the record),
+  // and agent-device sessions an earlier run could not end.
   yield* pruneLaunchers.pipe(Effect.ignore);
+  yield* retryPendingReleases.pipe(Effect.forkIn(scope));
 
   // Stop the hub and daemon with the server. Devices keep running.
   yield* Effect.addFinalizer(() => host.stop);

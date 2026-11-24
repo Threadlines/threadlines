@@ -868,7 +868,7 @@ export function buildTurnStartParams(input: {
       ? { agentPageAssetsDir: input.agentPageAssetsDir }
       : {}),
     ...(input.commandRequests ? { commandRequests: true } : {}),
-    ...(input.deviceTools ? { deviceTools: true } : {}),
+    ...(input.deviceTools && !input.lockdown ? { deviceTools: true } : {}),
     ...(input.scheduleTools && !input.lockdown ? { scheduleTools: true } : {}),
     ...(input.guide && !input.lockdown ? { guide: true } : {}),
   });

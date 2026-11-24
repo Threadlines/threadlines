@@ -11,6 +11,7 @@ import {
 } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
@@ -33,12 +34,6 @@ const GETPROP_LINE = /^\[([^\]]+)\]: \[(.*)\]$/;
 // An AVD name as `emulator -list-avds` prints it; anything else is never joined into a path.
 const AVD_NAME = /^[A-Za-z0-9._-]+$/;
 const runsOnXcode26Runtime = (version: string) => Number(/^iOS (\d+)/.exec(version)?.[1]) <= 26;
-// simctl needs a real file (it writes "-" or /dev/stdout as a file of that
-// name), so the PNG passes through one in Threadlines' own state folder ($2),
-// removed on exit, never the user's temp folder.
-const DEFAULT_DISPLAY_SCREENSHOT = `mkdir -p "$2" && f=$(mktemp "$2/screenshot.XXXXXX") || exit 1
-trap 'rm -f "$f"' 0
-xcrun simctl io "$1" screenshot --type=png "$f" >/dev/null && base64 -i "$f"`;
 
 const HubDevice = Schema.Struct({
   id: Schema.String,
@@ -173,6 +168,8 @@ export interface DeviceHubOperationsOptions {
   readonly platformAvailable: (platform: DevicePlatform) => Effect.Effect<boolean>;
   /** A folder in the server's state dir for files a command must write (screenshots). */
   readonly scratchDir: string;
+  /** Filesystem for scoped temp screenshot files (avoids sh/mktemp leaks on timeout). */
+  readonly fs?: FileSystem.FileSystem;
   /** Kept by the host across hub starts, so a refresh does not ask simctl or adb again. */
   readonly modelCache: DeviceModelCache;
   /**
@@ -556,25 +553,69 @@ export const makeDeviceHubOperations = (options: DeviceHubOperationsOptions): De
     },
   );
 
+  // simctl needs a real file (it writes "-" or /dev/stdout as a file of that
+  // name), so the PNG passes through a scoped temp file in Threadlines' own
+  // state folder, removed even if the command times out or is interrupted.
   const defaultDisplayScreenshot = Effect.fn("DeviceHubOperations.defaultDisplayScreenshot")(
     function* (udid: string) {
-      const capture = yield* run(
-        "sh",
-        ["-c", DEFAULT_DISPLAY_SCREENSHOT, "sh", udid, options.scratchDir],
-        {
-          timeoutMs: Duration.toMillis(SCREENSHOT_TIMEOUT),
-          maxOutputBytes: 64 * 1024 * 1024,
-        },
-      );
-      if (capture.code !== 0) {
+      const fs = options.fs;
+      if (!fs) {
         return yield* new DeviceOperationError({
           operation: "screenshot",
           reason: "command_failed",
-          exitCode: capture.code,
-          detail: boundDiagnostics(capture.stderr.trim()),
+          detail: "No filesystem available for fallback screenshot capture.",
         });
       }
-      return new Uint8Array(Buffer.from(capture.stdout, "base64"));
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* fs.makeDirectory(options.scratchDir, { recursive: true }).pipe(
+            Effect.mapError(
+              () =>
+                new DeviceOperationError({
+                  operation: "screenshot",
+                  reason: "command_failed",
+                  detail: "Could not prepare the temporary screenshot folder.",
+                }),
+            ),
+          );
+          const file = yield* fs
+            .makeTempFileScoped({ directory: options.scratchDir, prefix: "screenshot-" })
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new DeviceOperationError({
+                    operation: "screenshot",
+                    reason: "command_failed",
+                    detail: "Could not create a temporary screenshot file.",
+                  }),
+              ),
+            );
+          const capture = yield* run(
+            "xcrun",
+            ["simctl", "io", udid, "screenshot", "--type=png", file],
+            { timeoutMs: Duration.toMillis(SCREENSHOT_TIMEOUT) },
+          );
+          if (capture.code !== 0) {
+            return yield* new DeviceOperationError({
+              operation: "screenshot",
+              reason: "command_failed",
+              exitCode: capture.code,
+              detail: boundDiagnostics(capture.stderr.trim()),
+            });
+          }
+          return yield* fs.readFile(file).pipe(
+            Effect.map((bytes) => new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)),
+            Effect.mapError(
+              () =>
+                new DeviceOperationError({
+                  operation: "screenshot",
+                  reason: "command_failed",
+                  detail: "Could not read the captured screenshot file.",
+                }),
+            ),
+          );
+        }),
+      );
     },
   );
 

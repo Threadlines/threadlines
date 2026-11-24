@@ -366,6 +366,7 @@ describe("AgentPageRow", () => {
     await expect.element(addNote).toBeVisible();
 
     await addNote.click();
+    await expect.element(page.getByPlaceholder("Add context for this highlight")).toHaveFocus();
     await userEvent.keyboard("This one failed");
     await page.getByRole("button", { name: "Add", exact: true }).click();
     expect(onAddHighlight).toHaveBeenCalledWith({
@@ -427,7 +428,9 @@ describe("AgentPageRow", () => {
     await expect.poll(actionsBelowFrameTop).toBeGreaterThan(265);
 
     // Escape in the note, even on its buttons, closes the note, not the full-size view.
+    const noteInput = dialog.getByPlaceholder("Add context for this highlight");
     await addNote.click();
+    await expect.element(noteInput).toHaveFocus();
     await userEvent.keyboard("Discontinued");
     await userEvent.keyboard("{Tab}");
     await expect.element(dialog.getByRole("button", { name: "Cancel" })).toHaveFocus();
@@ -440,15 +443,15 @@ describe("AgentPageRow", () => {
     await dialog.getByRole("button", { name: /^Zoom 125%/ }).click();
     await pastTypingWindow();
     await line.tripleClick();
+    await expect.element(addNote).toBeVisible();
     await addNote.click();
+    await expect.element(noteInput).toHaveFocus();
     await userEvent.keyboard("Discontinued");
     // A look at the source keeps the note being written.
     const source = dialog.getByRole("button", { name: "Source" });
     await source.click();
     await source.click();
-    await expect
-      .element(dialog.getByPlaceholder("Add context for this highlight"))
-      .toHaveValue("Discontinued");
+    await expect.element(noteInput).toHaveValue("Discontinued");
     await dialog.getByRole("button", { name: "Add", exact: true }).click();
     expect(onAddHighlight).toHaveBeenCalledWith({
       sourceMessageId: version.pageId,

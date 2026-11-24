@@ -455,11 +455,18 @@ user-only (`widensAgents`).
   Windows and without `pgrep`, where the process scan cannot run.
 - `device_open` never picks a physical phone by default; an agent gets one only
   by naming its id.
-- A session whose close the daemon did not confirm stays claimed and open, so
-  a second close or the next startup sweep retries it. An open that finishes
-  after its thread was put away records nothing (a release count per thread).
+- A session whose close the daemon did not confirm moves to `pendingReleases`
+  in `claims.json` (and drops from active claims right away), so the next
+  close, agent tools starting, or the next server retries it. A dead daemon
+  is checked by PID so a stale `daemon.json` never wedges closing. An open
+  that finishes after its thread was put away or agent access turned off
+  records nothing.
+- The bound `agent-device` launcher refuses an agent's own `--session`,
+  `-s`, device, or daemon flags so every session it opens is one Threadlines
+  ends, and strips `--serial` alongside `--udid` for `cdp` / `connection`.
 - Turning a switch off publishes the new state before stopping anything, so
-  the agent tools refuse from that moment.
+  the agent tools refuse from that moment; turning agent access off removes
+  every launcher and `agent-device.json` and verifies the daemon PID exited.
 - The state stream slides: a subscriber that stops reading keeps only the
   newest two snapshots.
 - The iOS screenshot fallback writes through a temp file in

@@ -7,6 +7,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../config.ts";
@@ -83,7 +84,7 @@ const fakeHost = (
     current: Effect.succeed(ready),
     releaseAgentSession: (session) => Effect.sync(() => released.push(session) > 0),
     stop: Effect.void,
-    stopAgent: Effect.void,
+    stopAgent: Effect.succeed(true),
   });
 };
 
@@ -132,6 +133,168 @@ describe("DeviceService claims", () => {
       expect(released).toEqual([agentDeviceSession(threadId, "SIM-1")]);
       expect(yield* fs.readFileString(claimsPath)).not.toContain("SIM-1");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("keeps unconfirmed daemon releases on pendingReleases and retries on next startup", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const base = yield* fs.makeTempDirectoryScoped({ prefix: "tl-device-pending-" });
+      const claimsPath = path.join(base, "userdata", "device", "claims.json");
+      let confirmRelease = false;
+      const attempts: Array<string> = [];
+      const host = Layer.mock(DeviceHost.DeviceHost)({
+        summary: Effect.succeed({
+          platforms: [{ platform: "ios", available: true }],
+          hubInstalled: true,
+          agentDeviceInstalled: false,
+          tools: undefined,
+          toolInspectionError: undefined,
+        }),
+        platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
+        ensureReady: () =>
+          Effect.succeed({
+            nodePath: process.execPath,
+            hub: { origin: "http://127.0.0.1:1", token: "token" },
+            devices: {
+              list: Effect.succeed({
+                devices: [
+                  {
+                    id: "SIM-1",
+                    platform: "ios",
+                    name: "iPhone",
+                    version: "iOS 27.2",
+                    booted: true,
+                    physical: false,
+                  },
+                ],
+                detail: undefined,
+                incompletePlatforms: [],
+              }),
+              boot: () => unused,
+              attach: () => Effect.void,
+              shutdown: () => unused,
+              screenshot: () => unused,
+            },
+            run: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
+            helpers: { serveSimAxSettings: null, serveSimCli: null },
+          }),
+        current: Effect.succeed(null),
+        releaseAgentSession: (session) =>
+          Effect.sync(() => {
+            attempts.push(session);
+            return confirmRelease;
+          }),
+        stop: Effect.void,
+        stopAgent: Effect.succeed(true),
+      });
+      const layer = Layer.mergeAll(
+        host,
+        settingsLayer,
+        ServerConfig.layerTest(process.cwd(), base),
+      );
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* DeviceService.make;
+          yield* service.open({ threadId, deviceId: "SIM-1", platform: "ios" }, "user");
+          yield* service.close({ threadId, deviceId: "SIM-1" });
+          expect((yield* service.state).sessions).toEqual([]);
+        }),
+      ).pipe(Effect.provide(layer));
+
+      const expectedSession = agentDeviceSession(threadId, "SIM-1");
+      expect(attempts).toEqual([expectedSession]);
+      expect(JSON.parse(yield* fs.readFileString(claimsPath))).toEqual({
+        version: 1,
+        claims: [],
+        pendingReleases: [expectedSession],
+      });
+
+      confirmRelease = true;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* DeviceService.make;
+          yield* Effect.promise(() =>
+            expect
+              .poll(() =>
+                Effect.runPromise(
+                  fs.readFileString(claimsPath).pipe(Effect.map((s) => JSON.parse(s))),
+                ),
+              )
+              .toEqual({ version: 1, claims: [], pendingReleases: [] }),
+          );
+        }),
+      ).pipe(Effect.provide(layer));
+      expect(attempts).toEqual([expectedSession, expectedSession]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "turning agent access off removes launchers and config and warns if daemon stays up",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const base = yield* fs.makeTempDirectoryScoped({ prefix: "tl-device-withdraw-" });
+        const stateDir = path.join(base, "userdata");
+        const configPath = path.join(stateDir, "device", "agent-device.json");
+        const launcherDir = path.join(stateDir, "device", "bin", "thread-devices", "SIM-1");
+        yield* fs.makeDirectory(launcherDir, { recursive: true });
+        yield* fs.writeFileString(path.join(launcherDir, "agent-device"), "#!/bin/sh\n");
+        yield* fs.writeFileString(
+          configPath,
+          '{"daemonBaseUrl":"http://127.0.0.1:1","daemonAuthToken":"t"}',
+        );
+
+        let currentSettings = { enableDevices: true, agentDeviceAccess: true };
+        const settingsQueue = yield* Queue.unbounded<typeof currentSettings>();
+        const pushSettings = (next: typeof currentSettings) =>
+          Effect.sync(() => {
+            currentSettings = next;
+          }).pipe(Effect.andThen(Queue.offer(settingsQueue, next)));
+        const dynamicSettings = Layer.mock(ServerSettingsService)({
+          getSettings: Effect.sync(() => currentSettings as never),
+          streamChanges: Stream.fromQueue(settingsQueue) as never,
+        });
+        const host = Layer.mock(DeviceHost.DeviceHost)({
+          summary: Effect.succeed({
+            platforms: [{ platform: "ios", available: true }],
+            hubInstalled: true,
+            agentDeviceInstalled: true,
+            tools: undefined,
+            toolInspectionError: undefined,
+          }),
+          platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
+          ensureReady: () => unused,
+          current: Effect.succeed(null),
+          releaseAgentSession: () => Effect.succeed(true),
+          stop: Effect.void,
+          stopAgent: Effect.succeed(false),
+        });
+        const layer = Layer.mergeAll(
+          host,
+          dynamicSettings,
+          ServerConfig.layerTest(process.cwd(), base),
+        );
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const service = yield* DeviceService.make;
+            yield* Effect.sleep("20 millis");
+            yield* pushSettings({ enableDevices: true, agentDeviceAccess: false });
+            yield* Effect.promise(() =>
+              expect
+                .poll(() =>
+                  Effect.runPromise(service.state.pipe(Effect.map((s) => s.hostStatusDetail))),
+                )
+                .toContain("Agent tools did not stop"),
+            );
+            expect(yield* fs.exists(configPath)).toBe(false);
+            expect(yield* fs.exists(launcherDir)).toBe(false);
+          }),
+        ).pipe(Effect.provide(layer));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
 
