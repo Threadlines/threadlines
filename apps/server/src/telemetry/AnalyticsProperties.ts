@@ -67,6 +67,7 @@ const KNOWN_SAFE_MODELS = new Set([
   "default",
   "composer-1.5",
   "composer-2",
+  "gemini-pro-agent",
   "gpt-5.2",
   "gpt-5.3-codex",
   "gpt-5.3-codex-spark",
@@ -94,40 +95,94 @@ const KNOWN_SAFE_MODELS = new Set([
 
 const SAFE_PUBLIC_MODEL_PATTERNS = [
   // `gpt-4o` and its kin end their version in an "o"; no other letter.
-  /^gpt-\d{1,2}o?(?:\.\d{1,2})?(?:-(?:mini|nano|pro|turbo|preview|latest|chat|codex|spark|astra|sol|luna|terra|max|high|low|medium|fast))+(?:-20[2-3]\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))?$/,
-  /^gpt-\d{1,2}o?(?:\.\d{1,2})?(?:-20[2-3]\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))?$/,
-  /^o\d{1,2}(?:-(?:mini|pro|preview|high|low|medium))?(?:-20[2-3]\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))?$/,
-  /^claude-(?:fable|mythos|haiku|opus|sonnet)-\d{1,2}(?:-\d{1,2})?(?:-20[2-3]\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))?$/,
-  /^gemini-\d{1,2}(?:\.\d{1,2})?-(?:pro|flash|ultra|lite|argon|carbon|hydrogen|neon|sonar|exp|preview)(?:-(?:pro|flash|lite|sonar|exp|preview|latest|thinking|customtools|high|low|medium|minimal))*(?:-(?:0\d{2}|(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])))?$/,
+  /^gpt-\d{1,2}o?(?:[.-]\d{1,2})?(?:-(?:mini|nano|pro|turbo|preview|latest|chat|codex|spark|astra|sol|luna|terra|max|high|low|medium|xhigh|extra|minimal|none|fast|thinking|batch))+(?:-20[2-3]\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))?$/,
+  /^gpt-\d{1,2}o?(?:[.-]\d{1,2})?(?:-20[2-3]\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))?$/,
+  /^gpt-oss-(?:safeguard-)?\d{1,3}b(?:-(?:high|low|medium|xhigh|fast|free))?$/,
+  /^o\d{1,2}(?:-(?:mini|pro|preview|high|low|medium|xhigh|fast|batch))?(?:-20[2-3]\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))?$/,
+  /^claude-(?:fable|mythos|haiku|opus|sonnet)-\d{1,2}(?:-\d{1,2})?(?:-(?:thinking|fast|batch|high|low|medium|xhigh|max|minimal))*(?:-20[2-3]\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))?$/,
+  /^claude-\d{1,2}(?:-\d{1,2})?-(?:fable|mythos|haiku|opus|sonnet)(?:-(?:thinking|fast|batch|high|low|medium|xhigh|max|minimal))*$/,
+  /^(?:fable|mythos|haiku|opus|sonnet)(?:-\d{1,2}(?:-\d{1,2})?(?:-(?:thinking|fast|high|low|medium|xhigh|max|minimal))*)?$/,
+  /^gemini-\d{1,2}(?:\.\d{1,2})?-(?:pro|flash|ultra|lite|argon|carbon|hydrogen|neon|sonar|exp|preview)(?:-(?:pro|flash|lite|sonar|exp|preview|latest|thinking|customtools|high|low|medium|xhigh|extra|minimal))*(?:-(?:0\d{2}|(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])))?$/,
   /^muse-(?:spark|wonder|ember|glimmer)(?:-\d{1,2}(?:\.\d{1,2})?|-\d{1,3}b)?(?:-(?:open|contributor))?$/,
-  /^composer-\d{1,2}(?:\.\d{1,2})?$/,
-  /^grok-(?:code|\d{1,2}(?:\.\d{1,2})?)(?:-(?:fast|mini|pro|build|beta|latest|reasoning|code))*(?:-\d{1,2})?$/,
+  /^composer-\d{1,2}(?:\.\d{1,2})?(?:-(?:fast|mini|pro|turbo|preview|latest))?$/,
+  /^grok-(?:code|build|\d{1,2}(?:\.\d{1,2})?)(?:-(?:fast|mini|pro|build|beta|latest|reasoning|code))*(?:-\d{1,2}(?:\.\d{1,2})?)?$/,
+  /^deepseek-(?:v\d{1,2}(?:[.-]\d{1,2})?|r\d{1,2}(?:[.-]\d{1,2})?|chat|reasoner|coder|flash|pro)(?:-(?:pro|flash|chat|lite|mini|coder|reasoner|distill|thinking|free|latest|fast|preview))*(?:-(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))?$/,
+  /^glm-\d{1,2}(?:[.-]\d{1,2})?(?:-(?:air|airx|flash|flashx|plus|pro|turbo|fast|highspeed|free|latest|preview|vision|v))*$/,
+  /^qwen-?\d{1,2}(?:\.\d{1,2})?(?:-(?:coder|max|plus|turbo|flash|omni|vl|next|prime))*(?:-\d{1,3}(?:\.\d)?[bt])?(?:-a\d{1,3}b)?(?:-(?:instruct|thinking|preview|latest|free|fast|fp8))*(?:-(?:2[4-9]|3\d)(?:0[1-9]|1[0-2]))?$/,
+  /^kimi-(?:k\d{1,2}(?:[.-]\d{1,2})?|for-coding|latest|fast)(?:-(?:pro|code|thinking|preview|latest|fast|highspeed|turbo|free|instruct|256k))*$/,
+  /^minimax-m\d{1,2}(?:[.-]\d{1,2})?(?:-(?:flash|pro|fast|highspeed|free|latest|preview))*$/,
+  /^(?:mistral|devstral|codestral|ministral|magistral)-(?:large|medium|small|tiny|mini|nemo|saba|latest|\d{1,3}b)(?:-\d{1,2}(?:\.\d{1,2})?)?(?:-\d{1,3}b)?(?:-(?:instruct|latest|preview|free))?(?:-(?:2[4-9]|3\d)(?:0[1-9]|1[0-2]))?$/,
+  /^(?:mistral|devstral|codestral|ministral|magistral)-(?:2[4-9]|3\d)(?:0[1-9]|1[0-2])$/,
+  /^llama-?\d{1,2}(?:[.-]\d{1,2})?(?:-(?:scout|maverick|vision))?(?:-\d{1,3}b)?(?:-\d{1,2}e)?(?:-(?:instruct|versatile|instant|fast|fp8|preview|latest|free))*$/,
+  /^gemma-\d{1,2}(?:\.\d{1,2})?-\d{1,3}b(?:-a\d{1,2}b)?(?:-(?:it|pt|free|latest))*$/,
   /^(?:auto|default)$/,
 ];
 
 /**
  * Public providers whose own catalog names follow them in a model id, the
- * way agents that reach many providers write it (Pi, OpenCode):
+ * way agents that reach many providers write it (Pi, OpenCode, fx):
  * `google/gemini-2.5-pro`, `openrouter/anthropic/claude-sonnet-4.5`. Only
  * these prefixes come off. Any other prefix may name a private gateway, and
  * an Azure deployment name is the user's own words, so those stay custom.
  */
 const PUBLIC_MODEL_PROVIDER_PREFIXES: ReadonlySet<string> = new Set([
+  "alibaba",
+  "amazon",
+  "amazon-bedrock",
   "anthropic",
+  "cerebras",
   "cloudflare-ai-gateway",
+  "cloudflare-workers-ai",
+  "cohere",
+  "deepseek",
+  "deepseek-ai",
+  "fireworks",
   "gemini",
   "github-copilot",
   "google",
   "google-antigravity",
   "google-gemini-cli",
   "google-vertex",
+  "groq",
+  "huggingface",
+  "kimi-coding",
+  "meta",
+  "meta-llama",
+  "minimax",
+  "minimax-cn",
+  "minimaxai",
+  "mistral",
+  "mistralai",
+  "moonshotai",
+  "moonshotai-cn",
+  "nvidia",
   "openai",
   "openai-codex",
   "opencode",
+  "opencode-go",
   "openrouter",
+  "qwen",
+  "qwen-token-plan",
+  "qwen-token-plan-cn",
+  "qwen-token-plan-individual",
+  "qwen-token-plan-individual-cn",
+  "spacexai",
+  "stepfun",
+  "stepfun-ai",
+  "tencent",
+  "together",
   "vercel",
   "vercel-ai-gateway",
+  "x-ai",
   "xai",
+  "xiaomi",
+  "xiaomi-token-plan-ams",
+  "xiaomi-token-plan-cn",
+  "xiaomi-token-plan-sgp",
+  "z-ai",
+  "zai",
+  "zai-coding-cn",
+  "zai-org",
 ]);
 
 /**
@@ -139,8 +194,11 @@ const PUBLIC_MODEL_PROVIDER_PREFIXES: ReadonlySet<string> = new Set([
  * in KNOWN_SAFE_MODELS need no check.
  */
 const PUBLIC_MODEL_WORDS: ReadonlySet<string> = new Set([
+  "air",
+  "airx",
   "argon",
   "astra",
+  "batch",
   "beta",
   // Grok Build's own models: `grok-4.7-build-fast`.
   "build",
@@ -148,49 +206,136 @@ const PUBLIC_MODEL_WORDS: ReadonlySet<string> = new Set([
   "chat",
   "claude",
   "code",
+  "coder",
+  "codestral",
   "codex",
+  "coding",
   "composer",
   "contributor",
   "customtools",
+  "deepseek",
+  "devstral",
+  "distill",
   "ember",
   "exp",
+  "extra",
   "fable",
   "fast",
   "flash",
+  "flashx",
+  "for",
+  "fp8",
+  "free",
   "gemini",
+  "gemma",
   "glimmer",
+  "glm",
   "gpt",
   "grok",
   "haiku",
   "high",
+  "highspeed",
   "hydrogen",
+  "instant",
+  "instruct",
+  "it",
+  "kimi",
+  "large",
   "latest",
   "lite",
+  "llama",
   "low",
   "luna",
+  "magistral",
+  "maverick",
   "max",
   "medium",
   "mini",
   "minimal",
+  "minimax",
+  "ministral",
+  "mistral",
   "muse",
   "mythos",
   "nano",
+  "nemo",
   "neon",
+  "next",
+  "none",
+  "omni",
   "open",
   "opus",
+  "oss",
+  "plus",
   "preview",
+  "prime",
   "pro",
+  "pt",
+  "qwen",
+  "reasoner",
   "reasoning",
+  "saba",
+  "safeguard",
+  "scout",
+  "small",
   "sol",
   "sonar",
   "sonnet",
   "spark",
   "terra",
   "thinking",
+  "tiny",
   "turbo",
   "ultra",
+  "v",
+  "versatile",
+  "vision",
+  "vl",
   "wonder",
+  "xhigh",
 ]);
+
+const SAFE_BRACKET_TRAIT_ENTRY =
+  /^(?:1m|(?:reasoning|effort|context|context_size|fast|thinking)=(?:none|minimal|low|medium|high|xhigh|extra-high|max|true|false|\d{1,4}[km]))$/;
+
+const VERSIONED_CLAUDE_SHORTHAND = /^(?:fable|mythos|haiku|opus|sonnet)-\d/;
+
+const PUBLIC_VERSION_TOKEN =
+  /^(?:o\d{1,2}|qwen\d{1,2}|llama\d{1,2}|[vrkm]\d{1,2}|\d{1,2}[a-z]?|0\d{2}|\d{1,3}[bkt]|a\d{1,3}b|\d{1,2}e|(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])|(?:2[4-9]|3\d)(?:0[1-9]|1[0-2])|20[2-3]\d|20[2-3]\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))$/;
+
+function stripSafeModelSuffixes(bare: string): string {
+  let result = bare;
+  if (result.endsWith(":free")) {
+    result = result.slice(0, -":free".length);
+  } else if (result.endsWith(":batch")) {
+    result = result.slice(0, -":batch".length);
+  }
+  const bracketStart = result.indexOf("[");
+  if (bracketStart !== -1 && result.endsWith("]")) {
+    const inside = result.slice(bracketStart + 1, -1);
+    const parts = inside.split(",");
+    if (parts.length > 0 && parts.every((part) => SAFE_BRACKET_TRAIT_ENTRY.test(part))) {
+      result = result.slice(0, bracketStart);
+    }
+  }
+  return result;
+}
+
+/**
+ * Exact public bare model ids published in Pi's catalog (excluding Azure, where
+ * deployment names are user-chosen, and plain single words like `apex` or
+ * `free` that could collide with an arbitrary bare internal name).
+ */
+const PUBLIC_CATALOG_BARE_MODELS: ReadonlySet<string> = (() => {
+  const models = new Set<string>();
+  for (const slug of PI_PUBLIC_MODELS) {
+    if (slug.startsWith("azure/")) continue;
+    const bare = stripSafeModelSuffixes(slug.slice(slug.lastIndexOf("/") + 1));
+    if (!bare || (!bare.includes("-") && !/\d/.test(bare))) continue;
+    models.add(bare);
+  }
+  return models;
+})();
 
 function normalizeModelString(model: string | null | undefined): string | undefined {
   return model?.trim().toLowerCase() || undefined;
@@ -198,7 +343,9 @@ function normalizeModelString(model: string | null | undefined): string | undefi
 
 function inferModelFamily(model: string | undefined): AnalyticsModelFamily {
   if (!model) return "unknown";
-  if (model.includes("claude")) return "claude";
+  if (model.includes("claude") || /^(?:fable|mythos|haiku|opus|sonnet)(?:$|[-.])/.test(model)) {
+    return "claude";
+  }
   if (model.includes("gpt") || /^o\d/.test(model)) return "gpt";
   if (model.includes("gemini")) return "gemini";
   if (model.includes("composer") || model.includes("cursor")) return "cursor";
@@ -222,43 +369,59 @@ function isSafeKnownModel(model: string): boolean {
 /**
  * The public name a model id may be reported as, or undefined when it may
  * not. Claude versions get dashes the way Anthropic writes them (GitHub
- * Copilot writes `claude-sonnet-4.5`). A name behind provider prefixes must
- * have only public providers in front and only public words in it.
+ * Copilot writes `claude-sonnet-4.5`), and versioned Claude shorthands like
+ * `opus-4.6` normalize to `claude-opus-4-6`. A name behind provider prefixes
+ * must have only public providers in front and either match a known public
+ * pattern (using only public words) or appear verbatim in the pinned public
+ * catalog.
  */
 function publicModelName(model: string): string | undefined {
   // Too long to report whole, and a cut-off name could hide what made it private.
   if (model.length > MAX_ANALYTICS_MODEL_LENGTH) return undefined;
   const segments = model.split("/");
-  const bare = segments.pop() ?? "";
+  const rawBare = segments.pop() ?? "";
   if (!segments.every((segment) => PUBLIC_MODEL_PROVIDER_PREFIXES.has(segment))) {
     return undefined;
   }
-  const name = bare.startsWith("claude-") ? bare.replaceAll(".", "-") : bare;
-  if (!isSafeKnownModel(name)) return undefined;
-  return KNOWN_SAFE_MODELS.has(name) ||
-    name
-      .split(/[-.]/)
-      .every(
-        (word) =>
-          /^(?:o\d{1,2}|\d{1,2}[a-z]?|0\d{2}|\d{1,3}b|20[2-3]\d|20[2-3]\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))$/.test(
-            word,
-          ) || PUBLIC_MODEL_WORDS.has(word),
-      )
-    ? name
-    : undefined;
+  const bare = stripSafeModelSuffixes(rawBare);
+  const name = bare.startsWith("claude-")
+    ? bare.replaceAll(".", "-")
+    : VERSIONED_CLAUDE_SHORTHAND.test(bare)
+      ? `claude-${bare.replaceAll(".", "-")}`
+      : bare;
+  if (
+    isSafeKnownModel(name) &&
+    (KNOWN_SAFE_MODELS.has(name) ||
+      name
+        .split(/[-.]/)
+        .every((word) => PUBLIC_VERSION_TOKEN.test(word) || PUBLIC_MODEL_WORDS.has(word)))
+  ) {
+    return name;
+  }
+  if (PUBLIC_CATALOG_BARE_MODELS.has(bare)) {
+    return bare;
+  }
+  return undefined;
 }
 
 /**
- * A Pi model's name when Pi itself ships it: its `provider/id` is on Pi's
- * published list, so the name is public whatever words it uses (`deepseek-v4-pro`,
- * `global.openai.gpt-6-sol`). A model a user added in Pi's `models.json` or an
- * extension isn't on it and stays custom. The provider part comes off the way
- * it does for other agents, so the same model groups across them.
+ * A model's name when its full `provider/id` slug is on the pinned public
+ * catalog (`PI_PUBLIC_MODELS`), covering multi-segment gateway routes (such as
+ * Cloudflare Workers AI or OpenRouter vendors) whose inner prefixes are not
+ * in `PUBLIC_MODEL_PROVIDER_PREFIXES`. Azure entries apply only to built-in Pi.
  */
-function piCatalogModelName(slug: string): string | undefined {
-  if (!PI_PUBLIC_MODELS.has(slug)) return undefined;
-  const id = slug.slice(slug.indexOf("/") + 1);
-  return publicModelName(id) ?? id;
+function catalogModelName(slug: string, provider?: string): string | undefined {
+  if (provider !== "pi" && slug.startsWith("azure/")) return undefined;
+  const lastSlash = slug.lastIndexOf("/");
+  if (lastSlash === -1) return undefined;
+  const prefix = slug.slice(0, lastSlash + 1);
+  const rawBare = slug.slice(lastSlash + 1);
+  const bare = stripSafeModelSuffixes(rawBare);
+  const strippedSlug = `${prefix}${bare}`;
+  if (!PI_PUBLIC_MODELS.has(slug) && !PI_PUBLIC_MODELS.has(strippedSlug)) {
+    return undefined;
+  }
+  return publicModelName(bare) ?? bare;
 }
 
 export function normalizeAnalyticsModel(
@@ -274,8 +437,7 @@ export function normalizeAnalyticsModel(
     };
   }
 
-  const name =
-    publicModelName(normalized) ?? (provider === "pi" ? piCatalogModelName(normalized) : undefined);
+  const name = publicModelName(normalized) ?? catalogModelName(normalized, provider);
   if (name !== undefined) {
     return {
       model: name,

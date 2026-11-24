@@ -95,6 +95,51 @@ describe("AnalyticsProperties", () => {
       modelFamily: "gpt",
     });
     assert.strictEqual(normalizeAnalyticsModel("openai/o4-mini").model, "o4-mini");
+    // Antigravity, Cursor, and Claude variant shapes.
+    assert.strictEqual(normalizeAnalyticsModel("gpt-6-1").model, "gpt-6-1");
+    assert.strictEqual(normalizeAnalyticsModel("gpt-oss-120b-medium").model, "gpt-oss-120b-medium");
+    assert.strictEqual(normalizeAnalyticsModel("gemini-pro-agent").model, "gemini-pro-agent");
+    assert.strictEqual(normalizeAnalyticsModel("gemini-4-pro-xhigh").model, "gemini-4-pro-xhigh");
+    assert.strictEqual(
+      normalizeAnalyticsModel("gemini-4-flash-extra").model,
+      "gemini-4-flash-extra",
+    );
+    assert.strictEqual(normalizeAnalyticsModel("composer-2.5-fast").model, "composer-2.5-fast");
+    assert.strictEqual(normalizeAnalyticsModel("grok-build-0.1").model, "grok-build-0.1");
+    assert.strictEqual(
+      normalizeAnalyticsModel("claude-4.6-opus-high-thinking").model,
+      "claude-4-6-opus-high-thinking",
+    );
+    assert.deepStrictEqual(normalizeAnalyticsModel("opus-4.6"), {
+      model: "claude-opus-4-6",
+      modelKind: "known",
+      modelFamily: "claude",
+    });
+    assert.deepStrictEqual(normalizeAnalyticsModel("opus-4.6-thinking"), {
+      model: "claude-opus-4-6-thinking",
+      modelKind: "known",
+      modelFamily: "claude",
+    });
+    assert.deepStrictEqual(normalizeAnalyticsModel("opus"), {
+      model: "opus",
+      modelKind: "known",
+      modelFamily: "claude",
+    });
+    assert.deepStrictEqual(normalizeAnalyticsModel("claude-opus-5-5[1m]"), {
+      model: "claude-opus-5-5",
+      modelKind: "known",
+      modelFamily: "claude",
+    });
+    assert.strictEqual(normalizeAnalyticsModel("gpt-5.4[reasoning=high]").model, "gpt-5.4");
+    assert.strictEqual(
+      normalizeAnalyticsModel("gpt-5.4[reasoning=xhigh,fast=true,context=1m]").model,
+      "gpt-5.4",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("openrouter/anthropic/claude-opus-5.5:batch").model,
+      "claude-opus-5-5",
+    );
+    assert.strictEqual(normalizeAnalyticsModel("kimi-for-coding").model, "kimi-for-coding");
   });
 
   it("redacts custom and provider-prefixed model strings", () => {
@@ -111,23 +156,45 @@ describe("AnalyticsProperties", () => {
     const privateNames = [
       // A public name behind a gateway nobody knows, or an Azure deployment.
       "acme-gateway/claude-sonnet-5-5",
+      "acme-gateway/deepseek-v4-pro",
+      "acme-gateway/big-pickle",
       "azure/gpt-5.4",
       "openrouter/acme/claude-sonnet-5-5",
+      "openrouter/acme/deepseek-v4-pro",
       // A user's own model added under a public provider's name, or named
       // like a public one with no provider at all.
       "openai/gpt-5.4-acme-payroll",
       "gpt-5.4-acme-payroll",
       "gpt-4o-acme-payroll",
       "gpt-5x-sol",
+      "gpt-oss-120b-acme",
       "google/gemini-2.5-acme-payroll",
       "gemini-4-acme",
       "muse-acme-payroll",
       "muse-4242-1717",
       "gpt-5-4242-1717",
       "grok-4-12-34-56-78",
+      "mistral/mistral-small-12-34-56-78",
+      "deepseek-v4-0101-0202-0303",
+      "qwen3-12-34-56-78",
+      "llama-4-12-34-56-78",
       "claude-sonnet-4-20999999",
       "claude-mythos-5-acme",
       "o3-acme",
+      "deepseek-v4-4242",
+      "qwen3-acme-payroll",
+      "glm-5.3-acme",
+      "kimi-k3-acme",
+      "minimax-m3-acme",
+      "llama-4-acme",
+      // Private bracket traits or unknown colon modifiers.
+      "gpt-5.4[acme=secret]",
+      "cloudflare-workers-ai/@cf/openai/gpt-oss-120b[acme=secret]",
+      "claude-opus-5-5[acme]",
+      "gpt-5.4:acme",
+      // Bare single English words from the catalog stay custom without a provider.
+      "apex",
+      "fusion",
       "openai/gpt-5.4-123456789012",
       // Whatever made a long name private may be past the cut.
       `gpt-5-${"a".repeat(96)}:acme`,
@@ -166,7 +233,7 @@ describe("AnalyticsProperties", () => {
     );
   });
 
-  it("names a Pi model when Pi itself ships it, whatever its words", () => {
+  it("names public models across OpenCode, fx, Pi, and community agents", () => {
     assert.deepStrictEqual(normalizeAnalyticsModel("deepseek/deepseek-v4-pro", "pi"), {
       model: "deepseek-v4-pro",
       modelKind: "known",
@@ -181,16 +248,75 @@ describe("AnalyticsProperties", () => {
       normalizeAnalyticsModel("amazon-bedrock/global.openai.gpt-6-sol", "pi").model,
       "global.openai.gpt-6-sol",
     );
-    // A model the user added to Pi isn't on Pi's list.
+    // OpenCode, fx, and community agents share the same public model families and catalog.
+    assert.strictEqual(
+      normalizeAnalyticsModel("deepseek/deepseek-v4-pro", "opencode").model,
+      "deepseek-v4-pro",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("opencode/big-pickle", "opencode").model,
+      "big-pickle",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("opencode-go/mimo-v2.6-pro", "opencode").model,
+      "mimo-v2.6-pro",
+    );
+    assert.strictEqual(normalizeAnalyticsModel("moonshotai/kimi-k3", "fx").model, "kimi-k3");
+    assert.strictEqual(normalizeAnalyticsModel("spacexai/grok-4.6", "fx").model, "grok-4.6");
+    assert.strictEqual(normalizeAnalyticsModel("alibaba/qwen-3-235b", "fx").model, "qwen-3-235b");
+    assert.strictEqual(
+      normalizeAnalyticsModel("vercel-ai-gateway/moonshotai/kimi-k3", "opencode").model,
+      "kimi-k3",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("openrouter/baidu/ernie-5.5-flash-preview:free", "opencode").model,
+      "ernie-5.5-flash-preview",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel(
+        "cloudflare-workers-ai/@cf/openai/gpt-oss-120b[reasoning=high]",
+        "opencode",
+      ).model,
+      "gpt-oss-120b",
+    );
+    assert.strictEqual(normalizeAnalyticsModel("alibaba/qwen3.8-max", "fx").model, "qwen3.8-max");
+    assert.strictEqual(
+      normalizeAnalyticsModel("qwen3-coder-plus", "acpRegistry").model,
+      "qwen3-coder-plus",
+    );
+    assert.strictEqual(normalizeAnalyticsModel("glm-5.3", "acpRegistry").model, "glm-5.3");
+    assert.strictEqual(
+      normalizeAnalyticsModel("openrouter/z-ai/glm-5.3", "opencode").model,
+      "glm-5.3",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("minimax/minimax-m3.1-flash", "acpRegistry").model,
+      "minimax-m3.1-flash",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("mistral/devstral-2512", "opencode").model,
+      "devstral-2512",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("meta-llama/llama-4-scout-17b-16e-instruct", "opencode").model,
+      "llama-4-scout-17b-16e-instruct",
+    );
+    assert.strictEqual(
+      normalizeAnalyticsModel("openrouter/google/gemma-4-26b-a4b-it:free", "opencode").model,
+      "gemma-4-26b-a4b-it",
+    );
+    // A user-added model under a public provider stays custom everywhere.
     assert.strictEqual(
       normalizeAnalyticsModel("deepseek/deepseek-acme-payroll", "pi").model,
       "custom",
     );
-    // Pi's list vouches for Pi's models only.
     assert.strictEqual(
-      normalizeAnalyticsModel("deepseek/deepseek-v4-pro", "opencode").model,
+      normalizeAnalyticsModel("deepseek/deepseek-acme-payroll", "opencode").model,
       "custom",
     );
+    // Azure stays custom outside built-in Pi.
+    assert.strictEqual(normalizeAnalyticsModel("azure/gpt-5.4", "opencode").model, "custom");
+    assert.strictEqual(normalizeAnalyticsModel("azure/gpt-5.4", "pi").model, "gpt-5.4");
   });
 
   it("names a community agent by its registry id", () => {
