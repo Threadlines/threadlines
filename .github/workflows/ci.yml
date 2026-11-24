@@ -64,7 +64,7 @@ jobs:
         # Typecheck runs before build against .ts sources directly, so packages
         # don't need topological ordering (`apps/server` lists `@threadlines/web`
         # only to bundle its dist output).
-        run: vp exec vp run -r --parallel --concurrency-limit 4 --filter '!@threadlines/monorepo' typecheck
+        run: vp exec vp run --parallel --concurrency-limit 4 --filter '!@threadlines/monorepo' typecheck
 
       - name: Build desktop pipeline
         run: vp exec vp run build:desktop
