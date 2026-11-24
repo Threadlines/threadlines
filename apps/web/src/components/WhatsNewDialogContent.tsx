@@ -12,7 +12,7 @@ import {
   RELEASE_NOTES_SITE_URL,
   type ReleaseNotesEntry,
 } from "@threadlines/shared/releaseNotes";
-import { PlayIcon } from "lucide-react";
+import { ChevronRightIcon, PlayIcon } from "lucide-react";
 import { useState } from "react";
 import releaseNotes from "virtual:release-notes";
 
@@ -21,14 +21,18 @@ import { openExternalUrl } from "../lib/externalLinks";
 import { readPreviousAppVersion, useNightlyBuilds } from "../lib/whatsNew";
 import {
   describeBuild,
+  describeEarlierBuildsSummary,
   describeNightlyLead,
+  groupNightlyChanges,
   type NightlyBuildChanges,
+  type NightlyChangeGroup,
   planNightlyList,
   releaseChangeTag,
   releaseNotesUpTo,
   splitNightlyBuilds,
 } from "../lib/whatsNew.logic";
 import { Button } from "./ui/button";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "./ui/collapsible";
 import { DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "./ui/dialog";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { closeWhatsNewDialog } from "./WhatsNewDialog";
@@ -198,8 +202,9 @@ function ReleaseVideo({ video }: { readonly video: NonNullable<ReleaseNotesEntry
 }
 
 /**
- * A nightly's list: the builds since the one this device ran before, then the
- * earlier nightlies back to the last stable release, read from GitHub.
+ * A nightly's list: the changes since the build this device ran before,
+ * grouped by type across builds, then the earlier nightlies back to the last
+ * stable release (closed until opened), read from GitHub.
  */
 function NightlyChangesView({ lastStableVersion }: { readonly lastStableVersion: string | null }) {
   const { since, range } = planNightlyList({
@@ -223,67 +228,113 @@ function NightlyChangesView({ lastStableVersion }: { readonly lastStableVersion:
   const { fresh, earlier } = splitNightlyBuilds(builds, since, APP_VERSION);
   // Any earlier build means the list reached back past the one you had.
   const freshComplete = complete || since === null || earlier.length > 0;
+  const freshGroups = groupNightlyChanges(fresh);
   const earlierWithChanges = earlier.filter((build) => build.changes.length > 0);
 
   return (
-    <div className="grid gap-3" data-testid="whats-new-nightly">
+    <div className="grid gap-4" data-testid="whats-new-nightly">
       <p className="text-[13px] text-muted-foreground">
         {describeNightlyLead({ fresh, since, freshComplete, appVersion: APP_VERSION })}
       </p>
-      {fresh
-        .filter((build) => build.changes.length > 0)
-        .map((build) => (
-          <NightlyBuildSection key={build.version} build={build} />
-        ))}
+      {freshGroups.length > 0 ? <NightlyChangeGroups groups={freshGroups} /> : null}
       {earlierWithChanges.length > 0 ? (
-        <section className="grid gap-3 border-t pt-3" data-testid="whats-new-nightly-earlier">
-          <h3 className="font-semibold text-muted-foreground text-xs">
-            {range.after === null
-              ? "Earlier builds"
-              : `Earlier builds since ${describeBuild(range.after)}`}
-          </h3>
-          {earlierWithChanges.map((build) => (
-            <NightlyBuildSection key={build.version} build={build} />
-          ))}
-        </section>
-      ) : null}
-      {!complete && freshComplete ? (
+        <Collapsible className="border-t pt-2.5" data-testid="whats-new-nightly-earlier">
+          <CollapsibleTrigger className="group -mx-2 flex w-[calc(100%+1rem)] select-none items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-ring">
+            <ChevronRightIcon
+              aria-hidden="true"
+              className="size-3.5 shrink-0 transition-transform duration-150 group-data-[panel-open]:rotate-90"
+            />
+            <span className="min-w-0 flex-1">
+              {range.after === null
+                ? "Earlier builds"
+                : `Earlier builds since ${describeBuild(range.after)}`}
+            </span>
+            <span className="shrink-0 font-mono text-[11px] font-normal text-muted-foreground tabular-nums">
+              {describeEarlierBuildsSummary(earlierWithChanges, complete)}
+            </span>
+          </CollapsibleTrigger>
+          <CollapsiblePanel>
+            <div className="grid gap-4 pt-3">
+              {earlierWithChanges.map((build) => (
+                <NightlyBuildSection key={build.version} build={build} />
+              ))}
+              {!complete && freshComplete ? (
+                <p className="text-muted-foreground text-xs">Older builds are on GitHub.</p>
+              ) : null}
+            </div>
+          </CollapsiblePanel>
+        </Collapsible>
+      ) : !complete && freshComplete ? (
         <p className="text-muted-foreground text-xs">Older builds are on GitHub.</p>
       ) : null}
     </div>
   );
 }
 
+function changeKindHeadingClass(kind: NightlyChangeGroup["kind"]): string {
+  switch (kind) {
+    case "new":
+      return "text-primary-readable";
+    case "security":
+      return "text-warning-foreground";
+    default:
+      return "text-foreground";
+  }
+}
+
+function NightlyChangeGroups({
+  groups,
+  compact = false,
+}: {
+  readonly groups: ReadonlyArray<NightlyChangeGroup>;
+  readonly compact?: boolean;
+}) {
+  const Heading = compact ? "h5" : "h3";
+  return (
+    <div className={compact ? "grid gap-2.5" : "grid gap-3.5"}>
+      {groups.map((group) => (
+        <section
+          key={group.kind}
+          className="grid gap-1.5"
+          data-testid={compact ? undefined : `whats-new-group-${group.kind}`}
+        >
+          <Heading
+            className={
+              compact
+                ? "flex items-baseline gap-1.5 font-semibold text-xs"
+                : "flex items-baseline gap-1.5 font-semibold text-[13px]"
+            }
+          >
+            <span className={changeKindHeadingClass(group.kind)}>
+              {releaseChangeTag(group.kind)}
+            </span>
+            <span className="font-mono text-[11px] font-normal text-muted-foreground tabular-nums">
+              {group.items.length}
+            </span>
+          </Heading>
+          <ul className="grid list-disc gap-1 ps-4 text-[13px] leading-[19px] marker:text-muted-foreground">
+            {group.items.map(({ build, change }, index) => (
+              <li key={`${build}:${change.pullRequest ?? ""}:${index}:${change.text}`}>
+                {change.text}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function NightlyBuildSection({ build }: { readonly build: NightlyBuildChanges }) {
   const day = build.publishedAt?.slice(0, 10);
+  const groups = groupNightlyChanges([build]);
   return (
-    <section className="grid gap-1">
+    <section className="grid gap-2">
       <h4 className="font-mono text-[11px] text-muted-foreground">
         Build {build.build}
         {day ? ` · ${formatReleaseDay(day)}` : ""}
       </h4>
-      <ul className="grid gap-1">
-        {build.changes.map((change) => {
-          const tag = releaseChangeTag(change.kind);
-          return (
-            <li
-              key={`${change.pullRequest ?? ""}:${change.text}`}
-              className="flex items-baseline gap-2 text-[13px]"
-            >
-              <span
-                className={
-                  tag === "New"
-                    ? "w-13 shrink-0 rounded-[4px] bg-primary-readable/14 text-center font-mono text-[10.5px] text-primary-readable leading-4"
-                    : "w-13 shrink-0 rounded-[4px] bg-foreground/8 text-center font-mono text-[10.5px] text-muted-foreground leading-4"
-                }
-              >
-                {tag}
-              </span>
-              <span className="min-w-0">{change.text}</span>
-            </li>
-          );
-        })}
-      </ul>
+      <NightlyChangeGroups groups={groups} compact />
     </section>
   );
 }
