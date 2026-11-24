@@ -95,8 +95,10 @@ describe("antigravity process environment", () => {
 
   it("keeps the sign-in in the profile's own file and stops the CLI updating itself", () => {
     const value = env(config({}));
-    // What the CLI takes for SSH: a Google sign-in then lives in the
-    // profile, never in the OS keyring the user's own `agy` shares.
+    // A Google sign-in lives in the profile, never in the OS keyring the
+    // user's own `agy` shares: 1.5.16 goes by its own switch, earlier
+    // versions by what they take for SSH.
+    assert.equal(value.AGY_CLI_FORCE_FILE_TOKEN_STORAGE, "1");
     assert.equal(value.SSH_CONNECTION, "127.0.0.1 0 127.0.0.1 0");
     assert.equal(value.AGY_CLI_DISABLE_AUTO_UPDATE, "1");
     assert.equal(value.GEMINI_HOME, "/state/profile");

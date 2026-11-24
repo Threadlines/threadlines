@@ -127,7 +127,7 @@ for await (const line of lines) {
     process.exit(1);
   }
   mkdirSync(join(profile, "antigravity-acp"), { recursive: true });
-  writeFileSync(join(profile, "antigravity-acp", "antigravity-oauth-token"), JSON.stringify({ token: { access_token: "ya29.test" } }));
+  if (process.env.STANDIN_KEEPS_SIGN_IN_ELSEWHERE !== "1") writeFileSync(join(profile, "antigravity-acp", "antigravity-oauth-token"), JSON.stringify({ token: { access_token: "ya29.test" } }));
   console.log("Signed in.");
   process.exit(0);
 }
@@ -249,6 +249,17 @@ describe.skipIf(process.platform === "win32")("Antigravity Google sign-in", () =
       const neverAnswered = yield* makeFlowsAskingForever(flows);
       const failure = yield* Effect.flip(neverAnswered);
       expect(failure.message).toContain("couldn't reach Google");
+    }).pipe(Effect.scoped, Effect.provide(services)),
+  );
+
+  it.live("fails when the CLI keeps the sign-in outside the profile", () =>
+    Effect.gen(function* () {
+      const flows = yield* makeFlows([CODE], { STANDIN_KEEPS_SIGN_IN_ELSEWHERE: "1" });
+      const failure = yield* Effect.flip(flows.run("login"));
+      expect(failure.message).toContain("didn't keep the sign-in in this account's own folder");
+      assert.notInclude(flows.lines, "Signed in.");
+      const signedIn = yield* readAntigravityGoogleSignIn(flows.profileDir);
+      assert.isUndefined(signedIn.method);
     }).pipe(Effect.scoped, Effect.provide(services)),
   );
 
