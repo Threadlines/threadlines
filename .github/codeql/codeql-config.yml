@@ -1,0 +1,20 @@
+name: "Threadlines CodeQL config"
+
+paths-ignore:
+  # Read-only Effect 4 source copy for agents (21 MB); not shipped or executed.
+  - ".repos/**"
+  # Vendored third-party code.
+  - "apps/desktop/src/preview/vendor/**"
+  - "apps/web/public/mockServiceWorker.js"
+  - "apps/web/src/lib/vendor/**"
+  # Generated code.
+  - "**/routeTree.gen.ts"
+  - "**/worker-configuration.d.ts"
+  - "packages/effect-codex-app-server/src/_generated/**"
+  # Test suites and fixtures.
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/*.browser.*"
+  - "apps/server/integration/**"
+  - "apps/server/evals/**"
+  - "scripts/fixtures/**"
