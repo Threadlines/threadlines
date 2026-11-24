@@ -85,13 +85,15 @@ Threadlines sends product and reliability events such as:
   why (you stopped typing, or it started work or asked something on its own)
   and how long it had been running;
 - selected model family and sanitized model slug for provider turns. A model
-  name is reported only when every word in it is one public model names use.
-  One sent through a well-known provider (`google/gemini-2.5-pro`,
-  `openrouter/anthropic/claude-sonnet-4.5`) is reported without the
-  provider part (`gemini-2.5-pro`). A Pi model is also reported by name when its
-  name is on the list of models Pi itself ships (`deepseek-v4-pro`); a model
-  you name yourself in Pi is not on it. Any other model name is reported
-  only as `custom`;
+  name is reported only when it matches a known public model shape using public
+  words, or appears verbatim in the pinned public model catalog shipped with
+  Threadlines (`deepseek-v4-pro`, `kimi-k3`, `glm-5.3`, `qwen3.8-max`,
+  `big-pickle`). One sent through a well-known provider
+  (`google/gemini-2.5-pro`, `openrouter/anthropic/claude-sonnet-4.5`,
+  `moonshotai/kimi-k3`) is reported without the provider part, and known option
+  suffixes (`[1m]`, `[reasoning=high]`, `:free`, `:batch`) are stripped. Models
+  behind private gateways, Azure deployments (outside Pi's own built-in list),
+  or custom user-named models are reported only as `custom`;
 - for a community agent added from the ACP registry, its public registry id
   (such as `pi-acp`) on provider session, turn, fork, rollback, request,
   model reroute, deletion, and failure events, so reports can tell community
