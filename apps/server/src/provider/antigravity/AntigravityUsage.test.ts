@@ -16,6 +16,7 @@ import {
   ANTIGRAVITY_USAGE_EXPIRED_DETAIL,
   ANTIGRAVITY_USAGE_FAILED_DETAIL,
   ANTIGRAVITY_USAGE_USER_AGENT,
+  antigravityUsageUserAgent,
   makeAntigravityUsageReader,
   withAntigravityUsage,
 } from "./AntigravityUsage.ts";
@@ -255,6 +256,25 @@ const windowsOf = (snapshot: ServerProvider) =>
   }));
 
 describe("Antigravity plan limits", () => {
+  it("formats Cloud Code User-Agent with Go OS and architecture names", () => {
+    assert.equal(
+      antigravityUsageUserAgent("darwin", "arm64"),
+      "antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)",
+    );
+    assert.equal(
+      antigravityUsageUserAgent("win32", "x64"),
+      "antigravity/hub/2.24.0 (aidev_client; os_type=windows; arch=amd64; cl=963137146)",
+    );
+    assert.equal(
+      antigravityUsageUserAgent("win32", "arm64"),
+      "antigravity/hub/2.24.0 (aidev_client; os_type=windows; arch=arm64; cl=963137146)",
+    );
+    assert.equal(
+      antigravityUsageUserAgent("linux", "x64"),
+      "antigravity/hub/2.24.0 (aidev_client; os_type=linux; arch=amd64; cl=963137146)",
+    );
+  });
+
   it.effect("reads each family's 5-hour and weekly limits, with the email from the sign-in", () =>
     Effect.gen(function* () {
       const { readOnce, google } = yield* setup({

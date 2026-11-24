@@ -70,8 +70,6 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 63,
           reachedLimit: false,
           warning: false,
-          elapsedPercent: 80,
-          paceDetail: "80% of the 5-hour window has passed",
         },
       ],
     });
@@ -119,8 +117,6 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 63,
           reachedLimit: false,
           warning: false,
-          elapsedPercent: 80,
-          paceDetail: "80% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -344,8 +340,6 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 63,
           reachedLimit: false,
           warning: false,
-          elapsedPercent: 80,
-          paceDetail: "80% of the 5-hour window has passed",
         },
       ],
     });
@@ -427,8 +421,6 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 69,
           reachedLimit: false,
           warning: false,
-          elapsedPercent: 49.3,
-          paceDetail: "49% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -489,8 +481,6 @@ describe("deriveProviderAccountUsagePresentation", () => {
         remainingPercent: 65,
         reachedLimit: false,
         warning: false,
-        elapsedPercent: 49.3,
-        paceDetail: "49% of the 5-hour window has passed",
       },
       {
         key: "secondary",
@@ -613,8 +603,6 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 0,
           reachedLimit: true,
           warning: true,
-          elapsedPercent: 33.3,
-          paceDetail: "33% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -674,8 +662,6 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 0,
           reachedLimit: true,
           warning: true,
-          elapsedPercent: 33.3,
-          paceDetail: "33% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -735,8 +721,6 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 58,
           reachedLimit: false,
           warning: false,
-          elapsedPercent: 33.3,
-          paceDetail: "33% of the 5-hour window has passed",
         },
         {
           key: "secondary",
@@ -833,6 +817,54 @@ describe("usageWindowElapsedPercent", () => {
     // 28.6% of the week has passed.
     expect(detailAt(30)).toBe("30% used · resets in 5d");
     expect(detailAt(34)).toBe("34% used · ahead of pace · resets in 5d");
+  });
+
+  it("keeps pace marks and ahead-of-pace copy on weekly windows, not 5h sessions", () => {
+    const presentation = deriveProviderAccountUsagePresentation(
+      {
+        source: "grok-billing",
+        checkedAt: "2026-04-10T00:00:00.000Z",
+        primaryLimitId: "antigravity",
+        limits: [
+          {
+            limitId: "antigravity",
+            limitName: "Antigravity usage",
+            scoped: [
+              {
+                scopeLabel: "Gemini",
+                usedPercent: 40,
+                remainingPercent: 60,
+                resetsAt: nowMs + 4 * 3_600_000,
+                windowDurationMins: 300,
+              },
+              {
+                scopeLabel: "Gemini",
+                usedPercent: 40,
+                remainingPercent: 60,
+                resetsAt: nowMs + 5 * 86_400_000,
+                windowDurationMins: 10_080,
+              },
+            ],
+          },
+        ],
+      },
+      nowMs,
+    );
+
+    expect(presentation?.windows).toEqual([
+      expect.objectContaining({
+        label: "Gemini (5h)",
+        detail: "40% used · resets in 4h",
+      }),
+      expect.objectContaining({
+        label: "Gemini (weekly)",
+        detail: "40% used · ahead of pace · resets in 5d",
+        elapsedPercent: 28.6,
+        paceDetail: "29% of the week has passed",
+      }),
+    ]);
+    expect(presentation?.windows[0]?.elapsedPercent).toBeUndefined();
+    expect(presentation?.windows[0]?.paceDetail).toBeUndefined();
   });
 });
 
