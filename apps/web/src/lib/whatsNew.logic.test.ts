@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  describeEarlierBuildsSummary,
   describeNightlyLead,
   describeNightlyUpdate,
   describeWaitingUpdate,
+  groupNightlyChanges,
   type NightlyBuildChanges,
   nightlyReleasesPageSize,
   planNightlyList,
@@ -152,5 +154,68 @@ describe("a nightly's list", () => {
       "At least 1 change since build 355",
     );
     expect(notice([build(357, [])])).toBeNull();
+  });
+
+  it("groups nightly changes across builds by type in display order and summarizes earlier builds", () => {
+    const builds: ReadonlyArray<NightlyBuildChanges> = [
+      {
+        version: "0.8.1-nightly.20261030.358",
+        build: 358,
+        publishedAt: null,
+        url: "",
+        changes: [
+          { kind: "fixed", text: "Newest fix" },
+          { kind: "changed", text: "Fallback change" },
+          { kind: "new", text: "Newest feature" },
+        ],
+      },
+      {
+        version: "0.8.1-nightly.20261029.357",
+        build: 357,
+        publishedAt: null,
+        url: "",
+        changes: [
+          { kind: "security", text: "Patch advisory" },
+          { kind: "fixed", text: "Older fix" },
+          { kind: "faster", text: "Cut redraw cost" },
+          { kind: "new", text: "Older feature" },
+        ],
+      },
+    ];
+
+    expect(
+      groupNightlyChanges(builds).map((group) => ({
+        kind: group.kind,
+        items: group.items.map((item) => [item.build, item.change.text]),
+      })),
+    ).toEqual([
+      {
+        kind: "new",
+        items: [
+          [358, "Newest feature"],
+          [357, "Older feature"],
+        ],
+      },
+      { kind: "faster", items: [[357, "Cut redraw cost"]] },
+      { kind: "security", items: [[357, "Patch advisory"]] },
+      {
+        kind: "fixed",
+        items: [
+          [358, "Newest fix"],
+          [357, "Older fix"],
+        ],
+      },
+      { kind: "changed", items: [[358, "Fallback change"]] },
+    ]);
+
+    expect(groupNightlyChanges([build(357, ["Only fix"])]).map((group) => group.kind)).toEqual([
+      "fixed",
+    ]);
+    expect(describeEarlierBuildsSummary(builds)).toBe("2 builds · 7 changes");
+    expect(describeEarlierBuildsSummary([build(357, ["Only fix"])])).toBe("1 build · 1 change");
+    expect(describeEarlierBuildsSummary(builds, false)).toBe("Newest 2 builds · 7 changes");
+    expect(describeEarlierBuildsSummary([build(357, ["Only fix"])], false)).toBe(
+      "Newest build · 1 change",
+    );
   });
 });

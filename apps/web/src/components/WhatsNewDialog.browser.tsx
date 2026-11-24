@@ -83,7 +83,7 @@ describe("What's new", () => {
     await resetTestPage();
   });
 
-  it("lists a nightly's changes since the build you had, then the earlier nightlies", async () => {
+  it("groups a nightly's changes by type across builds and keeps earlier nightlies closed until opened", async () => {
     window.desktopBridge = {
       getPreviousAppVersion: () => "0.8.0-nightly.20261028.352",
     } as unknown as DesktopBridge;
@@ -96,16 +96,23 @@ describe("What's new", () => {
     await expect
       .element(list)
       .toMatchTextContent(/3 changes since build 352, the one you had before/);
-    await expect.element(list).toMatchTextContent(/FixedA computer on 0\.7\.1 keeps working/);
-    await expect.element(list).toMatchTextContent(/NewRename computers from the Fleet list/);
+    // New, then Security, then Fixed across builds 354 and 353 combined.
     await expect
       .element(list)
-      .toMatchTextContent(/SecurityBump hono for the serveStatic path bypass/);
+      .toMatchTextContent(
+        /New1Rename computers from the Fleet listSecurity1Bump hono for the serveStatic path bypassFixed1A computer on 0\.7\.1 keeps working/,
+      );
     await expect.element(list).not.toMatchTextContent(/Fleet video/);
-    // The menu's newest stable release before this nightly is 0.7.1.
+    // Earlier builds start closed and open on click.
     const earlier = page.getByTestId("whats-new-nightly-earlier");
-    await expect.element(earlier).toMatchTextContent(/Earlier builds since v0\.7\.1/);
-    await expect.element(earlier).toMatchTextContent(/Build 352.*FixedOlder/);
+    const earlierTrigger = earlier.getByRole("button", { name: /Earlier builds since v0\.7\.1/ });
+    await expect.element(earlierTrigger).toHaveAttribute("aria-expanded", "false");
+    await expect.element(earlierTrigger).toMatchTextContent(/Newest build · 1 change/);
+    await expect.element(earlier.getByText("Build 352")).not.toBeInTheDocument();
+
+    await earlierTrigger.click();
+    await expect.element(earlierTrigger).toHaveAttribute("aria-expanded", "true");
+    await expect.element(earlier).toMatchTextContent(/Build 352.*Fixed1Older/);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
