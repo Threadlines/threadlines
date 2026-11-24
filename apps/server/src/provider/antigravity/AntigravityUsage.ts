@@ -94,13 +94,16 @@ export const ANTIGRAVITY_USAGE_LABEL = "Antigravity usage";
 /**
  * Google's Cloud Code quota endpoints gate on the client User-Agent and
  * refuse or drop groups for unrecognized strings. Matches Antigravity's own
- * client string on those endpoints; userinfo still sends Threadlines' name.
+ * Go client string (`runtime.GOOS` / `runtime.GOARCH`) on those endpoints;
+ * userinfo still sends Threadlines' name.
  */
 export function antigravityUsageUserAgent(
   platform: NodeJS.Platform = process.platform,
   architecture: NodeJS.Architecture = process.arch,
 ): string {
-  return `antigravity/hub/2.24.0 (aidev_client; os_type=${platform}; arch=${architecture}; cl=963137146)`;
+  const osType = platform === "win32" ? "windows" : platform;
+  const arch = architecture === "x64" ? "amd64" : architecture === "ia32" ? "386" : architecture;
+  return `antigravity/hub/2.24.0 (aidev_client; os_type=${osType}; arch=${arch}; cl=963137146)`;
 }
 
 export const ANTIGRAVITY_USAGE_USER_AGENT = antigravityUsageUserAgent();

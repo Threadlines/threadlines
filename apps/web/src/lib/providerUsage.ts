@@ -31,8 +31,8 @@ export interface ProviderAccountUsageWindowPresentation {
   /**
    * How much of the window has passed (0-100), where a usage bar draws its
    * pace mark: usage left of the mark is on track to last until the reset.
-   * Unset when the provider doesn't say how long the window is or when it
-   * resets.
+   * Set only for weekly (and longer) windows whose length and reset time are
+   * known; short session windows such as 5h have no pace mark.
    */
   readonly elapsedPercent?: number;
   /**
@@ -253,6 +253,22 @@ export function usageWindowElapsedPercent(
   const remainingMs = resetMs - nowMs;
   if (remainingMs <= 0 || remainingMs > durationMs) return undefined;
   return Math.round((1 - remainingMs / durationMs) * 1000) / 10;
+}
+
+/**
+ * Short session windows (such as 5h) are used in bursts, so pace marks and
+ * "ahead of pace" apply only to weekly (and longer) windows.
+ */
+const MIN_PACE_WINDOW_MINS = 7 * 24 * 60;
+
+function usageWindowPaceElapsedPercent(
+  window: Pick<ServerProviderUsageWindow, "resetsAt" | "windowDurationMins">,
+  nowMs: number,
+): number | undefined {
+  if (window.windowDurationMins === undefined || window.windowDurationMins < MIN_PACE_WINDOW_MINS) {
+    return undefined;
+  }
+  return usageWindowElapsedPercent(window, nowMs);
 }
 
 /** "the week", "the day", "the 5-hour window": the span a pace mark measures. */
@@ -476,7 +492,7 @@ function formatUsageWindowPresentation(
   const blockedByLimitDetail = windowReachedLimit
     ? null
     : formatBlockedByLimitDetail(blockingLimitLabels);
-  const elapsedPercent = usageWindowElapsedPercent(window, nowMs);
+  const elapsedPercent = usageWindowPaceElapsedPercent(window, nowMs);
   const detailParts = [
     windowReachedLimit ? "limit reached" : `${usedPercent}% used`,
     // Pace stops mattering once this limit or another one is the blocker.
@@ -517,7 +533,7 @@ function formatScopedUsageWindowPresentation(
   const severityWarning = window.severity !== undefined && window.severity !== "normal";
   const resetDetail = formatResetDetail(window.resetsAt, nowMs);
   const durationLabel = formatUsageWindowDurationLabel(window, "");
-  const elapsedPercent = usageWindowElapsedPercent(window, nowMs);
+  const elapsedPercent = usageWindowPaceElapsedPercent(window, nowMs);
   const detailParts = [
     reachedLimit ? "limit reached" : `${usedPercent}% used`,
     reachedLimit ? null : formatPaceDetail(usedPercent, elapsedPercent),
