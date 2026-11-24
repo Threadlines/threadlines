@@ -95,7 +95,7 @@ const profileDir = process.env.GEMINI_HOME;
 let sessionCount = 0;
 
 const QUOTA_ERROR =
-  "Error 429, Message: Quota exhausted for gemini-4-argon., Status: RESOURCE_EXHAUSTED, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:googleapis.com metadata:map[quotaResetDelay:3600s quotaResetTimeStamp:2026-11-24T01:05:00Z] reason:QUOTA_EXHAUSTED]]";
+  "Error 429, Message: Quota exhausted for gemini-4-argon., Status: RESOURCE_EXHAUSTED, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:googleapis.com metadata:map[quotaResetDelay:3600s quotaResetTimeStamp:2099-01-01T00:00:00Z] reason:QUOTA_EXHAUSTED]]";
 const GATEWAY_ERROR =
   "Error 502, Message: Bad Gateway: Failed to connect to backend API, Status: 502 Bad Gateway, Details: []";
 const LOST_SIGNATURE_ERROR =
