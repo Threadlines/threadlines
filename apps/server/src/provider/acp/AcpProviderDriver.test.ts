@@ -7,10 +7,14 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
-import type { ServerProvider } from "@threadlines/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { checkAcpProviderStatus, makeAcpCatalogCache } from "./AcpProvider.ts";
+import { checkAcpProviderStatus, enrichAcpSnapshot, makeAcpCatalogCache } from "./AcpProvider.ts";
 import {
   groupSessionCommands,
   withSessionCommands,
@@ -351,3 +355,62 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
+
+describe("enrichAcpSnapshot", () => {
+  it("preserves out-of-band accountUsage patches when applying version advisory via updateSnapshot", async () => {
+    const initial: ServerProvider = {
+      instanceId: ProviderInstanceId.make("cursor"),
+      driver: ProviderDriverKind.make("cursor"),
+      displayName: "Cursor",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated", type: "oauth-personal" },
+      checkedAt: "2026-11-24T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    };
+    const usage: NonNullable<ServerProvider["accountUsage"]> = {
+      source: "grok-billing",
+      checkedAt: "2026-11-24T00:00:01.000Z",
+      primaryLimitId: "antigravity",
+      limits: [
+        {
+          limitId: "antigravity",
+          limitName: "Antigravity usage",
+          scoped: [
+            {
+              scopeLabel: "Gemini",
+              usedPercent: 12,
+              remainingPercent: 88,
+            },
+          ],
+        },
+      ],
+    };
+    // Out-of-band patch landed on the live snapshot before enrichment finished.
+    let live: ServerProvider = { ...initial, accountUsage: usage };
+    await Effect.runPromise(
+      enrichAcpSnapshot({
+        descriptor: { ...CURSOR_ACP_DESCRIPTOR, modelCapabilitiesVaryByModel: false },
+        settings: { enabled: true, binaryPath: "agent", apiEndpoint: "", customModels: [] },
+        snapshot: initial,
+        maintenanceCapabilities: {
+          ...CURSOR_ACP_DESCRIPTOR.maintenance,
+          packageName: null,
+        },
+        publishSnapshot: () => Effect.die("expected updateSnapshot to be used"),
+        updateSnapshot: (update) =>
+          Effect.sync(() => {
+            live = update(live);
+          }),
+        stampIdentity: (next) => next,
+        httpClient: HttpClient.make(() => Effect.die("no network expected")),
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+    expect(live.accountUsage).toEqual(usage);
+    expect(live.versionAdvisory?.currentVersion).toBe("1.0.0");
+  });
+});

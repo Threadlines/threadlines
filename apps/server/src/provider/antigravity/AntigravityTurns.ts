@@ -274,6 +274,7 @@ function acpErrorText(error: unknown): string | undefined {
 export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
   profileDir: string,
   readUsageLimit?: (model: string) => Effect.Effect<RuntimeUsageLimit | undefined>,
+  onPromptSettled?: Effect.Effect<void>,
 ): Pick<AcpProviderDescriptor<Settings>, "turnMachine" | "usageLedger" | "turnUsageTotals"> {
   return {
     // Turns outlive their prompt (1.5.10 sends what the agent does after a
@@ -283,7 +284,7 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
       workAfterPrompt: antigravityWorkAfterPrompt,
       steer: ANTIGRAVITY_STEERS,
       silentLimit: ANTIGRAVITY_SILENT_WORK_LIMIT,
-      outcome: antigravityPromptOutcome(profileDir, readUsageLimit),
+      outcome: antigravityPromptOutcome(profileDir, readUsageLimit, onPromptSettled),
     },
     usageLedger: { provider: "antigravity" },
     turnUsageTotals: antigravityTurnUsageTotals,
@@ -306,6 +307,7 @@ export function antigravityTurnBehavior<Settings extends AcpProviderSettings>(
 function antigravityPromptOutcome(
   profileDir: string,
   readUsageLimit?: (model: string) => Effect.Effect<RuntimeUsageLimit | undefined>,
+  onPromptSettled?: Effect.Effect<void>,
 ): AcpPromptOutcome {
   return {
     watch: (sessionId, model) =>
@@ -322,6 +324,9 @@ function antigravityPromptOutcome(
             : Effect.succeed(failure);
         const check: AcpPromptOutcomeWatch["check"] = (answer) =>
           Effect.gen(function* () {
+            // The CLI may have just renewed its OAuth token or consumed quota;
+            // poke the usage reader off the critical path.
+            if (onPromptSettled) yield* onPromptSettled.pipe(Effect.ignore);
             const nowMs = yield* Clock.currentTimeMillis;
             // 1.5.9+ fails the prompt with the real error.
             // Words it doesn't recognize keep the core's own reading.

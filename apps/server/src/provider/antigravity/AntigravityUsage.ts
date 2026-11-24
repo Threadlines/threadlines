@@ -25,8 +25,10 @@
  *   account never shows another's numbers or email.
  * - Requests go only to the two Cloud Code hosts and Google's userinfo
  *   endpoint, through a fetch that refuses every other host and every
- *   redirect, under Threadlines' own User-Agent. The token is never logged:
- *   errors are dropped for fixed words.
+ *   redirect. Cloud Code requests send Google's Antigravity client User-Agent
+ *   (Cloud Code gates quota responses on it); userinfo sends Threadlines' own.
+ *   The token is never logged: warnings carry only host, operation, and a
+ *   fixed status/reason string.
  * - It fails soft. A status check never waits for Google: it gets the last
  *   reading and starts a read in the background. One read at a time, 10
  *   seconds per request and 30 in all; a failed read keeps the last good
@@ -40,6 +42,7 @@ import * as fs from "node:fs/promises";
 import type {
   AntigravityAuthMethod,
   RuntimeUsageLimit,
+  ServerProvider,
   ServerProviderAccountUsage,
   ServerProviderAuth,
   ServerProviderAuthCapability,
@@ -88,8 +91,20 @@ const isGoogleMethod = (method: AntigravityAuthMethod): method is GoogleMethod =
 /** What a usage surface calls the reading. */
 export const ANTIGRAVITY_USAGE_LABEL = "Antigravity usage";
 
-/** Threadlines under its own name; never another app's client string. */
-export const ANTIGRAVITY_USAGE_USER_AGENT = `Threadlines/${THREADLINES_ACP_CLIENT_INFO.version}`;
+/**
+ * Google's Cloud Code quota endpoints gate on the client User-Agent and
+ * refuse or drop groups for unrecognized strings. Matches Antigravity's own
+ * client string on those endpoints; userinfo still sends Threadlines' name.
+ */
+export function antigravityUsageUserAgent(
+  platform: NodeJS.Platform = process.platform,
+  architecture: NodeJS.Architecture = process.arch,
+): string {
+  return `antigravity/hub/2.24.0 (aidev_client; os_type=${platform}; arch=${architecture}; cl=963137146)`;
+}
+
+export const ANTIGRAVITY_USAGE_USER_AGENT = antigravityUsageUserAgent();
+const THREADLINES_USER_AGENT = `Threadlines/${THREADLINES_ACP_CLIENT_INFO.version}`;
 
 const REQUEST_TIMEOUT = Duration.seconds(10);
 const READ_TIMEOUT = Duration.seconds(30);
@@ -105,15 +120,17 @@ const MAX_ANSWER_CHARS = 2_000_000;
 const TokenFile = Schema.Struct({
   token: Schema.Struct({
     access_token: Schema.NonEmptyString,
-    refresh_token: Schema.optional(Schema.String),
-    expiry: Schema.optional(Schema.String),
+    refresh_token: Schema.optional(Schema.NullOr(Schema.String)),
+    expiry: Schema.optional(Schema.NullOr(Schema.String)),
   }),
-  id_token_email: Schema.optional(Schema.String),
+  id_token_email: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const decodeTokenFile = Schema.decodeUnknownOption(Schema.fromJsonString(TokenFile));
 
 interface SavedToken {
   readonly accessToken: string;
+  /** Short hash of the access token: spots a CLI token renewal without holding the secret. */
+  readonly tokenHash: string;
   /** Undefined when the file doesn't say: then it counts as expired. */
   readonly expiresAtMs: number | undefined;
   readonly email: string | undefined;
@@ -123,29 +140,52 @@ interface SavedToken {
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 32);
 
-const cleanEmail = (value: string | undefined) => {
+const cleanEmail = (value: string | null | undefined) => {
   const email = value?.trim();
   return email && email.includes("@") && email.length <= 320 ? email : undefined;
 };
 
-const readSavedToken = (profileDir: string) =>
-  Effect.promise(async (): Promise<SavedToken | undefined> => {
-    const raw = await fs.readFile(antigravityTokenPath(profileDir), "utf8").catch(() => undefined);
-    if (raw === undefined) return undefined;
+const readSavedToken = (
+  profileDir: string,
+  onUnreadable?: (key: string, detail: string) => Effect.Effect<void>,
+) =>
+  Effect.gen(function* () {
+    const readResult = yield* Effect.promise(async () => {
+      try {
+        return {
+          ok: true as const,
+          raw: await fs.readFile(antigravityTokenPath(profileDir), "utf8"),
+        };
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code ?? "UNKNOWN";
+        return { ok: false as const, code };
+      }
+    });
+    if (!readResult.ok) {
+      if (readResult.code !== "ENOENT" && onUnreadable) {
+        yield* onUnreadable(`read:${readResult.code}`, `read error (${readResult.code})`);
+      }
+      return undefined;
+    }
+    const raw = readResult.raw;
+    if (raw.trim().length === 0) return undefined;
     const decoded = decodeTokenFile(raw);
-    if (decoded._tag === "None") return undefined;
+    if (decoded._tag === "None") {
+      if (onUnreadable) yield* onUnreadable(`decode:${sha256(raw)}`, "unexpected token file shape");
+      return undefined;
+    }
     const { token, id_token_email } = decoded.value;
     const expiresAtMs = token.expiry ? Date.parse(token.expiry) : Number.NaN;
     const email = cleanEmail(id_token_email);
+    const refreshToken = token.refresh_token ?? undefined;
     return {
       accessToken: token.access_token,
+      tokenHash: sha256(token.access_token),
       expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : undefined,
       email,
       // The refresh token outlives renewals; the access token is the last resort.
-      accountKey: sha256(
-        `antigravity-account/1\0${token.refresh_token || email || token.access_token}`,
-      ),
-    };
+      accountKey: sha256(`antigravity-account/1\0${refreshToken || email || token.access_token}`),
+    } satisfies SavedToken;
   });
 
 // ── Google's answers ─────────────────────────────────────────────────
@@ -303,18 +343,19 @@ function fold(into: Map<string, QuotaWindow>, window: QuotaWindow) {
   }
 }
 
-/**
- * The windows in one `retrieveUserQuotaSummary` answer, requested at
- * `requestedAtMs`. Pools (`5h`, `weekly`) keep their own rows; an Enterprise
- * answer's per-model buckets get one row per model, its thinking levels
- * folded together.
- */
-export function antigravitySummaryWindows(
-  answer: unknown,
-  requestedAtMs: number,
-): ReadonlyArray<QuotaWindow> {
+interface ParsedQuotaWindows {
+  readonly ok: boolean;
+  readonly windows: ReadonlyArray<QuotaWindow>;
+}
+
+function parseSummaryAnswer(answer: unknown, requestedAtMs: number): ParsedQuotaWindows {
   const decoded = decodeSummary(answer);
-  if (decoded._tag === "None") return [];
+  if (
+    decoded._tag === "None" ||
+    (decoded.value.groups === undefined && decoded.value.buckets === undefined)
+  ) {
+    return { ok: false, windows: [] };
+  }
   const summary = decoded.value;
   const groups = summary.groups?.some((group) => group.buckets?.length)
     ? summary.groups
@@ -362,17 +403,25 @@ export function antigravitySummaryWindows(
       });
     }
   }
-  return [...windows.values()];
+  return { ok: true, windows: [...windows.values()] };
 }
 
 /**
- * The windows in a `fetchAvailableModels` answer: each model's own quota.
- * Older accounts report quotas this way only, without a window length, so
- * none is made up.
+ * The windows in one `retrieveUserQuotaSummary` answer, requested at
+ * `requestedAtMs`. Pools (`5h`, `weekly`) keep their own rows; an Enterprise
+ * answer's per-model buckets get one row per model, its thinking levels
+ * folded together.
  */
-export function antigravityModelWindows(answer: unknown): ReadonlyArray<QuotaWindow> {
+export function antigravitySummaryWindows(
+  answer: unknown,
+  requestedAtMs: number,
+): ReadonlyArray<QuotaWindow> {
+  return parseSummaryAnswer(answer, requestedAtMs).windows;
+}
+
+function parseModelsAnswer(answer: unknown): ParsedQuotaWindows {
   const decoded = decodeModels(answer);
-  if (decoded._tag === "None") return [];
+  if (decoded._tag === "None") return { ok: false, windows: [] };
   const windows = new Map<string, QuotaWindow>();
   for (const [modelId, model] of Object.entries(decoded.value.models)) {
     if (model.isInternal) continue;
@@ -387,7 +436,16 @@ export function antigravityModelWindows(answer: unknown): ReadonlyArray<QuotaWin
       fold(windows, { family, period, usedPercent, resetsAtMs: parseTime(quota?.resetTime) });
     }
   }
-  return [...windows.values()];
+  return { ok: true, windows: [...windows.values()] };
+}
+
+/**
+ * The windows in a `fetchAvailableModels` answer: each model's own quota.
+ * Older accounts report quotas this way only, without a window length, so
+ * none is made up.
+ */
+export function antigravityModelWindows(answer: unknown): ReadonlyArray<QuotaWindow> {
+  return parseModelsAnswer(answer).windows;
 }
 
 /** Merges answers in host order: the first host's reading of a window wins. */
@@ -505,10 +563,17 @@ interface Timeouts {
   readonly read: Duration.Input;
 }
 
+const SAFE_REQUEST_REASON = /^(?:status \d{3}|answer too large|invalid JSON|timed out)$/u;
+
+const requestFailureReason = (cause: unknown): string =>
+  cause instanceof Error && SAFE_REQUEST_REASON.test(cause.message)
+    ? cause.message
+    : "request failed";
+
 const requestJson = (
   fetch: DownloadFetch,
   url: string,
-  init: { method: "GET" | "POST"; accessToken: string; body?: string },
+  init: { method: "GET" | "POST"; accessToken: string; userAgent: string; body?: string },
   timeout: Duration.Input,
 ) =>
   Effect.tryPromise({
@@ -517,7 +582,7 @@ const requestJson = (
         method: init.method,
         headers: {
           Authorization: `Bearer ${init.accessToken}`,
-          "User-Agent": ANTIGRAVITY_USAGE_USER_AGENT,
+          "User-Agent": init.userAgent,
           Accept: "application/json",
           ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
@@ -531,15 +596,18 @@ const requestJson = (
       }
       const text = await response.text();
       if (text.length > MAX_ANSWER_CHARS) throw new Error("answer too large");
-      return JSON.parse(text) as unknown;
+      try {
+        return JSON.parse(text) as unknown;
+      } catch {
+        throw new Error("invalid JSON");
+      }
     },
-    // The cause can quote the request; only the host is kept.
-    catch: () => new UsageRequestError({ reason: `${new URL(url).host} did not answer` }),
+    // The cause can quote the request; only fixed status/reason words are kept.
+    catch: (cause) => new UsageRequestError({ reason: requestFailureReason(cause) }),
   }).pipe(
     Effect.timeoutOrElse({
       duration: timeout,
-      orElse: () =>
-        Effect.fail(new UsageRequestError({ reason: `${new URL(url).host} timed out` })),
+      orElse: () => Effect.fail(new UsageRequestError({ reason: "timed out" })),
     }),
   );
 
@@ -555,7 +623,7 @@ const askHosts = (
   method: GoogleMethod,
   accessToken: string,
   operation: "retrieveUserQuotaSummary" | "fetchAvailableModels",
-  parse: (answer: unknown, requestedAtMs: number) => ReadonlyArray<QuotaWindow>,
+  parse: (answer: unknown, requestedAtMs: number) => ParsedQuotaWindows,
   timeout: Duration.Input,
   project?: string,
 ) => {
@@ -568,11 +636,27 @@ const askHosts = (
         const answer = yield* requestJson(
           fetch,
           `https://${host}/v1internal:${operation}`,
-          { method: "POST", accessToken, body },
+          { method: "POST", accessToken, userAgent: ANTIGRAVITY_USAGE_USER_AGENT, body },
           timeout,
         );
-        return { answered: true, windows: parse(answer, requestedAtMs) };
-      }).pipe(Effect.orElseSucceed(() => ({ answered: false, windows: [] as const }))),
+        const parsed = parse(answer, requestedAtMs);
+        if (!parsed.ok) {
+          yield* Effect.logWarning("Antigravity usage response had an unexpected shape", {
+            host,
+            operation,
+          });
+          return { answered: false, windows: [] as const };
+        }
+        return { answered: true, windows: parsed.windows };
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("Antigravity usage request failed", {
+            host,
+            operation,
+            reason: error.reason,
+          }).pipe(Effect.as({ answered: false, windows: [] as const })),
+        ),
+      ),
     { concurrency: "unbounded" },
   ).pipe(
     Effect.map((answers): QuotaRead => ({
@@ -600,7 +684,7 @@ const readQuotaWindows = (
       method,
       accessToken,
       "retrieveUserQuotaSummary",
-      antigravitySummaryWindows,
+      parseSummaryAnswer,
       timeout,
       project,
     );
@@ -610,7 +694,7 @@ const readQuotaWindows = (
       method,
       accessToken,
       "fetchAvailableModels",
-      antigravityModelWindows,
+      parseModelsAnswer,
       timeout,
       project,
     );
@@ -624,7 +708,12 @@ const readQuotaWindows = (
   });
 
 const readEmail = (fetch: DownloadFetch, accessToken: string, timeout: Duration.Input) =>
-  requestJson(fetch, USERINFO_URL, { method: "GET", accessToken }, timeout).pipe(
+  requestJson(
+    fetch,
+    USERINFO_URL,
+    { method: "GET", accessToken, userAgent: THREADLINES_USER_AGENT },
+    timeout,
+  ).pipe(
     Effect.map((answer) => {
       const decoded = decodeUserInfo(answer);
       return decoded._tag === "Some" ? cleanEmail(decoded.value.email) : undefined;
@@ -676,6 +765,18 @@ export interface AntigravityUsageReader {
    * is due. Empty for a method that isn't a Google sign-in, or when signed out.
    */
   readonly status: Effect.Effect<AntigravityUsageStatus>;
+  /**
+   * Checks the sign-in on disk and starts a background read if due or if the
+   * CLI just renewed the access token (e.g. when a chat session starts or
+   * finishes a turn).
+   */
+  readonly refresh: Effect.Effect<void>;
+  /**
+   * Folds the latest landed background reading onto a freshly checked snapshot
+   * when both belong to the same account, so a read that completed during
+   * model discovery is not overwritten by the earlier probe result.
+   */
+  readonly reconcile: (snapshot: ServerProvider) => ServerProvider;
   /** Cancels a read in flight and forgets every reading: for sign-in and sign-out. */
   readonly reset: Effect.Effect<void>;
   /** The instance's snapshot, once it exists: finished reads publish to it. */
@@ -716,11 +817,28 @@ export const makeAntigravityUsageReader = (
     const inFlight = yield* FiberHandle.make<void, never>();
     let reading: Reading | undefined;
     let emails = new Map<string, string>();
-    /** The key, time and outcome of the last read started. */
-    let lastAttempt: { key: string; atMs: number; failed: boolean } | undefined;
+    /** The key, access-token hash, time and outcome of the last read started. */
+    let lastAttempt: { key: string; tokenHash: string; atMs: number; failed: boolean } | undefined;
+    /** Most recent background read landed for the active account, for `reconcile`. */
+    let latestLanded:
+      | { readonly accountId: string; readonly status: AntigravityUsageStatus }
+      | undefined;
+    /** Avoids repeating the same unreadable-token warning on every 5-minute probe. */
+    let warnedTokenHash: string | undefined;
     /** Bumped by `reset`: a read started before it doesn't land. */
     let generation = 0;
     let snapshot: AntigravityUsageSnapshot | undefined;
+
+    const readToken = readSavedToken(input.profileDir, (warningKey, detail) =>
+      warnedTokenHash === warningKey
+        ? Effect.void
+        : Effect.suspend(() => {
+            warnedTokenHash = warningKey;
+            return Effect.logWarning("Antigravity token file could not be read for usage", {
+              reason: detail,
+            });
+          }),
+    );
 
     const keyOf = (token: SavedToken) => `${input.fingerprint}:${token.accountKey}`;
 
@@ -765,9 +883,15 @@ export const makeAntigravityUsageReader = (
      * for is still the one on disk, so one account's numbers and email never
      * land on another's.
      */
-    const land = (key: string, started: number, read: QuotaRead, email: string | undefined) =>
+    const land = (
+      key: string,
+      tokenHash: string,
+      started: number,
+      read: QuotaRead,
+      email: string | undefined,
+    ) =>
       Effect.gen(function* () {
-        const current = yield* readSavedToken(input.profileDir);
+        const current = yield* readToken;
         if (generation !== started || current === undefined || keyOf(current) !== key) return;
         const nowMs = yield* Clock.currentTimeMillis;
         if (read.windows.length > 0) {
@@ -785,10 +909,16 @@ export const makeAntigravityUsageReader = (
         if (email) emails.set(key, email);
         lastAttempt = {
           key,
-          atMs: lastAttempt?.atMs ?? nowMs,
+          tokenHash,
+          atMs:
+            lastAttempt?.key === key && lastAttempt.tokenHash === tokenHash
+              ? lastAttempt.atMs
+              : nowMs,
           failed: read.windows.length === 0 || !read.complete,
         };
-        yield* publishStatus(statusFor(current, key, nowMs));
+        const nextStatus = statusFor(current, key, nowMs);
+        latestLanded = { accountId: accountIdOf(key), status: nextStatus };
+        yield* publishStatus(nextStatus);
       });
 
     const read = (token: SavedToken, key: string, method: GoogleMethod) =>
@@ -810,11 +940,12 @@ export const makeAntigravityUsageReader = (
             ],
             { concurrency: "unbounded" },
           );
-          yield* land(key, started, windows, email);
+          yield* land(key, token.tokenHash, started, windows, email);
         }).pipe(
           Effect.timeoutOrElse({
             duration: timeouts.read,
-            orElse: () => land(key, started, { windows: [], complete: false }, undefined),
+            orElse: () =>
+              land(key, token.tokenHash, started, { windows: [], complete: false }, undefined),
           }),
         );
       }).pipe(
@@ -824,31 +955,60 @@ export const makeAntigravityUsageReader = (
 
     const status = Effect.gen(function* () {
       if (!isGoogleMethod(input.method)) return {};
-      const token = yield* readSavedToken(input.profileDir);
+      const token = yield* readToken;
       if (token === undefined) {
         // Signed out: whatever is kept belongs to a sign-in that's gone.
         reading = undefined;
+        latestLanded = undefined;
         return {};
       }
+      warnedTokenHash = undefined;
       const key = keyOf(token);
+      const accountId = accountIdOf(key);
       if (reading !== undefined && reading.key !== key) reading = undefined;
       const nowMs = yield* Clock.currentTimeMillis;
       const expired =
         token.expiresAtMs === undefined || token.expiresAtMs <= nowMs + EXPIRY_MARGIN_MS;
+      if (latestLanded !== undefined && (latestLanded.accountId !== accountId || expired)) {
+        latestLanded = undefined;
+      }
+      const tokenChanged =
+        lastAttempt !== undefined &&
+        (lastAttempt.key !== key || lastAttempt.tokenHash !== token.tokenHash);
       const due =
         lastAttempt === undefined ||
-        lastAttempt.key !== key ||
+        tokenChanged ||
         nowMs - lastAttempt.atMs >= MIN_READ_INTERVAL_MS;
       if (!expired && due) {
         lastAttempt = {
           key,
+          tokenHash: token.tokenHash,
           atMs: nowMs,
-          failed: lastAttempt?.key === key ? lastAttempt.failed : false,
+          failed: lastAttempt?.key === key && !tokenChanged ? lastAttempt.failed : false,
         };
-        yield* FiberHandle.run(inFlight, read(token, key, input.method), { onlyIfMissing: true });
+        // A changed account or renewed token replaces any read still running on the old one.
+        yield* FiberHandle.run(inFlight, read(token, key, input.method), {
+          onlyIfMissing: !tokenChanged,
+        });
       }
       return statusFor(token, key, nowMs);
     }).pipe(Effect.catchCause(() => Effect.succeed({})));
+
+    const reconcile = (next: ServerProvider): ServerProvider => {
+      if (
+        !next.enabled ||
+        next.auth.status !== "authenticated" ||
+        next.auth.type !== input.method ||
+        latestLanded === undefined
+      ) {
+        return next;
+      }
+      // `latestLanded` is cleared on sign-out, expiry, reset, and whenever `status`
+      // sees a different account, and only set after `land` confirms the token on
+      // disk still matches. It is therefore never older than `next`, even when an
+      // account switched while model discovery was still running.
+      return withAntigravityUsage(next, latestLanded.status);
+    };
 
     /** A picker slug's model name, from the instance's model list; a name passes through. */
     const modelName = (model: string) =>
@@ -863,12 +1023,16 @@ export const makeAntigravityUsageReader = (
 
     return {
       status,
+      refresh: Effect.asVoid(status),
+      reconcile,
       reset: Effect.gen(function* () {
         generation += 1;
         yield* FiberHandle.clear(inFlight);
         reading = undefined;
         emails = new Map();
         lastAttempt = undefined;
+        latestLanded = undefined;
+        warnedTokenHash = undefined;
       }),
       attach: (next) => {
         snapshot = next;
@@ -876,7 +1040,7 @@ export const makeAntigravityUsageReader = (
       usageLimitFor: (model) =>
         Effect.gen(function* () {
           if (!isGoogleMethod(input.method)) return undefined;
-          const token = yield* readSavedToken(input.profileDir);
+          const token = yield* readToken;
           if (token === undefined || reading?.key !== keyOf(token)) return undefined;
           return usageLimitForModel(
             reading.accountUsage,

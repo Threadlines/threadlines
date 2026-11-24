@@ -373,7 +373,15 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings, R = 
             ),
           checkProvider,
           scheduledCheckProvider: check(true),
-          enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
+          ...(descriptor.reconcileSnapshot
+            ? { reconcileSnapshot: descriptor.reconcileSnapshot }
+            : {}),
+          enrichSnapshot: ({
+            settings,
+            snapshot: currentSnapshot,
+            publishSnapshot,
+            updateSnapshot,
+          }) =>
             enrichAcpSnapshot({
               descriptor,
               settings,
@@ -381,6 +389,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings, R = 
               snapshot: currentSnapshot,
               maintenanceCapabilities,
               publishSnapshot,
+              updateSnapshot,
               stampIdentity,
               httpClient,
               catalog,
