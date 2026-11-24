@@ -2198,6 +2198,48 @@ describe("composerDraftStore new thread defaults", () => {
     expect(composerDraft()?.activeProvider).toBe(CODEX_INSTANCE);
     expect(draftRoom()).toBeUndefined();
   });
+
+  it("applies default access and mode, clearing stale composer overrides unless kept", () => {
+    const store = useComposerDraftStore.getState();
+    store.setRuntimeMode(draftId, "approval-required");
+    store.setInteractionMode(draftId, "plan");
+    store.setDraftThreadContext(draftId, {
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+
+    // Keeping explicit picks leaves both alone.
+    store.applyNewThreadDefaults(
+      draftId,
+      {
+        modelSelection: null,
+        room: null,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      },
+      { keepRuntimeMode: true, keepInteractionMode: true },
+    );
+    expect(useComposerDraftStore.getState().getDraftSession(draftId)).toMatchObject({
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+    expect(composerDraft()?.runtimeMode).toBe("approval-required");
+    expect(composerDraft()?.interactionMode).toBe("plan");
+
+    // Starting over applies the computer's defaults and clears old composer picks.
+    store.applyNewThreadDefaults(draftId, {
+      modelSelection: null,
+      room: null,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+    });
+    expect(useComposerDraftStore.getState().getDraftSession(draftId)).toMatchObject({
+      runtimeMode: "full-access",
+      interactionMode: "default",
+    });
+    expect(composerDraft()?.runtimeMode ?? null).toBeNull();
+    expect(composerDraft()?.interactionMode ?? null).toBeNull();
+  });
 });
 
 describe("composerDraftStore provider-scoped option updates", () => {

@@ -8,6 +8,7 @@ import {
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
+  type ProviderInteractionMode,
   type RuntimeMode,
   type VcsWorktreeStatus,
 } from "@threadlines/contracts";
@@ -121,6 +122,7 @@ export async function addWorktreeThreads(input: {
   readonly worktrees: ReadonlyArray<VcsWorktreeStatus>;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
+  readonly interactionMode?: ProviderInteractionMode;
 }): Promise<void> {
   const api = ensureEnvironmentApi(input.environmentId);
   for (const worktree of input.worktrees) {
@@ -132,7 +134,7 @@ export async function addWorktreeThreads(input: {
       title: threadTitleFromWorktree(worktree),
       modelSelection: input.modelSelection,
       runtimeMode: input.runtimeMode,
-      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      interactionMode: input.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
       branch: worktree.refName,
       worktreePath: worktree.path,
       worktreeOrigin: { kind: "existing" },

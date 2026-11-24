@@ -1873,7 +1873,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     options: accessLevel.options,
     // The row's menu returns the cursor itself once it has closed.
     onChange: (mode) => handleRuntimeModeChange(mode, { focusComposer: false }),
-    planning: interactionMode === "plan",
+    planning: composerProviderControls.showInteractionModeToggle && interactionMode === "plan",
   });
   const settingsModeControl = runControlsOnRow ? null : modeControl;
   const settingsAccessControl = runControlsOnRow ? null : accessControl;
@@ -3943,7 +3943,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         data-glass-surface="composer"
         className={cn(
           "group rounded-[13px] p-px transition-[background-color,box-shadow] duration-200",
-          interactionMode === "plan" && "plan-mode-frame",
+          composerProviderControls.showInteractionModeToggle &&
+            interactionMode === "plan" &&
+            "plan-mode-frame",
           composerProviderState.composerFrameClassName,
         )}
         onDragEnter={onComposerDragEnter}

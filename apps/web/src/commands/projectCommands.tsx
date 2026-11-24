@@ -37,6 +37,7 @@ import {
   startNewThreadFromContext,
   startNewThreadInProjectFromContext,
 } from "../lib/chatThreadActions";
+import { readComputerConfig } from "../newThreadDefaults";
 import { projectBriefLocation, useProjectBriefSupport } from "../projectBrief";
 import { deriveProviderInstanceEntries } from "../providerInstances";
 import { useServerProviders } from "../rpc/serverState";
@@ -215,6 +216,7 @@ export function useProjectCommands(): void {
             runtimeMode:
               openThreadRuntimeMode ??
               activeDraftThread?.runtimeMode ??
+              readComputerConfig(currentProject.environmentId)?.settings.newThreadRuntimeMode ??
               DEFAULT_NEW_THREAD_RUNTIME_MODE,
             returnFocus: focusComposer,
           });

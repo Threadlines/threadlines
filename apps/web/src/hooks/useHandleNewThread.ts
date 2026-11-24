@@ -1,6 +1,7 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import {
   DEFAULT_NEW_THREAD_RUNTIME_MODE,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
   type ScopedProjectRef,
   type ScopedThreadRef,
   type ThreadEnvMode,
@@ -148,9 +149,11 @@ function useNewThreadState() {
       // Every other new thread starts where its computer's "Start in" says,
       // read here so no surface can leave the setting out.
       const isPlacementPinned = hasBranchOption || hasWorktreePathOption || hasEnvModeOption;
-      const computerSettings = isPlacementPinned
-        ? null
-        : (readComputerConfig(projectRef.environmentId)?.settings ?? null);
+      const computerSettings = readComputerConfig(projectRef.environmentId)?.settings ?? null;
+      const defaultRuntimeMode =
+        computerSettings?.newThreadRuntimeMode ?? DEFAULT_NEW_THREAD_RUNTIME_MODE;
+      const defaultInteractionMode =
+        computerSettings?.newThreadInteractionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
       const activeThread =
         currentRouteTarget?.kind === "server"
           ? selectThreadByRef(useStore.getState(), currentRouteTarget.threadRef)
@@ -195,6 +198,9 @@ function useNewThreadState() {
             emptyStoredDraftThread.draftId,
             {
               threadId: emptyStoredDraftThread.threadId,
+              ...(computerSettings !== null
+                ? { runtimeMode: defaultRuntimeMode, interactionMode: defaultInteractionMode }
+                : {}),
               ...placement,
             },
           );
@@ -238,8 +244,12 @@ function useNewThreadState() {
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, currentDraftId, {
           threadId: latestActiveDraftThread.threadId,
           createdAt: latestActiveDraftThread.createdAt,
-          runtimeMode: latestActiveDraftThread.runtimeMode,
-          interactionMode: latestActiveDraftThread.interactionMode,
+          runtimeMode:
+            computerSettings !== null ? defaultRuntimeMode : latestActiveDraftThread.runtimeMode,
+          interactionMode:
+            computerSettings !== null
+              ? defaultInteractionMode
+              : latestActiveDraftThread.interactionMode,
           ...placement,
         });
         placeFromSettings(currentDraftId);
@@ -259,7 +269,8 @@ function useNewThreadState() {
           worktreePath: null,
           envMode: "local",
           ...placement,
-          runtimeMode: DEFAULT_NEW_THREAD_RUNTIME_MODE,
+          runtimeMode: defaultRuntimeMode,
+          interactionMode: defaultInteractionMode,
         });
         placeFromSettings(draftId);
         writeInitialPrompt(draftId);

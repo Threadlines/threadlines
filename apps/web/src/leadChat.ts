@@ -261,7 +261,7 @@ export async function createLeadChat(
       projectId: project.id,
       title: "Lead chat",
       modelSelection,
-      runtimeMode: DEFAULT_NEW_THREAD_RUNTIME_MODE,
+      runtimeMode: config?.settings.newThreadRuntimeMode ?? DEFAULT_NEW_THREAD_RUNTIME_MODE,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       branch: null,
       worktreePath: null,

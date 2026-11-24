@@ -414,6 +414,8 @@ export interface NewThreadDraftDefaults {
   readonly modelSelection: ModelSelection | null;
   /** Null: no agents beside the thread's own. */
   readonly room: DraftRoom | null;
+  readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: ProviderInteractionMode;
 }
 
 const PersistedDraftThreadState = Schema.Struct({
@@ -731,7 +733,11 @@ interface ComposerDraftStoreState {
   applyNewThreadDefaults: (
     threadRef: ComposerThreadTarget,
     defaults: NewThreadDraftDefaults | null,
-    options?: { readonly keepModel?: boolean },
+    options?: {
+      readonly keepModel?: boolean;
+      readonly keepRuntimeMode?: boolean;
+      readonly keepInteractionMode?: boolean;
+    },
   ) => void;
   setProviderModelOptions: (
     threadRef: ComposerThreadTarget,
@@ -3326,21 +3332,45 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 };
               }
             }
+            const applyRuntimeMode =
+              defaults !== null &&
+              options?.keepRuntimeMode !== true &&
+              defaults.runtimeMode !== undefined;
+            const applyInteractionMode =
+              defaults !== null &&
+              options?.keepInteractionMode !== true &&
+              defaults.interactionMode !== undefined;
+            if (applyRuntimeMode && nextDraft.runtimeMode !== null) {
+              nextDraft = { ...nextDraft, runtimeMode: null };
+            }
+            if (applyInteractionMode && nextDraft.interactionMode !== null) {
+              nextDraft = { ...nextDraft, interactionMode: null };
+            }
             const draftsChanged =
               !Equal.equals(base.modelSelectionByProvider, nextDraft.modelSelectionByProvider) ||
               base.activeProvider !== nextDraft.activeProvider ||
-              base.modelPicked !== nextDraft.modelPicked;
+              base.modelPicked !== nextDraft.modelPicked ||
+              base.runtimeMode !== nextDraft.runtimeMode ||
+              base.interactionMode !== nextDraft.interactionMode;
 
-            // "New thread" starts with the computer's room, or none: agents in
-            // a draft are setup, like its model, not work in progress.
+            // "New thread" starts with the computer's room, mode and access:
+            // draft setup follows the computer's settings unless kept.
             const thread = state.draftThreadsByThreadKey[threadKey];
             let nextThread = thread;
             if (defaults !== null && thread && !isDraftThreadPromoting(thread)) {
               const { room: _previous, ...rest } = thread;
-              nextThread =
-                defaults.room === null || defaults.room.agents.length === 0
-                  ? rest
-                  : { ...rest, room: defaults.room };
+              nextThread = {
+                ...rest,
+                ...(applyRuntimeMode && defaults.runtimeMode !== undefined
+                  ? { runtimeMode: defaults.runtimeMode }
+                  : {}),
+                ...(applyInteractionMode && defaults.interactionMode !== undefined
+                  ? { interactionMode: defaults.interactionMode }
+                  : {}),
+                ...(defaults.room !== null && defaults.room.agents.length > 0
+                  ? { room: defaults.room }
+                  : {}),
+              };
             }
             const threadChanged = nextThread !== thread && !Equal.equals(nextThread, thread);
 

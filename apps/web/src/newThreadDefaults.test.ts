@@ -82,6 +82,8 @@ describe("resolveNewThreadDefaults", () => {
     expect(resolveNewThreadDefaults({ settings, providers })).toEqual({
       modelSelection: opus,
       roomAgents: [{ modelSelection: astra, role: "Reviewer" }],
+      runtimeMode: "auto",
+      interactionMode: "default",
     });
 
     // Codex turned off: the agent on it is left out, the Claude default stays.
@@ -108,6 +110,8 @@ describe("resolveNewThreadDefaults", () => {
     expect(resolveNewThreadDefaults({ settings, providers: [] })).toEqual({
       modelSelection: opus,
       roomAgents: [{ modelSelection: astra }],
+      runtimeMode: "auto",
+      interactionMode: "default",
     });
   });
 });
@@ -296,6 +300,8 @@ describe("new thread defaults on a draft", () => {
       serverConfig: computerConfig(studio, {
         newThreadModelSelection: opus,
         defaultThreadEnvMode: "worktree",
+        newThreadRuntimeMode: "full-access",
+        newThreadInteractionMode: "plan",
       }),
     });
     store.setStickyModelSelection(astra);
@@ -305,19 +311,30 @@ describe("new thread defaults on a draft", () => {
     // Last used on the desktop: the draft starts on Astra without the user picking it.
     await applyNewThreadDefaultsToDraft(draftId, desktop);
     const draft = () => useComposerDraftStore.getState().getComposerDraft(draftId);
+    const session = () => useComposerDraftStore.getState().getDraftSession(draftId);
     expect(draft()?.activeProvider).toBe(CODEX);
+    expect(session()?.runtimeMode).toBe("auto");
+    expect(session()?.interactionMode).toBe("default");
 
     store.setDraftThreadContext(draftId, { projectRef: scopeProjectRef(studio, projectId) });
     await applyMovedDraftDefaults(draftId, studio);
     expect(draft()?.activeProvider).toBe(CLAUDE);
-    // The studio's Start in comes with the move too.
-    expect(useComposerDraftStore.getState().getDraftSession(draftId)?.envMode).toBe("worktree");
+    // The studio's Start in, Access and Mode come with the move too.
+    expect(session()?.envMode).toBe("worktree");
+    expect(session()?.runtimeMode).toBe("full-access");
+    expect(session()?.interactionMode).toBe("plan");
 
     store.setModelSelection(draftId, astra);
+    store.setRuntimeMode(draftId, "approval-required");
+    store.setDraftThreadContext(draftId, { runtimeMode: "approval-required" });
+    store.setInteractionMode(draftId, "default");
+    store.setDraftThreadContext(draftId, { interactionMode: "default" });
     store.setDraftThreadContext(draftId, { projectRef: scopeProjectRef(desktop, projectId) });
     store.setDraftThreadContext(draftId, { projectRef: scopeProjectRef(studio, projectId) });
     await applyMovedDraftDefaults(draftId, studio);
     expect(draft()?.activeProvider).toBe(CODEX);
+    expect(session()?.runtimeMode).toBe("approval-required");
+    expect(session()?.interactionMode).toBe("default");
   });
   it("keeps the last used model for a draft written in before the computer's settings came", async () => {
     const store = useComposerDraftStore.getState();
@@ -336,5 +353,40 @@ describe("new thread defaults on a draft", () => {
     const draft = useComposerDraftStore.getState().getComposerDraft(draftId);
     expect(draft?.activeProvider).toBe(CLAUDE);
     expect(draft?.modelSelectionByProvider[CLAUDE]).toEqual(opus);
+  });
+
+  it("drops un-picked Full access when moving to a connecting computer and applies late defaults even after typing", async () => {
+    const store = useComposerDraftStore.getState();
+    useSavedEnvironmentRuntimeStore.getState().patch(desktop, {
+      serverConfig: computerConfig(desktop, {
+        newThreadRuntimeMode: "full-access",
+        newThreadInteractionMode: "plan",
+      }),
+    });
+    store.setProjectDraftThreadId(scopeProjectRef(desktop, projectId), draftId, {
+      threadId: ThreadId.make("thread-connecting"),
+    });
+    await applyNewThreadDefaultsToDraft(draftId, desktop);
+    const session = () => useComposerDraftStore.getState().getDraftSession(draftId);
+    expect(session()).toMatchObject({ runtimeMode: "full-access", interactionMode: "plan" });
+
+    // Move to studio before studio's config arrives: Full access must not carry over.
+    store.setDraftThreadContext(draftId, { projectRef: scopeProjectRef(studio, projectId) });
+    const moveRequest = applyMovedDraftDefaults(draftId, studio);
+    expect(session()).toMatchObject({ runtimeMode: "auto", interactionMode: "default" });
+
+    // Typing before studio's config lands must not block studio's Access/Mode defaults.
+    store.setPrompt(draftId, "check tests");
+    useSavedEnvironmentRuntimeStore.getState().patch(studio, {
+      serverConfig: computerConfig(studio, {
+        newThreadRuntimeMode: "approval-required",
+        newThreadInteractionMode: "plan",
+      }),
+    });
+    await moveRequest;
+    expect(session()).toMatchObject({
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
   });
 });

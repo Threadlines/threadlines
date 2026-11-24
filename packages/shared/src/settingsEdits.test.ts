@@ -99,6 +99,7 @@ describe("agents' settings changes", () => {
     expect(refused([])).toBe("count");
     expect(refused([{ place: "settings.nowhere", value: true }])).toBe("unknown");
     expect(refused([{ place: "threads.agentThreads", value: "auto" }])).toBe("user_only");
+    expect(refused([{ place: "threads.access", value: "full-access" }])).toBe("user_only");
     expect(refused([{ place: "general.usageAnalytics", value: true }])).toBe("not_editable");
     expect(
       refused([
