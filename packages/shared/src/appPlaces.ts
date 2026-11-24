@@ -21,6 +21,7 @@ import type {
   ClientSettingsPatch,
   ComputerLinkAccess,
   BrowserSearchEngine,
+  FollowUpDelivery,
   GeneralChatsPlacement,
   LinkOpenTarget,
   ModelSelection,
@@ -366,6 +367,12 @@ export const GENERAL_CHATS_PLACEMENT_LABELS: Readonly<Record<GeneralChatsPlaceme
 
 /** "Theme", as its menu words each choice. */
 export const THEME_LABELS = { system: "System", light: "Light", dark: "Dark" } as const;
+
+/** "Sending while an agent works", as its menu words each choice. */
+export const FOLLOW_UP_DELIVERY_LABELS: Readonly<Record<FollowUpDelivery, string>> = {
+  steer: "Steer now",
+  queue: "Send when done",
+};
 
 /** "Motion", as its control words each choice. */
 export const THEME_MOTION_LABELS = { live: "Live", still: "Still" } as const;
@@ -1176,6 +1183,22 @@ const ROWS = [
     about: "Show the agent's reply while it's being written.",
     keywords: ["streaming"],
     ...editableServerSwitch("enableAssistantStreaming"),
+  },
+  {
+    id: "general.followUpDelivery",
+    kind: "row",
+    parent: "general.chatAndDiffs",
+    title: "Sending while an agent works",
+    about: "Default when sending during a reply. Override per thread in the composer.",
+    keywords: ["steer", "steer now", "send when done", "queue", "follow-up", "composer"],
+    scope: "device",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: FOLLOW_UP_DELIVERY_LABELS },
+      leaves: ["followUpDelivery"],
+      read: (settings) => settings.followUpDelivery,
+      patch: (value) => ({ followUpDelivery: value as FollowUpDelivery }),
+    },
   },
   {
     id: "general.timeFormat",

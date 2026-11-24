@@ -88,6 +88,7 @@ import {
   useRoomAgentNames,
   useRoomRecipientStore,
 } from "../rooms";
+import { resolveFollowUpDelivery, useFollowUpDeliveryStore } from "../followUpDeliveryStore";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { useDevicesSupported } from "./device/deviceState";
 import { isElectron } from "../env";
@@ -228,7 +229,7 @@ import {
 } from "~/projectScripts";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { formatProviderDriverKindLabel } from "../providerModels";
-import { useSettings, useUpdateSettings } from "../hooks/useSettings";
+import { getClientSettings, useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { roomsEnabledFor } from "../hooks/useRoomsEnabled";
 import { useNewThreadComposerFocus } from "../newThreadComposerFocus";
 import {
@@ -5369,15 +5370,30 @@ export default function ChatView(props: ChatViewProps) {
     return waiting.length === 0 && !pendingUserInputsRef.current.some(isBlockingUserInput);
   };
 
-  const readSendMenuChoice = () =>
-    `${settings.followUpDelivery}:${
+  const readEffectiveFollowUpDelivery = (threadRef: ScopedThreadRef | null) => {
+    const globalDefault = getClientSettings().followUpDelivery;
+    return threadRef === null
+      ? globalDefault
+      : resolveFollowUpDelivery(
+          useFollowUpDeliveryStore.getState().overridesByThreadKey,
+          threadRef,
+          globalDefault,
+        );
+  };
+
+  const readSendMenuChoice = () => {
+    const threadRef =
+      activeThread !== undefined ? scopeThreadRef(environmentId, activeThread.id) : null;
+    return `${readEffectiveFollowUpDelivery(threadRef)}:${
       activeThread !== undefined &&
+      threadRef !== null &&
       isRoomWaitChosen(
         useRoomRecipientStore.getState().waitChosen,
-        scopeThreadRef(environmentId, activeThread.id),
+        threadRef,
         activeThread.latestTurn?.turnId,
       )
     }`;
+  };
 
   const onSend = async (e?: { preventDefault: () => void }, options?: ComposerSendOptions) => {
     e?.preventDefault();
@@ -5781,13 +5797,16 @@ export default function ChatView(props: ChatViewProps) {
     const approvalDeclines = askOnTheSide || queueForAnotherAgent ? [] : pendingApprovals;
     // "Send when done" holds the message on the server until the turn ends;
     // the queue list shows it from there, so it gets no steering row.
+    const configuredFollowUpDelivery = readEffectiveFollowUpDelivery(
+      scopeThreadRef(environmentId, threadIdForSend),
+    );
     const followUpDelivery = queueForAnotherAgent
       ? "queue"
       : approvalDeclines.length > 0
         ? "steer"
         : oppositeDelivery
-          ? oppositeFollowUpDelivery(settings.followUpDelivery)
-          : settings.followUpDelivery;
+          ? oppositeFollowUpDelivery(configuredFollowUpDelivery)
+          : configuredFollowUpDelivery;
     const shouldCreateWorktree = firstWorkNeedsWorktree({
       isFirstWork: isFirstMessage,
       envMode: sendEnvMode,

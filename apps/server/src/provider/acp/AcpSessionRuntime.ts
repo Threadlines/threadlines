@@ -1193,7 +1193,14 @@ const makeAcpSessionRuntime = (
           // sent after it is handled before this is queued.
           const onAnswer = (answer: Exit.Exit<unknown, EffectAcpErrors.AcpError>) =>
             Effect.gen(function* () {
-              yield* queueSent;
+              // Only a reply from the agent (success or JSON-RPC error) proves
+              // the prompt was written; a synthetic transport failure does not.
+              if (
+                Exit.isSuccess(answer) ||
+                Schema.is(EffectAcpErrors.AcpRequestError)(Cause.squash(answer.cause))
+              ) {
+                yield* queueSent;
+              }
               yield* Ref.update(promptsInFlightRef, (count) => count - 1);
               // As `prompt`: the answer ends the prompt's reply, unless a turn
               // the agent began itself, or a newer prompt, carries one on.

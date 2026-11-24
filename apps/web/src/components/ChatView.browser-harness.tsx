@@ -80,6 +80,7 @@ import { closeProjectSetupDialog } from "./ProjectSetupDialog";
 import { closeThreadMoveDialog } from "./ThreadMoveDialog";
 import { closeMoveThreadsDialog } from "./MoveThreadsDialog";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import { resetFollowUpDeliveryOverridesForTests } from "../followUpDeliveryStore";
 import { connectEnvironmentBrowserHost } from "./browser/previewAutomationHost";
 import { closeThreadBrowser, useBrowserPageWatchers } from "./browser/BrowserHostLayer";
 import {
@@ -3489,6 +3490,7 @@ export function registerChatViewSuiteHooks(): void {
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
     resetRightPanelTabsForTests();
+    resetFollowUpDeliveryOverridesForTests();
     __resetComposerPullRequestDismissalsForTests();
     Reflect.deleteProperty(window, "desktopBridge");
     useComposerDraftStore.setState({

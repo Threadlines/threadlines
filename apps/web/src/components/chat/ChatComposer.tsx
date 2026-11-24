@@ -18,6 +18,7 @@ import type {
   TurnId,
 } from "@threadlines/contracts";
 import { saveComposerDraftAttachments } from "../../composerDraftAttachmentSave";
+import { resolveFollowUpDelivery, useFollowUpDeliveryStore } from "../../followUpDeliveryStore";
 import { publishComposerImageSupport } from "./composerImageSupport";
 import { type PromptRecall, recallablePrompts, stepPromptRecall } from "./composerPromptRecall";
 import { containsWorkflowKeyword } from "@threadlines/shared/workflowRuns";
@@ -134,7 +135,7 @@ import {
 } from "./ComposerPrimaryActions";
 import { useConnectedComputerCapability } from "../../environments/computerCapabilities";
 import { useEnvironmentServerSetting } from "../../hooks/useEnvironmentServerSetting";
-import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { useSettings } from "../../hooks/useSettings";
 import { useStableHandlers } from "../../hooks/useStableIdentity";
 import { useAgentWarmUp } from "../../hooks/useAgentWarmUp";
 import { getThreadInFlightStatus } from "../../lib/threadSort";
@@ -2002,11 +2003,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const meterShowsSlotHolder = recipientAgentId === (activeThread?.session?.participantId ?? null);
   const collapsedComposerPrimaryActionDisabled =
     isSendBusy || isConnecting || !composerSendState.hasSendableContent;
-  const followUpDelivery = useSettings((settings) => settings.followUpDelivery);
-  const { updateSettings } = useUpdateSettings();
+  const defaultFollowUpDelivery = useSettings((settings) => settings.followUpDelivery);
+  const followUpDelivery = useFollowUpDeliveryStore((state) =>
+    resolveFollowUpDelivery(state.overridesByThreadKey, routeThreadRef, defaultFollowUpDelivery),
+  );
   const handleFollowUpDeliveryChange = useCallback(
-    (delivery: FollowUpDelivery) => updateSettings({ followUpDelivery: delivery }),
-    [updateSettings],
+    (delivery: FollowUpDelivery) =>
+      useFollowUpDeliveryStore
+        .getState()
+        .setOverride(routeThreadRef, delivery, defaultFollowUpDelivery),
+    [defaultFollowUpDelivery, routeThreadRef],
   );
   // Rooms: while another agent works, a message for this one is asked now
   // (answered read-only on the side) or, when picked for this message, waits

@@ -170,6 +170,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
     written?: Deferred.Deferred<void, AcpError.AcpError>,
     requestId?: string | number,
+    registerPending?: Effect.Effect<void>,
   ) {
     // The RPC client's own control messages (an interrupted request, a stream
     // ack) would go out as `@effect/rpc/*` methods no ACP agent knows.
@@ -196,9 +197,17 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         payload: typeof encoded === "string" ? encoded : new TextDecoder().decode(encoded),
       });
 
-      // Nothing queues behind a pipe that is gone: it would wait forever.
-      if (pipeDown !== undefined) return yield* Effect.fail(pipeDown);
-      yield* Queue.offer(outgoing, { data: encoded, written, requestId }).pipe(Effect.asVoid);
+      // Register the answer handler and enqueue the frame together after the
+      // pipe check, so termination cannot fire an answer for a frame that was
+      // never placed on the outgoing queue.
+      yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          // Nothing queues behind a pipe that is gone: it would wait forever.
+          if (pipeDown !== undefined) return yield* Effect.fail(pipeDown);
+          if (registerPending !== undefined) yield* registerPending;
+          yield* Queue.offer(outgoing, { data: encoded, written, requestId }).pipe(Effect.asVoid);
+        }),
+      );
     } else if (written !== undefined) {
       yield* Deferred.succeed(written, undefined);
     }
@@ -636,7 +645,6 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       nextRequestId,
       (current) => [current, current + 1] as const,
     );
-    yield* Ref.update(orderedPending, (pending) => new Map(pending).set(requestId, onAnswer));
     const written = yield* Deferred.make<void, AcpError.AcpError>();
     // Returns once the agent's stdin took it; a request never written was
     // never sent, so it fails here and `onAnswer` hears nothing.
@@ -644,6 +652,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       { _tag: "Request", id: requestId, tag: method, payload, headers: [] },
       written,
       requestId,
+      Ref.update(orderedPending, (pending) => new Map(pending).set(requestId, onAnswer)),
     ).pipe(
       Effect.andThen(Deferred.await(written)),
       Effect.catch((error) =>

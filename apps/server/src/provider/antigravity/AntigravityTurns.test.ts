@@ -177,12 +177,6 @@ const startAgy = (
     };
   });
 
-/** Steering, which Antigravity ships without (`ANTIGRAVITY_STEERS`), on for one test. */
-const withSteering = (descriptor: AgyDescriptor): AgyDescriptor => ({
-  ...descriptor,
-  turnMachine: { ...descriptor.turnMachine!, steer: true },
-});
-
 const completedTurns = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
   events.flatMap((event) => (event.type === "turn.completed" ? [event] : []));
 
@@ -414,7 +408,7 @@ describe("Antigravity turns", () => {
 
   it.live("steers a running turn with a second prompt, never cancelling it", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("steer", withSteering);
+      const agy = yield* startAgy("steer");
       expect(agy.adapter.capabilities.activeTurnSteering).toBe("supported");
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
@@ -732,7 +726,7 @@ describe("Antigravity turns, the hard cases", () => {
 
   it.live("steers without inheriting the error the earlier prompt left in the log", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("steer-log-error", withSteering);
+      const agy = yield* startAgy("steer-log-error");
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
         input: "go",
@@ -751,7 +745,7 @@ describe("Antigravity turns, the hard cases", () => {
 
   it.live("steers without inheriting an error the earlier prompt writes late", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("steer-late-log-error", withSteering);
+      const agy = yield* startAgy("steer-late-log-error");
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
         input: "go",
@@ -772,7 +766,7 @@ describe("Antigravity turns, the hard cases", () => {
     "fails a steer whose own error is logged before the earlier prompt answers (finding 5)",
     () =>
       Effect.gen(function* () {
-        const agy = yield* startAgy("steer-own-log-error", withSteering);
+        const agy = yield* startAgy("steer-own-log-error");
         const { turnId } = yield* agy.adapter.sendTurn({
           threadId: agy.threadId,
           input: "go",
@@ -1063,21 +1057,22 @@ describe("Antigravity turn driver, the orderings", () => {
   it.live("sends a steer only after the prompt it steers, whose setup ran first (finding 2)", () =>
     Effect.gen(function* () {
       const gate = yield* makeGate((seam) => seam.point === "promptSetup" && seam.prompt === 1);
-      const agy = yield* startAgy("steer", withSteering, "full-access", gate.seams);
-      // The send returns once its prompt is written, so it waits on the gate too.
+      const agy = yield* startAgy("steer", undefined, "full-access", gate.seams);
+      // Both calls return once their prompts are written, so both wait on the gate.
       const sending = yield* agy.adapter
         .sendTurn({ threadId: agy.threadId, input: "first message", attachments: [] })
         .pipe(Effect.forkScoped);
       yield* gate.reached;
       const started = agy.events.find((event) => event.type === "turn.started");
       const turnId = started!.turnId!;
-      // The first prompt's setup hasn't returned; the steer is taken anyway.
-      yield* agy.adapter.steerTurn!({
+      // The first prompt's setup hasn't returned; the steer queues behind it and waits to write.
+      const steering = yield* agy.adapter.steerTurn!({
         threadId: agy.threadId,
         expectedTurnId: turnId,
         input: "the steer",
-      });
+      }).pipe(Effect.forkScoped);
       yield* Effect.sleep("200 millis");
+      expect(steering.pollUnsafe()).toBeUndefined();
       const prompts = (frames: ReadonlyArray<Record<string, unknown>>) =>
         frames.flatMap((frame) =>
           frame.method === "session/prompt" ? [JSON.stringify(frame.params)] : [],
@@ -1085,6 +1080,7 @@ describe("Antigravity turn driver, the orderings", () => {
       expect(prompts(yield* agy.frames())).toEqual([]);
       yield* gate.release;
       expect((yield* Fiber.join(sending)).turnId).toBe(turnId);
+      expect((yield* Fiber.join(steering)).turnId).toBe(turnId);
       yield* agy.waitFor((events) => completedTurns(events).length === 1);
       const sent = prompts(yield* agy.frames());
       expect(sent).toHaveLength(2);
@@ -1311,7 +1307,7 @@ describe("Antigravity turn driver, the orderings", () => {
   it.live("lets go of each prompt's record once its answer is in, a steered one's too", () =>
     Effect.gen(function* () {
       const gate = yield* makeGate(() => false);
-      const agy = yield* startAgy("steer", withSteering, "full-access", gate.seams);
+      const agy = yield* startAgy("steer", undefined, "full-access", gate.seams);
       const { turnId } = yield* agy.adapter.sendTurn({
         threadId: agy.threadId,
         input: "go",
@@ -1432,29 +1428,62 @@ describe("Antigravity turn driver, the orderings", () => {
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 
-  it.live("queues a message sent mid-turn, steering being off for Antigravity", () =>
+  it.live("fails a steer when the session stops before the steer is written to the agent", () =>
     Effect.gen(function* () {
-      const agy = yield* startAgy("background");
-      expect(agy.adapter.steerTurn).toBeUndefined();
-      expect(agy.adapter.capabilities.activeTurnSteering).toBeUndefined();
-      const first = yield* agy.adapter.sendTurn({
+      const gate = yield* makeGate((seam) => seam.point === "promptSetup" && seam.prompt === 1);
+      const agy = yield* startAgy("steer", undefined, "full-access", gate.seams);
+      expect(agy.adapter.capabilities.activeTurnSteering).toBe("supported");
+      const sending = yield* agy.adapter
+        .sendTurn({ threadId: agy.threadId, input: "first message", attachments: [] })
+        .pipe(Effect.forkScoped);
+      yield* gate.reached;
+      const started = agy.events.find((event) => event.type === "turn.started");
+      const turnId = started!.turnId!;
+      const steering = yield* agy.adapter.steerTurn!({
         threadId: agy.threadId,
-        input: "build it",
-        attachments: [],
-      });
-      // Sent while the first prompt runs: it waits for that turn to end.
-      const second = yield* agy.adapter.sendTurn({
-        threadId: agy.threadId,
-        input: "and then lint",
-        attachments: [],
-      });
-      yield* agy.waitFor((events) => completedTurns(events).length === 2);
-      expect(completedTurns(agy.events).map((event) => event.turnId)).toEqual([
-        first.turnId,
-        second.turnId,
-      ]);
+        expectedTurnId: turnId,
+        input: "never written",
+      }).pipe(Effect.exit, Effect.forkScoped);
+      yield* agy.waitFor(() =>
+        gate.seen.some((seam) => seam.point === "stepCommitted" && seam.event === "steer"),
+      );
+      yield* agy.adapter.stopSession(agy.threadId);
+      expect((yield* Fiber.join(sending)).undelivered).toBe(true);
+      expect(Exit.isFailure(yield* Fiber.join(steering))).toBe(true);
       const prompts = (yield* agy.frames()).filter((frame) => frame.method === "session/prompt");
-      expect(prompts).toHaveLength(2);
+      expect(prompts).toHaveLength(0);
+    }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live("does not send a steer alone when its turn's opening prompt fails mode setup first", () =>
+    Effect.gen(function* () {
+      const agy = yield* startAgy("mode-fails-once", undefined, "auto-accept-edits", undefined, {
+        version: 1,
+        fromProvider: ProviderDriverKind.make("claudeAgent"),
+        entries: [{ kind: "message", role: "user", text: "the earlier conversation" }],
+      });
+      const sending = yield* agy.adapter
+        .sendTurn({
+          threadId: agy.threadId,
+          input: "plan it",
+          interactionMode: "plan",
+          attachments: [],
+        })
+        .pipe(Effect.forkScoped);
+      yield* agy.waitFor((events) => events.some((event) => event.type === "turn.started"));
+      const turnId = agy.events.find((event) => event.type === "turn.started")!.turnId!;
+      const steering = yield* agy.adapter.steerTurn!({
+        threadId: agy.threadId,
+        expectedTurnId: turnId,
+        input: "also check tests",
+      }).pipe(Effect.exit, Effect.forkScoped);
+      const first = yield* Fiber.join(sending);
+      expect(first.undelivered).toBe(true);
+      expect(Exit.isFailure(yield* Fiber.join(steering))).toBe(true);
+      yield* agy.waitFor((events) => completedTurns(events).length === 1);
+      expect(completedTurns(agy.events)[0]?.payload.state).toBe("failed");
+      const prompts = (yield* agy.frames()).filter((frame) => frame.method === "session/prompt");
+      expect(prompts).toHaveLength(0);
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 });

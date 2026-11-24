@@ -1686,6 +1686,43 @@ describe("GeneralSettingsPanel observability", () => {
     });
   });
 
+  it("changes and resets the global mid-turn sending default in General settings", async () => {
+    const updateClientSettings = vi.fn(async (patch: object) => patch);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        updateClientSettings,
+        subscribeClientSettings: () => () => undefined,
+      },
+      server: {
+        updateSettings: vi.fn(async () => undefined),
+      },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <GeneralSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const trigger = page.getByRole("combobox", { name: "Sending while an agent works" });
+    await expect.element(trigger).toHaveTextContent("Steer now");
+
+    await trigger.click();
+    await page.getByRole("option", { name: "Send when done" }).click();
+    await expect.element(trigger).toHaveTextContent("Send when done");
+    await vi.waitFor(() => {
+      expect(updateClientSettings).toHaveBeenCalledWith({ followUpDelivery: "queue" });
+    });
+
+    await page.getByRole("button", { name: "Reset sending while an agent works" }).click();
+    await expect.element(trigger).toHaveTextContent("Steer now");
+    await vi.waitFor(() => {
+      expect(updateClientSettings).toHaveBeenCalledWith({ followUpDelivery: "steer" });
+    });
+  });
+
   it("creates and shows a pairing link when network access is enabled", async () => {
     window.desktopBridge = createDesktopBridgeStub({
       serverExposureState: {
