@@ -707,6 +707,13 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    * chosen; "Accept for session" then appears only for a real session grant.
    */
   readonly isLastingPermissionOption?: (option: EffectAcpSchema.PermissionOption) => boolean;
+  /**
+   * Offers "Always allow this session" client-side when a permission request
+   * includes `allow_once` without `allow_always` (e.g. Antigravity's `agy acp`).
+   * Grants live in memory on the open session and answer matching subsequent
+   * requests with `allow_once`, never persisting rules on disk.
+   */
+  readonly clientSessionApprovals?: boolean;
   /** A risk the agent attached to a permission option, shown with the approval. */
   readonly permissionOptionWarning?: (
     option: EffectAcpSchema.PermissionOption,

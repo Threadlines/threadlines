@@ -82,7 +82,7 @@ type AgyDescriptor = ReturnType<typeof makeAntigravityDescriptor>;
 const startAgy = (
   scenario: string,
   adjust?: (descriptor: AgyDescriptor) => AgyDescriptor,
-  runtimeMode: "full-access" | "approval-required" | "auto-accept-edits" = "full-access",
+  runtimeMode: "full-access" | "approval-required" | "auto-accept-edits" | "auto" = "full-access",
   turnMachineSeams?: (seam: AcpTurnMachineSeam) => Effect.Effect<void>,
   contextSeed?: ThreadContextSeed,
   startOverrides?: { readonly roomTools?: boolean },
@@ -1797,7 +1797,7 @@ describe("Antigravity tool rows and attachments", () => {
   );
 
   it.live(
-    "auto-approves Threadlines room MCP calls in Supervised mode while still asking for browser and spoofed commands",
+    "auto-approves Threadlines room MCP calls (wrapper and direct) in Supervised mode while still asking for browser and spoofed commands",
     () =>
       Effect.gen(function* () {
         const agy = yield* startAgy(
@@ -1809,8 +1809,8 @@ describe("Antigravity tool rows and attachments", () => {
           { roomTools: true },
         );
         yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
-        // Only browser_status and the spoofed command should open approval cards; room_ask is auto-approved.
-        for (let asked = 1; asked <= 2; asked += 1) {
+        // Only the two browser calls and the spoofed command should open approval cards; both room tools auto-approve.
+        for (let asked = 1; asked <= 3; asked += 1) {
           yield* agy.waitFor((events) => opened(events).length === asked);
           const request = opened(agy.events)[asked - 1]!;
           yield* agy.adapter.respondToRequest(
@@ -1821,12 +1821,16 @@ describe("Antigravity tool rows and attachments", () => {
         }
         yield* agy.waitFor((events) => completedTurns(events).length === 1);
         const cards = opened(agy.events);
-        expect(cards).toHaveLength(2);
+        expect(cards).toHaveLength(3);
         expect(cards[0]?.payload).toMatchObject({
+          requestType: "dynamic_tool_call",
+          detail: 'MCP tool threadlines_browser · browser_snapshot {"toolSummary":"Read page"}',
+        });
+        expect(cards[1]?.payload).toMatchObject({
           requestType: "exec_command_approval",
           detail: "MCP tool threadlines_browser · browser_status {}",
         });
-        expect(cards[1]?.payload).toMatchObject({
+        expect(cards[2]?.payload).toMatchObject({
           requestType: "exec_command_approval",
           detail: "rm -rf build",
         });
@@ -1834,7 +1838,95 @@ describe("Antigravity tool rows and attachments", () => {
           { outcome: { outcome: "selected", optionId: "allow" } },
           { outcome: { outcome: "selected", optionId: "allow" } },
           { outcome: { outcome: "selected", optionId: "allow" } },
+          { outcome: { outcome: "selected", optionId: "allow" } },
+          { outcome: { outcome: "selected", optionId: "allow" } },
         ]);
+      }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live(
+    "offers client-side session approvals for Antigravity, remembers scoped grants, resolves matching pending cards, and pauses grants in plan mode",
+    () =>
+      Effect.gen(function* () {
+        const agy = yield* startAgy("session-approvals", undefined, "auto");
+        yield* agy.adapter.sendTurn({ threadId: agy.threadId, input: "go", attachments: [] });
+
+        // 1. `gh pr view 101`: offers Always allow this session with the allow_once warning propagated.
+        yield* agy.waitFor((events) => opened(events).length === 1);
+        const ghViewCard = opened(agy.events)[0]!;
+        expect(ghViewCard.payload.availableDecisions).toEqual([
+          "cancel",
+          "decline",
+          "acceptForSession",
+          "accept",
+        ]);
+        expect(ghViewCard.payload.decisionWarnings).toEqual({
+          accept: "Network access. Runs outside the terminal sandbox.",
+          acceptForSession: "Network access. Runs outside the terminal sandbox.",
+        });
+        yield* agy.adapter.respondToRequest(
+          agy.threadId,
+          ApprovalRequestId.make(String(ghViewCard.requestId)),
+          "acceptForSession",
+        );
+
+        // 2. `gh pr view 102` auto-approves; next card must be `gh pr merge 101`.
+        yield* agy.waitFor((events) => opened(events).length === 2);
+        const ghMergeCard = opened(agy.events)[1]!;
+        expect(ghMergeCard.payload.detail).toBe("gh pr merge 101 --squash");
+        yield* agy.adapter.respondToRequest(
+          agy.threadId,
+          ApprovalRequestId.make(String(ghMergeCard.requestId)),
+          "accept",
+        );
+
+        // 3. Two concurrent `browser_snapshot` cards open; granting the first resolves both.
+        yield* agy.waitFor((events) => opened(events).length === 4);
+        const snapCard1 = opened(agy.events)[2]!;
+        expect(snapCard1.payload.detail).toContain(
+          "MCP tool threadlines_browser · browser_snapshot",
+        );
+        yield* agy.adapter.respondToRequest(
+          agy.threadId,
+          ApprovalRequestId.make(String(snapCard1.requestId)),
+          "acceptForSession",
+        );
+
+        // 4. Third `browser_snapshot` auto-approves; next card must be `browser_click`.
+        yield* agy.waitFor((events) => opened(events).length === 5);
+        const clickCard = opened(agy.events)[4]!;
+        expect(clickCard.payload.detail).toContain("MCP tool threadlines_browser · browser_click");
+        yield* agy.adapter.respondToRequest(
+          agy.threadId,
+          ApprovalRequestId.make(String(clickCard.requestId)),
+          "accept",
+        );
+
+        yield* agy.waitFor((events) => completedTurns(events).length === 1);
+
+        // 5. Turn 2 in Plan mode: prior `gh pr view` grant must not auto-approve or offer acceptForSession.
+        yield* agy.adapter.sendTurn({
+          threadId: agy.threadId,
+          input: "plan it",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        yield* agy.waitFor((events) => opened(events).length === 6);
+        const planCard = opened(agy.events)[5]!;
+        expect(planCard.payload.detail).toBe("gh pr view 103 --json state");
+        expect(planCard.payload.availableDecisions).toEqual(["cancel", "decline", "accept"]);
+        yield* agy.adapter.respondToRequest(
+          agy.threadId,
+          ApprovalRequestId.make(String(planCard.requestId)),
+          "accept",
+        );
+        yield* agy.waitFor((events) => completedTurns(events).length === 2);
+
+        // Every answer sent to Antigravity is `allow` (allow_once), never an invented allow_always.
+        expect(answers(yield* agy.frames())).toHaveLength(8);
+        for (const reply of answers(yield* agy.frames())) {
+          expect(reply).toEqual({ outcome: { outcome: "selected", optionId: "allow" } });
+        }
       }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
 

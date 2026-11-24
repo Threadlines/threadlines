@@ -9,6 +9,7 @@ import {
 } from "../acp/AcpRuntimeModel.ts";
 import {
   ANTIGRAVITY_TOOL_TEXT_LIMIT,
+  antigravityDirectMcpTool,
   antigravityProxiedMcpTool,
   boundAntigravityCommandLine,
   boundAntigravityText,
@@ -208,6 +209,128 @@ describe("Antigravity call_mcp_tool, exactly", () => {
     expect(edited.itemType).toBeUndefined();
     expect(edited.title).not.toBe("list_issues");
     expect(edited.detail ?? "").not.toContain("MCP tool");
+  });
+});
+
+describe("Antigravity direct Threadlines MCP tools", () => {
+  it("recognizes direct Run mcp_<server>_<tool> calls, including ask_user_to_run's command parameter", () => {
+    const roomDiff = {
+      title: "Run mcp_threadlines_room_room_diff",
+      kind: "other",
+      rawInput: { toolSummary: "Check git log", view: "log" },
+    } as const;
+    expect(antigravityDirectMcpTool(roomDiff)).toEqual({
+      server: "threadlines_room",
+      tool: "room_diff",
+      arguments: { toolSummary: "Check git log", view: "log" },
+    });
+
+    const askToRun = {
+      title: "Run mcp_threadlines_commands_ask_user_to_run",
+      kind: "other",
+      rawInput: { command: "git push", reason: "Needs auth" },
+    } as const;
+    expect(antigravityDirectMcpTool(askToRun)).toEqual({
+      server: "threadlines_commands",
+      tool: "ask_user_to_run",
+      arguments: { command: "git push", reason: "Needs auth" },
+    });
+
+    // Rejects wrong kind, unknown server, prefix-colliding external server, whitespace, edits, locations, or unexpected command fields.
+    const rejected = [
+      { ...roomDiff, kind: "execute" },
+      { ...roomDiff, title: "Run mcp_github_list_issues" },
+      { ...roomDiff, title: "Run mcp_threadlines_room_extra_status" },
+      { ...roomDiff, title: " Run mcp_threadlines_room_room_diff " },
+      { ...roomDiff, title: "Run mcp_threadlines_room_room diff" },
+      { ...roomDiff, rawInput: { CommandLine: "rm -rf /" } },
+      { ...roomDiff, rawInput: { command: "rm -rf /" } },
+      { ...roomDiff, rawInput: { executable: "/bin/sh", args: ["-c", "id"] } },
+      { ...askToRun, rawInput: { CommandLine: "rm -rf /" } },
+      { ...askToRun, rawInput: { executable: "/bin/sh" } },
+      { ...roomDiff, content: [{ type: "diff" }] },
+      { ...roomDiff, locations: [{ path: "/a" }] },
+    ];
+    for (const candidate of rejected) {
+      expect(antigravityDirectMcpTool(candidate)).toBeUndefined();
+    }
+  });
+
+  it("keeps direct MCP identity across completion updates and drops it on conflicting updates", () => {
+    const direct = {
+      title: "Run mcp_threadlines_commands_ask_user_to_run",
+      kind: "other" as const,
+      rawInput: { command: "git push", reason: "Needs auth" },
+    };
+    const initial = makeToolCallState({
+      toolCallId: "call_direct",
+      title: direct.title,
+      kind: direct.kind,
+      status: "pending",
+      rawInput: direct.rawInput,
+    })!;
+    const shown = normalizeAntigravityToolCall(initial, direct);
+    expect(shown).toMatchObject({
+      itemType: "mcp_tool_call",
+      mcpCallMode: "direct",
+      title: "ask_user_to_run",
+      data: { server: "threadlines_commands", tool: "ask_user_to_run" },
+    });
+    expect(shown.command).toBeUndefined();
+    expect(shown.data).not.toHaveProperty("command");
+
+    // Completion update without kind/rawInput stays an MCP tool call.
+    const doneUpdate = {
+      status: "completed" as const,
+      content: [{ type: "content" as const, content: { type: "text" as const, text: "shown" } }],
+    };
+    const completed = normalizeAntigravityToolCall(
+      mergeToolCallState(shown, makeToolCallState({ toolCallId: "call_direct", ...doneUpdate })!),
+      doneUpdate,
+    );
+    expect(completed.itemType).toBe("mcp_tool_call");
+    expect(completed.data.server).toBe("threadlines_commands");
+
+    // A bare `kind: "execute"` update on a direct call must revert it (never fall into wrapper mode).
+    const bareExec = { kind: "execute" as const };
+    const revertedBare = normalizeAntigravityToolCall(
+      mergeToolCallState(shown, makeToolCallState({ toolCallId: "call_direct", ...bareExec })!),
+      bareExec,
+    );
+    expect(revertedBare.itemType).toBeUndefined();
+    expect(revertedBare.kind).toBe("execute");
+    expect(revertedBare.data).not.toHaveProperty("server");
+
+    // Conflicting execute update with CommandLine reverts it back to a shell command.
+    const conflict = { kind: "execute" as const, rawInput: { CommandLine: "rm -rf /" } };
+    const reverted = normalizeAntigravityToolCall(
+      mergeToolCallState(shown, makeToolCallState({ toolCallId: "call_direct", ...conflict })!),
+      conflict,
+    );
+    expect(reverted.itemType).toBeUndefined();
+    expect(reverted.kind).toBe("execute");
+    expect(reverted.data).not.toHaveProperty("server");
+
+    // A merged call that already carries a diff cannot be upgraded into a direct MCP call later.
+    const earlierEdit = makeToolCallState({
+      toolCallId: "call_edit",
+      kind: "edit",
+      content: [{ type: "diff", path: "/repo/a.ts", oldText: "a", newText: "b" }],
+    })!;
+    const roomDirect = {
+      title: "Run mcp_threadlines_room_room_diff",
+      kind: "other" as const,
+      rawInput: { view: "status" },
+    };
+    const upgraded = normalizeAntigravityToolCall(
+      mergeToolCallState(
+        earlierEdit,
+        makeToolCallState({ toolCallId: "call_edit", ...roomDirect })!,
+      ),
+      roomDirect,
+    );
+    expect(upgraded.itemType).toBeUndefined();
+    expect(upgraded.data).not.toHaveProperty("server");
   });
 });
 

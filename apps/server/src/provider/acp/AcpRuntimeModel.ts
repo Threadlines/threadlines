@@ -40,6 +40,12 @@ export interface AcpToolCallState {
    * `normalizeToolCall`; absent, the row type follows `kind`.
    */
   readonly itemType?: ToolLifecycleItemType;
+  /**
+   * In-memory tag of which MCP wire shape `normalizeToolCall` established
+   * (`wrapper` vs `direct`), preserved across merges so later updates are only
+   * validated against that same form. Not written to `data`.
+   */
+  readonly mcpCallMode?: "wrapper" | "direct";
   readonly data: Record<string, unknown>;
 }
 
@@ -591,6 +597,7 @@ export function mergeToolCallState(
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
   const detail = next.detail ?? previous?.detail;
+  const mcpCallMode = next.mcpCallMode ?? previous?.mcpCallMode;
   return {
     toolCallId: next.toolCallId,
     ...(kind ? { kind } : {}),
@@ -599,6 +606,7 @@ export function mergeToolCallState(
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
     ...(detail ? { detail } : {}),
+    ...(mcpCallMode ? { mcpCallMode } : {}),
     data: mergeToolCallData(previous?.data, next.data, kind, command),
   };
 }
