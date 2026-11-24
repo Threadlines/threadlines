@@ -22,6 +22,8 @@ import {
   ANTIGRAVITY_SHARED_DIRS,
   ANTIGRAVITY_SHARED_FILES,
   antigravityUserHome,
+  readAntigravityDisabledSkills,
+  setAntigravitySkillDisabled,
   shareAntigravityUserConfigNow,
 } from "./AntigravityUserConfig.ts";
 
@@ -431,5 +433,77 @@ describe("an Antigravity instance and the user's own setup", () => {
     expect(status.skills).toEqual([
       { name: "review", description: "Review changes.", path: skill, scope: "user", enabled: true },
     ]);
+  });
+
+  it("splits config/skills into per-skill links when a skill is disabled and collapses safely on re-enable", async () => {
+    const setup = await makeSetup();
+    await setup.write("config/skills/alpha/SKILL.md", "---\nname: alpha\n---\n");
+    await setup.write("config/skills/beta/SKILL.md", "---\nname: beta\n---\n");
+
+    await shareAntigravityUserConfigNow({ ...setup, platform: "linux" });
+    expect(await linkOf(inProfile(setup.profileDir, "config/skills"))).toBe(
+      path.join(setup.gemini, "config/skills"),
+    );
+
+    const disableProblems = await setAntigravitySkillDisabled({
+      ...setup,
+      platform: "linux",
+      sharedDir: "config/skills",
+      entryName: "beta",
+      disabled: true,
+    });
+    expect(disableProblems).toEqual([]);
+    expect(await linkOf(inProfile(setup.profileDir, "config/skills"))).toBeUndefined();
+    expect(await linkOf(inProfile(setup.profileDir, "config/skills/alpha"))).toBe(
+      path.join(setup.gemini, "config/skills/alpha"),
+    );
+    expect(await exists(inProfile(setup.profileDir, "config/skills/beta"))).toBe(false);
+    expect(await readAntigravityDisabledSkills(setup.profileDir)).toEqual({
+      "config/skills": ["beta"],
+      "antigravity-cli/skills": [],
+    });
+
+    // Re-enabling restores the whole-directory symlink when no agent-owned folder is inside.
+    const enableProblems = await setAntigravitySkillDisabled({
+      ...setup,
+      platform: "linux",
+      sharedDir: "config/skills",
+      entryName: "beta",
+      disabled: false,
+    });
+    expect(enableProblems).toEqual([]);
+    expect(await linkOf(inProfile(setup.profileDir, "config/skills"))).toBe(
+      path.join(setup.gemini, "config/skills"),
+    );
+
+    // If the agent created its own skill while split, re-enabling must keep enabled links intact.
+    await setAntigravitySkillDisabled({
+      ...setup,
+      platform: "linux",
+      sharedDir: "config/skills",
+      entryName: "beta",
+      disabled: true,
+    });
+    await NodeFS.mkdir(inProfile(setup.profileDir, "config/skills/agent-own"), { recursive: true });
+    await NodeFS.writeFile(
+      inProfile(setup.profileDir, "config/skills/agent-own/SKILL.md"),
+      "agent",
+    );
+    await setAntigravitySkillDisabled({
+      ...setup,
+      platform: "linux",
+      sharedDir: "config/skills",
+      entryName: "beta",
+      disabled: false,
+    });
+    expect(await exists(inProfile(setup.profileDir, "config/skills/agent-own/SKILL.md"))).toBe(
+      true,
+    );
+    expect(await linkOf(inProfile(setup.profileDir, "config/skills/alpha"))).toBe(
+      path.join(setup.gemini, "config/skills/alpha"),
+    );
+    expect(await linkOf(inProfile(setup.profileDir, "config/skills/beta"))).toBe(
+      path.join(setup.gemini, "config/skills/beta"),
+    );
   });
 });

@@ -348,7 +348,7 @@ When a Claude, Codex or Antigravity usage limit stops a thread, the notice above
       "instructions",
       "rules",
     ],
-    body: `{place:settings.plugins} manages what agents can use beyond their own tools, per provider, on this computer or one project: {place:plugins.installed}, {place:plugins.apps}, {place:plugins.connections} (MCP servers) and {place:plugins.hooks}. Its Skills tab is {place:plugins.skills}.
+    body: `{place:settings.plugins} manages what agents can use beyond their own tools, per provider, on this computer or one project: {place:plugins.installed}, {place:plugins.apps}, {place:plugins.connections} (MCP servers) and {place:plugins.hooks}. Its Skills tab ({place:plugins.skills}) lists skills across every enabled provider (Codex, Claude, Antigravity, Grok, Cursor, OpenCode, Pi, Muse, fx and community agents), lets you toggle skills for Codex, Claude personal skills, Grok, local OpenCode and Antigravity personal skills (inside Threadlines profiles), and lets you inspect, reveal in folder, open provider config, create or delete skills where supported.
 
 {place:settings.instructions} shows the instruction files each provider reads in a project (like AGENTS.md or CLAUDE.md), to open or edit.`,
   },

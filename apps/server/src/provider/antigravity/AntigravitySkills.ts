@@ -421,6 +421,8 @@ export interface ListAntigravitySkillsInput {
   readonly cwd: string;
   /** The instance's profile (`GEMINI_HOME`), already prepared (`prepareAntigravityProfile`). */
   readonly profileDir: string;
+  /** False on machine-wide views, so home-dir `.agents` / `.gemini` folders are not treated as project roots. */
+  readonly includeProject?: boolean;
 }
 
 export interface AntigravitySkillListing {
@@ -436,41 +438,49 @@ export async function listAntigravitySkillsNow(
 ): Promise<AntigravitySkillListing> {
   const cwd = resolve(input.cwd);
   const profile = resolve(input.profileDir);
+  const includeProject = input.includeProject !== false;
   const scan = new SkillScan(
     Date.now() + (options.timeLimitMs ?? Duration.toMillis(LIST_TIME_LIMIT)),
   );
 
   // Nothing outside the project or its repository root is opened for it.
-  const root = await repositoryRoot(scan, cwd);
-  const realRoot = (await scan.realpath(root)) ?? root;
+  const root = includeProject ? await repositoryRoot(scan, cwd) : cwd;
+  const realRoot = includeProject ? ((await scan.realpath(root)) ?? root) : cwd;
   const insideProject: Confine = async (path) => {
     const real = await scan.realpath(path);
     return real !== undefined && isInside(realRoot, real);
   };
 
-  const roots: ReadonlyArray<readonly [string, Scope]> = [
-    [join(profile, "config", "skills"), "user"],
-    [join(cwd, ".gemini", "skills"), "project"],
-    [join(profile, "antigravity-cli", "skills"), "user"],
-    [join(cwd, ".agents", "skills"), "project"],
-    [join(cwd, ".agent", "skills"), "project"],
-  ];
+  const roots: ReadonlyArray<readonly [string, Scope]> = includeProject
+    ? [
+        [join(profile, "config", "skills"), "user"],
+        [join(cwd, ".gemini", "skills"), "project"],
+        [join(profile, "antigravity-cli", "skills"), "user"],
+        [join(cwd, ".agents", "skills"), "project"],
+        [join(cwd, ".agent", "skills"), "project"],
+      ]
+    : [
+        [join(profile, "config", "skills"), "user"],
+        [join(profile, "antigravity-cli", "skills"), "user"],
+      ];
   for (const [dir, scope] of roots) {
     await scan.scanFolder(dir, scope, NO_FILTER, scope === "project" ? insideProject : undefined);
   }
 
   // The CLI skips project manifest entries leaving the project or its repository root.
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    for (const folder of [".agents", ".agent"]) {
-      await scan.scanManifest({
-        path: join(dir, folder, "skills.json"),
-        baseDir: dir,
-        scope: "project",
-        filter: NO_FILTER,
-        confine: insideProject,
-      });
+  if (includeProject) {
+    for (let dir = cwd; ; dir = dirname(dir)) {
+      for (const folder of [".agents", ".agent"]) {
+        await scan.scanManifest({
+          path: join(dir, folder, "skills.json"),
+          baseDir: dir,
+          scope: "project",
+          filter: NO_FILTER,
+          confine: insideProject,
+        });
+      }
+      if (dir === root || dirname(dir) === dir || scan.exhausted) break;
     }
-    if (dir === root || dirname(dir) === dir || scan.exhausted) break;
   }
   await scan.scanManifest({
     path: join(profile, "config", "skills.json"),
@@ -495,7 +505,7 @@ export async function listAntigravitySkillsNow(
 export function makeAntigravitySkillsLister() {
   const lastComplete = new Map<string, ReadonlyArray<ServerProviderSkill>>();
   return (input: ListAntigravitySkillsInput) => {
-    const key = `${resolve(input.cwd)}\0${resolve(input.profileDir)}`;
+    const key = `${resolve(input.cwd)}\0${resolve(input.profileDir)}\0${input.includeProject !== false ? "1" : "0"}`;
     return Effect.promise(() =>
       listAntigravitySkillsNow(input).catch((): AntigravitySkillListing => ({
         skills: [],

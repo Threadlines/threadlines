@@ -164,6 +164,26 @@ export const ProviderExtensionSkill = Schema.Struct({
    * to delete from. Never set for plugin-bundled or provider-shipped skills.
    */
   canDelete: Schema.optional(Schema.Boolean),
+  /**
+   * False when the skill's file lives on a remote provider host rather than this machine, so the
+   * server will not read it from the local filesystem. Absent means readable when reported.
+   */
+  canRead: Schema.optional(Schema.Boolean),
+  /**
+   * Canonical filesystem target when `path` or its skill folder is a symlink pointing elsewhere
+   * (for example, a shared dotfiles folder). Display-only so the user knows edits affect other tools.
+   */
+  resolvedPath: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Provider configuration file that controls this skill's enabled state (for example,
+   * `~/.grok/config.toml` or `opencode.json`), when opening that file helps the user manage it.
+   */
+  configPath: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Short note shown in the detail modal explaining toggle scope or why a toggle is locked
+   * (for example, Threadlines-only profile toggles or a project config overriding a user toggle).
+   */
+  toggleNotice: Schema.optional(TrimmedString),
 });
 export type ProviderExtensionSkill = typeof ProviderExtensionSkill.Type;
 
@@ -294,12 +314,27 @@ export const ProviderExtensionHook = Schema.Struct({
 });
 export type ProviderExtensionHook = typeof ProviderExtensionHook.Type;
 
+/**
+ * Which surfaces this provider instance actually manages on the Plugins & Skills page.
+ * Absent on older servers; clients fall back to Codex/Claude defaults when omitted.
+ */
+export const ProviderExtensionProviderCapabilities = Schema.Struct({
+  plugins: Schema.optional(Schema.Boolean),
+  mcpServers: Schema.optional(Schema.Boolean),
+  apps: Schema.optional(Schema.Boolean),
+  hooks: Schema.optional(Schema.Boolean),
+  skillCreate: Schema.optional(Schema.Boolean),
+});
+export type ProviderExtensionProviderCapabilities =
+  typeof ProviderExtensionProviderCapabilities.Type;
+
 export const ProviderExtensionProviderInventory = Schema.Struct({
   instanceId: ProviderInstanceId,
   driver: ProviderDriverKind,
   displayName: Schema.optional(TrimmedNonEmptyString),
   status: ProviderExtensionProviderStatus,
   message: Schema.optional(TrimmedString),
+  capabilities: Schema.optional(ProviderExtensionProviderCapabilities),
   plugins: Schema.Array(ProviderExtensionPlugin),
   marketplaces: Schema.Array(ProviderExtensionMarketplace),
   /** `deferred` means `plugins` holds only installed plugins; the store was not requested. */

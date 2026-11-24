@@ -51,11 +51,10 @@ import { readRegularFile } from "./AntigravityFileReads.ts";
  * always-on rule files (CLI changelog: global customization in
  * `~/.gemini/config` includes the `rules/` folder).
  */
-export const ANTIGRAVITY_SHARED_DIRS = [
-  "config/skills",
-  "antigravity-cli/skills",
-  "config/rules",
-] as const;
+export const ANTIGRAVITY_SKILL_DIRS = ["config/skills", "antigravity-cli/skills"] as const;
+export type AntigravitySkillDir = (typeof ANTIGRAVITY_SKILL_DIRS)[number];
+
+export const ANTIGRAVITY_SHARED_DIRS = [...ANTIGRAVITY_SKILL_DIRS, "config/rules"] as const;
 
 /** Global rule files and the skill and rule manifests, relative to `GEMINI_HOME`. */
 export const ANTIGRAVITY_SHARED_FILES = [
@@ -88,9 +87,11 @@ const KEEP_OUT_NAMES = new Set([
 
 /** Copies above this size are skipped: the CLI cuts a rule file off far below it. */
 const MAX_COPY_BYTES = 1_000_000;
-const MAX_RECORD_BYTES = 64 * 1024;
+const MAX_RECORD_BYTES = 1024 * 1024;
 /** No chat waits longer than this for the user's rules and skills. */
 const SHARE_TIME_LIMIT = Duration.seconds(10);
+
+const SKILL_DIR_SET = new Set<string>(ANTIGRAVITY_SKILL_DIRS);
 
 /** What Threadlines put in the profile, so it never touches what it didn't. */
 interface SharedConfigRecord {
@@ -102,16 +103,42 @@ interface SharedConfigRecord {
    * the copy landing and the record catching up leaves it still ours.
    */
   copies: Record<string, ReadonlyArray<string>>;
+  /**
+   * Per-skill-dir folder names disabled inside this Threadlines profile.
+   * Empty/absent keeps the whole skills folder linked as one symlink.
+   */
+  disabledSkills?: Record<string, Array<string>>;
+  /**
+   * Shared skill directories currently materialized as real folders holding
+   * per-skill links so disabled entries can be omitted cleanly.
+   */
+  splitDirs?: Array<string>;
 }
 
 /** Beside the profile, so the record is outside the folder the agent keeps as its home. */
 export const antigravitySharedConfigRecordPath = (profileDir: string) =>
   `${profileDir}.shared-config.json`;
 
+function isSafeEntryName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("/") &&
+    !name.includes("\\") &&
+    !name.includes("\0")
+  );
+}
+
 function parseRecord(raw: unknown): SharedConfigRecord {
   const record: SharedConfigRecord = { links: {}, copies: {} };
   if (typeof raw !== "object" || raw === null) return record;
-  const { links, copies } = raw as { links?: unknown; copies?: unknown };
+  const { links, copies, disabledSkills, splitDirs } = raw as {
+    links?: unknown;
+    copies?: unknown;
+    disabledSkills?: unknown;
+    splitDirs?: unknown;
+  };
   if (typeof links === "object" && links !== null) {
     for (const [rel, target] of Object.entries(links)) {
       if (typeof target === "string") record.links[rel] = target;
@@ -123,6 +150,29 @@ function parseRecord(raw: unknown): SharedConfigRecord {
         record.copies[rel] = digests.filter((digest) => typeof digest === "string");
       }
     }
+  }
+  if (typeof disabledSkills === "object" && disabledSkills !== null) {
+    const parsedDisabled: Record<string, Array<string>> = {};
+    for (const [rel, entries] of Object.entries(disabledSkills)) {
+      if (!SKILL_DIR_SET.has(rel) || !Array.isArray(entries)) continue;
+      const valid = [
+        ...new Set(
+          entries.filter(
+            (entry): entry is string => typeof entry === "string" && isSafeEntryName(entry),
+          ),
+        ),
+      ].toSorted();
+      if (valid.length > 0) parsedDisabled[rel] = valid;
+    }
+    if (Object.keys(parsedDisabled).length > 0) record.disabledSkills = parsedDisabled;
+  }
+  if (Array.isArray(splitDirs)) {
+    const validSplit = [
+      ...new Set(
+        splitDirs.filter((rel): rel is string => typeof rel === "string" && SKILL_DIR_SET.has(rel)),
+      ),
+    ].toSorted();
+    if (validSplit.length > 0) record.splitDirs = validSplit;
   }
   return record;
 }
@@ -140,10 +190,34 @@ async function readRecord(profileDir: string): Promise<SharedConfigRecord> {
 }
 
 async function writeRecord(profileDir: string, record: SharedConfigRecord): Promise<void> {
+  const payload = JSON.stringify(record);
+  if (Buffer.byteLength(payload, "utf8") > MAX_RECORD_BYTES) {
+    throw new Error("Antigravity shared-config record exceeded the maximum safe size.");
+  }
   const target = antigravitySharedConfigRecordPath(profileDir);
   const temp = `${target}.${randomBytes(4).toString("hex")}.tmp`;
-  await fs.writeFile(temp, JSON.stringify(record), { mode: 0o600, flag: "wx" });
+  await fs.writeFile(temp, payload, { mode: 0o600, flag: "wx" });
   await fs.rename(temp, target);
+}
+
+/** Reads per-shared-dir disabled skill folder names stored beside an Antigravity profile. */
+export async function readAntigravityDisabledSkills(
+  profileDir: string,
+): Promise<Readonly<Record<AntigravitySkillDir, ReadonlyArray<string>>>> {
+  const record = await readRecord(profileDir);
+  return {
+    "config/skills": record.disabledSkills?.["config/skills"] ?? [],
+    "antigravity-cli/skills": record.disabledSkills?.["antigravity-cli/skills"] ?? [],
+  };
+}
+
+/** Whether Threadlines currently manages `rel` in `profileDir` as a split per-skill folder. */
+export async function isAntigravitySplitSkillDir(
+  profileDir: string,
+  rel: AntigravitySkillDir,
+): Promise<boolean> {
+  const record = await readRecord(profileDir);
+  return record.splitDirs?.includes(rel) === true;
 }
 
 /**
@@ -430,9 +504,340 @@ export interface ShareAntigravityUserConfigInput {
   readonly threadlinesDir?: string;
 }
 
+export interface SetAntigravitySkillDisabledInput extends ShareAntigravityUserConfigInput {
+  readonly sharedDir: AntigravitySkillDir;
+  readonly entryName: string;
+  readonly disabled: boolean;
+}
+
+async function hasDirectSkillFile(dir: string): Promise<boolean> {
+  const entries = await fs.readdir(dir).catch(() => undefined);
+  if (!entries) return false;
+  for (const name of entries) {
+    if (name.toLowerCase() !== "skill.md") continue;
+    const stat = await fs.stat(join(dir, name)).catch(() => undefined);
+    if (stat?.isFile()) return true;
+  }
+  return false;
+}
+
+function addSplitDir(record: SharedConfigRecord, rel: AntigravitySkillDir): void {
+  const next = new Set(record.splitDirs ?? []);
+  next.add(rel);
+  record.splitDirs = [...next].toSorted();
+}
+
+function removeSplitDir(record: SharedConfigRecord, rel: AntigravitySkillDir): void {
+  const next = (record.splitDirs ?? []).filter((item) => item !== rel);
+  if (next.length > 0) record.splitDirs = next;
+  else delete record.splitDirs;
+}
+
+function childLinkPrefix(rel: AntigravitySkillDir): string {
+  return `${rel}/`;
+}
+
+/**
+ * Reconciles per-skill links inside `<profile>/<rel>` for a split skill folder.
+ * Enabled child directories from `source` are linked into the profile; disabled or removed
+ * children have only Threadlines-owned links removed, leaving any agent-created folders intact.
+ */
+async function reconcileSplitSkillChildren(input: {
+  readonly rel: AntigravitySkillDir;
+  readonly path: string;
+  readonly source: string;
+  readonly allowed: boolean;
+  readonly disabledEntries: ReadonlySet<string>;
+  readonly profileDir: string;
+  readonly realProfile: string;
+  readonly platform: NodeJS.Platform;
+  readonly rules: SourceRules;
+  readonly record: SharedConfigRecord;
+  readonly claim: () => Promise<void>;
+  readonly problems: Array<{ path: string; error: string }>;
+}): Promise<void> {
+  const prefix = childLinkPrefix(input.rel);
+  const seenChildRels = new Set<string>();
+
+  if (input.allowed) {
+    const names = await fs.readdir(input.source).catch(() => undefined);
+    if (!names) {
+      input.problems.push({
+        path: input.source,
+        error: "Could not read the shared Antigravity skills folder; keeping existing links.",
+      });
+      return;
+    }
+    for (const name of names.toSorted()) {
+      if (!isSafeEntryName(name)) continue;
+      const childSource = join(input.source, name);
+      const childAllowed = await sourceAllowed(childSource, "dir", input.rules);
+      if (!childAllowed) continue;
+      const childRel = `${prefix}${name}`;
+      seenChildRels.add(childRel);
+      const childPath = join(input.path, name);
+      const childParent = {
+        profileDir: input.profileDir,
+        realProfile: input.realProfile,
+        rel: childRel,
+      };
+      try {
+        if (!(await realParentInProfile({ ...childParent, create: false }))) {
+          input.problems.push({
+            path: childPath,
+            error: "A folder on the way is a link; left alone.",
+          });
+          continue;
+        }
+        await shareByLink({
+          rel: childRel,
+          path: childPath,
+          source: childSource,
+          kind: "dir",
+          allowed: !input.disabledEntries.has(name),
+          platform: input.platform,
+          record: input.record,
+          claim: input.claim,
+          makeParent: () => realParentInProfile({ ...childParent, create: true }),
+        });
+      } catch (error) {
+        input.problems.push({ path: childPath, error: String(error) });
+      }
+    }
+  }
+
+  // Clean up Threadlines-owned links for skills that disappeared from the source folder.
+  const staleRels = Object.keys(input.record.links).filter(
+    (key) => key.startsWith(prefix) && !seenChildRels.has(key),
+  );
+  for (const staleRel of staleRels) {
+    const childPath = join(input.profileDir, ...staleRel.split("/"));
+    const childParent = {
+      profileDir: input.profileDir,
+      realProfile: input.realProfile,
+      rel: staleRel,
+    };
+    try {
+      if (!(await realParentInProfile({ ...childParent, create: false }))) continue;
+      await shareByLink({
+        rel: staleRel,
+        path: childPath,
+        source: input.record.links[staleRel] ?? "",
+        kind: "dir",
+        allowed: false,
+        platform: input.platform,
+        record: input.record,
+        claim: input.claim,
+        makeParent: () => Promise.resolve(false),
+      });
+    } catch (error) {
+      input.problems.push({ path: childPath, error: String(error) });
+    }
+  }
+}
+
+/**
+ * Attempts to collapse a split skill directory back to a single whole-folder symlink once no
+ * skills are disabled. Refuses to delete anything Threadlines did not create; if an agent-owned
+ * folder exists inside, keeps split mode so enabled skills stay linked.
+ */
+async function tryCollapseSplitSkillDir(input: {
+  readonly rel: AntigravitySkillDir;
+  readonly path: string;
+  readonly record: SharedConfigRecord;
+}): Promise<boolean> {
+  const prefix = childLinkPrefix(input.rel);
+  const stat = await fs.lstat(input.path).catch(() => undefined);
+  if (!stat) {
+    for (const key of Object.keys(input.record.links)) {
+      if (key.startsWith(prefix)) delete input.record.links[key];
+    }
+    removeSplitDir(input.record, input.rel);
+    return true;
+  }
+  if (!stat.isDirectory()) {
+    removeSplitDir(input.record, input.rel);
+    return false;
+  }
+  const names = await fs.readdir(input.path).catch(() => undefined);
+  if (!names) return false;
+
+  // Verify every child is a Threadlines-owned link BEFORE removing anything, so a foreign or
+  // agent-created folder never causes enabled links to be stripped out.
+  const ownedChildren: Array<{
+    readonly rel: string;
+    readonly path: string;
+    readonly target: string;
+  }> = [];
+  for (const name of names) {
+    const childRel = `${prefix}${name}`;
+    const recorded = input.record.links[childRel];
+    if (recorded === undefined) return false;
+    const childPath = join(input.path, name);
+    const childStat = await fs.lstat(childPath).catch(() => undefined);
+    if (!childStat?.isSymbolicLink()) return false;
+    const current = await linkTarget(childPath).catch(() => undefined);
+    if (current !== recorded) return false;
+    ownedChildren.push({ rel: childRel, path: childPath, target: recorded });
+  }
+
+  for (const child of ownedChildren) {
+    const removed = await removeIfOurs(child.path, async (aside) => {
+      const asideStat = await fs.lstat(aside).catch(() => undefined);
+      return asideStat?.isSymbolicLink() === true && (await linkTarget(aside)) === child.target;
+    });
+    if (!removed) return false;
+    delete input.record.links[child.rel];
+  }
+
+  const removedDir = await fs.rmdir(input.path).then(
+    () => true,
+    () => false,
+  );
+  if (!removedDir) return false;
+
+  for (const key of Object.keys(input.record.links)) {
+    if (key.startsWith(prefix)) delete input.record.links[key];
+  }
+  removeSplitDir(input.record, input.rel);
+  return true;
+}
+
+/** Shares one of Antigravity's skill directories, switching to per-skill links only when needed. */
+async function shareSkillDir(input: {
+  readonly rel: AntigravitySkillDir;
+  readonly entry: EntryContext;
+  readonly profileDir: string;
+  readonly realProfile: string;
+  readonly rules: SourceRules;
+  readonly problems: Array<{ path: string; error: string }>;
+}): Promise<void> {
+  const { rel, entry } = input;
+  const disabledList = entry.record.disabledSkills?.[rel] ?? [];
+  const disabledSet = new Set(disabledList);
+  const isSplit = entry.record.splitDirs?.includes(rel) === true;
+
+  if (disabledSet.size === 0) {
+    if (isSplit) {
+      const collapsed = await tryCollapseSplitSkillDir({
+        rel,
+        path: entry.path,
+        record: entry.record,
+      });
+      if (!collapsed) {
+        // An agent-owned entry lives inside the split folder: keep split mode and ensure every
+        // enabled child stays linked.
+        await reconcileSplitSkillChildren({
+          rel,
+          path: entry.path,
+          source: entry.source,
+          allowed: entry.allowed,
+          disabledEntries: disabledSet,
+          profileDir: input.profileDir,
+          realProfile: input.realProfile,
+          platform: entry.platform,
+          rules: input.rules,
+          record: entry.record,
+          claim: entry.claim,
+          problems: input.problems,
+        });
+        return;
+      }
+    }
+    await shareByLink(entry);
+    return;
+  }
+
+  if (!entry.allowed) {
+    await reconcileSplitSkillChildren({
+      rel,
+      path: entry.path,
+      source: entry.source,
+      allowed: false,
+      disabledEntries: disabledSet,
+      profileDir: input.profileDir,
+      realProfile: input.realProfile,
+      platform: entry.platform,
+      rules: input.rules,
+      record: entry.record,
+      claim: entry.claim,
+      problems: input.problems,
+    });
+    if (isSplit) {
+      await tryCollapseSplitSkillDir({ rel, path: entry.path, record: entry.record });
+    } else {
+      await shareByLink(entry);
+    }
+    return;
+  }
+
+  if (await hasDirectSkillFile(entry.source)) {
+    input.problems.push({
+      path: entry.path,
+      error: "Cannot disable individual skills when the skills folder itself is a single skill.",
+    });
+    await shareByLink(entry);
+    return;
+  }
+
+  const stat = await fs.lstat(entry.path).catch(() => undefined);
+  if (stat?.isSymbolicLink()) {
+    const recorded = entry.record.links[rel];
+    const current = await linkTarget(entry.path).catch(() => undefined);
+    if (recorded === undefined || current !== recorded) {
+      input.problems.push({
+        path: entry.path,
+        error: "A foreign symlink occupies this skills folder; left alone.",
+      });
+      return;
+    }
+    const removed = await removeIfOurs(entry.path, async (aside) => {
+      const asideStat = await fs.lstat(aside).catch(() => undefined);
+      return asideStat?.isSymbolicLink() === true && (await linkTarget(aside)) === recorded;
+    });
+    if (!removed) {
+      input.problems.push({
+        path: entry.path,
+        error: "Could not replace the existing skills link; left alone.",
+      });
+      return;
+    }
+    delete entry.record.links[rel];
+    if (!(await entry.makeParent())) return;
+    await fs.mkdir(entry.path, { mode: 0o700 });
+  } else if (!stat) {
+    if (!(await entry.makeParent())) return;
+    await fs.mkdir(entry.path, { mode: 0o700 });
+  } else if (!stat.isDirectory()) {
+    input.problems.push({
+      path: entry.path,
+      error: "A file occupies this skills folder; left alone.",
+    });
+    return;
+  }
+
+  addSplitDir(entry.record, rel);
+  await entry.claim();
+  await reconcileSplitSkillChildren({
+    rel,
+    path: entry.path,
+    source: entry.source,
+    allowed: true,
+    disabledEntries: disabledSet,
+    profileDir: input.profileDir,
+    realProfile: input.realProfile,
+    platform: entry.platform,
+    rules: input.rules,
+    record: entry.record,
+    claim: entry.claim,
+    problems: input.problems,
+  });
+}
+
 /** Brings the user's shared rules and skills into the profile; returns what failed. */
 async function shareOnce(
   input: ShareAntigravityUserConfigInput,
+  mutateDisabled?: (disabled: Record<string, Array<string>>) => void,
 ): Promise<ReadonlyArray<{ readonly path: string; readonly error: string }>> {
   await fs.mkdir(input.profileDir, { recursive: true, mode: 0o700 });
   const realProfile = await fs.realpath(input.profileDir);
@@ -443,11 +848,27 @@ async function shareOnce(
     forbidden: [realProfile, ...(threadlinesDir ? [threadlinesDir] : [])],
   };
   const before = await readRecord(input.profileDir);
+  const disabledSkills: Record<string, Array<string>> = {};
+  for (const [rel, entries] of Object.entries(before.disabledSkills ?? {})) {
+    disabledSkills[rel] = [...entries];
+  }
+  if (mutateDisabled) {
+    mutateDisabled(disabledSkills);
+    for (const [rel, entries] of Object.entries(disabledSkills)) {
+      const cleaned = [...new Set(entries.filter((entry) => isSafeEntryName(entry)))].toSorted();
+      if (cleaned.length > 0) disabledSkills[rel] = cleaned;
+      else delete disabledSkills[rel];
+    }
+  }
   const record: SharedConfigRecord = {
     links: { ...before.links },
     copies: { ...before.copies },
+    ...(Object.keys(disabledSkills).length > 0 ? { disabledSkills } : {}),
+    ...(before.splitDirs && before.splitDirs.length > 0
+      ? { splitDirs: [...before.splitDirs] }
+      : {}),
   };
-  let saved = JSON.stringify(record);
+  let saved = JSON.stringify(before);
   const save = async () => {
     const next = JSON.stringify(record);
     if (next === saved) return;
@@ -479,8 +900,20 @@ async function shareOnce(
         claim: save,
         makeParent: () => realParentInProfile({ ...parent, create: true }),
       };
-      if (kind === "file" && input.platform === "win32") await shareByCopy(entry);
-      else await shareByLink(entry);
+      if (kind === "dir" && SKILL_DIR_SET.has(rel)) {
+        await shareSkillDir({
+          rel: rel as AntigravitySkillDir,
+          entry,
+          profileDir: input.profileDir,
+          realProfile,
+          rules,
+          problems,
+        });
+      } else if (kind === "file" && input.platform === "win32") {
+        await shareByCopy(entry);
+      } else {
+        await shareByLink(entry);
+      }
     } catch (error) {
       problems.push({ path, error: String(error) });
     }
@@ -497,23 +930,55 @@ async function shareOnce(
 /** The run in progress for each profile: two starts never share at once. */
 const running = new Map<string, Promise<unknown>>();
 
-/** `shareOnce`, one at a time per profile; a run stuck past the time bound no longer holds the next. */
-export function shareAntigravityUserConfigNow(
-  input: ShareAntigravityUserConfigInput,
+function enqueueProfileShare(
+  profileDir: string,
+  task: () => Promise<ReadonlyArray<{ readonly path: string; readonly error: string }>>,
 ): Promise<ReadonlyArray<{ readonly path: string; readonly error: string }>> {
-  const key = resolve(input.profileDir);
+  const key = resolve(profileDir);
   const previous = running.get(key) ?? Promise.resolve();
   const waited = Promise.race([
     previous.catch(() => undefined),
     new Promise((done) => setTimeout(done, Duration.toMillis(SHARE_TIME_LIMIT)).unref()),
   ]);
-  const run = waited.then(() => shareOnce(input));
+  const run = waited.then(task);
   const settled = run.catch(() => undefined);
   running.set(key, settled);
   void settled.then(() => {
     if (running.get(key) === settled) running.delete(key);
   });
   return run;
+}
+
+/** `shareOnce`, one at a time per profile; a run stuck past the time bound no longer holds the next. */
+export function shareAntigravityUserConfigNow(
+  input: ShareAntigravityUserConfigInput,
+): Promise<ReadonlyArray<{ readonly path: string; readonly error: string }>> {
+  return enqueueProfileShare(input.profileDir, () => shareOnce(input));
+}
+
+/**
+ * Enables or disables one personal skill folder inside an Antigravity profile and reconciles the
+ * profile links immediately. Serialized with normal profile sharing so launches never race toggles.
+ */
+export function setAntigravitySkillDisabled(
+  input: SetAntigravitySkillDisabledInput,
+): Promise<ReadonlyArray<{ readonly path: string; readonly error: string }>> {
+  if (!isSafeEntryName(input.entryName)) {
+    return Promise.resolve([
+      {
+        path: input.profileDir,
+        error: `Invalid Antigravity skill folder name: ${input.entryName}`,
+      },
+    ]);
+  }
+  return enqueueProfileShare(input.profileDir, () =>
+    shareOnce(input, (disabled) => {
+      const current = new Set(disabled[input.sharedDir] ?? []);
+      if (input.disabled) current.add(input.entryName);
+      else current.delete(input.entryName);
+      disabled[input.sharedDir] = [...current];
+    }),
+  );
 }
 
 /**

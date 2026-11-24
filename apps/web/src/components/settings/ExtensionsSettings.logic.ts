@@ -268,10 +268,60 @@ export function extensionBrowserStatusLine(input: {
   };
 }
 
+const EXTENSION_PROVIDER_DRIVER_ORDER: Readonly<Record<string, number>> = {
+  codex: 0,
+  claudeAgent: 1,
+  antigravity: 2,
+  grok: 3,
+  cursor: 4,
+  opencode: 5,
+  pi: 6,
+  muse: 7,
+  fx: 8,
+};
+
 export function extensionProviderDriverSortRank(driverKind: string): number {
-  if (driverKind === "codex") return 0;
-  if (driverKind === "claudeAgent") return 1;
-  return 2;
+  return EXTENSION_PROVIDER_DRIVER_ORDER[driverKind] ?? 9;
+}
+
+function isLegacyManagedDriver(driver: string): boolean {
+  return driver === "codex" || driver === "claudeAgent";
+}
+
+export function isExtensionInventoryProviderActive(
+  provider: Pick<ProviderExtensionProviderInventory, "status">,
+): boolean {
+  return provider.status !== "disabled" && provider.status !== "unsupported";
+}
+
+export function providerSupportsPlugins(
+  provider: Pick<ProviderExtensionProviderInventory, "driver" | "capabilities">,
+): boolean {
+  return provider.capabilities?.plugins ?? isLegacyManagedDriver(String(provider.driver));
+}
+
+export function providerSupportsMcpServers(
+  provider: Pick<ProviderExtensionProviderInventory, "driver" | "capabilities">,
+): boolean {
+  return provider.capabilities?.mcpServers ?? isLegacyManagedDriver(String(provider.driver));
+}
+
+export function providerSupportsApps(
+  provider: Pick<ProviderExtensionProviderInventory, "driver" | "capabilities">,
+): boolean {
+  return provider.capabilities?.apps ?? String(provider.driver) === "codex";
+}
+
+export function providerSupportsHooks(
+  provider: Pick<ProviderExtensionProviderInventory, "driver" | "capabilities">,
+): boolean {
+  return provider.capabilities?.hooks ?? isLegacyManagedDriver(String(provider.driver));
+}
+
+export function providerSupportsSkillCreate(
+  provider: Pick<ProviderExtensionProviderInventory, "driver" | "capabilities">,
+): boolean {
+  return provider.capabilities?.skillCreate ?? isLegacyManagedDriver(String(provider.driver));
 }
 
 const EXTENSION_BROWSER_MAX_SINGLETON_GROUP_RATIO = 0.6;

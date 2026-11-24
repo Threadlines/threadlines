@@ -24,10 +24,16 @@ import {
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   formatExtensionGroupLabel,
+  isExtensionInventoryProviderActive,
   isLikelyLocalPath,
   isProviderCoverageMissing,
   makeExtensionInventoryCacheKey,
   mergeRefreshedProviders,
+  providerSupportsApps,
+  providerSupportsHooks,
+  providerSupportsMcpServers,
+  providerSupportsPlugins,
+  providerSupportsSkillCreate,
   formatSkillDisplayName,
   groupExtensionSkills,
   bucketSkillsByPlugin,
@@ -882,5 +888,44 @@ describe("ExtensionsSettings scope", () => {
       },
     );
     expect(resolveExtensionScope(deriveExtensionScopeGroups([], [], []), null)).toBeNull();
+  });
+
+  it("derives provider extension capabilities with safe defaults for older servers", () => {
+    const legacyCodex = { driver: ProviderDriverKind.make("codex") };
+    const legacyClaude = { driver: ProviderDriverKind.make("claudeAgent") };
+    const legacyAntigravity = { driver: ProviderDriverKind.make("antigravity") };
+    const cursor = {
+      driver: ProviderDriverKind.make("cursor"),
+      capabilities: {
+        plugins: false,
+        mcpServers: true,
+        apps: false,
+        hooks: false,
+        skillCreate: true,
+      },
+    };
+
+    expect(providerSupportsPlugins(legacyCodex)).toBe(true);
+    expect(providerSupportsApps(legacyCodex)).toBe(true);
+    expect(providerSupportsPlugins(legacyClaude)).toBe(true);
+    expect(providerSupportsApps(legacyClaude)).toBe(false);
+    expect(providerSupportsHooks(legacyClaude)).toBe(true);
+    expect(providerSupportsPlugins(legacyAntigravity)).toBe(false);
+    expect(providerSupportsMcpServers(legacyAntigravity)).toBe(false);
+    expect(providerSupportsSkillCreate(legacyAntigravity)).toBe(false);
+
+    expect(providerSupportsPlugins(cursor)).toBe(false);
+    expect(providerSupportsMcpServers(cursor)).toBe(true);
+    expect(providerSupportsSkillCreate(cursor)).toBe(true);
+
+    expect(isExtensionInventoryProviderActive({ status: "ready" })).toBe(true);
+    expect(isExtensionInventoryProviderActive({ status: "disabled" })).toBe(false);
+    expect(isExtensionInventoryProviderActive({ status: "unsupported" })).toBe(false);
+    expect(extensionProviderDriverSortRank("codex")).toBeLessThan(
+      extensionProviderDriverSortRank("antigravity"),
+    );
+    expect(extensionProviderDriverSortRank("antigravity")).toBeLessThan(
+      extensionProviderDriverSortRank("cursor"),
+    );
   });
 });
