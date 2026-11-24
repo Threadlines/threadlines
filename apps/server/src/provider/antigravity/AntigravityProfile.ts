@@ -85,12 +85,24 @@ function resolveLinuxSslCertFile(
 }
 
 /**
- * What the CLI takes for a session over SSH. It then keeps a Google sign-in
- * in the profile's own file instead of the one OS keyring entry every
- * profile (and the user's own terminal `agy`) shares, and signs in with
- * `agy acp --login`, which prints a link and reads back a code.
+ * What the CLI takes for a session over SSH. It then signs in with
+ * `agy acp --login`, which prints a link and reads back a code, and (1.5.14
+ * and 1.5.15 only) keeps a Google sign-in in the profile's own file.
  */
 const SSH_CONNECTION_STAND_IN = "127.0.0.1 0 127.0.0.1 0";
+
+/**
+ * Keeps a Google sign-in in the profile's own file (`antigravityTokenPath`)
+ * instead of the one OS keyring entry every profile (and the user's own
+ * terminal `agy`) shares. 1.5.16 goes by `AGY_CLI_FORCE_FILE_TOKEN_STORAGE`:
+ * the SSH stand-in alone leaves it on the keyring. 1.5.15 and earlier go by
+ * `SSH_CONNECTION`, and Google's old ACP server by
+ * `AGY_ACP_FORCE_FILE_STORAGE`.
+ */
+const FILE_SIGN_IN_STORAGE_ENV = {
+  AGY_CLI_FORCE_FILE_TOKEN_STORAGE: "1",
+  AGY_ACP_FORCE_FILE_STORAGE: "1",
+} as const;
 
 /**
  * A `BROWSER` that opens nothing: the agent prints its sign-in URL, and the
@@ -124,7 +136,7 @@ export function antigravityEnvironment(input: {
   }
   Object.assign(env, input.credentials);
   env.GEMINI_HOME = input.profileDir;
-  env.AGY_ACP_FORCE_FILE_STORAGE = "1";
+  Object.assign(env, FILE_SIGN_IN_STORAGE_ENV);
   env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
   env.SSH_CONNECTION = input.base.SSH_CONNECTION?.trim() || SSH_CONNECTION_STAND_IN;
   env.BROWSER = noopBrowser(input.platform, input.base);

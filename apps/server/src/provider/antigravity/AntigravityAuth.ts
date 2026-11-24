@@ -57,6 +57,7 @@ import {
   writeAntigravityProfileSettings,
   writeAntigravitySignInCheck,
 } from "./AntigravitySignInMethod.ts";
+import { readAntigravitySavedSignIn } from "./AntigravityProfile.ts";
 import { ProviderSetupError } from "../Errors.ts";
 
 /** How long the CLI may take to print its link: Windows cold starts unpack first. */
@@ -376,6 +377,18 @@ export function makeAntigravityAuthFlows(input: {
       if (exitCode !== 0) {
         return yield* Effect.fail(
           signInFailed(antigravitySignInErrorMessage(login.output.join("\n"))),
+        );
+      }
+      // The sign-in has to be in the profile's own file: that is what the
+      // status reads and what keeps accounts apart. A CLI that kept it
+      // somewhere else (the OS keyring) would pass the session check below
+      // on a sign-in this account doesn't own, and the row would still say
+      // signed out.
+      if (!(yield* readAntigravitySavedSignIn(input.profileDir)).cli) {
+        return yield* Effect.fail(
+          signInFailed(
+            "Antigravity signed in but didn't keep the sign-in in this account's own folder, so Threadlines can't use it. This Antigravity version may be newer than this Threadlines supports.",
+          ),
         );
       }
       // A session opening on the new sign-in is the proof, and lists the
