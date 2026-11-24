@@ -14,6 +14,13 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { COMPOSER_DRAFT_STORAGE_KEY, useComposerDraftStore } from "../composerDraftStore";
+import {
+  clearAttachmentBlobsForTest,
+  readAttachmentBlob,
+  setAttachmentBlobBackendForTest,
+  stashAttachmentBlobKey,
+} from "../lib/attachmentBlobStore";
+import { PROMPT_STASH_STORAGE_KEY, usePromptStashStore } from "../promptStashStore";
 import { useRoomRecipientStore } from "../rooms";
 import { isMacPlatform } from "../lib/utils";
 import { useTerminalStateStore } from "../terminalStateStore";
@@ -2169,6 +2176,101 @@ describe("ChatView (full app): composer", () => {
         "Edit-and-branch should navigate to the new server thread.",
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("stashes and restores a large image via IndexedDB without base64 in localStorage, and updates the unsaved tooltip copy", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-stash-idb" as MessageId,
+        targetText: "stash test",
+      }),
+    });
+
+    try {
+      const input = await waitForElement(
+        () =>
+          document.querySelector<HTMLInputElement>('input[type="file"][multiple]:not([accept])'),
+        "The attach-files picker did not render.",
+      );
+      const bigBytes = new Uint8Array(4_000_000);
+      // PNG signature followed by payload so it's a valid large image attachment.
+      bigBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bigBytes], "retina-hero.png", { type: "image/png" }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+
+      await vi.waitFor(() => {
+        expect(
+          useComposerDraftStore.getState().getComposerDraft(THREAD_REF)?.attachments,
+        ).toHaveLength(1);
+      });
+
+      // Stash the image-only prompt via the "+" menu.
+      await page.getByRole("button", { name: "Add to message" }).click();
+      await page.getByRole("menuitem", { name: /Stash this prompt/ }).click();
+
+      await vi.waitFor(() => {
+        expect(usePromptStashStore.getState().entries).toHaveLength(1);
+        expect(
+          useComposerDraftStore.getState().getComposerDraft(THREAD_REF)?.attachments ?? [],
+        ).toHaveLength(0);
+      });
+
+      const stashed = usePromptStashStore.getState().entries[0]!;
+      expect(stashed.attachments).toHaveLength(1);
+      expect(stashed.attachments[0]?.dataUrl).toBeUndefined();
+      // localStorage stays tiny (metadata only, no base64).
+      expect((localStorage.getItem(PROMPT_STASH_STORAGE_KEY) ?? "").length).toBeLessThan(2_000);
+      const stashKey = stashAttachmentBlobKey(stashed.id, stashed.attachments[0]!.id);
+      expect((await readAttachmentBlob(stashKey)).status).toBe("ok");
+
+      // Restore it from the Stashed prompts submenu.
+      await page.getByRole("button", { name: "Add to message" }).click();
+      await page.getByRole("menuitem", { name: /Stashed prompts/ }).click();
+      await page.getByRole("menuitem", { name: /1 attachment/ }).click();
+
+      await vi.waitFor(() => {
+        const restored = useComposerDraftStore.getState().getComposerDraft(THREAD_REF)?.attachments;
+        expect(restored).toHaveLength(1);
+        expect(restored?.[0]?.name).toBe("retina-hero.png");
+        expect(restored?.[0]?.sizeBytes).toBe(4_000_000);
+      });
+      await vi.waitFor(async () => {
+        expect((await readAttachmentBlob(stashKey)).status).toBe("not-found");
+      });
+
+      // Now simulate IndexedDB rejecting writes: warning icon tooltip says "on reload".
+      setAttachmentBlobBackendForTest({
+        put: async () => false,
+        get: async () => ({ status: "error" }),
+        deleteMany: async () => {},
+        listMeta: async () => null,
+      });
+      const failedTransfer = new DataTransfer();
+      failedTransfer.items.add(new File(["tiny"], "unsaved.txt", { type: "text/plain" }));
+      input.files = failedTransfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+
+      const warningIcon = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>('[aria-label="Draft attachment may not persist"]'),
+        "Unsaved attachment warning icon did not render.",
+      );
+      await page.elementLocator(warningIcon).hover();
+      await expect
+        .element(
+          page.getByText("Draft attachment could not be saved locally and may be lost on reload."),
+        )
+        .toBeVisible();
+    } finally {
+      setAttachmentBlobBackendForTest(null);
+      usePromptStashStore.setState({ entries: [] });
+      localStorage.removeItem(PROMPT_STASH_STORAGE_KEY);
+      await clearAttachmentBlobsForTest();
       await mounted.cleanup();
     }
   });

@@ -422,6 +422,58 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.persistedAttachments).toEqual([]);
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.nonPersistedAttachmentIds).toEqual([image.id]);
   });
+
+  it("verifies saved attachment ids even when another thread's persisted draft has malformed fields", async () => {
+    const image = makeImage({
+      id: "img-ok",
+      previewUrl: "blob:ok",
+    });
+    const activeKey = scopedThreadKey(threadRef);
+    useComposerDraftStore.getState().addAttachment(threadRef, image);
+    setLocalStorageItem(
+      COMPOSER_DRAFT_STORAGE_KEY,
+      {
+        version: 6,
+        state: {
+          draftsByThreadKey: {
+            "other-env:broken-thread": {
+              prompt: "old draft",
+              attachments: [],
+              activeProvider: "123-invalid-slug",
+            },
+            [activeKey]: {
+              prompt: "",
+              attachments: [
+                {
+                  id: image.id,
+                  name: image.name,
+                  mimeType: image.mimeType,
+                  sizeBytes: image.sizeBytes,
+                },
+              ],
+            },
+          },
+          draftThreadsByThreadKey: {},
+          logicalProjectDraftThreadKeyByLogicalProjectKey: {},
+        },
+      },
+      Schema.Unknown,
+    );
+
+    await useComposerDraftStore.getState().syncPersistedAttachments(threadRef, [
+      {
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+      },
+    ]);
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.persistedAttachments.map((a) => a.id)).toEqual([
+      image.id,
+    ]);
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.nonPersistedAttachmentIds).toEqual([]);
+  });
 });
 
 describe("composerDraftStore prefillEmptyPrompt", () => {

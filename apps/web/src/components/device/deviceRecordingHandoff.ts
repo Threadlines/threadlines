@@ -16,8 +16,10 @@ import { create } from "zustand";
 
 import {
   type ComposerAttachment,
+  composerDraftAttachmentCount,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
+  ensureDraftAttachmentsHydrated,
   useComposerDraftStore,
 } from "~/composerDraftStore";
 import { randomUUID } from "~/lib/utils";
@@ -131,11 +133,13 @@ export async function handOffDeviceRecording(input: {
   readonly context: string;
 }): Promise<DeviceRecordingHandoff> {
   const { result, threadRef, threadKey } = input;
+  await ensureDraftAttachmentsHydrated(threadRef);
   // A video the last chunks pushed past the limit can only be downloaded.
   const attachable = result.video && !result.video.tooBig ? result.video : null;
   const room = () => {
-    const taken =
-      useComposerDraftStore.getState().getComposerDraft(threadRef)?.attachments.length ?? 0;
+    const taken = composerDraftAttachmentCount(
+      useComposerDraftStore.getState().getComposerDraft(threadRef),
+    );
     const free = Math.max(0, PROVIDER_SEND_TURN_MAX_ATTACHMENTS - taken);
     const videoFits = attachable !== null && free > 0;
     const images = composerAcceptsImages(threadKey);

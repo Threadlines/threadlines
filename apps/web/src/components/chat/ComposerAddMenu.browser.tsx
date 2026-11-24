@@ -7,6 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import type { PromptStashEntry } from "../../promptStashStore";
+import {
+  clearAttachmentBlobsForTest,
+  putAttachmentBlob,
+  stashAttachmentBlobKey,
+} from "../../lib/attachmentBlobStore";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { resetTestPage } from "../../lib/testPage.browser-harness";
 
@@ -77,6 +82,7 @@ function renderAddMenu(props: {
 
 describe("ComposerAddMenu", () => {
   afterEach(async () => {
+    await clearAttachmentBlobsForTest();
     await resetTestPage();
   });
 
@@ -167,6 +173,43 @@ describe("ComposerAddMenu", () => {
     await page.getByRole("button", { name: "Stashed prompts" }).click();
     await page.getByRole("button", { name: "Take photo" }).click();
     expect(onTakePhoto).toHaveBeenCalledTimes(1);
+    await screen.unmount();
+  });
+
+  it("renders stashed image thumbnails stored in IndexedDB without inline dataUrls", async () => {
+    // Tiny valid 1x1 PNG in IndexedDB.
+    const pngBytes = Uint8Array.from(
+      atob(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRX0AAAAASUVORK5CYII=",
+      ),
+      (char) => char.charCodeAt(0),
+    );
+    await putAttachmentBlob(
+      stashAttachmentBlobKey("with-img", "img-1"),
+      new Blob([pngBytes], { type: "image/png" }),
+    );
+    const entry: PromptStashEntry = {
+      id: "with-img",
+      createdAt: new Date().toISOString(),
+      prompt: "check this screenshot",
+      attachments: [
+        {
+          id: "img-1",
+          name: "shot.png",
+          mimeType: "image/png",
+          sizeBytes: pngBytes.byteLength,
+        },
+      ],
+      droppedAttachmentNames: [],
+    };
+    const screen = await renderAddMenu({ entries: [entry], canStash: false });
+
+    await page.getByRole("button", { name: "Add to message" }).click();
+    await page.getByRole("menuitem", { name: /Stashed prompts/ }).click();
+    await vi.waitFor(() => {
+      const img = document.querySelector<HTMLImageElement>('img[src^="blob:"]');
+      expect(img).not.toBeNull();
+    });
     await screen.unmount();
   });
 });
