@@ -10088,7 +10088,11 @@ describe("ProviderCommandReactor", () => {
         createdAt: "2026-01-01T00:00:01.000Z",
       }),
     );
-    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(
+      async () =>
+        harness.sendTurn.mock.calls.length === 1 &&
+        (await projectedSession(harness))?.status === "running",
+    );
     await harness.drain();
 
     const afterHandoff = (await harness.readModel()).threads.find(
@@ -10142,7 +10146,11 @@ describe("ProviderCommandReactor", () => {
         createdAt: "2026-01-01T00:00:03.000Z",
       }),
     );
-    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    await waitFor(
+      async () =>
+        harness.sendTurn.mock.calls.length === 2 &&
+        (await projectedSession(harness))?.status === "running",
+    );
     await harness.drain();
 
     expect(harness.startSession.mock.calls.length).toBe(startCountBeforeReuse);
