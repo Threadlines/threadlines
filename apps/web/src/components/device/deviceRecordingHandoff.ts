@@ -273,13 +273,19 @@ export async function handOffDeviceRecording(input: {
         break;
       }
     }
-    // Whatever of ours is still in the draft but unsaved would go with a
-    // reload: keep it for download and say so.
+    // Whatever of ours is still in the draft but not persisted (whether marked
+    // unsaved or because saving threw / stayed stale) would go with a reload:
+    // keep it for download and say so.
     const now = useComposerDraftStore.getState().getComposerDraft(threadRef);
     const unsaved = new Set(now?.nonPersistedAttachmentIds ?? []);
+    const persisted = new Set(
+      (now?.persistedAttachments ?? [])
+        .filter((attachment) => !unsaved.has(attachment.id))
+        .map((attachment) => attachment.id),
+    );
     const present = new Set((now?.attachments ?? []).map((attachment) => attachment.id));
     const lost = ours.filter(
-      (attachment) => present.has(attachment.id) && unsaved.has(attachment.id),
+      (attachment) => present.has(attachment.id) && !persisted.has(attachment.id),
     );
     unsavedCount = lost.length;
     if (lost.length > 0) {

@@ -54,6 +54,7 @@ const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
  */
 export const EVAL_SERVER_SETTINGS = {
   codexSuggestions: false,
+  antigravitySuggestions: false,
   enableAgentPages: false,
   enableCommandRequests: false,
 } as const;

@@ -586,7 +586,7 @@ const RelayLayerLive = RelayHostLive.pipe(
 const AssistantsLayerLive = AssistantsLive.pipe(
   Layer.provide(AssistantRelayLive),
   Layer.provide(RelayLayerLive),
-  Layer.provide(OutsideAgentConnectionRepositoryLive),
+  Layer.provideMerge(OutsideAgentConnectionRepositoryLive),
   Layer.provide(ServerSecretStoreLive),
 );
 
@@ -747,7 +747,8 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   // Misc.
   Layer.provideMerge(ProcessDiagnosticsLayerLive),
   Layer.provideMerge(TraceDiagnostics.layer),
-  Layer.provideMerge(AnalyticsServiceLayerLive),
+  // Same ServerSettingsLive instance as RuntimeCoreDependenciesLive: Effect memoizes it.
+  Layer.provideMerge(AnalyticsServiceLayerLive.pipe(Layer.provide(ServerSettingsLive))),
   Layer.provideMerge(ExternalLauncher.layer),
   Layer.provideMerge(ServerLifecycleEventsLive),
   Layer.provide(NetService.layer),

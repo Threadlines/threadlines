@@ -11,8 +11,12 @@ const SCREENSHOT_TIMEOUT_MS = 20_000;
 export async function captureDeviceScreenshot(
   transport: DeviceHubTransport,
   target: { readonly platform: DevicePlatform; readonly deviceId: string },
+  signal?: AbortSignal,
 ): Promise<Blob> {
   const controller = new AbortController();
+  const onAbort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
   const timeout = setTimeout(() => controller.abort(), SCREENSHOT_TIMEOUT_MS);
   try {
     const response = await transport.fetch(
@@ -27,10 +31,12 @@ export async function captureDeviceScreenshot(
     if (!png) throw new Error("The device sent an incomplete screenshot. Try again.");
     return new Blob([png as BlobPart], { type: "image/png" });
   } catch (cause) {
+    if (signal?.aborted) throw cause;
     if (controller.signal.aborted)
       throw new Error("The screenshot took too long. Try again.", { cause });
     throw cause;
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener("abort", onAbort);
   }
 }

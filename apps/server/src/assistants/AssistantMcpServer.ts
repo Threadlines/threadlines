@@ -43,6 +43,7 @@ import {
   ThreadWaitTool,
 } from "../outsideAgents/connectTools.ts";
 import { OutsideAgentConnections } from "../outsideAgents/OutsideAgentConnections.ts";
+import { makeDailyAnalyticsCounter } from "../telemetry/DailyCounter.ts";
 import { AssistantAlerts } from "./AssistantAlerts.ts";
 import { type AssistantMcpTool, makeAssistantMcp, mapStrings } from "./AssistantMcp.ts";
 import { makeAssistantMcpEvents } from "./assistantMcpEvents.ts";
@@ -172,13 +173,37 @@ export const AssistantMcpServerLive = Layer.effectDiscard(
         },
       },
     ];
+    const toolCallCounter = yield* makeDailyAnalyticsCounter<{
+      readonly tool: string;
+      readonly outcome: string;
+      readonly door: "assistant";
+    }>({
+      event: "outside_agent.tool_calls",
+      keyOf: ({ tool, outcome }) => `${tool}\u0000${outcome}`,
+    });
+    const countedTools: ReadonlyArray<AssistantMcpTool> = tools.map((entry) => ({
+      ...entry,
+      run: (caller, parameters) =>
+        Effect.tap(entry.run(caller, parameters), (result) =>
+          Effect.sync(() => {
+            const outcome =
+              typeof result === "object" &&
+              result !== null &&
+              "outcome" in result &&
+              typeof (result as { readonly outcome?: unknown }).outcome === "string"
+                ? (result as { readonly outcome: string }).outcome
+                : "ok";
+            toolCallCounter.increment({ tool: entry.tool.name, outcome, door: "assistant" });
+          }),
+        ),
+    }));
     const handler = makeAssistantMcp({
       authenticate: assistants.authenticate,
       listed: (caller) =>
         connections
           .grant(caller.connectionId)
           .pipe(Effect.map((grant) => listedToolsFor(grant?.access ?? null))),
-      tools,
+      tools: countedTools,
       events: makeAssistantMcpEvents({
         alerts,
         grantOf: connections.grant,

@@ -87,8 +87,9 @@ export function DeviceChips(props: {
                     aria-label={`${chip.name} menu`}
                     className={cn(
                       "flex h-full w-5 shrink-0 items-center justify-center rounded-md focus-ring",
-                      // Always there on the shown chip and on touch; on hover elsewhere.
-                      !selected && "can-hover:opacity-0 can-hover:group-hover/chip:opacity-100",
+                      // Always there on the shown chip, keyboard focus, and touch; on hover elsewhere.
+                      !selected &&
+                        "can-hover:opacity-0 can-hover:group-hover/chip:opacity-100 can-hover:focus-visible:opacity-100",
                     )}
                   />
                 }

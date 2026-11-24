@@ -4,7 +4,14 @@ import {
   deviceAxElementAt,
   type DuoPanelId,
 } from "@threadlines/client-runtime/device";
-import { type CSSProperties, type PointerEvent, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type PointerEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
@@ -43,6 +50,8 @@ type ActivePointer = {
   readonly id: number;
   x: number;
   y: number;
+  /** Visual 0..1 coords on the active screen, for recording Duo gestures. */
+  visual?: { readonly x: number; readonly y: number };
   /** iPhone Duo: the display the gesture started on. */
   readonly panel?: DuoPanelId;
 };
@@ -85,7 +94,7 @@ export function DeviceStreamView(props: {
   // Reads beside the stream (fold, accessibility) run only while it is on screen.
   const live = streaming && state.active;
   const [host, setHost] = useState({ width: 0, height: 0 });
-  const hostRef = (element: HTMLDivElement | null) => {
+  const hostRef = useCallback((element: HTMLDivElement | null) => {
     if (!element) return;
     const update = () => {
       const rect = element.getBoundingClientRect();
@@ -99,12 +108,31 @@ export function DeviceStreamView(props: {
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
-  };
-  const mount = (canvas: HTMLCanvasElement) => (node: HTMLDivElement | null) => {
-    if (!node) return;
-    node.append(canvas);
-    return () => canvas.remove();
-  };
+  }, []);
+  const mountMainCanvas = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node) return;
+      node.append(stream.canvas);
+      return () => stream.canvas.remove();
+    },
+    [stream.canvas],
+  );
+  const mountCoverCanvas = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node) return;
+      node.append(stream.panelCanvases.cover);
+      return () => stream.panelCanvases.cover.remove();
+    },
+    [stream.panelCanvases.cover],
+  );
+  const mountInnerCanvas = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node) return;
+      node.append(stream.panelCanvases.inner);
+      return () => stream.panelCanvases.inner.remove();
+    },
+    [stream.panelCanvases.inner],
+  );
 
   // Android foldables: the fold controls, and the frame follows the posture.
   const fold = useAndroidFold({
@@ -145,6 +173,12 @@ export function DeviceStreamView(props: {
     readonly tapped: boolean;
   } | null>(null);
   const axShown = props.axOverlay === true;
+  const [prevAxShown, setPrevAxShown] = useState(axShown);
+  if (prevAxShown !== axShown) {
+    setPrevAxShown(axShown);
+    if (!axShown && axFocus !== null) setAxFocus(null);
+  }
+  const heldKeys = useRef(new Map<string, KeyboardEvent>());
 
   // Lay the drawing out: where it sits, how it turns, and the screen as the user sees it.
   const drawing = (() => {
@@ -224,6 +258,7 @@ export function DeviceStreamView(props: {
   /** 0..1 of the screen the user sees, for the plain and single frames and the overlay. */
   const screenPoint = (event: PointerEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
     const x = (event.clientX - rect.left) / rect.width;
     const y = (event.clientY - rect.top) / rect.height;
     return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
@@ -231,17 +266,24 @@ export function DeviceStreamView(props: {
   /** A point in the Duo drawing's points, from the stage the layer covers. */
   const duoPoint = (event: PointerEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const scale = drawing.kind === "duo" ? drawing.fit.scale : 1;
+    const scale = drawing.kind === "duo" ? drawing.fit.scale : 0;
+    if (rect.width <= 0 || rect.height <= 0 || scale <= 0) return null;
     return { x: (event.clientX - rect.left) / scale, y: (event.clientY - rect.top) / scale };
+  };
+  /** Visual 0..1 coords inside the active screen rect (for AX overlay and Duo recording). */
+  const visualScreenPoint = (event: PointerEvent<HTMLElement>) => {
+    const rect = drawing.screenRect;
+    const layer = layerRef.current?.getBoundingClientRect();
+    if (!rect || !layer || rect.width <= 0 || rect.height <= 0) return undefined;
+    const x = (event.clientX - layer.left - (rect.x - layerOrigin.x)) / rect.width;
+    const y = (event.clientY - layer.top - (rect.y - layerOrigin.y)) / rect.height;
+    return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
   };
   /** The overlay's element under a pointer, in the active screen's fractions. */
   const axElementUnder = (event: PointerEvent<HTMLElement>) => {
-    const rect = drawing.screenRect;
-    const layer = layerRef.current?.getBoundingClientRect();
-    if (!rect || !layer) return null;
-    const x = (event.clientX - layer.left - (rect.x - layerOrigin.x)) / rect.width;
-    const y = (event.clientY - layer.top - (rect.y - layerOrigin.y)) / rect.height;
-    return deviceAxElementAt(accessibility.elements, x, y);
+    const point = visualScreenPoint(event);
+    if (!point) return null;
+    return deviceAxElementAt(accessibility.elements, point.x, point.y);
   };
 
   const begin = (event: PointerEvent<HTMLDivElement>) => {
@@ -255,18 +297,27 @@ export function DeviceStreamView(props: {
     if (!state.input.connected) return;
     if (drawing.kind === "duo") {
       const point = duoPoint(event);
+      if (!point) return;
       const hit = duoTouchPoint(drawing.layout, point.x, point.y);
       // Touches on the display not in front never reach the device.
       if (!hit?.active) return;
+      const visual = visualScreenPoint(event);
       event.currentTarget.setPointerCapture(event.pointerId);
-      activePointer.current = { id: event.pointerId, x: hit.x, y: hit.y, panel: hit.panel };
-      client.sendRawTouch("begin", hit.x, hit.y);
+      activePointer.current = {
+        id: event.pointerId,
+        x: hit.x,
+        y: hit.y,
+        ...(visual ? { visual } : {}),
+        panel: hit.panel,
+      };
+      client.sendRawTouch("begin", hit.x, hit.y, visual);
       return;
     }
+    const point = screenPoint(event);
+    if (!point) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    const { x, y } = screenPoint(event);
-    activePointer.current = { id: event.pointerId, x, y };
-    client.sendTouch("begin", x, y);
+    activePointer.current = { id: event.pointerId, x: point.x, y: point.y };
+    client.sendTouch("begin", point.x, point.y);
   };
   const move = (event: PointerEvent<HTMLDivElement>) => {
     const pointer = activePointer.current;
@@ -277,24 +328,28 @@ export function DeviceStreamView(props: {
     if (pointer?.id !== event.pointerId) return;
     if (pointer.panel !== undefined && drawing.kind === "duo") {
       const point = duoPoint(event);
+      if (!point) return;
       // A drag that reaches the other display ends where it left this one: it never continues there.
       const over = duoTouchPoint(drawing.layout, point.x, point.y);
       if (over && over.panel !== pointer.panel) {
         activePointer.current = null;
-        client.sendRawTouch("end", pointer.x, pointer.y);
+        client.sendRawTouch("end", pointer.x, pointer.y, pointer.visual);
         return;
       }
       const raw = duoPanelPoint(drawing.layout, pointer.panel, point.x, point.y);
       if (!raw) return;
+      const visual = visualScreenPoint(event);
       pointer.x = raw.x;
       pointer.y = raw.y;
-      client.sendRawTouch("move", raw.x, raw.y);
+      if (visual) pointer.visual = visual;
+      client.sendRawTouch("move", raw.x, raw.y, visual);
       return;
     }
-    const { x, y } = screenPoint(event);
-    pointer.x = x;
-    pointer.y = y;
-    client.sendTouch("move", x, y);
+    const point = screenPoint(event);
+    if (!point) return;
+    pointer.x = point.x;
+    pointer.y = point.y;
+    client.sendTouch("move", point.x, point.y);
   };
   const end = (event: PointerEvent<HTMLDivElement>) => {
     const pointer = activePointer.current;
@@ -302,16 +357,18 @@ export function DeviceStreamView(props: {
     activePointer.current = null;
     if (pointer.panel !== undefined) {
       let { x, y } = pointer;
+      let visual = pointer.visual;
       if (event.type !== "lostpointercapture" && drawing.kind === "duo") {
         const point = duoPoint(event);
-        const raw = duoPanelPoint(drawing.layout, pointer.panel, point.x, point.y);
+        const raw = point ? duoPanelPoint(drawing.layout, pointer.panel, point.x, point.y) : null;
         if (raw) ({ x, y } = raw);
+        visual = visualScreenPoint(event) ?? visual;
       }
-      client.sendRawTouch("end", x, y);
+      client.sendRawTouch("end", x, y, visual);
       return;
     }
-    const { x, y } = event.type === "lostpointercapture" ? pointer : screenPoint(event);
-    client.sendTouch("end", x, y);
+    const point = event.type === "lostpointercapture" ? pointer : (screenPoint(event) ?? pointer);
+    client.sendTouch("end", point.x, point.y);
   };
 
   const loadingRect = drawing.kind === "duo" ? drawing.fit.box : drawing.screenRect;
@@ -358,6 +415,12 @@ export function DeviceStreamView(props: {
         data-testid="device-screen"
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget) return;
+          // Shift+Escape releases keyboard focus from the device screen (no keyboard trap).
+          if (event.shiftKey && event.key === "Escape") {
+            event.preventDefault();
+            event.currentTarget.blur();
+            return;
+          }
           if (event.metaKey) return;
           // Let paste chords fire the paste event.
           if (
@@ -367,11 +430,25 @@ export function DeviceStreamView(props: {
             return;
           }
           event.preventDefault();
+          if (platform === "ios") heldKeys.current.set(event.code, event.nativeEvent);
           client.sendKey(event.nativeEvent, "down");
         }}
         onKeyUp={(event) => {
           if (event.target !== event.currentTarget) return;
+          const hadKey = heldKeys.current.delete(event.code);
+          if (event.metaKey && !hadKey) return;
+          if (
+            !hadKey &&
+            ((event.ctrlKey && (event.key === "v" || event.key === "V")) ||
+              (event.shiftKey && event.key === "Insert"))
+          ) {
+            return;
+          }
           client.sendKey(event.nativeEvent, "up");
+        }}
+        onBlur={() => {
+          for (const key of heldKeys.current.values()) client.sendKey(key, "up");
+          heldKeys.current.clear();
         }}
         onPaste={(event) => {
           if (event.target !== event.currentTarget) return;
@@ -395,7 +472,7 @@ export function DeviceStreamView(props: {
               style={{ width: drawing.screenBox.width, height: drawing.screenBox.height }}
             >
               <div
-                ref={mount(stream.canvas)}
+                ref={mountMainCanvas}
                 className="absolute top-0 left-0"
                 style={
                   drawing.rotation === 90 || drawing.rotation === -90
@@ -455,9 +532,7 @@ export function DeviceStreamView(props: {
                         canvasTurn={panel.canvasTurn}
                         hinge={panel.id === 3}
                         inactive={panel.id !== drawing.layout.active}
-                        mountCanvas={mount(
-                          panel.id === 1 ? stream.panelCanvases.cover : stream.panelCanvases.inner,
-                        )}
+                        mountCanvas={panel.id === 1 ? mountCoverCanvas : mountInnerCanvas}
                       />
                     ))
                   ) : (
@@ -468,7 +543,7 @@ export function DeviceStreamView(props: {
                       x={0}
                       y={0}
                       canvasTurn={drawing.turns.canvasTurn}
-                      mountCanvas={mount(stream.canvas)}
+                      mountCanvas={mountMainCanvas}
                     />
                   )}
                 </div>

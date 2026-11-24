@@ -1,4 +1,5 @@
 import {
+  ACP_REGISTRY_DRIVER_KIND,
   CommandId,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -27,12 +28,18 @@ import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { ensureGeneralChatsProject } from "./orchestration/generalChats.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionSnapshotCounts,
+} from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
 import { ComputerLinkReactors } from "./links/ComputerLinkReactors.ts";
+import { ComputerLinkRepository, isUsableLink } from "./links/ComputerLinkRepository.ts";
 import { AssistantAlerts } from "./assistants/AssistantAlerts.ts";
 import { AssistantEvents } from "./assistants/AssistantEvents.ts";
+import { OutsideAgentConnectionRepository } from "./outsideAgents/OutsideAgentConnectionRepository.ts";
 import { PushAlerts } from "./pushAlerts/PushAlerts.ts";
+import { ScheduledTaskRepository } from "./scheduled/ScheduledTaskRepository.ts";
 import { ScheduledTasks } from "./scheduled/ScheduledTasks.ts";
 import { ProjectNotesUndo } from "./projectContext/ProjectNotesUndo.ts";
 import { ThreadAutoArchiveSweeper } from "./orchestration/Services/ThreadAutoArchiveSweeper.ts";
@@ -144,13 +151,17 @@ export const recordStartupHeartbeat = Effect.gen(function* () {
   const analytics = yield* AnalyticsService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const themeLibrary = yield* ThemeLibrary;
+  const serverSettings = yield* Effect.serviceOption(ServerSettingsService);
+  const computerLinks = yield* Effect.serviceOption(ComputerLinkRepository);
+  const scheduledTaskRepo = yield* Effect.serviceOption(ScheduledTaskRepository);
+  const outsideAgentRepo = yield* Effect.serviceOption(OutsideAgentConnectionRepository);
 
-  const { threadCount, projectCount } = yield* projectionSnapshotQuery.getCounts().pipe(
+  const counts = yield* projectionSnapshotQuery.getCounts().pipe(
     Effect.catch((cause) =>
       Effect.logWarning("failed to gather startup projection counts for telemetry", {
         cause,
       }).pipe(
-        Effect.as({
+        Effect.as<ProjectionSnapshotCounts>({
           threadCount: 0,
           projectCount: 0,
         }),
@@ -168,10 +179,61 @@ export const recordStartupHeartbeat = Effect.gen(function* () {
     ),
   );
 
+  const settingsSummary = Option.isSome(serverSettings)
+    ? yield* serverSettings.value.readStored.pipe(
+        Effect.map((settings) => {
+          const extraAccountCount = Object.entries(settings.providerInstances ?? {}).filter(
+            ([instanceId, instance]) =>
+              instance.driver !== ACP_REGISTRY_DRIVER_KIND && instanceId !== instance.driver,
+          ).length;
+          return {
+            extraAccountCount,
+            devicesEnabled: settings.enableDevices,
+            agentDeviceAccess: settings.agentDeviceAccess,
+            continueAfterRestart: settings.continueAfterRestart,
+          };
+        }),
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
+    : undefined;
+
+  const linkedComputerCount = Option.isSome(computerLinks)
+    ? yield* computerLinks.value.list.pipe(
+        Effect.map((rows) => rows.filter(isUsableLink).length),
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
+    : undefined;
+
+  const scheduledTaskCount = Option.isSome(scheduledTaskRepo)
+    ? yield* scheduledTaskRepo.value.listTasks.pipe(
+        Effect.map((rows) => rows.filter((row) => row.status === "active").length),
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
+    : undefined;
+
+  const connectionCounts = Option.isSome(outsideAgentRepo)
+    ? yield* outsideAgentRepo.value.listLive.pipe(
+        Effect.map((rows) => ({
+          assistantCount: rows.filter((row) => row.kind === "assistant").length,
+          outsideAgentCount: rows.filter((row) => row.kind === "local").length,
+        })),
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
+    : undefined;
+
   yield* analytics.record("server.boot.heartbeat", {
-    threadCount,
-    projectCount,
+    threadCount: counts.threadCount,
+    projectCount: counts.projectCount,
+    ...(counts.leadChatCount !== undefined ? { leadChatCount: counts.leadChatCount } : {}),
+    ...(counts.projectsWithBriefCount !== undefined
+      ? { projectsWithBriefCount: counts.projectsWithBriefCount }
+      : {}),
+    ...(counts.projectNoteCount !== undefined ? { projectNoteCount: counts.projectNoteCount } : {}),
     savedThemeCount,
+    ...(settingsSummary ?? {}),
+    ...(linkedComputerCount !== undefined ? { linkedComputerCount } : {}),
+    ...(scheduledTaskCount !== undefined ? { scheduledTaskCount } : {}),
+    ...(connectionCounts ?? {}),
   });
 });
 

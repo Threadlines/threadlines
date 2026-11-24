@@ -90,6 +90,36 @@ export function isAccountUsageNearLimit(
   return readAccountUsageBlockAt(accountUsage, nowMs, percent).state === "blocked";
 }
 
+/**
+ * `isAccountUsageNearLimit` for one model: checks both plan-wide windows and
+ * any model-scoped windows (`scoped`) covering `modelName`, so a provider with
+ * per-family pools (Antigravity) pauses extras only when that model's own
+ * pool is near its limit.
+ */
+export function isModelUsageNearLimit(
+  accountUsage: ServerProviderAccountUsage | undefined,
+  modelName: string,
+  nowMs: number,
+  percent: number,
+): boolean {
+  if (isAccountUsageNearLimit(accountUsage, nowMs, percent)) return true;
+  if (accountUsage === undefined) return false;
+  for (const limit of accountUsage.limits) {
+    for (const window of limit.scoped ?? []) {
+      const scope = {
+        name: window.scopeLabel,
+        models: window.scopeModels,
+        excludes: window.scopeExcludes,
+      };
+      if (!isUsedUpTo(window, percent) || !usageScopeHoldsModel(scope, modelName)) continue;
+      const resetsAtMs = usageResetTimeMs(window.resetsAt);
+      if (resetsAtMs !== undefined && resetsAtMs <= nowMs) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
 function readAccountUsageBlockAt(
   accountUsage: ServerProviderAccountUsage | undefined,
   nowMs: number,

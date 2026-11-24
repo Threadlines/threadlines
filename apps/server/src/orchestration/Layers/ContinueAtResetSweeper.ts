@@ -11,6 +11,7 @@ import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 
@@ -21,6 +22,7 @@ import {
 import { SystemWake } from "../../power/Services/SystemWake.ts";
 import { freshOrCurrentSnapshot } from "../../provider/freshProviderSnapshot.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
   ContinueAtResetSweeper,
   type ContinueAtResetSweeperShape,
@@ -64,6 +66,7 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
     const providerRegistry = yield* ProviderRegistry;
     const orchestrationEngine = yield* OrchestrationEngineService;
     const systemWake = yield* SystemWake;
+    const analytics = yield* Effect.serviceOption(AnalyticsService);
     // The interval and `sweepNow` must not both continue one thread.
     const sweepSemaphore = yield* Semaphore.make(1);
     /**
@@ -215,6 +218,11 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
         yield* Effect.logInfo("thread.continue-at-reset.continued-early", {
           threadId: entry.threadId,
         });
+        if (Option.isSome(analytics)) {
+          yield* analytics.value.record("provider.turn.usage_limit_continued", {
+            early: true,
+          });
+        }
         return true;
       }).pipe(
         Effect.catchCause((cause) =>
@@ -281,6 +289,11 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
           createdAt,
         });
         yield* Effect.logInfo("thread.continue-at-reset.continued", { threadId: entry.threadId });
+        if (Option.isSome(analytics)) {
+          yield* analytics.value.record("provider.turn.usage_limit_continued", {
+            early: false,
+          });
+        }
         return true;
       }).pipe(
         Effect.catchCause((cause) =>

@@ -174,6 +174,10 @@ export interface RoomToolDeps {
   readonly invitesMode: Effect.Effect<AgentInvitesMode>;
   readonly git: Pick<GitVcsDriverShape, "execute" | "workingTreeDiff">;
   readonly requests: RoomRequestRegistry;
+  readonly recordAnalytics?: (
+    event: string,
+    properties?: Readonly<Record<string, unknown>>,
+  ) => Effect.Effect<void>;
 }
 
 interface Room {
@@ -675,13 +679,23 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
     readonly abandoned: Effect.Effect<void>;
     /** A review asked of several agents: its batch, and the basis captured once for all. */
     readonly batch?: { readonly batchId: RoomAgentBatchId; readonly reviewInput: RoomReviewInput };
+    readonly onSubmitSettled?: (submitted: boolean) => Effect.Effect<void>;
   }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { scope, kind, arrival } = input;
+        let submitSettled = false;
+        const settleSubmit = (didSubmit: boolean) =>
+          Effect.suspend(() => {
+            if (submitSettled) return Effect.void;
+            submitSettled = true;
+            return input.onSubmitSettled?.(didSubmit) ?? Effect.void;
+          });
+        yield* Effect.addFinalizer(() => settleSubmit(false));
         const base = { agent: agentLabel(arrival.target) };
         const refusal = precheck(scope, kind, arrival, input.batch?.batchId);
         if (refusal !== null) {
+          yield* settleSubmit(false);
           return {
             ...base,
             outcome: refusal.outcome,
@@ -689,6 +703,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
           } satisfies RoomAnswerResult;
         }
         if (!(yield* canAnswerOnTheSide(arrival.target))) {
+          yield* settleSubmit(false);
           return {
             ...base,
             outcome: "refused",
@@ -788,7 +803,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
             Effect.tap((rejection) =>
               Effect.sync(() => {
                 submitted = rejection === undefined;
-              }),
+              }).pipe(Effect.andThen(settleSubmit(rejection === undefined))),
             ),
             Effect.uninterruptible,
           );
@@ -799,7 +814,11 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
 
         const sent = yield* Effect.raceFirst(send, callEnds);
         if (typeof sent === "object") {
+          yield* settleSubmit(false);
           return sent;
+        }
+        if (sent !== "sent") {
+          yield* settleSubmit(false);
         }
         const what = kind === "review" ? "review" : "answer";
         let ending: "timeout" | "abandoned";
@@ -1009,6 +1028,22 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
             batchId: RoomAgentBatchId.make(randomUUID()),
             reviewInput: captured.success,
           };
+          const recordAnalytics = deps.recordAnalytics;
+          let remainingSubmissions = arrivals.length;
+          let startedReviewers = 0;
+          const onSubmitSettled =
+            arrivals.length >= 2 && recordAnalytics !== undefined
+              ? (didSubmit: boolean) =>
+                  Effect.suspend(() => {
+                    if (didSubmit) startedReviewers += 1;
+                    remainingSubmissions -= 1;
+                    return remainingSubmissions === 0 && startedReviewers >= 2
+                      ? recordAnalytics("room.council_review.started", {
+                          reviewerCount: startedReviewers,
+                        })
+                      : Effect.void;
+                  })
+              : undefined;
           const reviews = yield* Effect.forEach(
             arrivals,
             (arrival) =>
@@ -1020,6 +1055,7 @@ export function makeRoomToolHandlers(deps: RoomToolDeps) {
                 basis: input.basis,
                 abandoned,
                 batch,
+                ...(onSubmitSettled !== undefined ? { onSubmitSettled } : {}),
               }),
             { concurrency: "unbounded" },
           );

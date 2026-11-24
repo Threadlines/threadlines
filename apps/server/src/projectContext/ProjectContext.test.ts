@@ -507,6 +507,22 @@ layer("ProjectContext", (it) => {
       assert.include(off, "- Style: Tabs, not spaces");
       assert.notInclude(off, "project_note_write");
       assert.include(yield* sessionText(threadId, "full-access", "ask"), "project_note_write");
+
+      // Without the room/app MCP server, neither project_note_write nor project_note_read is mentioned.
+      const withoutTools = yield* makeProjectInstructions.pipe(
+        Effect.flatMap((lookup) =>
+          lookup.forSession({
+            sessionKey: threadId,
+            runtimeMode: "full-access",
+            canUseNoteTools: false,
+          }),
+        ),
+        Effect.provide(ServerSettingsService.layerTest({ projectNotes: "ask" })),
+        Effect.map((text) => text ?? ""),
+      );
+      assert.include(withoutTools, "- Style: Tabs, not spaces");
+      assert.notInclude(withoutTools, "project_note_write");
+      assert.notInclude(withoutTools, "project_note_read");
     }),
   );
 });

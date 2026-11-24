@@ -142,6 +142,7 @@ import {
   ArchivedThreadsSection,
 } from "./ArchivedThreadsSection";
 import { ProviderInstanceCard, type ProviderAddAccountControls } from "./ProviderInstanceCard";
+import { ProviderSuggestionsSection } from "./ProviderSuggestionsSection";
 import { addAccountMenuLabel, isThreadlinesAccountFolder } from "./providerAccounts.logic";
 import { formatProviderInstanceName } from "../../providerInstances";
 import { getDriverOption } from "./providerDriverMeta";
@@ -538,10 +539,13 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.claudeSuggestionsWhenUsageRunsFast !==
       DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast
-        ? ["Keep Claude's suggestions when you're using a lot"]
+        ? [placeById("providers.claudeSuggestions").title]
         : []),
       ...(settings.codexSuggestions !== DEFAULT_UNIFIED_SETTINGS.codexSuggestions
-        ? [placeById("threads.codexSuggestions").title]
+        ? [placeById("providers.codexSuggestions").title]
+        : []),
+      ...(settings.antigravitySuggestions !== DEFAULT_UNIFIED_SETTINGS.antigravitySuggestions
+        ? [placeById("providers.antigravitySuggestions").title]
         : []),
       ...(settings.continueAfterUsageLimits !== DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits
         ? ["Continue after usage limits"]
@@ -591,6 +595,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.claudeWorkflowSize,
       settings.claudeSuggestionsWhenUsageRunsFast,
       settings.codexSuggestions,
+      settings.antigravitySuggestions,
       settings.continueAfterUsageLimits,
       settings.continueAfterRestart,
       settings.enableCommandRequests,
@@ -676,6 +681,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       claudeSuggestionsWhenUsageRunsFast:
         DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast,
       codexSuggestions: DEFAULT_UNIFIED_SETTINGS.codexSuggestions,
+      antigravitySuggestions: DEFAULT_UNIFIED_SETTINGS.antigravitySuggestions,
       continueAfterUsageLimits: DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits,
       continueAfterRestart: DEFAULT_UNIFIED_SETTINGS.continueAfterRestart,
       enableCommandRequests: true,
@@ -2075,6 +2081,8 @@ export function ProviderSettingsPanel({
             : []),
         ]}
       </div>
+
+      <ProviderSuggestionsSection />
 
       <CommunityAgentsSection
         addedAgentIds={communityAgentIds}

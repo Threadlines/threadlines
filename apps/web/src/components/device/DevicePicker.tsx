@@ -4,7 +4,7 @@ import {
   groupDevicesByPlatform,
   isDeviceHostBusy,
 } from "@threadlines/client-runtime/deviceState";
-import { PowerIcon, RefreshCwIcon, SmartphoneIcon } from "lucide-react";
+import { PowerIcon, RefreshCwIcon, SettingsIcon, SmartphoneIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import { SETTINGS_GROUP_ROW_CLASS, SettingsGroup } from "../settings/settingsLayout";
@@ -26,6 +26,8 @@ export function DevicePicker(props: {
   readonly onOpen: (device: DeviceSummary) => void;
   readonly onPowerOff: (device: DeviceSummary) => void;
   readonly onRefresh: () => void;
+  /** Reopens this computer's device setup (closes the one-way door on linked computers / phone). */
+  readonly onOpenSetup?: () => void;
 }) {
   const { state } = props;
   const groups = groupDevicesByPlatform(state.devices);
@@ -53,16 +55,29 @@ export function DevicePicker(props: {
                 ? "1 device"
                 : `${state.devices.length} devices`}
         </span>
-        <Button
-          size="icon-xs"
-          variant="ghost"
-          aria-label="Refresh devices"
-          tooltip="Refresh devices"
-          disabled={props.refreshing || busy}
-          onClick={props.onRefresh}
-        >
-          {props.refreshing ? <Spinner /> : <RefreshCwIcon />}
-        </Button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Refresh devices"
+            tooltip="Refresh devices"
+            disabled={props.refreshing || busy}
+            onClick={props.onRefresh}
+          >
+            {props.refreshing ? <Spinner /> : <RefreshCwIcon />}
+          </Button>
+          {props.onOpenSetup ? (
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label="Device settings"
+              tooltip="Device settings"
+              onClick={props.onOpenSetup}
+            >
+              <SettingsIcon />
+            </Button>
+          ) : null}
+        </div>
       </div>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-3">
         {state.hostStatus !== "ready" && state.hostStatus !== "idle" ? (

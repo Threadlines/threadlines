@@ -440,6 +440,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const text = yield* projectInstructions.value.forSession({
         sessionKey: input.threadId,
         runtimeMode: input.runtimeMode,
+        canUseNoteTools: input.roomTools === true || input.guideTools === true,
       });
       return text === undefined ? rest : { ...rest, projectInstructions: text };
     });
@@ -864,9 +865,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               input.binding.threadId,
             );
             yield* analytics.record("provider.session.recovered", {
-              provider: existing.provider,
+              ...analyticsAgentProperties({
+                provider: existing.provider,
+                communityAgentId: yield* communityAgentIdOf(bindingInstanceId),
+              }),
               strategy: "adopt-existing",
               hasResumeCursor: existing.resumeCursor !== undefined,
+              resumeFailed: false,
             });
             return { adapter, session: existing, historyOwed: false } as const;
           }
@@ -928,9 +933,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           historyOwed ? { historyOwed: true } : undefined,
         );
         yield* analytics.record("provider.session.recovered", {
-          provider: resumed.provider,
+          ...analyticsAgentProperties({
+            provider: resumed.provider,
+            communityAgentId: yield* communityAgentIdOf(bindingInstanceId),
+          }),
           strategy: "resume-thread",
           hasResumeCursor: resumed.resumeCursor !== undefined,
+          resumeFailed: historyOwed,
           startMs,
         });
         return { adapter, session: resumed, historyOwed } as const;
@@ -1015,9 +1024,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
               yield* adapter.stopSession(input.threadId).pipe(
                 Effect.tap(() =>
-                  analytics.record("provider.session.stopped", {
-                    provider: adapter.provider,
-                  }),
+                  communityAgentIdOf(instanceId).pipe(
+                    Effect.flatMap((communityAgentId) =>
+                      analytics.record(
+                        "provider.session.stopped",
+                        analyticsAgentProperties({
+                          provider: adapter.provider,
+                          communityAgentId,
+                        }),
+                      ),
+                    ),
+                  ),
                 ),
                 Effect.catchCause((cause) =>
                   Effect.logWarning("provider.session.stop-stale-failed", {
@@ -1427,13 +1444,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   ) =>
     Effect.gen(function* () {
       const nowMs = yield* Clock.currentTimeMillis;
-      const provider = yield* registry.getInstanceInfo(entry.instanceId as ProviderInstanceId).pipe(
-        Effect.map((info) => info.driverKind),
-        Effect.orElseSucceed(() => "unknown"),
+      const agent = yield* registry.getInstanceInfo(entry.instanceId as ProviderInstanceId).pipe(
+        Effect.map((info) => ({
+          provider: info.driverKind,
+          communityAgentId: info.communityAgentId,
+        })),
+        Effect.orElseSucceed(() => ({ provider: "unknown", communityAgentId: undefined })),
       );
       yield* Effect.logInfo("provider service stopped an unused early session", { reason });
       yield* analytics.record("provider.session.early_unused", {
-        provider,
+        ...analyticsAgentProperties(agent),
         reason,
         ageMs: Math.max(0, nowMs - entry.startedAtMs),
       });
@@ -1767,20 +1787,33 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         });
         if (input.telemetryContext?.kind === "thread_fork") {
           const sourceModelSelection = input.telemetryContext.sourceModelSelection;
-          // Model names are read by agent kind (Pi's own list applies to every Pi instance).
-          const sourceDriver = sourceModelSelection
-            ? yield* registry.getByInstance(sourceModelSelection.instanceId).pipe(
-                Effect.map((adapter) => adapter.provider),
+          // Model names and fork telemetry use the driver kind (and public
+          // community agent id), never a user-defined instance id slug.
+          const sourceInfo = sourceModelSelection
+            ? yield* registry.getInstanceInfo(sourceModelSelection.instanceId).pipe(
+                Effect.map((info) => ({
+                  provider: info.driverKind,
+                  communityAgentId: info.communityAgentId,
+                })),
                 Effect.orElseSucceed(() => undefined),
               )
             : undefined;
+          const sourceDriver = sourceInfo?.provider;
           yield* analytics.record("thread.fork.created", {
-            sourceProvider: sourceModelSelection?.instanceId ?? "unknown",
-            targetProvider: input.modelSelection?.instanceId ?? routed.instanceId,
+            ...analyticsAgentProperties({
+              provider: sourceDriver ?? "unknown",
+              communityAgentId: sourceInfo?.communityAgentId,
+              prefix: "source",
+            }),
+            ...analyticsAgentProperties({
+              provider: routed.adapter.provider,
+              communityAgentId,
+              prefix: "target",
+            }),
             providerChanged:
               sourceModelSelection !== undefined &&
-              input.modelSelection !== undefined &&
-              sourceModelSelection.instanceId !== input.modelSelection.instanceId,
+              sourceModelSelection.instanceId !==
+                (input.modelSelection?.instanceId ?? routed.instanceId),
             modelChanged:
               sourceModelSelection !== undefined &&
               input.modelSelection !== undefined &&
@@ -1813,6 +1846,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           attachmentCount: input.attachments.length,
           hasInput: typeof input.input === "string" && input.input.trim().length > 0,
           ...(input.origin !== undefined ? { origin: input.origin } : {}),
+          ...(input.lane !== undefined ? { lane: input.lane } : {}),
         });
       }).pipe(
         Effect.catchCause((cause) =>
@@ -2008,7 +2042,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           },
         });
         yield* analytics.record("provider.review.started", {
-          provider: routed.adapter.provider,
+          ...analyticsAgentProperties({
+            provider: routed.adapter.provider,
+            communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+          }),
           targetType: input.target.type,
           delivery: input.delivery,
         });
@@ -2431,9 +2468,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }),
           ),
         );
-        yield* analytics.record("provider.context.compact_requested", {
-          provider: routed.adapter.provider,
-        });
+        yield* analytics.record(
+          "provider.context.compact_requested",
+          analyticsAgentProperties({
+            provider: routed.adapter.provider,
+            communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+          }),
+        );
       }).pipe(
         withMetrics({
           counter: providerTurnsTotal,
@@ -2504,7 +2545,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         },
       );
       yield* analytics.record("provider.goal.set", {
-        provider: routed.adapter.provider,
+        ...analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
         status: goal.status,
       });
       return goal;
@@ -2555,9 +2599,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           payload: {},
         },
       );
-      yield* analytics.record("provider.goal.cleared", {
-        provider: routed.adapter.provider,
-      });
+      yield* analytics.record(
+        "provider.goal.cleared",
+        analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
+      );
     },
   );
 
@@ -2625,9 +2673,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       status: "paused",
       origin: "automatic",
     });
-    yield* analytics.record("provider.goal.paused_for_stop", {
-      provider: routed.adapter.provider,
-    });
+    yield* analytics.record(
+      "provider.goal.paused_for_stop",
+      analyticsAgentProperties({
+        provider: routed.adapter.provider,
+        communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+      }),
+    );
     return pausedGoal;
   });
 
@@ -2658,7 +2710,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           secretScrubber.restoreAnswer(routed.threadId, input.requestId, input.decision),
         );
         yield* analytics.record("provider.request.responded", {
-          provider: routed.adapter.provider,
+          ...analyticsAgentProperties({
+            provider: routed.adapter.provider,
+            communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+          }),
           decision: input.decision,
         });
       }).pipe(
@@ -2793,9 +2848,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           },
         });
       }
-      yield* analytics.record("provider.session.stopped", {
-        provider: routed.adapter.provider,
-      });
+      yield* analytics.record(
+        "provider.session.stopped",
+        analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
+      );
     }).pipe(
       withMetrics({
         counter: providerSessionsTotal,
@@ -2938,7 +2997,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         yield* upsertSessionBinding(rolledBackSession, routed.threadId);
       }
       yield* analytics.record("provider.conversation.rolled_back", {
-        provider: routed.adapter.provider,
+        ...analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
         turns: input.numTurns,
       });
       return {
@@ -3057,7 +3119,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }
       const forgotten = yield* forgetConversation(threadId);
       yield* analytics.record("provider.conversation.rolled_back", {
-        provider: adapter.provider,
+        ...analyticsAgentProperties({
+          provider: adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(binding.providerInstanceId),
+        }),
         turns: numTurns,
       });
       return forgotten;
@@ -3300,7 +3365,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }
       yield* directory.deleteBinding(input.threadId);
       yield* analytics.record("provider.thread.deleted", {
-        provider: routed.adapter.provider,
+        ...analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
         nativeDelete: routed.adapter.deleteThread !== undefined,
       });
     }).pipe(
@@ -3467,7 +3535,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   );
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
-    const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
     const activeSessions = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
       adapter.listSessions().pipe(
@@ -3509,7 +3576,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }),
     ).pipe(Effect.asVoid);
     yield* analytics.record("provider.sessions.stopped_all", {
-      sessionCount: threadIds.length,
+      sessionCount: activeSessions.length,
     });
     yield* analytics.flush;
   });

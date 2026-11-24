@@ -385,11 +385,33 @@ describe("Antigravity audit improvements", () => {
     ).toBeUndefined();
   });
 
-  it("keeps HTTP MCP servers when assumeHttpMcp is set", () => {
+  it("keeps HTTP MCP servers when assumeHttpMcp is set, and falls back to stdio bridge otherwise", () => {
     const servers = [
-      { type: "http" as const, name: "room", url: "http://127.0.0.1:9999/mcp", headers: [] },
+      {
+        type: "http" as const,
+        name: "room",
+        url: "http://127.0.0.1:9999/mcp",
+        headers: [{ name: "Authorization", value: "Bearer secret-tok" }],
+      },
     ];
-    expect(supportedMcpServers(servers, undefined, false)).toEqual([]);
+    const fallback = supportedMcpServers(servers, undefined, false);
+    expect(fallback).toHaveLength(1);
+    expect(fallback[0]).toMatchObject({
+      name: "room",
+      command: process.execPath,
+    });
+    expect("type" in fallback[0]!).toBe(false);
+    const stdio = fallback[0] as {
+      readonly args: ReadonlyArray<string>;
+      readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+    };
+    expect(stdio.args.join(" ")).not.toContain("secret-tok");
+    expect(stdio.env).toEqual(
+      expect.arrayContaining([
+        { name: "THREADLINES_MCP_URL", value: "http://127.0.0.1:9999/mcp" },
+        { name: "THREADLINES_MCP_AUTHORIZATION", value: "Bearer secret-tok" },
+      ]),
+    );
     expect(supportedMcpServers(servers, undefined, true)).toEqual(servers);
   });
 

@@ -106,23 +106,25 @@ const decodeServerSettingsJson = Schema.decodeUnknownOption(ServerSettingsJson);
  * Mirrors the server's telemetry consent: `THREADLINES_TELEMETRY_ENABLED`
  * wins when set, a throwaway run (CI, or a data folder in the temp folder)
  * sends nothing, otherwise `usageAnalyticsEnabled` from settings.json decoded
- * with the same lenient JSONC parser the server uses, defaulting to enabled
- * when the file is absent or undecodable.
+ * with the same lenient JSONC parser the server uses. A missing file uses the
+ * default; an unreadable or malformed existing file fails closed.
  */
 export function resolveTelemetryConsent(input: {
   readonly envOverride: string | undefined;
   readonly throwawayRun: boolean;
   readonly rawSettingsJson: string | undefined;
+  readonly settingsReadFailed?: boolean;
 }): boolean {
   const override = parseTelemetryEnabledOverride(input.envOverride);
   if (override !== undefined) return override;
   if (input.throwawayRun) return false;
+  if (input.settingsReadFailed === true) return false;
 
   if (input.rawSettingsJson === undefined) {
     return DEFAULT_SERVER_SETTINGS.usageAnalyticsEnabled;
   }
   return Option.match(decodeServerSettingsJson(input.rawSettingsJson), {
-    onNone: () => DEFAULT_SERVER_SETTINGS.usageAnalyticsEnabled,
+    onNone: () => false,
     onSome: (settings) => settings.usageAnalyticsEnabled,
   });
 }
@@ -164,9 +166,22 @@ const makeDesktopCrashReport = Effect.gen(function* () {
       const posthogHost = process.env.THREADLINES_POSTHOG_HOST?.trim() || bundledPosthogHost;
       if (!posthogKey) return;
 
-      const rawSettingsJson = yield* fileSystem
+      const settingsRead = yield* fileSystem
         .readFileString(environment.serverSettingsPath)
-        .pipe(Effect.map(Option.some), Effect.orElseSucceed(Option.none<string>));
+        .pipe(Effect.result);
+      let rawSettingsJson: string | undefined;
+      let settingsReadFailed = false;
+      if (settingsRead._tag === "Success") {
+        rawSettingsJson = settingsRead.success;
+      } else {
+        const error = settingsRead.failure;
+        const isMissing =
+          typeof error === "object" &&
+          error !== null &&
+          "reason" in error &&
+          (error as { readonly reason?: { readonly _tag?: string } }).reason?._tag === "NotFound";
+        settingsReadFailed = !isMissing;
+      }
       const realPathOrSelf = (path: string) =>
         fileSystem.realPath(path).pipe(Effect.orElseSucceed(() => path));
       const tempDir = NodeOS.tmpdir();
@@ -177,7 +192,8 @@ const makeDesktopCrashReport = Effect.gen(function* () {
           tempDirs: [tempDir, yield* realPathOrSelf(tempDir)],
           ciEnv: process.env.CI,
         }),
-        rawSettingsJson: Option.getOrUndefined(rawSettingsJson),
+        rawSettingsJson,
+        settingsReadFailed,
       });
       if (!consented) return;
 

@@ -37,6 +37,15 @@ async function dataUrlOf(file: File): Promise<string> {
  * and answers "stale", since the change that made the newer list saves it.
  * A caller that must know the outcome runs it again.
  */
+const inFlightByTarget = new Map<
+  string,
+  { readonly listed: string; readonly promise: Promise<"saved" | "stale"> }
+>();
+
+function targetKey(target: ComposerThreadTarget): string {
+  return typeof target === "string" ? target : `${target.environmentId}\u0000${target.threadId}`;
+}
+
 export async function saveComposerDraftAttachments(
   target: ComposerThreadTarget,
   options: {
@@ -44,44 +53,68 @@ export async function saveComposerDraftAttachments(
     readonly attachments?: ReadonlyArray<ComposerAttachment>;
   } = {},
 ): Promise<"saved" | "stale"> {
+  const key = targetKey(target);
   const store = useComposerDraftStore.getState();
   const draft = store.getComposerDraft(target);
   const attachments = options.attachments ?? draft?.attachments ?? [];
   if (!draft || attachments.length === 0) {
+    inFlightByTarget.delete(key);
     store.clearPersistedAttachments(target);
     return "saved";
   }
   const listed = attachments.map((attachment) => attachment.id).join("\u0000");
-  const unsaved = new Set(draft.nonPersistedAttachmentIds);
-  const saved = new Map(
-    draft.persistedAttachments
-      .filter((attachment) => !unsaved.has(attachment.id))
-      .map((attachment) => [attachment.id, attachment]),
-  );
-  const staged: PersistedComposerAttachment[] = [];
-  for (const attachment of attachments) {
-    const already = saved.get(attachment.id);
-    if (already) {
-      staged.push(already);
-      continue;
-    }
-    if (!composerAttachmentFitsDraftStorage(attachment)) continue;
-    try {
-      staged.push({
-        id: attachment.id,
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        sizeBytes: attachment.sizeBytes,
-        dataUrl: await dataUrlOf(attachment.file),
-      });
-    } catch {
-      // Unreadable now: left unsaved.
-    }
+  // Deduplicate concurrent saves of the exact same attachment list (e.g., ChatComposer +
+  // recording handoff) without blocking a newer list behind a stale slow file read.
+  const existing = inFlightByTarget.get(key);
+  if (existing && existing.listed === listed) {
+    return existing.promise;
   }
-  const now = useComposerDraftStore.getState().getComposerDraft(target);
-  if ((now?.attachments ?? []).map((attachment) => attachment.id).join("\u0000") !== listed) {
-    return "stale";
-  }
-  await useComposerDraftStore.getState().syncPersistedAttachments(target, staged);
-  return "saved";
+
+  const entry: { readonly listed: string; promise: Promise<"saved" | "stale"> } = {
+    listed,
+    promise: Promise.resolve("stale"),
+  };
+  const run = async (): Promise<"saved" | "stale"> => {
+    const unsaved = new Set(draft.nonPersistedAttachmentIds);
+    const saved = new Map(
+      draft.persistedAttachments
+        .filter((attachment) => !unsaved.has(attachment.id))
+        .map((attachment) => [attachment.id, attachment]),
+    );
+    const staged: PersistedComposerAttachment[] = [];
+    for (const attachment of attachments) {
+      const already = saved.get(attachment.id);
+      if (already) {
+        staged.push(already);
+        continue;
+      }
+      if (!composerAttachmentFitsDraftStorage(attachment)) continue;
+      try {
+        staged.push({
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          dataUrl: await dataUrlOf(attachment.file),
+        });
+      } catch {
+        // Unreadable now: left unsaved.
+      }
+    }
+    if (inFlightByTarget.get(key) !== entry) {
+      return "stale";
+    }
+    const now = useComposerDraftStore.getState().getComposerDraft(target);
+    if ((now?.attachments ?? []).map((attachment) => attachment.id).join("\u0000") !== listed) {
+      return "stale";
+    }
+    await useComposerDraftStore.getState().syncPersistedAttachments(target, staged);
+    return "saved";
+  };
+
+  inFlightByTarget.set(key, entry);
+  entry.promise = run().finally(() => {
+    if (inFlightByTarget.get(key) === entry) inFlightByTarget.delete(key);
+  });
+  return entry.promise;
 }

@@ -554,6 +554,56 @@ const program = Effect.gen(function* () {
         yield* modelCallEnds(sessionId);
         return { stopReason: "end_turn" as const };
       }
+      if (scenario === "threadlines-mcp-permission") {
+        const ask = (toolCall: AcpSchema.ToolCallUpdate) =>
+          agent.client.requestPermission({
+            sessionId,
+            toolCall,
+            options: [
+              { optionId: "allow", name: "Allow", kind: "allow_once" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          });
+        // Threadlines room tool: auto-approved once even in Supervised mode.
+        yield* ask({
+          toolCallId: "call_room",
+          title: "MCP Tool room_ask",
+          kind: "execute",
+          status: "pending",
+          rawInput: {
+            ServerName: "threadlines_room",
+            ToolName: "room_ask",
+            Arguments: { agent: "Codex", question: "Ready?" },
+          },
+        });
+        // Threadlines browser tool: must still ask in Supervised mode.
+        yield* ask({
+          toolCallId: "call_browser",
+          title: "MCP Tool browser_status",
+          kind: "execute",
+          status: "pending",
+          rawInput: {
+            ServerName: "threadlines_browser",
+            ToolName: "browser_status",
+            Arguments: {},
+          },
+        });
+        // Spoofed command naming threadlines_room alongside CommandLine: must still ask.
+        yield* ask({
+          toolCallId: "call_spoof_room",
+          title: "MCP Tool room_ask",
+          kind: "execute",
+          status: "pending",
+          rawInput: {
+            ServerName: "threadlines_room",
+            ToolName: "room_ask",
+            CommandLine: "rm -rf build",
+          },
+        });
+        yield* say(sessionId, "Done.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
+      }
       if (scenario === "permission-second") {
         if (promptsSeen === 1) {
           yield* say(sessionId, "First done.");

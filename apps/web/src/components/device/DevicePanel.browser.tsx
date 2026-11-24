@@ -598,4 +598,41 @@ describe("DevicePanel", () => {
       computer.channels.filter((channel) => channel.input.path === "/vendor/serve-sim/helper/ws"),
     ).toHaveLength(1);
   });
+
+  it("selects the booted serial when an Android AVD boots, hides Shake on Android, and reopens setup from the picker", async () => {
+    const AVD = {
+      id: "Pixel_9_API_35",
+      platform: "android",
+      name: "Pixel 9",
+      version: "Android 16",
+      booted: false,
+      physical: false,
+    } as const;
+    const computer = fakeComputer(deviceState({ devices: [AVD] }));
+    computer.device.open.mockImplementationOnce(async () => session(PIXEL.id, "android", "user"));
+    await render(<Host visible />);
+
+    // Picker gear icon reopens setup and Done returns to the picker.
+    await page.getByRole("button", { name: "Device settings" }).click();
+    await expect.element(page.getByRole("heading", { name: "Set up devices" })).toBeVisible();
+    await page.getByRole("button", { name: "Done" }).click();
+    await expect.element(page.getByTestId("device-picker")).toBeVisible();
+
+    // Booting an AVD whose open returns its booted emulator serial selects that serial.
+    await page.getByRole("button", { name: "Start Pixel 9" }).click();
+    computer.push(
+      deviceState({
+        devices: [PIXEL],
+        sessions: [session(PIXEL.id, "android", "user")],
+        revision: 2,
+      }),
+    );
+    await expect.element(page.getByRole("toolbar", { name: "Device controls" })).toBeVisible();
+    expect(readThreadDeviceViews(THREAD_KEY).selected).toBe(PIXEL.id);
+
+    // Android Tools hides the iOS-only Shake button.
+    await page.getByRole("button", { name: "Tools" }).click();
+    await expect.element(page.getByRole("button", { name: "Close tools" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Shake" })).not.toBeInTheDocument();
+  });
 });

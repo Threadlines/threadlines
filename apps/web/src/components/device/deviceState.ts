@@ -99,6 +99,7 @@ function receive(environmentId: EnvironmentId, next: DeviceServiceState, fromStr
 
 /** Subscribes each followed computer on its current connection, once. */
 function syncConnections() {
+  let cleared = false;
   for (const [environmentId, entry] of followed) {
     const connection =
       readEnvironmentConnection(environmentId) ??
@@ -108,13 +109,21 @@ function syncConnections() {
     entry.unsubscribe = null;
     entry.connection = connection;
     const api = connection === null ? undefined : readEnvironmentApi(environmentId);
-    if (api === undefined) continue;
+    if (api === undefined) {
+      if (environmentId in states) {
+        const { [environmentId]: _stale, ...rest } = states;
+        states = rest;
+        cleared = true;
+      }
+      continue;
+    }
     entry.unsubscribe = api.device.subscribeState((state) => {
       // A late answer from a subscription already dropped is not this one's.
       if (followed.get(environmentId) !== entry || entry.connection !== connection) return;
       receive(environmentId, state, true);
     });
   }
+  if (cleared) emit();
 }
 
 function follow(environmentId: EnvironmentId): () => void {
@@ -135,6 +144,10 @@ function follow(environmentId: EnvironmentId): () => void {
     if (held.refs > 0) return;
     held.unsubscribe?.();
     followed.delete(environmentId);
+    if (environmentId in states) {
+      const { [environmentId]: _stale, ...rest } = states;
+      states = rest;
+    }
     if (followed.size === 0) {
       stopWatchingConnections?.();
       stopWatchingConnections = null;
@@ -276,8 +289,8 @@ export function deviceChannelApi(environmentId: EnvironmentId): DeviceChannelApi
       }
       return api.device.channel.open(input, listener, onClosed);
     },
-    send: (input) => deviceApi(environmentId).channel.send(input),
-    credit: (input) => deviceApi(environmentId).channel.credit(input),
+    send: async (input) => deviceApi(environmentId).channel.send(input),
+    credit: async (input) => deviceApi(environmentId).channel.credit(input),
   };
 }
 

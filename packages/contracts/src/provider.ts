@@ -289,6 +289,10 @@ export const ProviderTurnOrigin = Schema.Literals([
 ]);
 export type ProviderTurnOrigin = typeof ProviderTurnOrigin.Type;
 
+/** Which room lane ran a turn, for usage analytics only. */
+export const ProviderTurnLane = Schema.Literals(["main", "side", "side_review"]);
+export type ProviderTurnLane = typeof ProviderTurnLane.Type;
+
 /**
  * How long the steps before the agent gets a message took, for usage analytics
  * only. `queueMs`: waiting behind the thread's earlier work. `prepareMs`: getting
@@ -330,6 +334,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   requestedAt: Schema.optional(IsoDateTime),
   /** See ProviderTurnOrigin. */
   origin: Schema.optional(ProviderTurnOrigin),
+  /** See ProviderTurnLane. */
+  lane: Schema.optional(ProviderTurnLane),
   /**
    * A person sent this from the app and reads the reply: a driver that makes
    * its own suggestion of their next message (Codex) does so after this turn.

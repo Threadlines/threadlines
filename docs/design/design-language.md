@@ -239,7 +239,10 @@ plain chip, even when its label happens to read like a sentence.
 | Meta (versions, dates, counts, ids)   | 10.5–11, `font-mono`       | 400    | muted      |
 
 - One page title per page. Section titles are sentence case, not uppercase
-  eyebrow labels.
+  eyebrow labels. If a heading feels impressive, it is too big.
+- Copy is scannable: lead with the feature name and keep descriptions to one
+  sentence (about two rendered lines). Users skim changelogs and UIs; they
+  don't read them.
 - Secondary text is opaque `--muted-foreground`, never faded with opacity
   (`/70`, `/80`): faded grey falls under 4.5:1 contrast on the darker
   surfaces.
@@ -304,6 +307,9 @@ must not move that often:
 | Section title to its group                         | 8px                                                             |
 | Group rows                                         | 10px / 14px padding, at least 52px tall with a description      |
 | Dense list rows (two-column grids)                 | 10px / 14px padding, at least 48px tall                         |
+
+Keep tight vertical rhythm: if a page scrolls mostly through whitespace, shrink
+the gaps, not the content.
 
 ## Radii
 
@@ -399,5 +405,5 @@ a switch's off track and a field's edge must stay visible against the group
 ## Marketing site
 
 The marketing site keeps its flat rules: structure from type, spacing and
-hairlines; no cards except clickable tiles; one display-size element per page;
-its own tokens (`--surface`, `--fg-*`).
+hairlines; no cards except clickable tiles; one display-size element per page
+(~40px max); body 15-16px; its own tokens (`--surface`, `--fg-*`).

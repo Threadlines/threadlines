@@ -41,6 +41,10 @@ describe("subscribeDeviceEventLog", () => {
     push(': hello\n\ndata: {"events":[{"id":1,"kind":"launch","summary":"Settings"}]}\n\n');
     push('data: {"event":{"id":2,"kind":"tap",');
     push('"msg":"Tapped"}}\r\n\r\ndata: not json\n\n');
+    // Split `\r\n` across chunks must not be mistaken for a blank-line event boundary.
+    push('data: {"event":{"id":3,"kind":"ui","msg":"Split CRLF"}}\r');
+    push("\n\r");
+    push("\n");
     await new Promise((resolve) => setTimeout(resolve, 0));
     stop();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -49,6 +53,7 @@ describe("subscribeDeviceEventLog", () => {
     expect(batches).toEqual([
       { ids: [1], reset: true },
       { ids: [2], reset: false },
+      { ids: [3], reset: false },
     ]);
     expect(cancelled).toBe(true);
   });

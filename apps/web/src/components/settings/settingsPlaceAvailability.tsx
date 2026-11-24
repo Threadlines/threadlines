@@ -18,12 +18,14 @@ import {
 import { useSavedEnvironmentRegistryStore } from "../../environments/runtime";
 import { isElectron } from "../../env";
 import { usePrimarySessionAccess } from "../../hooks/useAuthAccess";
+import { useSettings } from "../../hooks/useSettings";
 import { pushAlertsSupport, relayLinkOf, usePushAlertsStore } from "../../pushAlerts/pushAlerts";
 import {
   canSetDesktopBackgroundOptions,
   useDesktopBackgroundOptions,
 } from "./desktopBackgroundOptions";
 import { isRemotelyReachable } from "./connections/serverReach";
+import { deriveMaintainedProviderRows, isProviderRowEnabled } from "./providerEnablement";
 import { selectSettingsSearchActive, useSettingsSearchStore } from "./settingsSearchStore";
 
 /**
@@ -81,6 +83,12 @@ export interface PlaceSignals {
   readonly projectContext: boolean;
   /** This computer's server has devices (capability `devices`). */
   readonly devices: boolean;
+  /** At least one Claude Code instance is turned on. */
+  readonly claudeEnabled: boolean;
+  /** At least one Codex instance is turned on. */
+  readonly codexEnabled: boolean;
+  /** At least one Antigravity instance is turned on. */
+  readonly antigravityEnabled: boolean;
 }
 
 /**
@@ -131,6 +139,11 @@ const SHOWN_WHEN: Partial<Record<SettingsPlaceSearchId, (signals: PlaceSignals) 
   "devices.enable": (s) => !s.phone && s.devices,
   "devices.agentAccess": (s) => !s.phone && s.devices,
   "devices.tools": (s) => !s.phone && s.devices,
+  // Providers › Suggestions: only providers the user currently has turned on.
+  "providers.suggestions": (s) => s.claudeEnabled || s.codexEnabled || s.antigravityEnabled,
+  "providers.claudeSuggestions": (s) => s.claudeEnabled,
+  "providers.codexSuggestions": (s) => s.codexEnabled,
+  "providers.antigravitySuggestions": (s) => s.antigravityEnabled,
 };
 
 /**
@@ -152,6 +165,9 @@ const STATIC_SIGNALS: PlaceSignals = {
   remotelyReachable: true,
   projectContext: true,
   devices: true,
+  claudeEnabled: true,
+  codexEnabled: true,
+  antigravityEnabled: true,
 };
 
 const PlaceSignalsContext = createContext<PlaceSignals | null>(null);
@@ -198,6 +214,24 @@ export interface SettingsSearchHost {
   readonly searchSession: number;
 }
 
+function useEnabledSuggestionProviders() {
+  const providers = useSettings((settings) => settings.providers);
+  const providerInstances = useSettings((settings) => settings.providerInstances);
+  return useMemo(() => {
+    const rows = deriveMaintainedProviderRows({ providers, providerInstances });
+    let claudeEnabled = false;
+    let codexEnabled = false;
+    let antigravityEnabled = false;
+    for (const row of rows) {
+      if (!isProviderRowEnabled(row)) continue;
+      if (row.driver === "claudeAgent") claudeEnabled = true;
+      else if (row.driver === "codex") codexEnabled = true;
+      else if (row.driver === "antigravity") antigravityEnabled = true;
+    }
+    return { claudeEnabled, codexEnabled, antigravityEnabled };
+  }, [providerInstances, providers]);
+}
+
 function usePlaceSignals(phone: boolean, host: SettingsSearchHost): PlaceSignals {
   const background = useDesktopBackgroundOptions();
   const dictation = useDictationStatus(usePrimaryEnvironmentId());
@@ -218,6 +252,7 @@ function usePlaceSignals(phone: boolean, host: SettingsSearchHost): PlaceSignals
   const alertsSupport = pushAlertsSupport();
   const alertsShown = alertsSupport !== "unsupported" && alertComputers > 0;
   const canSetBackground = background !== null && canSetDesktopBackgroundOptions();
+  const { claudeEnabled, codexEnabled, antigravityEnabled } = useEnabledSuggestionProviders();
   return useMemo(
     () => ({
       phone,
@@ -237,15 +272,21 @@ function usePlaceSignals(phone: boolean, host: SettingsSearchHost): PlaceSignals
       remotelyReachable: isElectron ? desktopReach : authPolicy === "remote-reachable",
       projectContext,
       devices,
+      claudeEnabled,
+      codexEnabled,
+      antigravityEnabled,
     }),
     [
       alertsEnabled,
       alertsPermission,
       alertsShown,
       alertsSupport,
+      antigravityEnabled,
       authPolicy,
       background,
       canSetBackground,
+      claudeEnabled,
+      codexEnabled,
       desktopReach,
       devices,
       dictation,
@@ -311,13 +352,15 @@ export function SettingsAvailabilityProvider({
 
 /** Answers whether a settings place is on screen here; follows the live facts. */
 export function useSettingsPlaceShown(): (id: SettingsPlaceSearchId) => boolean {
-  const gathered = useContext(PlaceSignalsContext) ?? STATIC_SIGNALS;
+  const fromProvider = useContext(PlaceSignalsContext);
+  const fallbackProviders = useEnabledSuggestionProviders();
   // The nearest surface wins: a page drawn as the phone's says so itself.
   const phone = useSettingsSurface() === "phone";
-  const signals = useMemo(
-    () => (gathered.phone === phone ? gathered : { ...gathered, phone }),
-    [gathered, phone],
-  );
+  const signals = useMemo(() => {
+    const base =
+      fromProvider ?? ({ ...STATIC_SIGNALS, ...fallbackProviders } satisfies PlaceSignals);
+    return base.phone === phone ? base : { ...base, phone };
+  }, [fallbackProviders, fromProvider, phone]);
   return useCallback((id) => placeShown(signals, id), [signals]);
 }
 

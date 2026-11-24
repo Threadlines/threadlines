@@ -19,6 +19,8 @@ export interface ProjectInstructionsShape {
   readonly forSession: (input: {
     readonly sessionKey: ThreadId;
     readonly runtimeMode: RuntimeMode;
+    /** False when the session is starting without the room/app MCP server. */
+    readonly canUseNoteTools?: boolean | undefined;
   }) => Effect.Effect<string | undefined>;
 }
 
