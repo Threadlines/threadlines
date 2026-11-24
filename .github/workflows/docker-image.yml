@@ -58,25 +58,32 @@ jobs:
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         # The npm registry can take a while to serve a version it just
-        # accepted ("being processed": 0.10.0 took 14 minutes), and a manual
-        # run may name a version still publishing, so the build waits rather
-        # than failing on ordering. 40 minutes, inside the job's 60.
+        # accepted ("being processed": 0.10.0 took 14 minutes), and the
+        # tarball CDN can lag several minutes behind the metadata (0.11.0
+        # served metadata at 12 minutes and the .tgz 5 minutes later). Wait
+        # until both metadata and the tarball URL respond before building.
+        # 40 minutes, inside the job's 60.
         run: |
           set -euo pipefail
           wait_minutes=40
           attempts=$((wait_minutes * 6))
           for attempt in $(seq 1 "$attempts"); do
-            if npm view "@threadlines/server@${VERSION}" version > /dev/null 2>&1; then
-              echo "npm has ${VERSION}"
+            tarball="$(npm view "@threadlines/server@${VERSION}" dist.tarball --loglevel=error 2>/dev/null | tr -d '\r\n' || true)"
+            if [[ "$tarball" == https://* ]] && curl -fsSIL --max-time 15 "$tarball" > /dev/null 2>&1; then
+              echo "npm has ${VERSION} (${tarball})"
               exit 0
             fi
             # One line a minute, not one every ten seconds.
             if [ $((attempt % 6)) = 1 ]; then
-              echo "npm does not have ${VERSION} yet ($(((attempt - 1) / 6)) of ${wait_minutes} minutes waited)"
+              if [[ "$tarball" == https://* ]]; then
+                echo "npm metadata has ${VERSION}, waiting for tarball ${tarball} ($(((attempt - 1) / 6)) of ${wait_minutes} minutes waited)"
+              else
+                echo "npm does not have ${VERSION} yet ($(((attempt - 1) / 6)) of ${wait_minutes} minutes waited)"
+              fi
             fi
             sleep 10
           done
-          echo "::error::@threadlines/server@${VERSION} never appeared on npm in ${wait_minutes} minutes."
+          echo "::error::@threadlines/server@${VERSION} tarball never became reachable on npm in ${wait_minutes} minutes."
           exit 1
 
       - name: Set up QEMU
