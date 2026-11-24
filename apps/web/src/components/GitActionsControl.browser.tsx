@@ -239,6 +239,7 @@ vi.mock("~/store", () => ({
   selectBootstrapCompleteForActiveEnvironment: () => true,
   selectProjectByRef: () => null,
   selectThreadByRef: () => null,
+  selectThreadShellByRef: () => null,
   selectThreadExistsByRef: () => false,
   selectSidebarThreadSummaryByRef: () => null,
   selectThreadIdsByProjectRef: () => [],

@@ -156,6 +156,7 @@ vi.mock("~/store", () => ({
   selectProjectsAcrossEnvironments: vi.fn(() => []),
   selectSidebarThreadSummaryByRef: vi.fn(() => null),
   selectThreadByRef: vi.fn(() => null),
+  selectThreadShellByRef: vi.fn(() => null),
   selectThreadShellsAcrossEnvironments: vi.fn(() => []),
   selectThreadsAcrossEnvironments: vi.fn(() => []),
 }));
@@ -174,6 +175,7 @@ vi.mock("~/uiStateStore", () => ({
   useUiStateStore: {
     getState: () => ({
       clearThreadUi: vi.fn(),
+      syncThread: vi.fn(),
       syncPromotedDraftThreadRefs: vi.fn(),
     }),
   },

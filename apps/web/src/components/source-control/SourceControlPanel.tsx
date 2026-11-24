@@ -24,6 +24,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { useShallow } from "zustand/react/shallow";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -117,7 +118,11 @@ import { getAppModelOptionsForInstance } from "~/modelSelection";
 import { useServerProviders } from "~/rpc/serverState";
 import { getSourceControlPresentation } from "~/sourceControlPresentation";
 import { useStore } from "~/store";
-import { createProjectSelectorByRef, createThreadSelectorByRef } from "~/storeSelectors";
+import {
+  createProjectSelectorByRef,
+  createThreadCheckoutSelectorByRef,
+  createThreadProviderReviewSelectorByRef,
+} from "~/storeSelectors";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { getVcsRefBadge, type WorktreeCleanupRow } from "~/worktreeCleanup";
@@ -1433,7 +1438,7 @@ function SourceControlBranchMenu({
 }) {
   const queryClient = useQueryClient();
   const activeThread = useStore(
-    useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]),
+    useMemo(() => createThreadCheckoutSelectorByRef(activeThreadRef), [activeThreadRef]),
   );
   const activeThreadSession = activeThread?.session ?? null;
   const selectServerThreadCheckout = useThreadCheckoutSelection({
@@ -2063,13 +2068,24 @@ export function SourceControlPanel({
     setPendingDropStash(null);
   }, [cwd, environmentId]);
   const reviewThread = useStore(
-    useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]),
+    useMemo(() => createThreadProviderReviewSelectorByRef(activeThreadRef), [activeThreadRef]),
   );
   const reviewDraftSession = useComposerDraftStore((store) =>
     activeThreadRef ? store.getDraftSessionByRef(activeThreadRef) : null,
   );
-  const reviewComposerDraft = useComposerDraftStore((store) =>
-    activeThreadRef ? store.getComposerDraft(activeThreadRef) : null,
+  const reviewComposerDraft = useComposerDraftStore(
+    useShallow((store) => {
+      const draft = activeThreadRef ? store.getComposerDraft(activeThreadRef) : null;
+      if (!draft) {
+        return null;
+      }
+      return {
+        activeProvider: draft.activeProvider,
+        modelSelectionByProvider: draft.modelSelectionByProvider,
+        runtimeMode: draft.runtimeMode,
+        interactionMode: draft.interactionMode,
+      };
+    }),
   );
   const reviewProjectRef = useMemo(() => {
     const threadContext = reviewThread ?? reviewDraftSession;

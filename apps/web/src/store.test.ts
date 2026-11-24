@@ -3778,4 +3778,81 @@ describe("selectRunningSidebarThreadsAcrossEnvironments", () => {
     expect(ids(unknown.local)).toEqual([local.id, remote.id]);
     expect(unknown.remote).toEqual([]);
   });
+
+  it("keeps thread shell identity when an upserted shell carries a fresh structurally equal modelSelection", () => {
+    const thread = makeThread({
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+    });
+    const baseState = makeState(thread);
+    const makeUpsert = (sequence: number, updatedAt: string) =>
+      ({
+        kind: "thread-upserted",
+        sequence,
+        thread: {
+          id: thread.id,
+          projectId: thread.projectId,
+          title: thread.title,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          branch: thread.branch,
+          worktreePath: thread.worktreePath,
+          effectiveCwd: thread.effectiveCwd,
+          goal: null,
+          latestTurn: null,
+          createdAt: thread.createdAt,
+          updatedAt,
+          archivedAt: thread.archivedAt,
+          pinnedAt: thread.pinnedAt,
+          pullRequestAutoFix: false,
+          pullRequestAutoMerge: null,
+          linkedPullRequests: [],
+          participants: [],
+          doneOverride: null,
+          lastSeenAt: null,
+          session: null,
+          latestUserMessageAt: null,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+          cumulativeDiffStat: null,
+          diffStatBaselineTurnCount: 0,
+          ...NO_CHILD_THREAD_SHELL_FIELDS,
+        },
+      }) as const;
+
+    const first = applyShellEvent(
+      baseState,
+      makeUpsert(2, "2026-02-27T00:00:01.000Z"),
+      localEnvironmentId,
+    );
+    const firstShell = localEnvironmentStateOf(first).threadShellById[thread.id];
+    expect(firstShell).toBeDefined();
+
+    // Exact same content with a fresh modelSelection object must keep the shell reference.
+    const second = applyShellEvent(
+      first,
+      makeUpsert(3, "2026-02-27T00:00:01.000Z"),
+      localEnvironmentId,
+    );
+    expect(localEnvironmentStateOf(second).threadShellById[thread.id]).toBe(firstShell);
+
+    // When updatedAt moves, the shell changes but modelSelection keeps its reference.
+    const third = applyShellEvent(
+      second,
+      makeUpsert(4, "2026-02-27T00:00:02.000Z"),
+      localEnvironmentId,
+    );
+    const thirdShell = localEnvironmentStateOf(third).threadShellById[thread.id];
+    expect(thirdShell).not.toBe(firstShell);
+    expect(thirdShell?.modelSelection).toBe(firstShell?.modelSelection);
+  });
 });

@@ -304,9 +304,13 @@ function normalizeModelSelection<T extends { instanceId: string; model: string }
   if (!isProviderDriverKind(selection.instanceId)) {
     return selection;
   }
+  const resolvedModel = resolveModelSlugForProvider(selection.instanceId, selection.model);
+  if (resolvedModel === selection.model) {
+    return selection;
+  }
   return {
     ...selection,
-    model: resolveModelSlugForProvider(selection.instanceId, selection.model),
+    model: resolvedModel,
   };
 }
 
@@ -1543,19 +1547,69 @@ function sideTurnsEqual(
   );
 }
 
+function modelSelectionsEqual(
+  left: ThreadShell["modelSelection"],
+  right: ThreadShell["modelSelection"],
+): boolean {
+  if (left === right) return true;
+  if (left.instanceId !== right.instanceId || left.model !== right.model) return false;
+  const leftOptions = left.options;
+  const rightOptions = right.options;
+  if (leftOptions === rightOptions) return true;
+  const a = leftOptions ?? [];
+  const b = rightOptions ?? [];
+  if (a.length !== b.length) return false;
+  return a.every((option, index) => {
+    const other = b[index];
+    return other !== undefined && option.id === other.id && option.value === other.value;
+  });
+}
+
 /**
- * A changed shell, keeping the participants it had while they are the same.
- * The server pushes a whole shell again on every update a streaming turn
- * makes, and what the chat builds from the participants (agent names and
- * labels) should keep its identity across them.
+ * A changed shell, keeping references to nested structures (`participants`,
+ * `modelSelection`, `linkedPullRequests`, `dismissedPullRequests`) while their
+ * contents are unchanged. The server pushes a whole shell again on every update
+ * a streaming turn makes, and consumers keyed on those fields should keep
+ * reference identity across them.
  */
-function withKeptParticipants(previous: ThreadShell | undefined, next: ThreadShell): ThreadShell {
-  const kept = previous?.participants;
-  return kept !== undefined &&
-    kept !== next.participants &&
-    participantsEqual(kept, next.participants)
-    ? { ...next, participants: kept }
-    : next;
+function withKeptShellReferences(
+  previous: ThreadShell | undefined,
+  next: ThreadShell,
+): ThreadShell {
+  if (!previous) return next;
+  const keepParticipants =
+    previous.participants !== undefined &&
+    previous.participants !== next.participants &&
+    participantsEqual(previous.participants, next.participants);
+  const keepModelSelection =
+    previous.modelSelection !== next.modelSelection &&
+    modelSelectionsEqual(previous.modelSelection, next.modelSelection);
+  const keepLinkedPullRequests =
+    previous.linkedPullRequests !== next.linkedPullRequests &&
+    linkedPullRequestsEqual(previous.linkedPullRequests, next.linkedPullRequests);
+  const keepDismissedPullRequests =
+    previous.dismissedPullRequests !== next.dismissedPullRequests &&
+    dismissedPullRequestsEqual(previous.dismissedPullRequests, next.dismissedPullRequests);
+  const keepWorktreeOrigin =
+    previous.worktreeOrigin !== next.worktreeOrigin &&
+    worktreeOriginsEqual(previous.worktreeOrigin, next.worktreeOrigin);
+  if (
+    !keepParticipants &&
+    !keepModelSelection &&
+    !keepLinkedPullRequests &&
+    !keepDismissedPullRequests &&
+    !keepWorktreeOrigin
+  ) {
+    return next;
+  }
+  return {
+    ...next,
+    ...(keepParticipants ? { participants: previous.participants } : {}),
+    ...(keepModelSelection ? { modelSelection: previous.modelSelection } : {}),
+    ...(keepLinkedPullRequests ? { linkedPullRequests: previous.linkedPullRequests } : {}),
+    ...(keepDismissedPullRequests ? { dismissedPullRequests: previous.dismissedPullRequests } : {}),
+    ...(keepWorktreeOrigin ? { worktreeOrigin: previous.worktreeOrigin } : {}),
+  };
 }
 
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
@@ -1566,7 +1620,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.codexThreadId === right.codexThreadId &&
     left.projectId === right.projectId &&
     left.title === right.title &&
-    left.modelSelection === right.modelSelection &&
+    modelSelectionsEqual(left.modelSelection, right.modelSelection) &&
     left.runtimeMode === right.runtimeMode &&
     left.interactionMode === right.interactionMode &&
     left.error === right.error &&
@@ -1802,7 +1856,7 @@ function writeThreadState(
       ...nextState,
       threadShellById: {
         ...nextState.threadShellById,
-        [nextThread.id]: withKeptParticipants(previousShell, nextShell),
+        [nextThread.id]: withKeptShellReferences(previousShell, nextShell),
       },
     };
   }
@@ -2035,7 +2089,7 @@ function writeThreadShellState(
       ...nextState,
       threadShellById: {
         ...nextState.threadShellById,
-        [nextThread.shell.id]: withKeptParticipants(previousShell, nextThread.shell),
+        [nextThread.shell.id]: withKeptShellReferences(previousShell, nextThread.shell),
       },
     };
   }
@@ -4234,6 +4288,15 @@ export function selectProjectByRef(
 ): Project | undefined {
   return ref
     ? selectEnvironmentState(state, ref.environmentId).projectById[ref.projectId]
+    : undefined;
+}
+
+export function selectThreadShellByRef(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+): ThreadShell | undefined {
+  return ref
+    ? selectEnvironmentState(state, ref.environmentId).threadShellById[ref.threadId]
     : undefined;
 }
 

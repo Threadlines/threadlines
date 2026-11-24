@@ -90,7 +90,7 @@ import {
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { refreshSourceControlDiscoveryAfterReconnect } from "../lib/sourceControlDiscoveryState";
-import { useInboxThreads } from "../hooks/useInboxThreads";
+import { InboxThreadsProvider, useInboxThreads } from "../hooks/useInboxThreads";
 import { useSettings } from "../hooks/useSettings";
 import { isUnreadFinishedWork } from "../components/Sidebar.logic";
 import { toSortableTimestamp } from "../lib/threadSort";
@@ -278,52 +278,54 @@ function RootRouteView() {
         <EnvironmentConnectionManagerBootstrap />
         <AppShellIdlePreloads />
         <PushAlertsRuntime />
-        <AlertSoundRuntime />
-        {isElectron ? <DesktopTaskbarStatusSync /> : null}
-        {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
-        {primaryEnvironmentAuthenticated ? (
-          <OptionalChunk>
-            <ThemeLibrarySyncLazy.Component />
-          </OptionalChunk>
-        ) : null}
-        {/* The Keep bar every theme trial shows, the import dialog, theme file drops. */}
-        <ThemeTrialBar />
-        {isElectron ? <BrowserProfileReconciler /> : null}
-        {/* Plain Suspense: the browser panel needs it, so a failure shows. */}
-        {isElectron ? (
-          <Suspense fallback={null}>
-            <BrowserHostLayerLazy.Component />
-          </Suspense>
-        ) : null}
-        <SshPasswordPromptDialog />
-        <QuitConfirmationDialog />
-        <DesktopUpdateInstallDialog />
-        <ThreadDeleteDialogHost />
-        <ThreadMoveDialogHost />
-        <MoveThreadsDialogHost />
-        <ProjectSetupDialogHost />
-        <ThreadRenameDialogHost />
-        <DeviceRenameDialogHost />
-        <ConnectComputerDialogHost />
-        <WhatsNewDialogHost />
-        <ReportProblemDialogHost />
-        <ExpandedImageViewerHost />
-        <ProviderSignInDialogHost />
-        {primaryEnvironmentAuthenticated ? <OutsideAgentsHost /> : null}
-        <HostedStaticEnvironmentBootstrap />
-        {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
-        {/* Not over first-run setup: the one chance would go to a screen about something else. */}
-        {shownRouteId !== "/setup" ? <WhatsNewNotice /> : null}
-        {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
-        <ProviderUpdateProgress />
-        {primaryEnvironmentAuthenticated ? <SourceControlToolUpdateLaunchNotification /> : null}
-        {primaryEnvironmentAuthenticated ? <WebSocketConnectionCoordinator /> : null}
-        <ComputerStallNotices />
-        {primaryEnvironmentAuthenticated ? (
-          <WebSocketConnectionSurface>{appShell}</WebSocketConnectionSurface>
-        ) : (
-          appShell
-        )}
+        <InboxThreadsProvider>
+          <AlertSoundRuntime />
+          {isElectron ? <DesktopTaskbarStatusSync /> : null}
+          {primaryEnvironmentAuthenticated ? <ScheduledTasksSync /> : null}
+          {primaryEnvironmentAuthenticated ? (
+            <OptionalChunk>
+              <ThemeLibrarySyncLazy.Component />
+            </OptionalChunk>
+          ) : null}
+          {/* The Keep bar every theme trial shows, the import dialog, theme file drops. */}
+          <ThemeTrialBar />
+          {isElectron ? <BrowserProfileReconciler /> : null}
+          {/* Plain Suspense: the browser panel needs it, so a failure shows. */}
+          {isElectron ? (
+            <Suspense fallback={null}>
+              <BrowserHostLayerLazy.Component />
+            </Suspense>
+          ) : null}
+          <SshPasswordPromptDialog />
+          <QuitConfirmationDialog />
+          <DesktopUpdateInstallDialog />
+          <ThreadDeleteDialogHost />
+          <ThreadMoveDialogHost />
+          <MoveThreadsDialogHost />
+          <ProjectSetupDialogHost />
+          <ThreadRenameDialogHost />
+          <DeviceRenameDialogHost />
+          <ConnectComputerDialogHost />
+          <WhatsNewDialogHost />
+          <ReportProblemDialogHost />
+          <ExpandedImageViewerHost />
+          <ProviderSignInDialogHost />
+          {primaryEnvironmentAuthenticated ? <OutsideAgentsHost /> : null}
+          <HostedStaticEnvironmentBootstrap />
+          {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
+          {/* Not over first-run setup: the one chance would go to a screen about something else. */}
+          {shownRouteId !== "/setup" ? <WhatsNewNotice /> : null}
+          {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+          <ProviderUpdateProgress />
+          {primaryEnvironmentAuthenticated ? <SourceControlToolUpdateLaunchNotification /> : null}
+          {primaryEnvironmentAuthenticated ? <WebSocketConnectionCoordinator /> : null}
+          <ComputerStallNotices />
+          {primaryEnvironmentAuthenticated ? (
+            <WebSocketConnectionSurface>{appShell}</WebSocketConnectionSurface>
+          ) : (
+            appShell
+          )}
+        </InboxThreadsProvider>
         {authGateState.status === "hosted-static" ? <HostedStaticServerStateBridge /> : null}
         {authGateState.status === "hosted-static" ? <SavedEnvironmentConnectionOverlay /> : null}
       </AnchoredToastProvider>

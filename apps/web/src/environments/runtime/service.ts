@@ -6,6 +6,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
+  type OrchestrationThreadShell,
   type ScopedThreadRef,
   type ServerConfig,
   type TerminalStreamEvent,
@@ -94,8 +95,8 @@ import {
   selectProjectsAcrossEnvironments,
   selectSidebarThreadSummaryByRef,
   selectThreadByRef,
+  selectThreadShellByRef,
   selectThreadShellsAcrossEnvironments,
-  selectThreadsAcrossEnvironments,
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
 import { useUiStateStore } from "~/uiStateStore";
@@ -1197,6 +1198,18 @@ function syncProjectUiFromStore() {
   );
 }
 
+function syncSingleThreadUiFromShell(
+  thread: OrchestrationThreadShell,
+  environmentId: EnvironmentId,
+) {
+  useUiStateStore.getState().syncThread({
+    key: scopedThreadKey(scopeThreadRef(environmentId, thread.id)),
+    seedVisitedAt: thread.updatedAt ?? thread.createdAt,
+    serverLastSeenAt: thread.lastSeenAt,
+    serverDoneOverrideAt: thread.doneOverride?.at ?? null,
+  });
+}
+
 function syncThreadUiFromStore() {
   const appState = useStore.getState();
   // The shells carry everything read here; whole threads would rebuild every
@@ -1228,7 +1241,7 @@ function reconcileSnapshotDerivedState() {
   syncProjectUiFromStore();
   syncThreadUiFromStore();
 
-  const threads = selectThreadsAcrossEnvironments(useStore.getState());
+  const threads = selectThreadShellsAcrossEnvironments(useStore.getState());
   const activeThreadKeys = collectActiveTerminalThreadIds({
     snapshotThreads: threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -1424,7 +1437,9 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
         ? event.threadId
         : null;
   const threadRef = threadId ? scopeThreadRef(environmentId, threadId) : null;
-  const previousThread = threadRef ? selectThreadByRef(useStore.getState(), threadRef) : undefined;
+  const previousThread = threadRef
+    ? selectThreadShellByRef(useStore.getState(), threadRef)
+    : undefined;
 
   writeThreadStore(environmentId, threadId, () =>
     useStore.getState().applyShellEvent(event, environmentId),
@@ -1437,13 +1452,13 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       syncProjectUiFromStore();
       return;
     case "thread-upserted":
-      syncThreadUiFromStore();
+      syncSingleThreadUiFromShell(event.thread, environmentId);
       settleComposerPullRequestDismissals({
         environmentId,
         threadId: event.thread.id,
         sequence: event.sequence,
       });
-      if (!previousThread && threadRef) {
+      if (threadRef) {
         markPromotedDraftThreadByRef(threadRef);
       }
       threadDetails.warmNonIdle(environmentId, [event.thread]);

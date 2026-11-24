@@ -8,7 +8,7 @@ const inferRememberedCheckpointTurnCounts = keyedMemo((summaries: Thread["turnDi
   inferCheckpointTurnCountByTurnId(summaries),
 );
 
-export function useTurnDiffSummaries(activeThread: Thread | undefined) {
+export function useTurnDiffSummaries(activeThread: Pick<Thread, "turnDiffSummaries"> | undefined) {
   const turnDiffSummaries = useMemo(() => {
     if (!activeThread) {
       return [];

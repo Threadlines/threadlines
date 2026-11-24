@@ -3,6 +3,7 @@ import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
@@ -110,68 +111,78 @@ const fatalStartupCause = <E>(stage: string, cause: Cause.Cause<E>) =>
  * the menus, tray, file protocol, updater and IPC handlers can be built while
  * it boots. The window waits for those (see allowMainWindowOpen), not for this.
  */
-const startBackend = Effect.gen(function* () {
-  const backendManager = yield* DesktopBackendManager.DesktopBackendManager;
-  const state = yield* DesktopState.DesktopState;
-  const environment = yield* DesktopEnvironment.DesktopEnvironment;
-  const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
-  const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-  yield* logBootstrapInfo("bootstrap start");
+const startBackend = (shellEnvironmentFiber: Fiber.Fiber<void>) =>
+  Effect.gen(function* () {
+    const backendManager = yield* DesktopBackendManager.DesktopBackendManager;
+    const shutdown = yield* DesktopLifecycle.DesktopShutdown;
+    const state = yield* DesktopState.DesktopState;
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+    const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+    yield* logBootstrapInfo("bootstrap start");
 
-  if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
-    return yield* new DesktopDevelopmentBackendPortRequiredError();
-  }
+    if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
+      return yield* new DesktopDevelopmentBackendPortRequiredError();
+    }
 
-  const settings = yield* desktopSettings.get;
-  const probeHosts = desktopBackendPortProbeHosts(settings.serverExposureMode);
-  const backendPortSelection = yield* resolveDesktopBackendPort({
-    configuredPort: environment.configuredBackendPort,
-    probeHosts,
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: BACKEND_PORT_DISCOVERY_TIMEOUT,
-      orElse: () => new DesktopBackendPortDiscoveryTimeoutError(),
-    }),
-  );
-  const backendPort = backendPortSelection.port;
-  yield* logBootstrapInfo(
-    backendPortSelection.selectedByScan
-      ? "selected backend port via sequential scan"
-      : "using configured backend port",
-    {
-      port: backendPort,
-      ...(backendPortSelection.selectedByScan ? { startPort: DEFAULT_DESKTOP_BACKEND_PORT } : {}),
-    },
-  );
-
-  if (settings.serverExposureMode !== environment.defaultDesktopSettings.serverExposureMode) {
-    yield* logBootstrapInfo("bootstrap restoring persisted server exposure mode", {
-      mode: settings.serverExposureMode,
-    });
-  }
-  const serverExposureState = yield* serverExposure.configureFromSettings({
-    port: backendPort,
-    selectedByScan: backendPortSelection.selectedByScan,
-  });
-  const backendConfig = yield* serverExposure.backendConfig;
-  yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
-    baseUrl: backendConfig.httpBaseUrl.href,
-  });
-  if (serverExposureState.endpointUrl) {
-    yield* logBootstrapInfo("bootstrap enabled network access", {
-      endpointUrl: serverExposureState.endpointUrl,
-    });
-  } else if (settings.serverExposureMode === "network-accessible") {
-    yield* logBootstrapWarning(
-      "bootstrap fell back to local-only because no advertised network host was available",
+    const settings = yield* desktopSettings.get;
+    const probeHosts = desktopBackendPortProbeHosts(settings.serverExposureMode);
+    const backendPortSelection = yield* resolveDesktopBackendPort({
+      configuredPort: environment.configuredBackendPort,
+      probeHosts,
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: BACKEND_PORT_DISCOVERY_TIMEOUT,
+        orElse: () => new DesktopBackendPortDiscoveryTimeoutError(),
+      }),
     );
-  }
+    const backendPort = backendPortSelection.port;
+    yield* logBootstrapInfo(
+      backendPortSelection.selectedByScan
+        ? "selected backend port via sequential scan"
+        : "using configured backend port",
+      {
+        port: backendPort,
+        ...(backendPortSelection.selectedByScan ? { startPort: DEFAULT_DESKTOP_BACKEND_PORT } : {}),
+      },
+    );
 
-  if (!(yield* Ref.get(state.quitting))) {
-    yield* backendManager.start;
-    yield* logBootstrapInfo("bootstrap backend start requested");
-  }
-}).pipe(Effect.withSpan("desktop.bootstrap"));
+    if (settings.serverExposureMode !== environment.defaultDesktopSettings.serverExposureMode) {
+      yield* logBootstrapInfo("bootstrap restoring persisted server exposure mode", {
+        mode: settings.serverExposureMode,
+      });
+    }
+    const serverExposureState = yield* serverExposure.configureFromSettings({
+      port: backendPort,
+      selectedByScan: backendPortSelection.selectedByScan,
+    });
+    const backendConfig = yield* serverExposure.backendConfig;
+    yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
+      baseUrl: backendConfig.httpBaseUrl.href,
+    });
+    if (serverExposureState.endpointUrl) {
+      yield* logBootstrapInfo("bootstrap enabled network access", {
+        endpointUrl: serverExposureState.endpointUrl,
+      });
+    } else if (settings.serverExposureMode === "network-accessible") {
+      yield* logBootstrapWarning(
+        "bootstrap fell back to local-only because no advertised network host was available",
+      );
+    }
+
+    // Wait for the login-shell environment probe before spawning the backend
+    // (and before updates.configure below) so both see the recovered PATH.
+    // Race against shutdown so quitting while a slow shell probes exits promptly.
+    yield* Effect.raceFirst(
+      Fiber.join(shellEnvironmentFiber),
+      shutdown.awaitRequest.pipe(Effect.andThen(Fiber.interrupt(shellEnvironmentFiber))),
+    );
+
+    if (!(yield* Ref.get(state.quitting))) {
+      yield* backendManager.start;
+      yield* logBootstrapInfo("bootstrap backend start requested");
+    }
+  }).pipe(Effect.withSpan("desktop.bootstrap"));
 
 const startup = Effect.gen(function* () {
   const appIdentity = yield* DesktopAppIdentity.DesktopAppIdentity;
@@ -181,6 +192,7 @@ const startup = Effect.gen(function* () {
   const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
   const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+  const state = yield* DesktopState.DesktopState;
   const updates = yield* DesktopUpdates.DesktopUpdates;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const statusIndicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
@@ -188,7 +200,9 @@ const startup = Effect.gen(function* () {
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const threadLinks = yield* DesktopThreadLinks.DesktopThreadLinks;
 
-  yield* shellEnvironment.installIntoProcess;
+  // Probe the login shell in parallel with Electron initialization and backend
+  // port discovery; joined in startBackend before spawning the server process.
+  const shellEnvironmentFiber = yield* Effect.forkChild(shellEnvironment.installIntoProcess);
   yield* logStartupInfo("runtime logging configured", { logDir: environment.logDir });
   yield* desktopSettings.load;
 
@@ -214,7 +228,12 @@ const startup = Effect.gen(function* () {
       logStartupWarning("browser passkeys could not be enabled", { cause: String(cause) }),
     ),
   );
-  yield* startBackend.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
+  yield* startBackend(shellEnvironmentFiber).pipe(
+    Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)),
+  );
+  if (yield* Ref.get(state.quitting)) {
+    return;
+  }
   yield* applicationMenu.configure;
   yield* statusIndicator.configure;
   yield* background.configure;

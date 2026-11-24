@@ -25,7 +25,7 @@ import {
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
-import { createFenceTracker } from "./markdownFences";
+import { createFenceTracker, laterMathClosers } from "./markdownFences";
 
 export { splitMarkdownBlocks } from "@threadlines/shared/markdownBlocks";
 
@@ -182,17 +182,20 @@ export function buildInlineCodeFileLinkMeta(
   text: string,
   cwd: string | undefined,
 ): ReadonlyMap<string, MarkdownFileLinkMeta> {
-  const metaBySpan = new Map<string, MarkdownFileLinkMeta>();
+  let metaBySpan: Map<string, MarkdownFileLinkMeta> | null = null;
   for (const span of extractInlineCodeSpans(text)) {
-    if (metaBySpan.has(span)) continue;
+    if (metaBySpan?.has(span)) continue;
     // A dev-server address reads as a file reference too (`127.0.0.1:8080`); it
     // is handled as an address by the renderer and must not become a chip.
     if (localhostUrlFromText(span)) continue;
     if (!parseChatFileReference(span) && !isAbsoluteInlineFilePath(span)) continue;
     const meta = resolveMarkdownFileLinkMeta(span, cwd);
-    if (meta) metaBySpan.set(span, meta);
+    if (meta) {
+      metaBySpan ??= new Map();
+      metaBySpan.set(span, meta);
+    }
   }
-  return metaBySpan;
+  return metaBySpan ?? EMPTY_FILE_LINK_META_MAP;
 }
 
 const TAIL_CONTAINER_PREFIX_REGEX = /^[ \t>]*(?:(?:[-*+]|\d{1,9}[.)])(?= ))?[ \t]*/;
@@ -352,8 +355,150 @@ export function chatMarkdownUrlTransform(href: string, cwd: string | undefined):
 }
 
 const EMPTY_FILE_LINK_META_MAP: ReadonlyMap<string, MarkdownFileLinkMeta> = new Map();
+const EMPTY_SUFFIX_MAP: ReadonlyMap<string, string> = new Map();
 const EMPTY_SPAN_SET: ReadonlySet<string> = new Set();
 const EMPTY_PATHS: readonly string[] = [];
+
+/** Per-block file-path summary used to avoid rescanning settled blocks while streaming. */
+export interface MarkdownBlockFileLinkScan {
+  readonly writtenPaths: readonly string[];
+  /** Bare file names referenced in inline code (`home.png`, `math.ts:12`), without line/column. */
+  readonly bareFileNames: readonly string[];
+}
+
+const EMPTY_BLOCK_FILE_LINK_SCAN: MarkdownBlockFileLinkScan = {
+  writtenPaths: EMPTY_PATHS,
+  bareFileNames: EMPTY_PATHS,
+};
+
+const MAX_BLOCK_FILE_LINK_SCAN_CACHE_ENTRIES = 512;
+const blockFileLinkScanCache = new Map<string, MarkdownBlockFileLinkScan>();
+
+function scanMarkdownBlockFileLinksUncached(
+  text: string,
+  cwd: string | undefined,
+): MarkdownBlockFileLinkScan {
+  let writtenPaths: Set<string> | null = null;
+  let bareFileNames: Set<string> | null = null;
+  const addWritten = (written: string) => {
+    const meta = resolveMarkdownFileLinkMeta(written, cwd);
+    if (meta) {
+      writtenPaths ??= new Set();
+      writtenPaths.add(meta.filePath);
+    }
+  };
+  const lines = text.split("\n");
+  const fence = createFenceTracker({ closesLater: laterMathClosers(lines) });
+  for (const line of lines) {
+    if (fence.feed(line) !== "text") continue;
+    for (const href of extractMarkdownLinkHrefs(line)) {
+      if (href.includes("/") || href.includes("\\")) addWritten(normalizeMarkdownLinkHrefKey(href));
+    }
+    for (const match of line.matchAll(INLINE_CODE_RUN_PATTERN)) {
+      const span = match[2]?.trim();
+      if (!span) continue;
+      if (isAbsoluteInlineFilePath(span)) {
+        addWritten(span);
+        continue;
+      }
+      if (localhostUrlFromText(span)) continue;
+      const reference = parseChatFileReference(span);
+      if (reference && !reference.path.includes("/")) {
+        bareFileNames ??= new Set();
+        bareFileNames.add(reference.path);
+      }
+    }
+    const prose = line.replace(INLINE_CODE_RUN_PATTERN, (run) => " ".repeat(run.length));
+    for (const match of findBareImagePaths(prose)) addWritten(match.text);
+  }
+  if (!writtenPaths && !bareFileNames) {
+    return EMPTY_BLOCK_FILE_LINK_SCAN;
+  }
+  return {
+    writtenPaths: writtenPaths ? [...writtenPaths].toSorted() : EMPTY_PATHS,
+    bareFileNames: bareFileNames ? [...bareFileNames].toSorted() : EMPTY_PATHS,
+  };
+}
+
+/**
+ * Scans one markdown block for written file paths and bare inline-code file
+ * names. Settled blocks hit a bounded LRU cache so streaming deltas only scan
+ * the growing tail block.
+ */
+export function scanMarkdownBlockFileLinks(
+  text: string,
+  cwd: string | undefined,
+  options?: { readonly cache?: boolean },
+): MarkdownBlockFileLinkScan {
+  if (options?.cache === false) {
+    return scanMarkdownBlockFileLinksUncached(text, cwd);
+  }
+  const cacheKey = `${cwd ?? ""}\u0000${text}`;
+  const cached = blockFileLinkScanCache.get(cacheKey);
+  if (cached !== undefined) {
+    blockFileLinkScanCache.delete(cacheKey);
+    blockFileLinkScanCache.set(cacheKey, cached);
+    return cached;
+  }
+  const computed = scanMarkdownBlockFileLinksUncached(text, cwd);
+  if (blockFileLinkScanCache.size >= MAX_BLOCK_FILE_LINK_SCAN_CACHE_ENTRIES) {
+    const oldestKey = blockFileLinkScanCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      blockFileLinkScanCache.delete(oldestKey);
+    }
+  }
+  blockFileLinkScanCache.set(cacheKey, computed);
+  return computed;
+}
+
+/** Groups written file paths by trailing basename segment for O(1) bare-name lookup. */
+export function indexWrittenFilePathsByBasename(
+  writtenPaths: Iterable<string>,
+): ReadonlyMap<string, readonly string[]> {
+  const byBasename = new Map<string, Set<string>>();
+  for (const filePath of writtenPaths) {
+    const slashed = filePath.replaceAll("\\", "/");
+    const lastSlash = slashed.lastIndexOf("/");
+    if (lastSlash < 0) continue;
+    const basename = slashed.slice(lastSlash + 1);
+    if (!basename) continue;
+    let group = byBasename.get(basename);
+    if (!group) {
+      group = new Set();
+      byBasename.set(basename, group);
+    }
+    group.add(filePath);
+  }
+  const sorted = new Map<string, readonly string[]>();
+  for (const [basename, group] of byBasename) {
+    sorted.set(basename, [...group].toSorted());
+  }
+  return sorted;
+}
+
+/** Returns only the written paths that could match one of `bareFileNames`, as a newline-joined key. */
+export function selectWrittenFilePathsKeyForBareNames(
+  bareFileNames: readonly string[],
+  writtenPathsByBasename: ReadonlyMap<string, readonly string[]>,
+): string {
+  if (bareFileNames.length === 0 || writtenPathsByBasename.size === 0) {
+    return "";
+  }
+  if (bareFileNames.length === 1) {
+    const matches = writtenPathsByBasename.get(bareFileNames[0]!);
+    return matches ? matches.join("\n") : "";
+  }
+  let matched: Set<string> | null = null;
+  for (const name of bareFileNames) {
+    const group = writtenPathsByBasename.get(name);
+    if (!group) continue;
+    matched ??= new Set();
+    for (const filePath of group) {
+      matched.add(filePath);
+    }
+  }
+  return matched ? [...matched].toSorted().join("\n") : "";
+}
 
 /**
  * Every file a message names by a written-out path: a link with a folder in
@@ -364,25 +509,7 @@ const EMPTY_PATHS: readonly string[] = [];
  * that placed it. Sorted, so equal answers compare equal.
  */
 export function collectWrittenFilePaths(text: string, cwd: string | undefined): readonly string[] {
-  const paths = new Set<string>();
-  const add = (written: string) => {
-    const meta = resolveMarkdownFileLinkMeta(written, cwd);
-    if (meta) paths.add(meta.filePath);
-  };
-  const fence = createFenceTracker();
-  for (const line of text.split("\n")) {
-    if (fence.feed(line) !== "text") continue;
-    for (const href of extractMarkdownLinkHrefs(line)) {
-      if (href.includes("/") || href.includes("\\")) add(normalizeMarkdownLinkHrefKey(href));
-    }
-    for (const match of line.matchAll(INLINE_CODE_RUN_PATTERN)) {
-      const span = match[2]?.trim();
-      if (span && isAbsoluteInlineFilePath(span)) add(span);
-    }
-    const prose = line.replace(INLINE_CODE_RUN_PATTERN, (run) => " ".repeat(run.length));
-    for (const match of findBareImagePaths(prose)) add(match.text);
-  }
-  return paths.size === 0 ? EMPTY_PATHS : [...paths].toSorted();
+  return scanMarkdownBlockFileLinksUncached(text, cwd).writtenPaths;
 }
 
 /**
@@ -481,15 +608,18 @@ export function resolveMarkdownDocumentFileLinks(
     readonly writtenFilePaths?: readonly string[] | undefined;
   },
 ): MarkdownDocumentFileLinks {
-  const markdownFileLinkMetaByHref = new Map<string, MarkdownFileLinkMeta>();
+  let markdownFileLinkMetaByHrefMap: Map<string, MarkdownFileLinkMeta> | null = null;
   for (const href of extractMarkdownLinkHrefs(text)) {
     const normalizedHref = normalizeMarkdownLinkHrefKey(href);
-    if (markdownFileLinkMetaByHref.has(normalizedHref)) continue;
+    if (markdownFileLinkMetaByHrefMap?.has(normalizedHref)) continue;
     const meta = resolveMarkdownFileLinkMeta(normalizedHref, cwd);
     if (meta) {
-      markdownFileLinkMetaByHref.set(normalizedHref, meta);
+      markdownFileLinkMetaByHrefMap ??= new Map();
+      markdownFileLinkMetaByHrefMap.set(normalizedHref, meta);
     }
   }
+  const markdownFileLinkMetaByHref: ReadonlyMap<string, MarkdownFileLinkMeta> =
+    markdownFileLinkMetaByHrefMap ?? EMPTY_FILE_LINK_META_MAP;
   const { metaBySpan: inlineCodeFileLinkMetaBySpan, placedSpans: inlineCodeSpansPlacedByDocument } =
     options.inlineCodeChips
       ? placeShortReferencesByWrittenPaths(
@@ -500,15 +630,22 @@ export function resolveMarkdownDocumentFileLinks(
       : { metaBySpan: EMPTY_FILE_LINK_META_MAP, placedSpans: EMPTY_SPAN_SET };
   let fileLinkMetaByKey: ReadonlyMap<string, MarkdownFileLinkMeta> = markdownFileLinkMetaByHref;
   if (inlineCodeFileLinkMetaBySpan.size > 0) {
-    const merged = new Map(markdownFileLinkMetaByHref);
-    for (const [span, meta] of inlineCodeFileLinkMetaBySpan) {
-      if (!merged.has(span)) merged.set(span, meta);
+    if (markdownFileLinkMetaByHref.size === 0) {
+      fileLinkMetaByKey = inlineCodeFileLinkMetaBySpan;
+    } else {
+      const merged = new Map(markdownFileLinkMetaByHref);
+      for (const [span, meta] of inlineCodeFileLinkMetaBySpan) {
+        if (!merged.has(span)) merged.set(span, meta);
+      }
+      fileLinkMetaByKey = merged;
     }
-    fileLinkMetaByKey = merged;
   }
-  const fileLinkParentSuffixByPath = buildFileLinkParentSuffixByPath(
-    [...fileLinkMetaByKey.values()].map((meta) => meta.filePath),
-  );
+  const fileLinkParentSuffixByPath: ReadonlyMap<string, string> =
+    fileLinkMetaByKey.size < 2
+      ? EMPTY_SUFFIX_MAP
+      : buildFileLinkParentSuffixByPath(
+          [...fileLinkMetaByKey.values()].map((meta) => meta.filePath),
+        );
   return {
     markdownFileLinkMetaByHref,
     inlineCodeFileLinkMetaBySpan,

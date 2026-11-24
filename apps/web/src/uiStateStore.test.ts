@@ -11,12 +11,14 @@ import {
   readLegacyInboxState,
   readPersistedState,
   reorderProjects,
+  resolveDoneOverlay,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
   setThreadWrapUpOnPullRequestSettled,
   settleSeenOverlay,
   syncProjects,
+  syncThread,
   syncThreads,
   type UiState,
 } from "./uiStateStore";
@@ -810,5 +812,90 @@ describe("uiStateStore persistence round-trip", () => {
     ]);
 
     expect(rehydrated.projectExpandedById[nextLogicalKey]).toBe(false);
+  });
+
+  it("syncThread updates one thread incrementally and preserves reference identity on no-ops", () => {
+    const threadKey = "env-1:thread-1";
+    const otherKey = "env-1:thread-2";
+    const initial = makeUiState({
+      threadSeedVisitedAtById: { [otherKey]: "2026-04-01T00:00:00.000Z" },
+      seenThreadOverlays: {
+        [threadKey]: {
+          at: "2026-04-02T00:00:00.000Z",
+          baselineAt: "2026-04-01T00:00:00.000Z",
+          settled: true,
+          writeId: 1,
+        },
+        [otherKey]: {
+          at: "2026-04-02T00:00:00.000Z",
+          baselineAt: "2026-04-01T00:00:00.000Z",
+          settled: true,
+          writeId: 2,
+        },
+      },
+      doneThreadOverlays: {
+        [threadKey]: {
+          state: "done",
+          at: "2026-04-02T00:00:00.000Z",
+          baselineAt: null,
+          settled: true,
+        },
+      },
+    });
+
+    const seeded = syncThread(initial, {
+      key: threadKey,
+      seedVisitedAt: "2026-04-01T00:00:00.000Z",
+      serverLastSeenAt: "2026-04-01T00:00:00.000Z",
+      serverDoneOverrideAt: null,
+    });
+    expect(seeded.threadSeedVisitedAtById[threadKey]).toBe("2026-04-01T00:00:00.000Z");
+    expect(seeded.seenThreadOverlays).toBe(initial.seenThreadOverlays);
+    expect(seeded.doneThreadOverlays).toBe(initial.doneThreadOverlays);
+
+    const noop = syncThread(seeded, {
+      key: threadKey,
+      seedVisitedAt: "2026-04-03T00:00:00.000Z",
+      serverLastSeenAt: "2026-04-01T00:00:00.000Z",
+      serverDoneOverrideAt: null,
+    });
+    expect(noop).toBe(seeded);
+
+    const retired = syncThread(seeded, {
+      key: threadKey,
+      seedVisitedAt: "2026-04-03T00:00:00.000Z",
+      serverLastSeenAt: "2026-04-02T00:00:00.000Z",
+      serverDoneOverrideAt: "2026-04-02T00:00:00.000Z",
+    });
+    expect(retired.seenThreadOverlays[threadKey]).toBeUndefined();
+    expect(retired.seenThreadOverlays[otherKey]).toEqual(initial.seenThreadOverlays[otherKey]);
+    expect(retired.doneThreadOverlays[threadKey]).toBeUndefined();
+    expect(retired.threadSeedVisitedAtById).toBe(seeded.threadSeedVisitedAtById);
+  });
+
+  it("resolveDoneOverlay retires immediately when the server already echoed past baseline", () => {
+    const threadKey = "env-1:thread-done-race";
+    const at = "2026-04-02T00:00:00.000Z";
+    const pending = makeUiState({
+      doneThreadOverlays: {
+        [threadKey]: {
+          state: "done",
+          at,
+          baselineAt: null,
+          settled: false,
+        },
+      },
+    });
+
+    const stillPendingServer = resolveDoneOverlay(pending, threadKey, at, "confirmed", null);
+    expect(stillPendingServer.doneThreadOverlays[threadKey]).toEqual({
+      state: "done",
+      at,
+      baselineAt: null,
+      settled: true,
+    });
+
+    const alreadyEchoed = resolveDoneOverlay(pending, threadKey, at, "confirmed", at);
+    expect(alreadyEchoed.doneThreadOverlays[threadKey]).toBeUndefined();
   });
 });

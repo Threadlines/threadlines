@@ -67,15 +67,21 @@ function collectByIds<TKey extends string, TValue>(
   return nextValues;
 }
 
-function selectThreadMessages(state: EnvironmentState, threadId: ThreadId): Thread["messages"] {
+export function selectThreadMessages(
+  state: EnvironmentState,
+  threadId: ThreadId,
+): Thread["messages"] {
   return state.messagesByThreadId[threadId] ?? EMPTY_MESSAGES;
 }
 
-function selectThreadActivities(state: EnvironmentState, threadId: ThreadId): Thread["activities"] {
+export function selectThreadActivities(
+  state: EnvironmentState,
+  threadId: ThreadId,
+): Thread["activities"] {
   return state.activitiesByThreadId[threadId] ?? EMPTY_ACTIVITIES;
 }
 
-function selectThreadProposedPlans(
+export function selectThreadProposedPlans(
   state: EnvironmentState,
   threadId: ThreadId,
 ): Thread["proposedPlans"] {
@@ -86,7 +92,7 @@ function selectThreadProposedPlans(
   );
 }
 
-function selectThreadTurnDiffSummaries(
+export function selectThreadTurnDiffSummaries(
   state: EnvironmentState,
   threadId: ThreadId,
 ): Thread["turnDiffSummaries"] {

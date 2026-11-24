@@ -169,12 +169,16 @@ const EMPTY_LAYOUT: MeasuredBackdropLayout = { zones: [], artShown: true };
 /** The new-thread screen, in either layout: its zones are patches around its text. */
 const DRAFT_SCREEN_SELECTOR = "[data-draft-hero], [data-draft-stacked]";
 
+/** Screens whose backdrop patches hug individual text blocks rather than fixed boxes. */
+const TEXT_PATCH_SCREEN_SELECTOR = "[data-draft-hero], [data-draft-stacked], [data-empty-home]";
+
 const MEASURED_SELECTORS = [
   '[data-slot="app-titlebar"]',
   '[data-slot="navigation-rail"]',
   '[data-slot="app-panel"]',
   '[data-slot="sidebar-inner"]',
   "[data-chat-column]",
+  "[data-timeline-root]",
   "[data-chat-composer-form]",
   "[data-glass-surface]",
   "[data-draft-hero]",
@@ -189,6 +193,17 @@ const MEASURED_SELECTORS = [
   ".thread-terminal-drawer",
 ].join(", ");
 
+function recordsAffectBackdropLayout(records: readonly MutationRecord[]): boolean {
+  for (const record of records) {
+    if (record.type !== "childList") return true;
+    const target = record.target;
+    if (!(target instanceof Element) || target.closest("[data-timeline-root]") === null) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function useBackdropLayout(
   tokens: ThemeTokens,
   floors: ReturnType<typeof glassFloors>,
@@ -202,7 +217,45 @@ function useBackdropLayout(
     let lastRun = -Infinity;
     // The last measure was of a new-thread screen, whose patches hug its text.
     let draftPatches = false;
+    let observerInitialized = false;
+    let watchingTextPatchScreen = false;
     const observed = new Set<Element>();
+
+    const syncTextPatchObservers = (nextWatching: boolean) => {
+      if (observerInitialized && nextWatching === watchingTextPatchScreen) return;
+      const wasWatching = watchingTextPatchScreen;
+      watchingTextPatchScreen = nextWatching;
+      if (observerInitialized) {
+        mutationObserver.disconnect();
+      }
+      observerInitialized = true;
+      mutationObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        // Text that changes in place (a project renamed elsewhere) can outgrow
+        // its patch without resizing anything that is watched; only needed on
+        // screens whose zones hug individual text blocks.
+        characterData: nextWatching,
+        attributes: true,
+        attributeFilter: [
+          "data-state",
+          "data-sidebar-state",
+          "data-draft-hero",
+          "data-draft-stacked",
+          "data-chat-composer-mobile-collapsed",
+          "hidden",
+        ],
+      });
+      if (nextWatching && !wasWatching) {
+        // The new-thread screen scrolls as one, carrying its patch with it.
+        document.addEventListener("scroll", schedule, { capture: true, passive: true });
+        // Text that rises into place (the home screen's) settles where its patch belongs.
+        document.addEventListener("animationend", schedule);
+      } else if (!nextWatching && wasWatching) {
+        document.removeEventListener("scroll", schedule, { capture: true });
+        document.removeEventListener("animationend", schedule);
+      }
+    };
 
     const measure = () => {
       frame = 0;
@@ -214,6 +267,9 @@ function useBackdropLayout(
         floors,
       );
       draftPatches = document.querySelector(DRAFT_SCREEN_SELECTOR) !== null;
+      syncTextPatchObservers(
+        draftPatches || document.querySelector(TEXT_PATCH_SCREEN_SELECTOR) !== null,
+      );
       setLayout((previous) =>
         previous.artShown === next.artShown && sameBackdropZones(previous.zones, next.zones)
           ? previous
@@ -266,31 +322,16 @@ function useBackdropLayout(
     };
 
     const resizeObserver = new ResizeObserver(schedule);
-    const mutationObserver = new MutationObserver(schedule);
-    mutationObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-      // Text that changes in place (a project renamed elsewhere) can outgrow
-      // its patch without resizing anything that is watched.
-      characterData: true,
-      attributes: true,
-      attributeFilter: [
-        "data-state",
-        "data-sidebar-state",
-        "data-draft-hero",
-        "data-draft-stacked",
-        "data-chat-composer-mobile-collapsed",
-        "hidden",
-      ],
+    const mutationObserver = new MutationObserver((records) => {
+      if (!watchingTextPatchScreen && !recordsAffectBackdropLayout(records)) {
+        return;
+      }
+      schedule();
     });
     window.addEventListener("resize", schedule);
     // A phone's keyboard shrinks and pans the visible page without resizing the window.
     window.visualViewport?.addEventListener("resize", schedule);
     window.visualViewport?.addEventListener("scroll", schedule);
-    // The new-thread screen scrolls as one, carrying its patch with it.
-    document.addEventListener("scroll", schedule, { capture: true, passive: true });
-    // Text that rises into place (the home screen's) settles where its patch belongs.
-    document.addEventListener("animationend", schedule);
     measure();
     return () => {
       if (frame !== 0) cancelAnimationFrame(frame);

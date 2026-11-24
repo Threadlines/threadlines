@@ -128,6 +128,7 @@ const MAX_CONSOLE_ENTRIES = 200;
 const DRAG_MOVE_STEPS = 10;
 
 const MAX_NETWORK_FAILURES = 100;
+const MAX_TRACKED_REQUEST_URLS = 1000;
 /** See `sendCommand`: comfortably inside the broker's twenty second deadline. */
 const CDP_COMMAND_TIMEOUT = "15 seconds";
 const PAGE_DID_NOT_ANSWER = "the page did not answer in time";
@@ -256,6 +257,8 @@ interface AttachedTab {
   expectedAgentInputs: Array<{ kind: "mouseDown" | "mouseWheel"; expiresAt: number }>;
   /** Until when the user's keys are kept out of the page; see `agentKeys`. */
   holdUserKeysUntil: number;
+  /** Reference count of active element-description calls holding `Accessibility.enable` open. */
+  accessibilityUsers: number;
   /** Frame id -> its own CDP session, for frames in other processes; see `routePoint`. */
   frameSessions: Map<string, string>;
   /**
@@ -1699,34 +1702,71 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
    * all. Must run before the overlay is torn down, since the teardown is what
    * drops the handles.
    */
+  const withAccessibilityEnabled = <A, E, R>(
+    contents: WebContents,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    Effect.acquireUseRelease(
+      Effect.gen(function* () {
+        const tab = attached.get(contents.id);
+        if (tab === undefined) {
+          return null;
+        }
+        tab.accessibilityUsers += 1;
+        // Idempotent in CDP: running on every acquire avoids racing a second
+        // caller ahead of an in-flight enable, while refcounting delays disable.
+        yield* sendCommand(contents, "Accessibility.enable").pipe(Effect.ignore);
+        return tab;
+      }),
+      () => effect,
+      (tab) =>
+        Effect.gen(function* () {
+          if (tab === null) {
+            return;
+          }
+          tab.accessibilityUsers = Math.max(0, tab.accessibilityUsers - 1);
+          if (tab.accessibilityUsers === 0 && attached.get(contents.id) === tab) {
+            yield* sendCommand(contents, "Accessibility.disable").pipe(Effect.ignore);
+          }
+        }),
+    );
+
   const describeStashed = Effect.fn("PreviewAutomation.describeStashed")(function* (
     contents: WebContents,
     stash: string,
     count: number,
   ) {
-    const described: DesktopPreviewPickedElement[] = [];
-    for (let index = 0; index < count; index += 1) {
-      const handle = (yield* sendCommand(contents, "Runtime.evaluate", {
-        expression: `window[${JSON.stringify(stash)}][${index}]`,
-      })) as { result?: { objectId?: string } };
-      const objectId = handle.result?.objectId;
-      if (objectId === undefined) {
-        continue;
-      }
-      const node = (yield* sendCommand(contents, "DOM.describeNode", { objectId })) as {
-        node?: { backendNodeId?: number };
-      };
-      yield* sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
-      const backendNodeId = node.node?.backendNodeId;
-      if (backendNodeId === undefined) {
-        continue;
-      }
-      const element = yield* describePickedNode(sendCommand)(contents, backendNodeId);
-      if (element !== null) {
-        described.push(element);
-      }
+    if (count <= 0) {
+      return [];
     }
-    return described;
+    return yield* withAccessibilityEnabled(
+      contents,
+      Effect.gen(function* () {
+        const described: DesktopPreviewPickedElement[] = [];
+        for (let index = 0; index < count; index += 1) {
+          const handle = (yield* sendCommand(contents, "Runtime.evaluate", {
+            expression: `window[${JSON.stringify(stash)}][${index}]`,
+          })) as { result?: { objectId?: string } };
+          const objectId = handle.result?.objectId;
+          if (objectId === undefined) {
+            continue;
+          }
+          const node = (yield* sendCommand(contents, "DOM.describeNode", { objectId })) as {
+            node?: { backendNodeId?: number };
+          };
+          yield* sendCommand(contents, "Runtime.releaseObject", { objectId }).pipe(Effect.ignore);
+          const backendNodeId = node.node?.backendNodeId;
+          if (backendNodeId === undefined) {
+            continue;
+          }
+          const element = yield* describePickedNode(sendCommand)(contents, backendNodeId);
+          if (element !== null) {
+            described.push(element);
+          }
+        }
+        return described;
+      }),
+    );
   });
 
   const buildStatus = (webContentsId: number, contents: WebContents): DesktopPreviewStatus => {
@@ -1779,6 +1819,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       controlEpoch: 0,
       expectedAgentInputs: [],
       holdUserKeysUntil: 0,
+      accessibilityUsers: 0,
       frameSessions: new Map(),
       sessionOwners: new Map(),
       framesByOrdinal: new Map(),
@@ -1892,7 +1933,21 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         const requestId = String(params.requestId ?? "");
         const request = params.request as { url?: string } | undefined;
         if (requestId !== "" && request?.url !== undefined) {
+          tab.requestUrls.delete(requestId);
           tab.requestUrls.set(requestId, request.url);
+          if (tab.requestUrls.size > MAX_TRACKED_REQUEST_URLS) {
+            const oldestKey = tab.requestUrls.keys().next().value;
+            if (oldestKey !== undefined) {
+              tab.requestUrls.delete(oldestKey);
+            }
+          }
+        }
+        return;
+      }
+      if (method === "Network.loadingFinished") {
+        const requestId = String(params.requestId ?? "");
+        if (requestId !== "") {
+          tab.requestUrls.delete(requestId);
         }
         return;
       }
@@ -1953,11 +2008,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     };
 
     contents.debugger.on("message", onMessage);
-    const onDestroyed = () => {
-      frameNumbering.delete(webContentsId);
-      attached.delete(webContentsId);
-      lifecycles.delete(webContentsId);
-    };
+    trackDestruction(webContentsId, contents);
     // Electron tells us when the attachment goes -- DevTools opening, the guest
     // crashing, someone calling detach. Dropping the record here is what lets
     // the next command notice and rebuild rather than fail.
@@ -1965,13 +2016,11 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       attached.get(webContentsId)?.dispose();
       attached.delete(webContentsId);
     };
-    contents.once("destroyed", onDestroyed);
     contents.debugger.on("detach", onDetach);
     tab.dispose = () => {
       siteIdentity.stop();
       contents.debugger.off("message", onMessage);
       contents.debugger.off("detach", onDetach);
-      contents.off("destroyed", onDestroyed);
       contents.off("before-input-event", onBeforeInput);
       contents.off("before-mouse-event", onBeforeMouse);
       contents.off("console-message", onConsole);
@@ -1985,9 +2034,14 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       Effect.ignore,
     );
 
-    for (const method of ["Page.enable", "Network.enable", "Log.enable", "Accessibility.enable"]) {
-      yield* sendCommand(contents, method);
-    }
+    yield* sendCommand(contents, "Page.enable");
+    // We only record request URLs and failures and never call
+    // `Network.getResponseBody`, so tell Chromium not to buffer response bodies.
+    yield* sendCommand(contents, "Network.enable", {
+      maxTotalBufferSize: 0,
+      maxResourceBufferSize: 0,
+    });
+    yield* sendCommand(contents, "Log.enable");
     // The guest believes it is focused even while the user's caret is
     // elsewhere in the embedding window. Agent input pulls focus onto the
     // <webview> and the web client hands it straight back (browserFocusGuard);
@@ -2044,6 +2098,21 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
    */
   /** Names each frame-owner lookup's object group apart. */
   let frameOwnerLookups = 0;
+
+  const trackedDestruction = new WeakSet<WebContents>();
+  // Registered once per guest (outside `tab.dispose`) so detaching the debugger
+  // (e.g. opening DevTools) never drops cleanup for `frameNumbering` and `lifecycles`.
+  const trackDestruction = (webContentsId: number, contents: WebContents) => {
+    if (trackedDestruction.has(contents)) return;
+    trackedDestruction.add(contents);
+    contents.once("destroyed", () => {
+      pendingPicks.get(webContentsId)?.supersede();
+      drawWaiters.get(webContentsId)?.();
+      frameNumbering.delete(webContentsId);
+      attached.delete(webContentsId);
+      lifecycles.delete(webContentsId);
+    });
+  };
 
   const frameNumbering = new Map<
     number,

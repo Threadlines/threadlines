@@ -783,6 +783,54 @@ function shouldRetireOverlay(
   return overlay.settled && (serverAt ?? null) !== overlay.baselineAt;
 }
 
+export function syncThread(state: UiState, thread: SyncThreadInput): UiState {
+  const seedVisitedAt = thread.seedVisitedAt;
+  const shouldAddSeed =
+    state.threadSeedVisitedAtById[thread.key] === undefined &&
+    seedVisitedAt !== undefined &&
+    seedVisitedAt.length > 0;
+
+  const existingSeenOverlay = state.seenThreadOverlays[thread.key];
+  const shouldRetireSeen =
+    existingSeenOverlay !== undefined &&
+    shouldRetireOverlay(existingSeenOverlay, thread.serverLastSeenAt ?? null);
+
+  const existingDoneOverlay = state.doneThreadOverlays[thread.key];
+  const shouldRetireDone =
+    existingDoneOverlay !== undefined &&
+    shouldRetireOverlay(existingDoneOverlay, thread.serverDoneOverrideAt ?? null);
+
+  if (!shouldAddSeed && !shouldRetireSeen && !shouldRetireDone) {
+    return state;
+  }
+
+  let nextSeenThreadOverlays = state.seenThreadOverlays;
+  if (shouldRetireSeen) {
+    const { [thread.key]: _removed, ...rest } = state.seenThreadOverlays;
+    nextSeenThreadOverlays = rest;
+  }
+
+  let nextDoneThreadOverlays = state.doneThreadOverlays;
+  if (shouldRetireDone) {
+    const { [thread.key]: _removed, ...rest } = state.doneThreadOverlays;
+    nextDoneThreadOverlays = rest;
+  }
+
+  return {
+    ...state,
+    ...(shouldAddSeed
+      ? {
+          threadSeedVisitedAtById: {
+            ...state.threadSeedVisitedAtById,
+            [thread.key]: seedVisitedAt,
+          },
+        }
+      : {}),
+    seenThreadOverlays: nextSeenThreadOverlays,
+    doneThreadOverlays: nextDoneThreadOverlays,
+  };
+}
+
 export function syncThreads(
   state: UiState,
   threads: readonly SyncThreadInput[],
@@ -922,6 +970,7 @@ export function resolveDoneOverlay(
   threadKey: string,
   at: string,
   outcome: "confirmed" | "failed",
+  serverDoneOverrideAt?: string | null,
 ): UiState {
   const overlay = state.doneThreadOverlays[threadKey];
   if (overlay === undefined || overlay.at !== at) {
@@ -931,7 +980,12 @@ export function resolveDoneOverlay(
   if (outcome === "failed") {
     delete nextOverlays[threadKey];
   } else {
-    nextOverlays[threadKey] = { ...overlay, settled: true };
+    const settled: ThreadDoneOverlayWrite = { ...overlay, settled: true };
+    if (serverDoneOverrideAt !== undefined && shouldRetireOverlay(settled, serverDoneOverrideAt)) {
+      delete nextOverlays[threadKey];
+    } else {
+      nextOverlays[threadKey] = settled;
+    }
   }
   return { ...state, doneThreadOverlays: nextOverlays };
 }
@@ -1242,13 +1296,19 @@ function setSidebarListShown<T extends UiLayoutState>(state: T, open: boolean): 
 
 interface UiStateStore extends UiState {
   syncProjects: (projects: readonly SyncProjectInput[]) => void;
+  syncThread: (thread: SyncThreadInput) => void;
   syncThreads: (
     threads: readonly SyncThreadInput[],
     options?: { readonly loadedEnvironmentIds?: ReadonlySet<string> },
   ) => void;
   setDoneOverlay: (threadKey: string, overlay: ThreadDoneOverlayWrite) => void;
   setSeenOverlay: (threadKey: string, overlay: ThreadSeenOverlayWrite) => void;
-  resolveDoneOverlay: (threadKey: string, at: string, outcome: "confirmed" | "failed") => void;
+  resolveDoneOverlay: (
+    threadKey: string,
+    at: string,
+    outcome: "confirmed" | "failed",
+    serverDoneOverrideAt?: string | null,
+  ) => void;
   settleSeenOverlay: (
     threadKey: string,
     writeId: number,
@@ -1286,11 +1346,12 @@ interface UiStateStore extends UiState {
 export const useUiStateStore = create<UiStateStore>((set) => ({
   ...readPersistedState(),
   syncProjects: (projects) => set((state) => syncProjects(state, projects)),
+  syncThread: (thread) => set((state) => syncThread(state, thread)),
   syncThreads: (threads, options) => set((state) => syncThreads(state, threads, options)),
   setDoneOverlay: (threadKey, overlay) => set((state) => setDoneOverlay(state, threadKey, overlay)),
   setSeenOverlay: (threadKey, overlay) => set((state) => setSeenOverlay(state, threadKey, overlay)),
-  resolveDoneOverlay: (threadKey, at, outcome) =>
-    set((state) => resolveDoneOverlay(state, threadKey, at, outcome)),
+  resolveDoneOverlay: (threadKey, at, outcome, serverDoneOverrideAt) =>
+    set((state) => resolveDoneOverlay(state, threadKey, at, outcome, serverDoneOverrideAt)),
   settleSeenOverlay: (threadKey, writeId, outcome) =>
     set((state) => settleSeenOverlay(state, threadKey, writeId, outcome)),
   setInboxProjectScope: (projectKeys) =>

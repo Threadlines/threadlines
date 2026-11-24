@@ -2,7 +2,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   collectWrittenFilePaths,
+  indexWrittenFilePathsByBasename,
   repairStreamingMarkdownTail,
+  resolveMarkdownDocumentFileLinks,
+  scanMarkdownBlockFileLinks,
+  selectWrittenFilePathsKeyForBareNames,
   splitMarkdownBlocks,
 } from "./chatMarkdownDocument";
 import { fencedBlockIsClosed } from "./markdownFences";
@@ -122,6 +126,50 @@ describe("collectWrittenFilePaths", () => {
       "/tmp/shots/old.png",
       "C:\\Users\\me\\notes\\plan.md",
     ]);
+  });
+
+  it("matches only bare file names relevant to a block while keeping ambiguous paths intact", () => {
+    const first = scanMarkdownBlockFileLinks(
+      "Updated [a](/Users/me/repo/a/index.ts) and `/Users/me/repo/src/math.ts`.",
+      "/Users/me/repo",
+    );
+    const second = scanMarkdownBlockFileLinks(
+      "See `math.ts:12` and `index.ts` and `other.ts`.",
+      "/Users/me/repo",
+    );
+    const third = scanMarkdownBlockFileLinks(
+      "Also [b](/Users/me/repo/b/index.ts).",
+      "/Users/me/repo",
+    );
+
+    const byBasename = indexWrittenFilePathsByBasename([
+      ...first.writtenPaths,
+      ...second.writtenPaths,
+      ...third.writtenPaths,
+    ]);
+    expect(second.bareFileNames).toEqual(["index.ts", "math.ts", "other.ts"]);
+    expect(selectWrittenFilePathsKeyForBareNames(first.bareFileNames, byBasename)).toBe("");
+    expect(selectWrittenFilePathsKeyForBareNames(second.bareFileNames, byBasename)).toBe(
+      ["/Users/me/repo/a/index.ts", "/Users/me/repo/b/index.ts", "/Users/me/repo/src/math.ts"].join(
+        "\n",
+      ),
+    );
+
+    const noLinksA = resolveMarkdownDocumentFileLinks("Plain prose only.", "/Users/me/repo", {
+      inlineCodeChips: true,
+      writtenFilePaths: [],
+    });
+    const noLinksB = resolveMarkdownDocumentFileLinks("Still plain prose.", "/Users/me/repo", {
+      inlineCodeChips: true,
+      writtenFilePaths: [],
+    });
+    expect(noLinksA.fileLinkMetaByKey).toBe(noLinksB.fileLinkMetaByKey);
+    expect(noLinksA.fileLinkParentSuffixByPath).toBe(noLinksB.fileLinkParentSuffixByPath);
+  });
+
+  it("keeps scanning bare file names after an unmatched $$ display-math opener", () => {
+    const scan = scanMarkdownBlockFileLinks("$$\nSee `report.ts:12`.", "/Users/me/repo");
+    expect(scan.bareFileNames).toEqual(["report.ts"]);
   });
 });
 
