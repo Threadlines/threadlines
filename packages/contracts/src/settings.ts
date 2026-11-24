@@ -12,9 +12,13 @@ import {
 import {
   AgentInvitesMode,
   AgentThreadsMode,
+  DEFAULT_NEW_THREAD_RUNTIME_MODE,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
   FollowUpDelivery,
   ModelSelection,
+  ProviderInteractionMode,
   RoomAgentRole,
+  RuntimeMode,
 } from "./orchestration.ts";
 import { ProjectNotesMode } from "./projectContext.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
@@ -1183,6 +1187,20 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /**
+   * The access level a new thread starts with on this computer. Agents that
+   * lack the level run at the next safer one they have. Never chosen: Auto.
+   */
+  newThreadRuntimeMode: RuntimeMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_NEW_THREAD_RUNTIME_MODE)),
+  ),
+  /**
+   * Whether a new thread starts in Build (`default`) or Plan (`plan`) mode on
+   * this computer. Agents without Plan mode start in Build. Never chosen: Build.
+   */
+  newThreadInteractionMode: ProviderInteractionMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
+  ),
+  /**
    * The name the user gave this computer in Threadlines. Every device and
    * linked computer sees it (the descriptor's `label`); `null` keeps the name
    * the computer's system gives it (`systemLabel`). Never chosen: null.
@@ -1367,6 +1385,8 @@ export const ServerSettingsPatch = Schema.Struct({
   // reasoning, and the list is the whole list.
   newThreadModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   newThreadRoomAgents: Schema.optionalKey(Schema.Array(NewThreadRoomAgent)),
+  newThreadRuntimeMode: Schema.optionalKey(RuntimeMode),
+  newThreadInteractionMode: Schema.optionalKey(ProviderInteractionMode),
   computerName: Schema.optionalKey(Schema.NullOr(DeviceName)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;

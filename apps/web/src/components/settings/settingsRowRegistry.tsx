@@ -69,7 +69,9 @@ import {
   ContinueAfterRestartRow,
   DefaultThreadEnvModeRow,
   GeneralChatsPlacementRow,
+  NewThreadAccessRow,
   NewThreadAgentRow,
+  NewThreadModeRow,
   NewThreadRoomRow,
   NewWorktreeBaseRow,
   RoomsRow,
@@ -144,6 +146,8 @@ export const SETTINGS_ROWS = {
   // Threads
   "threads.agent": live(NewThreadAgentRow),
   "threads.room": live(NewThreadRoomRow),
+  "threads.mode": live(NewThreadModeRow),
+  "threads.access": live(NewThreadAccessRow),
   "threads.startIn": live(DefaultThreadEnvModeRow),
   "threads.worktreesFrom": live(NewWorktreeBaseRow),
   "threads.agentThreads": live(AgentThreadsRow),

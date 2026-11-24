@@ -518,6 +518,12 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.newThreadModelSelection !== null ? ["New thread agent"] : []),
       ...(settings.newThreadRoomAgents.length > 0 ? ["New thread room"] : []),
+      ...(settings.newThreadInteractionMode !== DEFAULT_UNIFIED_SETTINGS.newThreadInteractionMode
+        ? ["Build or Plan"]
+        : []),
+      ...(settings.newThreadRuntimeMode !== DEFAULT_UNIFIED_SETTINGS.newThreadRuntimeMode
+        ? ["New thread access"]
+        : []),
       ...(settings.openLinksIn !== DEFAULT_UNIFIED_SETTINGS.openLinksIn ? ["Open links in"] : []),
       ...(settings.browserNewTabSize !== null ? ["Browser page size"] : []),
       ...(settings.browserSearchEngine !== DEFAULT_UNIFIED_SETTINGS.browserSearchEngine
@@ -590,6 +596,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.wrapUpThreadsOnPullRequestSettled,
       settings.newThreadModelSelection,
       settings.newThreadRoomAgents,
+      settings.newThreadInteractionMode,
+      settings.newThreadRuntimeMode,
       settings.enableRooms,
       settings.enableAgentPages,
       settings.enableClaudeArtifacts,
@@ -669,6 +677,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       wrapUpThreadsOnPullRequestSettled: DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled,
       newThreadModelSelection: DEFAULT_UNIFIED_SETTINGS.newThreadModelSelection,
       newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,
+      newThreadInteractionMode: DEFAULT_UNIFIED_SETTINGS.newThreadInteractionMode,
+      newThreadRuntimeMode: DEFAULT_UNIFIED_SETTINGS.newThreadRuntimeMode,
       openLinksIn: DEFAULT_UNIFIED_SETTINGS.openLinksIn,
       browserNewTabSize: DEFAULT_UNIFIED_SETTINGS.browserNewTabSize,
       browserSearchEngine: DEFAULT_UNIFIED_SETTINGS.browserSearchEngine,

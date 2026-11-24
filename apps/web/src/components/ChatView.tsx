@@ -1558,6 +1558,7 @@ export default function ChatView(props: ChatViewProps) {
               sendCtx.selectedModelSelection.options,
             ),
             runtimeMode,
+            interactionMode,
           });
         } catch (error) {
           toastManager.add(failureNotice({ title: "Couldn't add the threads", error }));
@@ -1571,6 +1572,7 @@ export default function ChatView(props: ChatViewProps) {
     draftProjectId,
     draftWorktreePath,
     environmentId,
+    interactionMode,
     isGeneralChatThread,
     isLocalDraftThread,
     pickupProjectCwd,
@@ -4613,14 +4615,15 @@ export default function ChatView(props: ChatViewProps) {
   // for more changes, and focus moving to the prompt would close it.
   const handleRuntimeModeChange = useCallback(
     (mode: RuntimeMode, options?: { focusComposer?: boolean }) => {
-      if (mode === runtimeMode) return;
+      if (mode === runtimeMode && (!isLocalDraftThread || composerRuntimeMode === mode)) return;
       setComposerDraftRuntimeMode(composerDraftTarget, mode);
-      if (isLocalDraftThread) {
+      if (isLocalDraftThread && mode !== runtimeMode) {
         setDraftThreadContext(composerDraftTarget, { runtimeMode: mode });
       }
       if (options?.focusComposer !== false) scheduleComposerFocus();
     },
     [
+      composerRuntimeMode,
       isLocalDraftThread,
       runtimeMode,
       scheduleComposerFocus,
@@ -4632,14 +4635,17 @@ export default function ChatView(props: ChatViewProps) {
 
   const handleInteractionModeChange = useCallback(
     (mode: ProviderInteractionMode, options?: { focusComposer?: boolean }) => {
-      if (mode === interactionMode) return;
+      if (mode === interactionMode && (!isLocalDraftThread || composerInteractionMode === mode)) {
+        return;
+      }
       setComposerDraftInteractionMode(composerDraftTarget, mode);
-      if (isLocalDraftThread) {
+      if (isLocalDraftThread && mode !== interactionMode) {
         setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
       }
       if (options?.focusComposer !== false) scheduleComposerFocus();
     },
     [
+      composerInteractionMode,
       interactionMode,
       isLocalDraftThread,
       scheduleComposerFocus,

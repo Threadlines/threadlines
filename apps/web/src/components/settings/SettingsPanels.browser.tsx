@@ -4608,6 +4608,22 @@ describe("ThreadsSettingsPanel new thread defaults", () => {
       .toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: "Add agent" })).toBeDisabled();
   });
+
+  it("changes and resets default mode and access level", async () => {
+    const updateSettings = await mountWith({});
+
+    await page.getByRole("combobox", { name: "Default build or plan mode" }).click();
+    await page.getByRole("option", { name: /Plan/ }).click();
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledWith({ newThreadInteractionMode: "plan" });
+    });
+
+    await page.getByRole("combobox", { name: "Default access level" }).click();
+    await page.getByRole("option", { name: /Full access/ }).click();
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledWith({ newThreadRuntimeMode: "full-access" });
+    });
+  });
 });
 
 describe("Agent Instructions", () => {

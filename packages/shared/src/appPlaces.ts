@@ -27,6 +27,7 @@ import type {
   ModelSelection,
   NewWorktreeBaseFrom,
   ProjectNotesMode,
+  ProviderInteractionMode,
   PushAlertKinds,
   ServerSettings,
   ServerSettingsPatch,
@@ -42,6 +43,7 @@ import {
   RESPONSIVE_PAGE_SIZE_ID,
   RESPONSIVE_PAGE_SIZE_LABEL,
 } from "./browserPageSizes.ts";
+import { RUNTIME_MODE_LABELS } from "./runtimeMode.ts";
 import {
   agentInvitesChoice,
   agentThreadsMode,
@@ -317,6 +319,12 @@ const editableAlert = (alert: keyof PushAlertKinds | "quietAtComputer") =>
 /** Fetch interval in whole seconds, as its row shows it. */
 const fetchIntervalSeconds = (settings: ServerSettings): number =>
   Math.round(Duration.toSeconds(settings.automaticGitFetchInterval));
+
+/** "Mode", as its menu words each choice. */
+export const INTERACTION_MODE_LABELS: Readonly<Record<ProviderInteractionMode, string>> = {
+  default: "Build",
+  plan: "Plan",
+};
 
 /** "Start in", as its menu words each choice. */
 export const THREAD_ENV_MODE_LABELS: Readonly<Record<ThreadEnvMode, string>> = {
@@ -1525,6 +1533,39 @@ const ROWS = [
     parent: "threads.newThreads",
     title: "Room",
     about: "Other agents new threads start with in the room, if any.",
+    widensAgents: true,
+  },
+  {
+    id: "threads.mode",
+    kind: "row",
+    parent: "threads.newThreads",
+    title: "Build or Plan",
+    about: "Whether new threads start in Build or Plan. Agents without Plan start in Build.",
+    keywords: ["build", "plan", "planning"],
+    ...editableServerChoice("newThreadInteractionMode", INTERACTION_MODE_LABELS),
+  },
+  {
+    id: "threads.access",
+    kind: "row",
+    parent: "threads.newThreads",
+    title: "Access",
+    about:
+      "The access level new threads start with. Agents without it use the next safer level they have.",
+    keywords: [
+      "access level",
+      "default access",
+      "full access",
+      "auto",
+      "supervised",
+      "auto-accept edits",
+      "permissions",
+      "sandbox",
+    ],
+    value: {
+      kind: "choice",
+      read: (settings) => settings.newThreadRuntimeMode,
+      options: RUNTIME_MODE_LABELS,
+    },
     widensAgents: true,
   },
   {

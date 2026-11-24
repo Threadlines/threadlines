@@ -6,13 +6,17 @@ import {
   type NewWorktreeBaseFrom,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderInteractionMode,
   ROOM_AGENT_ROLE_MAX_LENGTH,
+  RUNTIME_MODES,
+  type RuntimeMode,
 } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import {
   AGENT_INVITES_LABELS,
   AGENT_THREADS_LABELS,
   GENERAL_CHATS_PLACEMENT_LABELS,
+  INTERACTION_MODE_LABELS,
   NEW_WORKTREE_BASE_LABELS,
   THREAD_ENV_MODE_LABELS,
 } from "@threadlines/shared/appPlaces";
@@ -27,6 +31,8 @@ import { useState } from "react";
 
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { roomsEnabledFor } from "../../hooks/useRoomsEnabled";
+import { interactionModeConfig, interactionModeOptions } from "../../interactionModeOptions";
+import { cn } from "../../lib/utils";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -36,6 +42,8 @@ import {
 import { canRunOnComputer } from "../../newThreadDefaults";
 import { deriveDisplayProviderInstanceEntries } from "../../providerInstances";
 import { useServerProviders } from "../../rpc/serverState";
+import { runtimeModeConfig } from "../../runtimeModeOptions";
+import { AccessOptionContent } from "../chat/ComposerRunControls";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
@@ -73,6 +81,8 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
       <SettingsSection place="threads.newThreads" description={computerNote}>
         <NewThreadAgentRow />
         <NewThreadRoomRow />
+        <NewThreadModeRow />
+        <NewThreadAccessRow />
         <DefaultThreadEnvModeRow />
         <NewWorktreeBaseRow />
         <AgentThreadsRow />
@@ -322,6 +332,126 @@ export function NewThreadRoomRow() {
         )}
       </div>
     </SettingsRow>
+  );
+}
+
+export function NewThreadModeRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const mode = settings.newThreadInteractionMode;
+  const current = interactionModeConfig[mode];
+  const CurrentIcon = current.icon;
+  return (
+    <SettingsRow
+      place="threads.mode"
+      resetAction={
+        mode !== DEFAULT_UNIFIED_SETTINGS.newThreadInteractionMode ? (
+          <SettingResetButton
+            label="build or plan"
+            onClick={() =>
+              updateSettings({
+                newThreadInteractionMode: DEFAULT_UNIFIED_SETTINGS.newThreadInteractionMode,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={mode}
+          onValueChange={(value) => {
+            if (value === "default" || value === "plan") {
+              updateSettings({ newThreadInteractionMode: value satisfies ProviderInteractionMode });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Default build or plan mode">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <CurrentIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+              <SelectValue>{INTERACTION_MODE_LABELS[mode]}</SelectValue>
+            </span>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false} matchTriggerWidth={false}>
+            {interactionModeOptions.map((option) => {
+              const Icon = option.icon;
+              return (
+                <SelectItem key={option.mode} value={option.mode} className="min-w-60 py-2">
+                  <div className="grid min-w-0 gap-0.5">
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <Icon
+                        aria-hidden="true"
+                        className="size-3.5 shrink-0 text-muted-foreground"
+                      />
+                      {INTERACTION_MODE_LABELS[option.mode]}
+                    </span>
+                    <span className="text-muted-foreground text-xs leading-4">
+                      {option.description}
+                    </span>
+                  </div>
+                </SelectItem>
+              );
+            })}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+export function NewThreadAccessRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const mode = settings.newThreadRuntimeMode;
+  const current = runtimeModeConfig[mode];
+  const CurrentIcon = current.icon;
+  return (
+    <SettingsRow
+      place="threads.access"
+      resetAction={
+        mode !== DEFAULT_UNIFIED_SETTINGS.newThreadRuntimeMode ? (
+          <SettingResetButton
+            label="new thread access"
+            onClick={() =>
+              updateSettings({
+                newThreadRuntimeMode: DEFAULT_UNIFIED_SETTINGS.newThreadRuntimeMode,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={mode}
+          onValueChange={(value) => {
+            if (RUNTIME_MODES.includes(value as RuntimeMode)) {
+              updateSettings({ newThreadRuntimeMode: value as RuntimeMode });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-auto sm:min-w-44" aria-label="Default access level">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <CurrentIcon
+                aria-hidden="true"
+                className={cn(
+                  "size-3.5 shrink-0",
+                  mode === "full-access" ? "text-warning-foreground" : "text-muted-foreground",
+                )}
+              />
+              <SelectValue>{current.label}</SelectValue>
+            </span>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false} matchTriggerWidth={false}>
+            {RUNTIME_MODES.map((candidate) => (
+              <SelectItem key={candidate} value={candidate} className="min-w-64 py-2">
+                <AccessOptionContent
+                  option={{ mode: candidate, ...runtimeModeConfig[candidate] }}
+                />
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
   );
 }
 

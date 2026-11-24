@@ -54,7 +54,7 @@ The project name in "What's next in …?" on the new-thread screen opens the lis
 
 A repository can already have worktrees that Threadlines did not make (git worktree add, or another app). Right after such a repository is added as a project, the new-thread screen lists them under the message box with a checkbox each, and "Add N threads" makes a thread for every ticked one, named from its branch; nothing runs until you send a message there. After that the screen shows only a count beside the recent threads ("4 worktrees"); opening it lists them with Work here, which points the thread you are about to start at that worktree, Add as threads…, and Hide for this project. The Workspace picker under the message box lists the same worktrees under Existing worktree, and the command palette has Add existing worktrees as threads…, which also brings a hidden count back. A thread in one of these is a guest: no setup script runs, the branch is not renamed, deleting the thread never offers to delete the folder, and undoing a turn only undoes that thread's own edits. Worktrees a thread already works in are left out. The computer's server needs to be on a version that has this; with an older one none of it shows.
 
-The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer, which also holds the agent's effort. Beside it sit Build or Plan (one click switches, as does Shift+Tab in the message box) and the access level; on a narrow window they show just their icons, and on phones both live in the model button's panel instead.
+The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer, which also holds the agent's effort. Beside it sit Build or Plan (one click switches, as does Shift+Tab in the message box; default {place:threads.mode}) and the access level (default {place:threads.access}); on a narrow window they show just their icons, and on phones both live in the model button's panel instead.
 
 While an agent works, {place:general.followUpDelivery} sets how a message goes by default (Steer now adds it to the reply in progress, Send when done holds it for the next one), and the arrow beside the send button overrides it for the current thread. Enter sends that way; Cmd+Enter (Ctrl+Enter on Windows and Linux) sends that one message the other way.
 
@@ -74,7 +74,7 @@ When Threadlines quits, updates or crashes while an agent works on something the
     id: "access-levels",
     title: "Access levels",
     keywords: ["access", "permissions", "approval", "sandbox", "full access", "auto", "supervised"],
-    body: `Each thread runs at an access level, picked from the access button beside the model button in the composer (on phones, in the model button's panel):
+    body: `Each thread runs at an access level, picked from the access button beside the model button in the composer (on phones, in the model button's panel). {place:threads.access} sets the default for new threads:
 
 - Supervised: asks before commands and file changes.
 - Auto-accept edits: edits run without asking; other actions ask.
