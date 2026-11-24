@@ -6,6 +6,7 @@ type GitHubApp = {
 };
 
 type CheckRun = {
+  id?: number;
   app?: GitHubApp;
   completed_at?: string | null;
   conclusion?: string | null;
@@ -35,9 +36,10 @@ type CheckRunEvaluation = {
 const DEFAULT_REQUIRED_CHECKS = [
   "Checks and Build",
   "Unit Test",
-  "Server Test (1/3)",
-  "Server Test (2/3)",
-  "Server Test (3/3)",
+  "Server Test (1/4)",
+  "Server Test (2/4)",
+  "Server Test (3/4)",
+  "Server Test (4/4)",
   "Browser Test (1/2)",
   "Browser Test (2/2)",
   "Release Smoke",
@@ -80,9 +82,30 @@ function readNonNegativeNumberEnv(name: string, fallback: number): number {
 }
 
 function compareCheckRuns(a: CheckRun, b: CheckRun): number {
-  const aTime = Date.parse(a.completed_at ?? a.started_at ?? "1970-01-01T00:00:00Z");
-  const bTime = Date.parse(b.completed_at ?? b.started_at ?? "1970-01-01T00:00:00Z");
-  return bTime - aTime;
+  const aTimestamp = a.completed_at ?? a.started_at;
+  const bTimestamp = b.completed_at ?? b.started_at;
+
+  // A queued check run has neither started_at nor completed_at yet. Order it
+  // by monotonically increasing GitHub check-run id when available, and treat
+  // an unstarted non-completed run without an id as newer than a finished one
+  // so polling never misses a freshly queued rerun.
+  if (!aTimestamp || !bTimestamp) {
+    if (a.id !== undefined && b.id !== undefined && a.id !== b.id) {
+      return b.id - a.id;
+    }
+    const aPending = a.status !== "completed" ? 1 : 0;
+    const bPending = b.status !== "completed" ? 1 : 0;
+    if (aPending !== bPending) {
+      return bPending - aPending;
+    }
+  }
+
+  const aTime = Date.parse(aTimestamp ?? "1970-01-01T00:00:00Z");
+  const bTime = Date.parse(bTimestamp ?? "1970-01-01T00:00:00Z");
+  if (bTime !== aTime) {
+    return bTime - aTime;
+  }
+  return (b.id ?? 0) - (a.id ?? 0);
 }
 
 function getNextUrl(linkHeader: string | null): string | null {
@@ -130,7 +153,7 @@ async function fetchJson(
 async function fetchCheckRuns(repository: string, ref: string, token: string): Promise<CheckRun[]> {
   const encodedRef = encodeURIComponent(ref);
   let nextUrl: string | null =
-    `https://api.github.com/repos/${repository}/commits/${encodedRef}/check-runs?filter=latest&per_page=100`;
+    `https://api.github.com/repos/${repository}/commits/${encodedRef}/check-runs?filter=all&per_page=100`;
   const checkRuns: CheckRun[] = [];
 
   while (nextUrl) {
@@ -165,15 +188,18 @@ function formatCheckRunStatus(checkName: string, checkRun: CheckRun | undefined)
   return `${checkName}: status=${checkRun.status ?? "unknown"}, conclusion=${checkRun.conclusion ?? "unknown"} (${checkRun.html_url ?? checkRun.details_url ?? "no URL"})`;
 }
 
-function isCancelled(checkRun: CheckRun): boolean {
-  return checkRun.status === "completed" && checkRun.conclusion === "cancelled";
+function isNonVerdict(checkRun: CheckRun): boolean {
+  return (
+    checkRun.status === "completed" &&
+    (checkRun.conclusion === "cancelled" || checkRun.conclusion === "skipped")
+  );
 }
 
 /**
- * Picks the newest run of each required check and grades it. A cancelled run
- * is not a verdict on the commit, so it yields to the newest run that has one:
- * a merge landing on main cancels the previous main CI run, but the merge
- * queue already ran the same checks on that exact commit.
+ * Picks the newest run of each required check and grades it. A cancelled or
+ * skipped run is not a verdict on the commit, so it yields to the newest run
+ * that has one: a merge landing on main cancels or skips the duplicate push CI
+ * run, while the merge queue already ran the same checks on that exact commit.
  */
 export function evaluateRequiredChecks(
   requiredChecks: ReadonlyArray<string>,
@@ -185,7 +211,7 @@ export function evaluateRequiredChecks(
       continue;
     }
     const current = checksByName.get(checkRun.name);
-    if (!current || (isCancelled(current) && !isCancelled(checkRun))) {
+    if (!current || (isNonVerdict(current) && !isNonVerdict(checkRun))) {
       checksByName.set(checkRun.name, checkRun);
     }
   }
