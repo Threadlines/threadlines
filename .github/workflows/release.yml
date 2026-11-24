@@ -51,9 +51,9 @@ concurrency:
 
 jobs:
   preflight:
-    name: Verify desktop release
+    name: Verify and prepare desktop release
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     outputs:
       version: ${{ steps.release_meta.outputs.version }}
       tag: ${{ steps.release_meta.outputs.tag }}
@@ -66,6 +66,8 @@ jobs:
       build_macos: ${{ steps.release_meta.outputs.build_macos }}
       build_linux: ${{ steps.release_meta.outputs.build_linux }}
       macos_matrix: ${{ steps.release_meta.outputs.macos_matrix }}
+      needs_mac_manifest_merge: ${{ steps.release_meta.outputs.needs_mac_manifest_merge }}
+      draft_created: ${{ steps.create_draft.outputs.draft_created }}
       ref: ${{ github.sha }}
     steps:
       - name: Checkout
@@ -86,10 +88,9 @@ jobs:
         run: node scripts/verify-release-ci.ts
 
       - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: vp install --frozen-lockfile
-
-      - name: Ensure Electron binary is installed
-        run: node scripts/ensure-electron-binary.ts
 
       - id: release_meta
         name: Resolve release metadata
@@ -227,6 +228,7 @@ jobs:
 
           build_macos=true
           build_linux=false
+          needs_mac_manifest_merge=false
           case "$build_scope" in
             mac-arm64)
               build_windows=false
@@ -243,6 +245,7 @@ jobs:
               ;;
             mac-all)
               build_windows=false
+              needs_mac_manifest_merge=true
               macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]}'
               ;;
             linux)
@@ -254,6 +257,7 @@ jobs:
             all)
               build_windows=true
               build_linux=true
+              needs_mac_manifest_merge=true
               macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]}'
               ;;
             *)
@@ -278,38 +282,43 @@ jobs:
           echo "build_macos=$build_macos" >> "$GITHUB_OUTPUT"
           echo "build_linux=$build_linux" >> "$GITHUB_OUTPUT"
           echo "macos_matrix=$macos_matrix" >> "$GITHUB_OUTPUT"
+          echo "needs_mac_manifest_merge=$needs_mac_manifest_merge" >> "$GITHUB_OUTPUT"
 
-      - name: Release smoke
-        run: node scripts/release-smoke.ts
+      - name: Align release package versions
+        run: node scripts/update-release-package-versions.ts "${{ steps.release_meta.outputs.version }}"
 
-  prepare_release:
-    name: Prepare draft GitHub Release
-    needs: preflight
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The web, server, and desktop main/preload JS bundles are platform-independent.
+      # Build them once here on Linux and hand the tarball to macOS, Windows, and Linux
+      # runners (`--skip-build`) instead of compiling the same bundles 3 to 4 times.
+      - name: Build shared desktop/server/web bundles
+        env:
+          APP_VERSION: ${{ steps.release_meta.outputs.version }}
+          THREADLINES_APP_VERSION: ${{ steps.release_meta.outputs.version }}
+          VITE_APP_VERSION: ${{ steps.release_meta.outputs.version }}
+          THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
+          THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
+          THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
+        run: |
+          set -euo pipefail
+          vp exec vp run build:desktop
+          tar -czf "$RUNNER_TEMP/desktop-js-bundles.tar.gz" \
+            apps/desktop/dist-electron \
+            apps/server/dist
+
+      - name: Upload shared desktop/server/web bundles
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          ref: ${{ needs.preflight.outputs.ref }}
-          fetch-depth: 0
-
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
-        with:
-          node-version: "24"
-          cache: true
-          run-install: false
-
-      - name: Install dependencies
-        run: vp install --frozen-lockfile
+          name: desktop-js-bundles
+          path: ${{ runner.temp }}/desktop-js-bundles.tar.gz
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Generate release notes
         env:
           GH_TOKEN: ${{ github.token }}
-          CHANNEL: ${{ needs.preflight.outputs.channel }}
-          TAG: ${{ needs.preflight.outputs.tag }}
-          CURRENT_REF: ${{ needs.preflight.outputs.ref }}
+          CHANNEL: ${{ steps.release_meta.outputs.channel }}
+          TAG: ${{ steps.release_meta.outputs.tag }}
+          CURRENT_REF: ${{ github.sha }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -364,13 +373,14 @@ jobs:
 
           node scripts/generate-release-notes.ts "${args[@]}"
 
-      - name: Create draft release
+      - id: create_draft
+        name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.preflight.outputs.tag }}
-          TARGET_REF: ${{ needs.preflight.outputs.ref }}
-          RELEASE_NAME: ${{ needs.preflight.outputs.name }}
-          IS_PRERELEASE: ${{ needs.preflight.outputs.is_prerelease }}
+          TAG: ${{ steps.release_meta.outputs.tag }}
+          TARGET_REF: ${{ github.sha }}
+          RELEASE_NAME: ${{ steps.release_meta.outputs.name }}
+          IS_PRERELEASE: ${{ steps.release_meta.outputs.is_prerelease }}
         run: |
           set -euo pipefail
 
@@ -389,12 +399,12 @@ jobs:
           fi
 
           gh "${args[@]}"
+          echo "draft_created=true" >> "$GITHUB_OUTPUT"
 
   windows:
     name: Build Windows x64 installer
     needs:
       - preflight
-      - prepare_release
     if: ${{ needs.preflight.outputs.build_windows == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 30
@@ -403,7 +413,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-          fetch-depth: 0
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
@@ -412,11 +421,34 @@ jobs:
           cache: true
           run-install: false
 
+      - name: Cache desktop build downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+            ~/AppData/Local/TrustedSigningModule
+          key: windows-x64-desktop-ts0.5.8-${{ hashFiles('pnpm-lock.yaml', 'package.json', 'apps/desktop/package.json') }}
+          restore-keys: |
+            windows-x64-desktop-ts0.5.8-
+            windows-x64-desktop-
+
       - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: vp install --frozen-lockfile
 
-      - name: Ensure Electron binary is installed
-        run: node scripts/ensure-electron-binary.ts
+      - name: Download shared desktop/server/web bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-js-bundles
+          path: .release-bundles
+
+      - name: Extract shared desktop/server/web bundles
+        shell: bash
+        run: |
+          tar -xzf .release-bundles/desktop-js-bundles.tar.gz
+          rm -rf .release-bundles
 
       - name: Align release package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
@@ -455,14 +487,17 @@ jobs:
         shell: pwsh
         run: |
           $moduleVersion = "0.5.8"
-          $moduleRoot = Join-Path $env:RUNNER_TEMP "trusted-signing-modules"
-          New-Item -ItemType Directory -Path $moduleRoot -Force | Out-Null
-          Save-Module `
-            -Name TrustedSigning `
-            -RequiredVersion $moduleVersion `
-            -Repository PSGallery `
-            -Path $moduleRoot `
-            -Force
+          $moduleRoot = Join-Path $env:LOCALAPPDATA "TrustedSigningModule"
+          $moduleDir = Join-Path $moduleRoot "TrustedSigning\$moduleVersion"
+          if (-not (Test-Path $moduleDir)) {
+            New-Item -ItemType Directory -Path $moduleRoot -Force | Out-Null
+            Save-Module `
+              -Name TrustedSigning `
+              -RequiredVersion $moduleVersion `
+              -Repository PSGallery `
+              -Path $moduleRoot `
+              -Force
+          }
 
           $env:PSModulePath = "$moduleRoot$([IO.Path]::PathSeparator)$env:PSModulePath"
           "PSModulePath=$env:PSModulePath" |
@@ -490,6 +525,7 @@ jobs:
           --target nsis
           --arch x64
           --build-version "${{ needs.preflight.outputs.version }}"
+          --skip-build
           --verbose
 
       - name: Normalize Windows updater manifests
@@ -570,7 +606,6 @@ jobs:
     name: Build macOS ${{ matrix.arch }} artifact
     needs:
       - preflight
-      - prepare_release
     if: ${{ needs.preflight.outputs.build_macos == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
@@ -582,7 +617,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-          fetch-depth: 0
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
@@ -603,10 +637,20 @@ jobs:
             macos-desktop-
 
       - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: vp install --frozen-lockfile
 
-      - name: Ensure Electron binary is installed
-        run: node scripts/ensure-electron-binary.ts
+      - name: Download shared desktop/server/web bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-js-bundles
+          path: .release-bundles
+
+      - name: Extract shared desktop/server/web bundles
+        run: |
+          tar -xzf .release-bundles/desktop-js-bundles.tar.gz
+          rm -rf .release-bundles
 
       - name: Align release package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
@@ -678,6 +722,7 @@ jobs:
             --target dmg \
             --arch "${{ matrix.arch }}" \
             --build-version "${{ needs.preflight.outputs.version }}" \
+            --skip-build \
             --verbose
 
       - name: Normalize macOS updater manifests
@@ -771,7 +816,6 @@ jobs:
     name: Build Linux x64 AppImage
     needs:
       - preflight
-      - prepare_release
     if: ${{ needs.preflight.outputs.build_linux == 'true' }}
     # Pinned, not ubuntu-latest: the terminal's native module (node-pty) is
     # compiled here and takes this machine's glibc. Built on ubuntu-26.04 it
@@ -784,7 +828,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-          fetch-depth: 0
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
@@ -804,10 +847,20 @@ jobs:
             linux-x64-desktop-
 
       - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: vp install --frozen-lockfile
 
-      - name: Ensure Electron binary is installed
-        run: node scripts/ensure-electron-binary.ts
+      - name: Download shared desktop/server/web bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-js-bundles
+          path: .release-bundles
+
+      - name: Extract shared desktop/server/web bundles
+        run: |
+          tar -xzf .release-bundles/desktop-js-bundles.tar.gz
+          rm -rf .release-bundles
 
       - name: Align release package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
@@ -823,6 +876,7 @@ jobs:
           --target AppImage
           --arch x64
           --build-version "${{ needs.preflight.outputs.version }}"
+          --skip-build
           --verbose
 
       - name: Normalize Linux updater manifests
@@ -952,23 +1006,26 @@ jobs:
     name: Publish GitHub Release
     needs:
       - preflight
-      - prepare_release
       - windows
       - macos
       - linux
-    if: ${{ always() && needs.prepare_release.result == 'success' && (needs.macos.result == 'success' || needs.macos.result == 'skipped') && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (needs.linux.result == 'success' || needs.linux.result == 'skipped') && (needs.macos.result == 'success' || needs.windows.result == 'success' || needs.linux.result == 'success') }}
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.macos.result == 'success' || needs.macos.result == 'skipped') && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (needs.linux.result == 'success' || needs.linux.result == 'skipped') && (needs.macos.result == 'success' || needs.windows.result == 'success' || needs.linux.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write
     steps:
+      # Single-arch macOS releases (all nightlies) already uploaded their final
+      # updater manifests from the macos job. Only check out and install workspace
+      # deps when two macOS architectures need to be merged.
       - name: Checkout
+        if: ${{ needs.macos.result == 'success' && needs.preflight.outputs.needs_mac_manifest_merge == 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-          fetch-depth: 0
 
       - name: Setup Vite+
+        if: ${{ needs.macos.result == 'success' && needs.preflight.outputs.needs_mac_manifest_merge == 'true' }}
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: "24"
@@ -976,13 +1033,15 @@ jobs:
           run-install: false
 
       - name: Install dependencies
+        if: ${{ needs.macos.result == 'success' && needs.preflight.outputs.needs_mac_manifest_merge == 'true' }}
         run: vp install --frozen-lockfile --ignore-scripts
 
       - name: Download updater manifests
-        if: ${{ needs.macos.result == 'success' }}
+        if: ${{ needs.macos.result == 'success' && needs.preflight.outputs.needs_mac_manifest_merge == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.preflight.outputs.tag }}
           CHANNEL: ${{ needs.preflight.outputs.channel }}
         run: |
@@ -1001,10 +1060,11 @@ jobs:
           ls -la release-manifests
 
       - name: Merge macOS updater manifests
-        if: ${{ needs.macos.result == 'success' }}
+        if: ${{ needs.macos.result == 'success' && needs.preflight.outputs.needs_mac_manifest_merge == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.preflight.outputs.tag }}
           CHANNEL: ${{ needs.preflight.outputs.channel }}
         run: |
@@ -1050,6 +1110,7 @@ jobs:
       - name: Publish draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.preflight.outputs.tag }}
           IS_PRERELEASE: ${{ needs.preflight.outputs.is_prerelease }}
         run: |
@@ -1166,12 +1227,11 @@ jobs:
     name: Cleanup failed draft release
     needs:
       - preflight
-      - prepare_release
       - windows
       - macos
       - linux
       - publish
-    if: ${{ always() && needs.prepare_release.result == 'success' && ((needs.windows.result != 'success' && needs.windows.result != 'skipped') || (needs.macos.result != 'success' && needs.macos.result != 'skipped') || (needs.linux.result != 'success' && needs.linux.result != 'skipped') || needs.publish.result != 'success') }}
+    if: ${{ always() && needs.preflight.outputs.draft_created == 'true' && (needs.preflight.result != 'success' || (needs.windows.result != 'success' && needs.windows.result != 'skipped') || (needs.macos.result != 'success' && needs.macos.result != 'skipped') || (needs.linux.result != 'success' && needs.linux.result != 'skipped') || needs.publish.result != 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
