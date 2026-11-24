@@ -77,7 +77,9 @@ export function parseAndroidAxNodes(nodes: ReadonlyArray<unknown>): ReadonlyArra
   const root = withBounds[0]?.bounds;
   const screenWidth = Math.max(1, numberOr(root?.right, 1));
   const screenHeight = Math.max(1, numberOr(root?.bottom, 1));
-  return withBounds.slice(1, AX_ELEMENT_LIMIT + 1).flatMap((node, index): DeviceAxElement[] => {
+  const elements: DeviceAxElement[] = [];
+  for (let index = 1; index < withBounds.length && elements.length < AX_ELEMENT_LIMIT; index += 1) {
+    const node = withBounds[index]!;
     const left = numberOr(node.bounds.left, 0);
     const top = numberOr(node.bounds.top, 0);
     const width = (numberOr(node.bounds.right, left) - left) / screenWidth;
@@ -85,22 +87,21 @@ export function parseAndroidAxNodes(nodes: ReadonlyArray<unknown>): ReadonlyArra
     const text = typeof node.text === "string" ? node.text : "";
     const description = typeof node.contentDescription === "string" ? node.contentDescription : "";
     const label = text || description;
-    if (width <= 0 || height <= 0 || (width >= 0.95 && height >= 0.9)) return [];
-    if (!label && node.clickable !== true) return [];
+    if (width <= 0 || height <= 0 || (width >= 0.95 && height >= 0.9)) continue;
+    if (!label && node.clickable !== true) continue;
     const className = typeof node.className === "string" ? node.className : "";
-    return [
-      {
-        // Node ids are not promised unique; the position in the list is.
-        id: `${index}:${typeof node.id === "string" || typeof node.id === "number" ? node.id : ""}`,
-        label,
-        role: className.split(".").at(-1) ?? "",
-        x: left / screenWidth,
-        y: top / screenHeight,
-        width,
-        height,
-      },
-    ];
-  });
+    elements.push({
+      // Node ids are not promised unique; the position in the list is.
+      id: `${index - 1}:${typeof node.id === "string" || typeof node.id === "number" ? node.id : ""}`,
+      label,
+      role: className.split(".").at(-1) ?? "",
+      x: left / screenWidth,
+      y: top / screenHeight,
+      width,
+      height,
+    });
+  }
+  return elements;
 }
 
 const errorOf = (payload: unknown) =>
@@ -119,7 +120,12 @@ export async function readDeviceAxElements(
       : `/vendor/serve-emu/api/accessibility?device=${device}`,
     signal ? { signal } : {},
   );
-  const payload: unknown = await response.json().catch(() => null);
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch (cause) {
+    if (!(cause instanceof SyntaxError)) throw cause;
+  }
   if (!response.ok) throw new Error(errorOf(payload) ?? `Accessibility ${response.status}`);
   if (target.platform === "ios") {
     if (!Array.isArray(payload))

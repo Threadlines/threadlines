@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import * as Fiber from "effect/Fiber";
@@ -2161,3 +2162,229 @@ it("names an edit's files relative to the session, whichever way the agent wrote
     { path: "b.ts", kind: "add", additions: 1, deletions: 0 },
   ]);
 });
+
+it.effect(
+  "emits prompt suggestions after completed user turns, skips non-user turns, and drops stale suggestions when a new turn starts",
+  () =>
+    Effect.gen(function* () {
+      const mockBinary = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_PROMPT_RESPONSE_TEXT: "Done! Want me to run the browser suite next?",
+        }),
+      );
+      const sampleStarted = yield* Deferred.make<void>();
+      const releaseBlockedSample = yield* Deferred.make<void>();
+      let blockNextSample = false;
+      const seenBatches: Array<ReadonlyArray<{ readonly role: string; readonly text: string }>> =
+        [];
+
+      const adapter = yield* makeAcpAdapter(
+        CURSOR_ACP_DESCRIPTOR,
+        decodeCursorSettings({ enabled: true, binaryPath: mockBinary }),
+        {
+          promptSuggestions: {
+            shouldSuggest: () => Effect.succeed(true),
+            sample: ({ messages }) =>
+              Effect.gen(function* () {
+                seenBatches.push(messages);
+                if (blockNextSample) {
+                  yield* Deferred.succeed(sampleStarted, undefined);
+                  yield* Deferred.await(releaseBlockedSample);
+                  return "Stale suggestion that must be dropped";
+                }
+                return '  "Run the browser suite."  ';
+              }),
+          },
+        },
+      );
+
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      const allEvents: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          allEvents.push(event);
+        }).pipe(Effect.andThen(Queue.offer(events, event)), Effect.asVoid),
+      ).pipe(Effect.forkScoped);
+
+      const threadId = ThreadId.make("acp-prompt-suggestions-thread");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("cursor"),
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      // 1. User-originated turn completes -> emits sanitized prompt suggestion.
+      const firstTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Fix the sidebar spacing",
+        suggestNextMessage: true,
+      });
+
+      const waitForEvent = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
+        Effect.gen(function* () {
+          while (true) {
+            const next = yield* Queue.take(events);
+            if (predicate(next)) return next;
+          }
+        }).pipe(Effect.timeout("5 seconds"));
+
+      const suggestionEvent = yield* waitForEvent(
+        (event) =>
+          event.type === "turn.prompt-suggestion.updated" && event.turnId === firstTurn.turnId,
+      );
+      assert.equal(suggestionEvent.type, "turn.prompt-suggestion.updated");
+      if (suggestionEvent.type === "turn.prompt-suggestion.updated") {
+        assert.equal(suggestionEvent.payload.suggestion, "Run the browser suite.");
+      }
+      assert.deepEqual(seenBatches[0], [
+        { role: "user", text: "Fix the sidebar spacing" },
+        { role: "assistant", text: "Done! Want me to run the browser suite next?" },
+      ]);
+
+      // 2. Non-user turn (suggestNextMessage omitted) -> no suggestion sampled.
+      const secondTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Background check",
+      });
+      yield* waitForEvent(
+        (event) => event.type === "turn.completed" && event.turnId === secondTurn.turnId,
+      );
+      assert.equal(seenBatches.length, 1);
+
+      // 3. Stale suggestion cancelled when a newer turn starts before it resolves.
+      blockNextSample = true;
+      const thirdTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Check lint too",
+        suggestNextMessage: true,
+      });
+      yield* Deferred.await(sampleStarted).pipe(Effect.timeout("5 seconds"));
+      blockNextSample = false;
+
+      const fourthTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Actually skip lint and ship",
+        suggestNextMessage: true,
+      });
+      yield* Deferred.succeed(releaseBlockedSample, undefined);
+
+      const fourthSuggestion = yield* waitForEvent(
+        (event) =>
+          event.type === "turn.prompt-suggestion.updated" && event.turnId === fourthTurn.turnId,
+      );
+      assert.equal(fourthSuggestion.type, "turn.prompt-suggestion.updated");
+      // Make sure the third turn's blocked suggestion never arrived.
+      assert.equal(
+        allEvents.some(
+          (event) =>
+            event.type === "turn.prompt-suggestion.updated" && event.turnId === thirdTurn.turnId,
+        ),
+        false,
+      );
+
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(eventFiber);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), {
+          prefix: "threadlines-acp-suggestions-test-",
+        }).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
+
+it.effect(
+  "does not sample a prompt suggestion when a turn-machine turn is interrupted while reading its outcome",
+  () =>
+    Effect.gen(function* () {
+      const mockBinary = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_PROMPT_RESPONSE_TEXT: "Finished the refactor.",
+        }),
+      );
+      const outcomeReadReached = yield* Deferred.make<void>();
+      const releaseOutcomeRead = yield* Deferred.make<void>();
+      let sampleCalls = 0;
+
+      const adapter = yield* makeAcpAdapter(
+        {
+          ...CURSOR_ACP_DESCRIPTOR,
+          turnMachine: {
+            workAfterPrompt: () => undefined,
+            steer: false,
+            silentLimit: Duration.minutes(5),
+          },
+        },
+        decodeCursorSettings({ enabled: true, binaryPath: mockBinary }),
+        {
+          turnMachineSeams: (seam) =>
+            seam.point === "outcomeRead"
+              ? Deferred.succeed(outcomeReadReached, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseOutcomeRead)),
+                )
+              : Effect.void,
+          promptSuggestions: {
+            shouldSuggest: () => Effect.succeed(true),
+            sample: () =>
+              Effect.sync(() => {
+                sampleCalls += 1;
+                return "Should not run after interrupt";
+              }),
+          },
+        },
+      );
+
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      const allEvents: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          allEvents.push(event);
+        }).pipe(Effect.andThen(Queue.offer(events, event)), Effect.asVoid),
+      ).pipe(Effect.forkScoped);
+
+      const threadId = ThreadId.make("acp-machine-interrupt-suggestion-thread");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("cursor"),
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Refactor the helper",
+        suggestNextMessage: true,
+      });
+
+      // Hold the turn at outcomeRead, interrupt it, then let the answered
+      // outcome settle as completed. The interrupt must suppress suggestions.
+      yield* Deferred.await(outcomeReadReached).pipe(Effect.timeout("5 seconds"));
+      yield* adapter.interruptTurn(threadId);
+      yield* Deferred.succeed(releaseOutcomeRead, undefined);
+
+      yield* Effect.gen(function* () {
+        while (true) {
+          const next = yield* Queue.take(events);
+          if (next.type === "turn.completed" && next.turnId === turn.turnId) return;
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(eventFiber);
+
+      assert.equal(sampleCalls, 0);
+      assert.equal(
+        allEvents.some((event) => event.type === "turn.prompt-suggestion.updated"),
+        false,
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), {
+          prefix: "threadlines-acp-machine-suggestions-test-",
+        }).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);

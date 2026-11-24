@@ -167,4 +167,14 @@ describe("restartContinueVerdict", () => {
     // The agent never got the message: "continue" would lose it.
     expect(verdict(cutThread([typed]), { turnStarted: false }).kind).toBe("note");
   });
+
+  it("judges a continue by the turn the restart cut, not the newest message (finding 7)", () => {
+    const typed = userMessage("typed", minutesAgo(30), { composer: "typed" });
+    // A check-back's turn was cut: it started with no message, so no continue.
+    expect(verdict(cutThread([typed]), { turnMessageId: null }).kind).toBe("note");
+    // The person's own turn was cut: it continues.
+    expect(verdict(cutThread([typed]), { turnMessageId: MessageId.make("typed") }).kind).toBe(
+      "continue",
+    );
+  });
 });

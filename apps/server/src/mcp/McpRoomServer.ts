@@ -65,6 +65,7 @@ import { type McpInvocationScope, mcpSessionRegistry } from "./McpSessionRegistr
 import { limitReaches, makeOutsideToolLimits, outsideLimitDetail } from "./outsideToolLimit.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { makeRoomToolHandlers } from "./roomToolHandlers.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { McpRoomInvocation, RoomToolkit } from "./roomTools.ts";
 import { makeGuideToolHandler } from "./guideToolHandlers.ts";
 import { GuideToolkit } from "./guideTools.ts";
@@ -245,6 +246,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           return model?.shortName ?? model?.name ?? selection.model;
         }),
       );
+    const analytics = yield* Effect.serviceOption(AnalyticsService);
     const handlers = makeRoomToolHandlers({
       engine,
       readThread,
@@ -278,6 +280,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       ),
       git,
       requests,
+      ...(Option.isSome(analytics) ? { recordAnalytics: analytics.value.record } : {}),
     });
     // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
     const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);

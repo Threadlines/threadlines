@@ -50,14 +50,17 @@ import {
   WritingStyleRow,
 } from "./SourceControlSettings";
 import {
+  AntigravitySuggestionsRow,
+  ClaudeSuggestionsRow,
+  CodexSuggestionsRow,
+} from "./ProviderSuggestionsSection";
+import {
   AgentInvitesRow,
   AgentPagesRow,
   AgentThreadsRow,
   AgentThreadsShareWorktreesRow,
   BackupWritingModelRow,
   ClaudeArtifactsRow,
-  ClaudeSuggestionsRow,
-  CodexSuggestionsRow,
   ClaudeWorkflowSizeRow,
   CommandRequestsRow,
   ConfirmArchiveRow,
@@ -148,8 +151,6 @@ export const SETTINGS_ROWS = {
   "threads.agentPages": live(AgentPagesRow),
   "threads.claudeArtifacts": live(ClaudeArtifactsRow),
   "threads.claudeWorkflowSize": live(ClaudeWorkflowSizeRow),
-  "threads.claudeSuggestions": live(ClaudeSuggestionsRow),
-  "threads.codexSuggestions": live(CodexSuggestionsRow),
   "threads.continueAfterUsageLimits": live(ContinueAfterUsageLimitsRow),
   "threads.continueAfterRestart": live(ContinueAfterRestartRow),
   "threads.commandRequests": live(CommandRequestsRow),
@@ -192,4 +193,8 @@ export const SETTINGS_ROWS = {
   // Devices
   "devices.enable": live(UseDevicesRow),
   "devices.agentAccess": live(AgentDeviceAccessRow),
+  // Providers › Suggestions
+  "providers.claudeSuggestions": live(ClaudeSuggestionsRow),
+  "providers.codexSuggestions": live(CodexSuggestionsRow),
+  "providers.antigravitySuggestions": live(AntigravitySuggestionsRow),
 } as const satisfies { readonly [Id in SettingsRowPlaceId]: SettingsRowEntry };

@@ -264,6 +264,12 @@ export function pushAlertActionsForEvent(
       // The child's result went to the parent thread, whose agent carries on
       // with it: the parent's own alert is the one that counts.
       return [{ type: "cancel-thread", threadId: event.payload.childThreadId, kinds: DONE_KINDS }];
+    case "thread.handed-back":
+      // A later turn a child took on its own went up to its parent as a
+      // report: the same, and no alert each time a child reports.
+      return event.payload.owedReport === undefined
+        ? []
+        : [{ type: "cancel-thread", threadId: event.payload.threadId, kinds: DONE_KINDS }];
     case "thread.seen-set":
       // Opened somewhere: no need to say it finished.
       return [{ type: "cancel-thread", threadId: event.payload.threadId, kinds: DONE_KINDS }];

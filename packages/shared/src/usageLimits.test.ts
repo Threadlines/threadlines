@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   isAccountUsageNearLimit,
+  isModelUsageNearLimit,
   usageLimitForModel,
   usageScopeHoldsModel,
 } from "./usageLimits.ts";
@@ -99,5 +100,47 @@ describe("Antigravity's family limits", () => {
     expect(usageLimitForModel(usage, "Gemini 3.1 Pro", NOW_MS)).toBeUndefined();
     // Past its reset, the reading is older than the window.
     expect(usageLimitForModel(usage, "Claude Opus 5.5", resetsAt + 1)).toBeUndefined();
+  });
+
+  it("checks near-limit per model pool without blocking unrelated families", () => {
+    const resetsAt = NOW_MS + 3_600_000;
+    const usage: ServerProviderAccountUsage = {
+      source: "grok-billing",
+      checkedAt: "2026-11-06T11:59:00.000Z",
+      limits: [
+        {
+          limitId: "antigravity",
+          scoped: [
+            {
+              scopeLabel: "Gemini",
+              scopeModels: ["Gemini"],
+              scopeExcludes: ["Hydrogen"],
+              usedPercent: 30,
+              remainingPercent: 70,
+              resetsAt,
+            },
+            {
+              scopeLabel: "Gemini Hydrogen",
+              scopeModels: ["Hydrogen"],
+              usedPercent: 90,
+              remainingPercent: 10,
+              resetsAt,
+            },
+            {
+              scopeLabel: "Claude & GPT",
+              scopeModels: ["Claude", "GPT"],
+              usedPercent: 96,
+              remainingPercent: 4,
+              resetsAt,
+            },
+          ],
+        },
+      ],
+    };
+    expect(isModelUsageNearLimit(usage, "Gemini 4 Hydrogen", NOW_MS, 90)).toBe(true);
+    expect(isModelUsageNearLimit(usage, "Gemini 3.8 Flash", NOW_MS, 90)).toBe(false);
+    expect(isModelUsageNearLimit(usage, "Claude Opus 5.5", NOW_MS, 90)).toBe(true);
+    // Past reset, the stale reading no longer blocks.
+    expect(isModelUsageNearLimit(usage, "Gemini 4 Hydrogen", resetsAt + 1, 90)).toBe(false);
   });
 });

@@ -10,12 +10,15 @@
  */
 import { join } from "node:path";
 
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   ANTIGRAVITY_DRIVER_KIND,
   ANTIGRAVITY_PRESENTATION,
@@ -23,6 +26,12 @@ import {
   validateAntigravityRuntime,
 } from "../acp/AntigravityAcpSupport.ts";
 import { type AcpProviderDriverEnv, makeAcpProviderDriver } from "../acp/AcpProviderDriver.ts";
+import { sampleAcpPromptSuggestion } from "../acp/AcpTextGeneration.ts";
+import {
+  isAntigravitySuggestionUsageNearLimit,
+  selectAntigravitySuggestionTarget,
+} from "../antigravity/AntigravityPromptSuggestions.ts";
+import { buildTranscriptPromptSuggestionPrompt } from "../promptSuggestions.ts";
 import { antigravityReleaseFor } from "../antigravity/AntigravityRelease.ts";
 import {
   type AntigravityReleaseSource,
@@ -53,7 +62,7 @@ import type { ProviderDriver } from "../ProviderDriver.ts";
 import { AntigravitySettings } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 
-export type AntigravityDriverEnv = AcpProviderDriverEnv;
+export type AntigravityDriverEnv = AcpProviderDriverEnv | ServerSettingsService;
 
 /** Linux's C library: Alpine and other musl systems get Google's musl build. */
 function hostLibc(): "glibc" | "musl" {
@@ -157,7 +166,63 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         skillsCwd: serverConfig.cwd,
         usage,
       });
-      const instance = yield* makeAcpProviderDriver(descriptor).create(input);
+      const serverSettings = yield* ServerSettingsService;
+      const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const instance = yield* makeAcpProviderDriver(descriptor, {
+        promptSuggestions: ({ settings: effectiveSettings, environment, getSnapshot }) => {
+          const isAllowed = (targetModelName: string | undefined) =>
+            Effect.gen(function* () {
+              const on = yield* serverSettings.getSettings.pipe(
+                Effect.map((current) => current.antigravitySuggestions),
+                Effect.orElseSucceed(() => false),
+              );
+              if (!on) return false;
+              const current = yield* getSnapshot;
+              return !isAntigravitySuggestionUsageNearLimit(
+                current.accountUsage,
+                targetModelName,
+                yield* Clock.currentTimeMillis,
+              );
+            });
+          return Effect.succeed({
+            shouldSuggest: (model) =>
+              Effect.gen(function* () {
+                const current = yield* getSnapshot;
+                const target = selectAntigravitySuggestionTarget(current.models, model);
+                return yield* isAllowed(target.modelName);
+              }),
+            sample: ({ cwd, model, messages }) =>
+              Effect.gen(function* () {
+                const prompt = buildTranscriptPromptSuggestionPrompt(messages);
+                if (prompt === undefined) return undefined;
+                // Select and quota-check one target from a single snapshot so
+                // a catalog refresh cannot switch models between check and call.
+                const current = yield* getSnapshot;
+                const target = selectAntigravitySuggestionTarget(current.models, model);
+                if (!(yield* isAllowed(target.modelName))) return undefined;
+                let checkedModelName = target.modelName;
+                const sampled = yield* sampleAcpPromptSuggestion({
+                  descriptor,
+                  settings: effectiveSettings,
+                  environment,
+                  commandSpawner,
+                  fileSystem,
+                  cwd,
+                  prompt,
+                  model: target.model,
+                  options: target.options,
+                  allowLiveModel: ({ name }) => {
+                    checkedModelName = name;
+                    return isAllowed(name);
+                  },
+                });
+                if (sampled === undefined) return undefined;
+                return (yield* isAllowed(checkedModelName)) ? sampled : undefined;
+              }),
+          });
+        },
+      }).create(input);
       usage.attach(instance.snapshot);
       const builtEnvironment = providerInstanceEnvironmentKey(input.environment);
       const authFlows = makeAntigravityAuthFlows({

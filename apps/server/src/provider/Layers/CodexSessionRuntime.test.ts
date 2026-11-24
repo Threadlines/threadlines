@@ -2169,4 +2169,48 @@ process.stdin.on("end", () => process.exit(0));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("20 seconds")),
     );
   });
+
+  it("emits session/exited when the app-server process is killed by a signal", async () => {
+    if (process.platform === "win32") return;
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const runtime = yield* makeCodexSessionRuntime({
+          threadId: ThreadId.make("signal-exit-thread"),
+          serverPort: 0,
+          binaryPath: process.execPath,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+            ...spawner,
+            spawn: () =>
+              spawner.spawn(
+                ChildProcess.make(process.execPath, [
+                  fileURLToPath(
+                    new URL(
+                      "../../../../../packages/effect-codex-app-server/test/fixtures/codex-app-server-mock-peer.ts",
+                      import.meta.url,
+                    ),
+                  ),
+                ]),
+              ),
+          }),
+        );
+        const exited = yield* Deferred.make<ProviderEvent>();
+        yield* runtime.events.pipe(
+          Stream.runForEach((event) =>
+            event.method === "session/exited" ? Deferred.succeed(exited, event) : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+        yield* runtime.start();
+        assert.ok(runtime.process);
+        process.kill(runtime.process.pid, "SIGKILL");
+        const exitEvent = yield* Deferred.await(exited);
+        assert.equal(exitEvent.method, "session/exited");
+        assert.equal(exitEvent.message, "Codex App Server exited with signal SIGKILL.");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+    );
+  });
 });

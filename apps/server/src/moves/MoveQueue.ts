@@ -65,6 +65,7 @@ import {
   isRestorePaid,
   moveWaitsOf,
   PARENT_DIDNT_MOVE_WORDS,
+  reportWaitThreads,
   restoreMessageText,
   sameMoveStatus,
   sharedCheckoutBusyThreads,
@@ -542,8 +543,12 @@ export const makeMoveQueue = (
           context.thread.pendingMove?.targetTakes,
         );
         // Whatever those threads do next (a command run interrupted, a
-        // workflow or a voice chat ending) is a reason to look again.
-        entry.waitsOnThreads = new Set(sharedCheckoutBusyThreads(context.view, context.thread));
+        // workflow or a voice chat ending, or a family report settling) is a
+        // reason to look again.
+        entry.waitsOnThreads = new Set([
+          ...sharedCheckoutBusyThreads(context.view, context.thread),
+          ...reportWaitThreads(context.view, context.thread),
+        ]);
         // One of them changed while this look read it: look again.
         if (
           [...entry.waitsOnThreads].some((other) => (lastSequenceOf.get(other) ?? 0) > readFrom)

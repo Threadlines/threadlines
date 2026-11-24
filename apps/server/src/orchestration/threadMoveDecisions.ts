@@ -41,7 +41,11 @@ import {
   type ThreadNativeSessionFellBackPayload,
   type ThreadPendingMove,
 } from "@threadlines/contracts";
-import { withinModeCeiling } from "@threadlines/shared/childThreads";
+import {
+  attachedDescendantsOf,
+  isAttachedChild,
+  withinModeCeiling,
+} from "@threadlines/shared/childThreads";
 import { hasLiveCommandRun } from "@threadlines/shared/commandRuns";
 import { threadPullRequestAutomationArmed } from "@threadlines/shared/linkedPullRequests";
 import {
@@ -419,7 +423,7 @@ export function threadMoveRefusals(
 
   // What goes away on its own.
   found.push(
-    ...workWaits(thread, {
+    ...workWaits(readModel, thread, {
       rooms: takesRooms,
       families: takesFamilies,
       sendable: thread.queuedFollowUps ?? [],
@@ -448,9 +452,39 @@ export function sharedCheckoutBusyThreads(
         candidate.deletedAt === null &&
         (candidate.move ?? null) === null &&
         checkoutOf(readModel, candidate) === checkout &&
-        busyInFolder(candidate),
+        busyInFolder(readModel, candidate),
     )
     .map((candidate) => candidate.id);
+}
+
+/**
+ * Other threads whose events can clear a family-report wait on `thread`:
+ * its attached parent while the parent holds an open request for it, and any
+ * attached child that still owes a report. The move queue watches these so a
+ * waiting move wakes as soon as the report settles.
+ */
+export function reportWaitThreads(
+  readModel: ThreadMoveView,
+  thread: OrchestrationThread,
+): ReadonlyArray<ThreadId> {
+  const ids: ThreadId[] = [];
+  if (isAttachedChild(thread) && thread.parentThreadId !== null) {
+    const parent = readModel.threads.find(
+      (entry) => entry.id === thread.parentThreadId && entry.deletedAt === null,
+    );
+    if (
+      parent !== undefined &&
+      parent.childRequests.open.some((request) => request.childThreadId === thread.id)
+    ) {
+      ids.push(parent.id);
+    }
+  }
+  for (const { thread: child } of attachedDescendantsOf(readModel.threads, thread.id)) {
+    if ((child.childRequests.owedReports ?? []).length > 0) {
+      ids.push(child.id);
+    }
+  }
+  return ids;
 }
 
 /**
@@ -463,6 +497,7 @@ export function sharedCheckoutBusyThreads(
  * a move in the same folder waits on (`busyInFolder`), so the two can't drift.
  */
 function workWaits(
+  readModel: ThreadMoveView,
   thread: OrchestrationThread,
   options: {
     readonly rooms: boolean;
@@ -500,16 +535,34 @@ function workWaits(
       found.push(wait("side_turn", ROOM_CHAIN_WORDS));
     }
   }
-  // Waiting on the threads it started (Part 3f, (g)): "Move when it's done"
-  // waits for their answers; a start waiting for the user's OK, for them.
+  // Waiting on the threads it started, or owing a report in either direction
+  // (docs/design/agent-autonomy-no-limits.md, "Access", sequence 4): a parent
+  // waits while any attached child still owes it a report, and a child waits
+  // while it has an owed report or its parent has an open request for it.
   if (options.families) {
     const open = thread.childRequests.open;
     if (open.some((request) => request.status === "awaiting_user")) {
       found.push(wait("approval"));
     }
+    const parent =
+      isAttachedChild(thread) && thread.parentThreadId !== null
+        ? readModel.threads.find(
+            (entry) => entry.id === thread.parentThreadId && entry.deletedAt === null,
+          )
+        : undefined;
+    const parentAwaitsChild =
+      parent !== undefined &&
+      parent.childRequests.open.some((request) => request.childThreadId === thread.id);
+    const childOwesReport = (thread.childRequests.owedReports ?? []).length > 0;
+    const attachedChildOwesReport = attachedDescendantsOf(readModel.threads, thread.id).some(
+      ({ thread: child }) => (child.childRequests.owedReports ?? []).length > 0,
+    );
     if (
       open.some((request) => request.status !== "awaiting_user") ||
-      options.sendable.some((entry) => isFamilyQueued(thread, entry))
+      options.sendable.some((entry) => isFamilyQueued(thread, entry)) ||
+      parentAwaitsChild ||
+      childOwesReport ||
+      attachedChildOwesReport
     ) {
       found.push(wait("background", FAMILY_WAIT_WORDS));
     }
@@ -536,7 +589,7 @@ function workWaits(
  * (Part 3f, (g)), or a parent waiting for its child's own move while the
  * child waits for the parent's held message (Part 3f, (h)).
  */
-function busyInFolder(thread: OrchestrationThread): boolean {
+function busyInFolder(readModel: ThreadMoveView, thread: OrchestrationThread): boolean {
   const pending = thread.pendingMove ?? null;
   const queued = thread.queuedFollowUps ?? [];
   const sendable =
@@ -548,7 +601,7 @@ function busyInFolder(thread: OrchestrationThread): boolean {
   return (
     sendable.length > 0 ||
     (pending === null && waitingPlanOf(thread) !== null) ||
-    workWaits(thread, { rooms: true, families: true, sendable }).length > 0
+    workWaits(readModel, thread, { rooms: true, families: true, sendable }).length > 0
   );
 }
 
@@ -2641,7 +2694,12 @@ export function decideNativeSessionFallBack(
   }
   const payload: ThreadNativeSessionFellBackPayload = {
     reason: command.reason,
-    ...(command.resendMessageId !== undefined ? { resendMessageId: command.resendMessageId } : {}),
+    ...(command.resendMessageId !== undefined
+      ? {
+          resendMessageId: command.resendMessageId,
+          chainEpoch: command.chainEpoch ?? thread.agentRequests.chainEpoch,
+        }
+      : {}),
     ...(participantId !== undefined ? { participantId } : {}),
   };
   // The thread's own agent's, or (a room) one agent's own record.

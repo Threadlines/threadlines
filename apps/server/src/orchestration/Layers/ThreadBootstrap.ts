@@ -685,6 +685,7 @@ const make = Effect.gen(function* () {
           parentThreadId: input.lineage.parentThreadId,
           parentTurnId: input.lineage.parentTurnId,
           attachedToParent: launch.reportBack,
+          ...(!launch.reportBack ? { stopsWithParent: true as const } : {}),
         }
       : input.lineage.kind === "remote"
         ? { remoteOrigin: input.lineage.remoteOrigin }
@@ -734,6 +735,7 @@ const make = Effect.gen(function* () {
           runtimeMode: launch.runtimeMode,
           interactionMode: launch.interactionMode,
           ...(input.fromThread !== undefined ? { fromThread: input.fromThread } : {}),
+          ...(input.requestCeiling !== undefined ? { requestCeiling: input.requestCeiling } : {}),
           ...(input.lineage.kind === "scheduled"
             ? { scheduledTaskId: input.lineage.scheduledRun.taskId }
             : {}),

@@ -9,8 +9,10 @@ import { it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { ChildProcessSpawner } from "effect/process";
 import { createModelSelection } from "@threadlines/shared/model";
 import { expect } from "vite-plus/test";
 
@@ -18,7 +20,7 @@ import { CursorSettings, ProviderInstanceId } from "@threadlines/contracts";
 
 import { ServerConfig } from "../../config.ts";
 import { type TextGenerationShape } from "../../textGeneration/TextGeneration.ts";
-import { makeAcpTextGeneration } from "./AcpTextGeneration.ts";
+import { makeAcpTextGeneration, sampleAcpPromptSuggestion } from "./AcpTextGeneration.ts";
 import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
@@ -328,4 +330,82 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
         }),
     );
   });
+
+  it.effect("samples a prompt suggestion in an isolated session and cleans it up", () =>
+    Effect.gen(function* () {
+      const tempDir = mkdtempSync(path.join(os.tmpdir(), "threadlines-suggestion-acp-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          rmSync(tempDir, { recursive: true, force: true });
+        }),
+      );
+      const closedSessionIds: Array<string> = [];
+      const agentPath = makeAcpAgentWrapper(tempDir, {
+        T3_ACP_PROMPT_RESPONSE_TEXT: "Run the browser suite next",
+      });
+      const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+
+      const sampled = yield* sampleAcpPromptSuggestion({
+        descriptor: {
+          ...CURSOR_ACP_DESCRIPTOR,
+          isolateTextGeneration: true,
+          onEphemeralSessionClosed: (sessionId) =>
+            Effect.sync(() => {
+              closedSessionIds.push(sessionId);
+            }),
+        },
+        settings: decodeCursorSettings({ enabled: true, binaryPath: agentPath }),
+        environment: process.env,
+        commandSpawner,
+        fileSystem,
+        cwd: process.cwd(),
+        prompt: "Predict the next user message.",
+        model: "composer-2",
+      });
+
+      expect(sampled).toBe("Run the browser suite next");
+      expect(closedSessionIds.length).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "aborts prompt sampling without falling back when the requested model is not offered",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = mkdtempSync(
+          path.join(os.tmpdir(), "threadlines-suggestion-missing-model-"),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            rmSync(tempDir, { recursive: true, force: true });
+          }),
+        );
+        const requestLogPath = path.join(tempDir, "requests.jsonl");
+        const agentPath = makeAcpAgentWrapper(tempDir, {
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          T3_ACP_PROMPT_RESPONSE_TEXT: "Should never be prompted",
+        });
+        const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+
+        const sampled = yield* sampleAcpPromptSuggestion({
+          descriptor: {
+            ...CURSOR_ACP_DESCRIPTOR,
+            isolateTextGeneration: true,
+          },
+          settings: decodeCursorSettings({ enabled: true, binaryPath: agentPath }),
+          environment: process.env,
+          commandSpawner,
+          fileSystem,
+          cwd: process.cwd(),
+          prompt: "Predict the next user message.",
+          model: "gemini-4-hydrogen-unavailable",
+        });
+
+        expect(sampled).toBeUndefined();
+        const rawLog = readFileSync(requestLogPath, "utf8");
+        expect(rawLog).not.toContain('"method":"session/prompt"');
+      }).pipe(Effect.scoped),
+  );
 });

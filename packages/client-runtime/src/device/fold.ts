@@ -44,7 +44,12 @@ const foldRequest = async (
       ...(signal ? { signal } : {}),
     },
   );
-  const payload: unknown = await response.json().catch(() => null);
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch (cause) {
+    if (!(cause instanceof SyntaxError)) throw cause;
+  }
   if (!response.ok) throw new Error(errorText(payload, response.status));
   const reply = decodeFoldReply(payload);
   if (Option.isNone(reply)) throw new Error("The emulator sent an unexpected fold reply.");

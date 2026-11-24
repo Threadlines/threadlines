@@ -45,7 +45,7 @@ import {
 } from "../providerMaintenance.ts";
 import { withKnownCliDirsOnPath } from "../providerDetection.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
-import { makeAcpAdapter } from "./AcpAdapter.ts";
+import { type AcpAdapterOptions, makeAcpAdapter } from "./AcpAdapter.ts";
 import {
   buildInitialAcpProviderSnapshot,
   checkAcpProviderStatus,
@@ -192,9 +192,19 @@ export function resolveAcpBinaryPath<Settings extends AcpProviderSettings>(
   );
 }
 
-export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
+export interface AcpProviderDriverOptions<Settings extends AcpProviderSettings, R = never> {
+  readonly promptSuggestions?: (context: {
+    readonly descriptor: AcpProviderDescriptor<Settings>;
+    readonly settings: Settings;
+    readonly environment: NodeJS.ProcessEnv;
+    readonly getSnapshot: Effect.Effect<ServerProvider>;
+  }) => Effect.Effect<NonNullable<AcpAdapterOptions<Settings>["promptSuggestions"]>, never, R>;
+}
+
+export function makeAcpProviderDriver<Settings extends AcpProviderSettings, R = never>(
   descriptor: AcpProviderDescriptor<Settings>,
-): ProviderDriver<Settings, AcpProviderDriverEnv> {
+  driverOptions?: AcpProviderDriverOptions<Settings, R>,
+): ProviderDriver<Settings, AcpProviderDriverEnv | R> {
   const DRIVER_KIND = descriptor.driverKind;
   const maintenanceResolver = makeAcpProviderMaintenanceResolver(descriptor);
 
@@ -310,11 +320,22 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings>(
                   ),
                 ),
               };
+        const promptSuggestions = driverOptions?.promptSuggestions
+          ? yield* driverOptions.promptSuggestions({
+              descriptor,
+              settings: effectiveConfig,
+              environment: processEnv,
+              getSnapshot: Effect.suspend(
+                () => liveSnapshot?.getSnapshot ?? Effect.die("ACP provider snapshot not ready"),
+              ),
+            })
+          : undefined;
         const adapter = yield* makeAcpAdapter(descriptor, effectiveConfig, {
           environment: processEnv,
           ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
           instanceId,
           ...(recordTurnUsage ? { recordTurnUsage } : {}),
+          ...(promptSuggestions ? { promptSuggestions } : {}),
           ...agentCommandHooks,
         });
         const textGeneration = yield* makeAcpTextGeneration(

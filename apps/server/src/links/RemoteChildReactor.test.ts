@@ -107,6 +107,8 @@ interface LinkedComputer {
   readonly watch?: ReadonlyArray<PeerWatchEvent>;
   /** It says how threads are filed and takes `peer.thread.wrap` (`PeerDescriptor.threadFiling`). */
   readonly threadFiling?: boolean;
+  /** It enforces `PeerSendInput.ceiling` (`PeerDescriptor.enforcesRequestCeiling`). */
+  readonly enforcesRequestCeiling?: boolean;
 }
 
 /**
@@ -265,6 +267,9 @@ const makeComputer = Effect.gen(function* () {
           linked.start ??
             (() => Effect.succeed({ status: "started" as const, threadId: REMOTE_CHILD })),
         ),
+        "peer.request.send": answer("peer.request.send", () =>
+          Effect.succeed({ status: "queued" as const }),
+        ),
       } as unknown as PeerClient;
       const layer = RemoteChildReactorLive.pipe(
         Layer.provide(
@@ -278,6 +283,9 @@ const makeComputer = Effect.gen(function* () {
               describe: () =>
                 Effect.succeed({
                   threadFiling: linked.threadFiling === true,
+                  ...(linked.enforcesRequestCeiling === true
+                    ? { enforcesRequestCeiling: true }
+                    : {}),
                 } as unknown as PeerDescriptor),
               noteRemoteLabel: () => undefined,
             }),
@@ -756,6 +764,115 @@ it.layer(NodeServices.layer)("RemoteChildReactor", (it) => {
         });
         // Nothing was written into the read-only copy.
         assert.lengthOf((yield* computer.stored).childRequests?.open ?? [], 1);
+      }),
+  );
+
+  it.effect(
+    "carries the sender's ceiling to an updated peer, and refuses a narrower sender to an older peer",
+    () =>
+      Effect.gen(function* () {
+        const submitSend = (
+          computer: Effect.Success<typeof makeComputer>,
+          requestId: ChildRequestId,
+          runtimeMode: "auto-accept-edits" | "full-access",
+        ) =>
+          Effect.gen(function* () {
+            yield* computer.askForThread;
+            yield* computer.recordRemote("running", {
+              status: "accepted",
+              threadId: REMOTE_CHILD,
+            });
+            yield* computer.engine.dispatch({
+              type: "thread.remote-child.update",
+              commandId: CommandId.make(`record-${requestId}`),
+              threadId: PARENT,
+              child: {
+                environmentId: MAC_MINI,
+                label: "Mac mini",
+                threadId: REMOTE_CHILD,
+                title: "Remote worker",
+                handle: "Claude",
+                attachmentEpoch: 0,
+                cachedStatus: "idle",
+                updatedAt: AT,
+              },
+              createdAt: AT,
+            });
+            yield* computer.engine.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make(`mode-${requestId}`),
+              threadId: PARENT,
+              runtimeMode,
+              createdAt: AT,
+            });
+            yield* computer.engine.dispatch({
+              type: "thread.session.set",
+              commandId: CommandId.make(`session-${requestId}`),
+              threadId: PARENT,
+              session: {
+                threadId: PARENT,
+                status: "running",
+                providerName: "claudeAgent",
+                providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+                runtimeMode,
+                activeTurnId: TurnId.make("turn-1"),
+                lastError: null,
+                updatedAt: AT,
+              },
+              createdAt: AT,
+            });
+            yield* computer.engine.dispatch({
+              type: "thread.child.send",
+              commandId: CommandId.make(`send-${requestId}`),
+              threadId: PARENT,
+              requestId,
+              from: { participantId: null },
+              callerTurnId: TurnId.make("turn-1"),
+              childThreadId: REMOTE_CHILD,
+              childMessageId: MessageId.make(`msg-${requestId}`),
+              text: "Check the build.",
+              createdAt: AT,
+            });
+          });
+
+        // Narrow sender -> older peer (no enforcesRequestCeiling): refused and settled failed.
+        const older = yield* makeComputer;
+        yield* submitSend(older, ChildRequestId.make("req-older-narrow"), "auto-accept-edits");
+        yield* older.boot({ enforcesRequestCeiling: false });
+        yield* eventually(
+          Effect.map(
+            older.stored,
+            (parent) =>
+              !(parent.childRequests?.open ?? []).some(
+                (entry) => entry.requestId === ChildRequestId.make("req-older-narrow"),
+              ),
+          ),
+          "narrow send to older peer settles failed",
+        );
+        assert.deepEqual(older.callsTo("peer.request.send"), []);
+
+        // Widest sender -> older peer: allowed, no ceiling can be broken.
+        const widest = yield* makeComputer;
+        yield* submitSend(widest, ChildRequestId.make("req-older-wide"), "full-access");
+        yield* widest.boot({ enforcesRequestCeiling: false });
+        yield* eventually(
+          Effect.sync(() => widest.callsTo("peer.request.send").length === 1),
+          "widest send to older peer goes through",
+        );
+
+        // Narrow sender -> updated peer: carries ceiling.
+        const updated = yield* makeComputer;
+        yield* submitSend(updated, ChildRequestId.make("req-updated-narrow"), "auto-accept-edits");
+        yield* updated.boot({ enforcesRequestCeiling: true });
+        yield* eventually(
+          Effect.sync(() => updated.callsTo("peer.request.send").length === 1),
+          "narrow send to updated peer goes through with ceiling",
+        );
+        assert.deepEqual(
+          (updated.callsTo("peer.request.send")[0]?.payload as { readonly ceiling?: unknown })
+            ?.ceiling,
+          { runtimeMode: "auto-accept-edits", interactionMode: "default" },
+        );
       }),
   );
 });

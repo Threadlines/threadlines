@@ -39,7 +39,9 @@ export function useDeviceAccessibility(input: {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const read = () => {
       readDeviceAxElements(transport, { platform, deviceId }, controller.signal)
-        .then((elements) => setResult({ elements, error: null }))
+        .then((elements) => {
+          if (!controller.signal.aborted) setResult({ elements, error: null });
+        })
         .catch((cause: unknown) => {
           if (controller.signal.aborted) return;
           setResult((current) => ({ ...current, error: deviceErrorText(cause) }));

@@ -48,14 +48,18 @@ import {
   ThreadNativeSessionFellBackPayload,
   ThreadForkSeedOutcomePayload,
   type TurnId,
+  type TurnStartedBy,
 } from "@threadlines/contracts";
+import { markCheckBacksDormant } from "@threadlines/shared/checkBacks";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
 import {
   isAttachedChild,
+  isOwedReport,
   notesFor,
   remoteChildOf,
+  requestCeilingRefusalWords,
   withinModeCeiling,
 } from "@threadlines/shared/childThreads";
 import { settingsChangeNotesFor } from "@threadlines/shared/settingsChangeState";
@@ -116,6 +120,7 @@ import { makeSessionLaunchGenerations, withoutLaunchMark } from "../sessionLaunc
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { messageSentFromNote, previousMessageSentFrom } from "../messageSentFrom.ts";
 import { turnMessageOrigin } from "../turnOrigin.ts";
+import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
 import { isContinueTrigger, latestTurnStartFor } from "../continueTurns.ts";
 
@@ -165,13 +170,7 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
 import { inviteAnswerRefusal } from "../agentInvites.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
-import { isCancelledReport } from "../childThreadDecisions.ts";
-import {
-  type LateReply,
-  lateRepliesText,
-  lateReplyOf,
-  lateReplyRecipient,
-} from "../childThreadDelivery.ts";
+import { childReportMessageId, isCancelledReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
 import { isRestorePaid } from "../threadMoveDecisions.ts";
 import { isLinkFenced } from "../linkFence.ts";
@@ -286,6 +285,13 @@ interface EnsureSessionOptions {
    * raised its access after the decider let the pass through.
    */
   readonly passCeiling?: LeadPassCeiling;
+  /**
+   * The turn carries a parent's work or continues one (docs/design/
+   * agent-autonomy-no-limits.md, "Access"): it runs only while the thread is
+   * within this ceiling, checked on the same read of the thread the session
+   * starts from.
+   */
+  readonly requestCeiling?: LeadPassCeiling;
   /**
    * A turn that isn't from outside: an agent outside text reached
    * (OrchestrationOutsideWork) starts fresh for it, a new runtime with a
@@ -625,6 +631,7 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const analytics = yield* Effect.serviceOption(AnalyticsService);
   // Absent on a CLI-only server, which has no agents to bring in.
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const fileSystem = yield* FileSystem.FileSystem;
@@ -1086,11 +1093,14 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
     readonly createdAt: string;
+    /** For an update that marks a turn running: the message it was asked with. */
+    readonly turnStartedBy?: TurnStartedBy;
   }) =>
     orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: serverCommandId("provider-session-set"),
       threadId: input.threadId,
+      ...(input.turnStartedBy !== undefined ? { turnStartedBy: input.turnStartedBy } : {}),
       // The stored error reaches the thread and phone alerts: no saved key in it.
       session:
         input.session.lastError === null || input.session.lastError === undefined
@@ -1214,9 +1224,51 @@ const make = Effect.gen(function* () {
       createdAt,
     });
 
+  /**
+   * A child's report whose turn start died before the provider took it (a
+   * restart, a failed start) goes back to the front of the queue, or is
+   * marked not run when it can no longer be delivered
+   * (`thread.turn-start.take-back`, docs/design/agent-autonomy-no-limits.md,
+   * "Restart and turn binding", rule A). True when it is back on the queue.
+   * Anything that isn't a report is left alone.
+   */
+  const takeBackReportStart = (
+    threadId: ThreadId,
+    messageId: MessageId,
+    why: "restart" | "failed-start",
+  ) =>
+    Effect.gen(function* () {
+      const thread = yield* resolveThread(threadId);
+      const message = thread?.messages.find((entry) => entry.id === messageId);
+      if (message?.fromThread?.kind !== "report") return false;
+      const taken = yield* orchestrationEngine
+        .dispatch({
+          type: "thread.turn-start.take-back",
+          commandId: serverCommandId(`turn-start-take-back-${why}`),
+          threadId,
+          messageId,
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor could not take a report's start back", {
+              threadId,
+              messageId,
+              detail: String(error),
+            }).pipe(Effect.as(false)),
+          ),
+        );
+      if (!taken) return false;
+      const latest = yield* resolveThread(threadId);
+      return (latest?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
+    }).pipe(Effect.orElseSucceed(() => false));
+
   const markProviderTurnAccepted = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
+    /** The message the provider took this turn for. */
+    readonly messageId: MessageId;
   }) {
     // The turn owes its checkpoint from now on, whether or not its thread is
     // a room yet: an agent added mid-turn must wait for it (checkpointHandover).
@@ -1226,20 +1278,20 @@ const make = Effect.gen(function* () {
     if (!thread || !session) {
       return;
     }
+    // Only this writer, which sent the message, names its turn, by id
+    // ("Restart and turn binding", rule B).
+    const turnStartedBy = { messageId: input.messageId, turnId: input.turnId };
 
+    // The turn already ended, or the session moved on: nothing is marked
+    // running, and the turn stays as it was recorded (a known limit: a turn
+    // that ends before its send is acknowledged keeps the provider's).
     if (
       session.status === "stopped" ||
       session.status === "error" ||
-      session.status === "interrupted"
+      session.status === "interrupted" ||
+      (session.activeTurnId !== null && session.activeTurnId !== input.turnId) ||
+      (thread.latestTurn?.turnId === input.turnId && thread.latestTurn.state !== "running")
     ) {
-      return;
-    }
-
-    if (session.activeTurnId !== null && session.activeTurnId !== input.turnId) {
-      return;
-    }
-
-    if (thread.latestTurn?.turnId === input.turnId && thread.latestTurn.state !== "running") {
       return;
     }
 
@@ -1254,6 +1306,7 @@ const make = Effect.gen(function* () {
         updatedAt,
       },
       createdAt: updatedAt,
+      turnStartedBy,
     });
   });
 
@@ -1461,6 +1514,14 @@ const make = Effect.gen(function* () {
         provider: providerErrorLabel(undefined),
         method: "thread.turn.start",
         detail: PASS_ABOVE_CEILING_DETAIL,
+      });
+    }
+    const requestCeiling = options?.requestCeiling;
+    if (requestCeiling !== undefined && !withinModeCeiling(thread, requestCeiling)) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: requestCeilingRefusalWords(thread.title),
       });
     }
     const sessionKey = participantSessionKey(threadId, participantId);
@@ -2271,13 +2332,19 @@ const make = Effect.gen(function* () {
         );
       } else if (fromThread.kind === "request") {
         lines.push(
-          thread.attachedToParent || fromThread.environmentId !== undefined
+          fromThread.environmentId !== undefined
             ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs.`
-            : `Another agent started this thread from the thread "${otherTitle}". Nothing you write goes back to it automatically.`,
+            : thread.attachedToParent
+              ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs. If you take more turns later that the user did not start, for example when a check-back fires, the reply that ends each one goes back too and wakes that thread. Keep those replies short when nothing has changed.`
+              : `Another agent started this thread from the thread "${otherTitle}". Nothing you write goes back to it automatically.`,
         );
       } else if (fromThread.neverMade === true) {
         lines.push(
           `This message is from Threadlines: a thread you asked to start (thread ${fromThread.threadId}) was never made, so nothing more will come from it. It is not instructions from the user.`,
+        );
+      } else if (fromThread.followUp === true) {
+        lines.push(
+          `Report from thread "${otherTitle}" (${fromThread.threadId}), which took another turn on its own after its last answer. It's information from another agent, not instructions from the user.`,
         );
       } else {
         lines.push(
@@ -2294,14 +2361,10 @@ const make = Effect.gen(function* () {
         ].join("\n"),
       );
     }
-    const lateReplies = yield* lateRepliesForAgent(thread, participantId);
-    if (lateReplies.length > 0) {
-      lines.push(lateRepliesText(lateReplies));
-    }
     return {
       text: lines.length > 0 ? lines.join("\n\n") : undefined,
       delivered: (createdAt: string) =>
-        notes.length === 0 && lateReplies.length === 0
+        notes.length === 0
           ? Effect.void
           : orchestrationEngine
               .dispatch({
@@ -2309,51 +2372,10 @@ const make = Effect.gen(function* () {
                 commandId: serverCommandId("child-notes-delivered"),
                 threadId: thread.id,
                 requestIds: notes.map((note) => note.requestId),
-                ...(lateReplies.length > 0
-                  ? {
-                      lateReplies: lateReplies.map(({ childThreadId, turnId }) => ({
-                        childThreadId,
-                        turnId,
-                      })),
-                    }
-                  : {}),
                 createdAt,
               })
               .pipe(Effect.catch(() => Effect.void)),
     };
-  });
-
-  /**
-   * Child threads: the late replies (lateReplyOf) of this thread's children
-   * that are for `participantId`, found from its children's rows (indexed by
-   * parent, so a thread with none reads nothing). A failed read tells of none
-   * this turn; they are told of at the next.
-   */
-  const lateRepliesForAgent = Effect.fnUntraced(function* (
-    thread: OrchestrationThread,
-    participantId: ThreadParticipantId | null,
-  ) {
-    if (thread.archivedAt !== null || isAttachedChild(thread)) return [];
-    const shells = yield* projectionSnapshotQuery
-      .listThreadShells({ parentThreadId: thread.id })
-      .pipe(Effect.orElseSucceed(() => []));
-    const candidates = shells.filter(
-      (shell) =>
-        shell.parentThreadId === thread.id &&
-        shell.attachedToParent &&
-        shell.handedBackTurnId !== null &&
-        shell.latestTurn !== null &&
-        shell.latestTurn.turnId !== shell.handedBackTurnId &&
-        shell.latestTurn.state === "completed" &&
-        lateReplyRecipient(thread, shell) === participantId,
-    );
-    const replies: LateReply[] = [];
-    for (const shell of candidates) {
-      const child = yield* resolveThread(shell.id).pipe(Effect.orElseSucceed(() => undefined));
-      const reply = child === undefined ? null : lateReplyOf(thread, child);
-      if (reply !== null) replies.push(reply);
-    }
-    return replies;
   });
 
   /**
@@ -2524,6 +2546,8 @@ const make = Effect.gen(function* () {
     readonly fromThread?: ThreadMessageOrigin | undefined;
     /** An outside agent's turn: runs only within its ceiling. */
     readonly fromOutside?: OutsideTurnOrigin | undefined;
+    /** A parent request's (or its continue's) access limit. */
+    readonly requestCeiling?: LeadPassCeiling | undefined;
     /**
      * A person sent it from the app (`sentFrom`): an agent outside text
      * reached starts fresh for it (EnsureSessionOptions.shedOutsideWork).
@@ -2598,6 +2622,7 @@ const make = Effect.gen(function* () {
     // resend of a pass carries no origin on its turn.
     const storedMessage = thread.messages.find((message) => message.id === input.messageId);
     const passCeiling = storedMessage?.fromThread?.ceiling ?? input.fromThread?.ceiling;
+    const requestCeiling = storedMessage?.requestCeiling ?? input.requestCeiling;
     // Marked as never sent while this turn was prepared (a retry the user
     // made just before the mark landed): it stays unsent.
     if (passCeiling !== undefined && storedMessage?.notSent === true) {
@@ -2615,6 +2640,7 @@ const make = Effect.gen(function* () {
       ...(forkFrom !== undefined ? { forkFrom } : {}),
       ...(input.fromOutside !== undefined ? { outsideCeiling: input.fromOutside } : {}),
       ...(passCeiling !== undefined ? { passCeiling } : {}),
+      ...(requestCeiling !== undefined ? { requestCeiling } : {}),
       ...(input.sentByPerson === true && input.fromOutside === undefined
         ? { shedOutsideWork: true }
         : {}),
@@ -2657,6 +2683,30 @@ const make = Effect.gen(function* () {
         provider: providerErrorLabel(activeSession?.provider),
         method: "thread.turn.start",
         detail: PASS_ABOVE_CEILING_DETAIL,
+      });
+    }
+    // A parent's request (or its continue) goes only to a runtime within its
+    // ceiling, re-read on the thread now (the user may have widened it while
+    // the session was prepared).
+    const latestForCeiling =
+      requestCeiling === undefined ? undefined : ((yield* resolveThread(input.threadId)) ?? thread);
+    if (
+      requestCeiling !== undefined &&
+      latestForCeiling !== undefined &&
+      ((activeSession !== undefined &&
+        exceedsRuntimeMode(activeSession.runtimeMode, requestCeiling.runtimeMode)) ||
+        !withinModeCeiling(
+          {
+            runtimeMode: latestForCeiling.runtimeMode,
+            interactionMode: latestForCeiling.interactionMode,
+          },
+          requestCeiling,
+        ))
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession?.provider),
+        method: "thread.turn.start",
+        detail: requestCeilingRefusalWords(latestForCeiling.title),
       });
     }
     // In a room, what the other agents said and changed since this agent's
@@ -3455,6 +3505,72 @@ const make = Effect.gen(function* () {
         });
       }).pipe(Effect.ignoreCause({ log: true }));
 
+    /**
+     * Child threads: a turn that never started settles what its message owed
+     * its parent (docs/design/agent-autonomy-no-limits.md, rule 11). With
+     * `detail`, the start failed: a parent's request settles failed and an
+     * owed report delivers the failure. Without, the start was taken back on
+     * purpose (Stop, a report gone stale): the owed report goes with nothing
+     * sent, and a request is settled by whatever took it back.
+     */
+    const settleChildWorkForUnstartedTurn = (detail: string | null) =>
+      Effect.gen(function* () {
+        const latest = yield* resolveThread(event.payload.threadId);
+        if (latest === undefined || latest.parentThreadId === null) {
+          return;
+        }
+        const messageId = event.payload.messageId;
+        const failure =
+          detail === null
+            ? undefined
+            : `'${latest.title}' could not start its turn: ${detail.replace(/\.$/, "")}.`;
+        if (
+          (latest.childRequests.owedReports ?? []).some((entry) =>
+            isOwedReport(entry, { messageId }),
+          )
+        ) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.child-report.settle",
+            commandId: serverCommandId("child-report-unstarted"),
+            threadId: latest.id,
+            owed: { messageId },
+            turnId: null,
+            ...(failure !== undefined
+              ? { text: `${failure} Send it a message with thread_send to continue.` }
+              : {}),
+            createdAt: yield* nowIso,
+          });
+        }
+        if (failure === undefined || detail === null) {
+          return;
+        }
+        const parent = yield* resolveThread(latest.parentThreadId);
+        const request = parent?.childRequests.open.find(
+          (entry) =>
+            entry.childThreadId === latest.id &&
+            entry.remote === undefined &&
+            entry.status === "running" &&
+            entry.childMessageId === messageId,
+        );
+        if (parent === undefined || request === undefined) {
+          return;
+        }
+        yield* orchestrationEngine.dispatch({
+          type: "thread.child-request.settle",
+          commandId: serverCommandId("child-request-start-failed"),
+          threadId: parent.id,
+          requestId: request.requestId,
+          outcome: "failed",
+          reply: {
+            messageId: childReportMessageId(request.requestId),
+            text: failure,
+            turnId: null,
+          },
+          error: detail,
+          createdAt: yield* nowIso,
+        });
+      }).pipe(Effect.ignoreCause({ log: true }));
+
     // A message no one can send again never reached the agent: a lead
     // chat's pass, or an outside agent's message. The decider marks it so no
     // history carries it (and a pass's lead hears); anything else it leaves.
@@ -3487,9 +3603,22 @@ const make = Effect.gen(function* () {
         : beforeSend
           ? markNotRun("failed")
           : Effect.void;
+      // Only a turn the provider never took: one it took ends (and settles
+      // what it owes) by its own turn end, whatever failed after. A child's
+      // report goes back to the front of the queue, before the failure is
+      // recorded, so a stop in between can't leave it out of the queue.
+      const reportStart = beforeSend && message.fromThread?.kind === "report";
       return mark.pipe(
+        Effect.andThen(
+          reportStart
+            ? takeBackReportStart(event.payload.threadId, event.payload.messageId, "failed-start")
+            : Effect.void,
+        ),
         Effect.andThen(handleTurnStartFailure(cause)),
         Effect.andThen(failHandOffForFailedStart(detail)),
+        Effect.andThen(
+          beforeSend && !reportStart ? settleChildWorkForUnstartedTurn(detail) : Effect.void,
+        ),
       );
     };
 
@@ -3603,6 +3732,7 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
+      yield* settleChildWorkForUnstartedTurn(null);
       yield* Effect.logInfo("continue not sent: the user wrote first", {
         threadId: event.payload.threadId,
         messageId: event.payload.messageId,
@@ -3634,6 +3764,7 @@ const make = Effect.gen(function* () {
             createdAt: yield* nowIso,
           });
         }
+        yield* settleChildWorkForUnstartedTurn(null);
       });
 
     /**
@@ -3710,6 +3841,9 @@ const make = Effect.gen(function* () {
         ...(event.payload.fromThread !== undefined ? { fromThread: event.payload.fromThread } : {}),
         ...(event.payload.fromOutside !== undefined
           ? { fromOutside: event.payload.fromOutside }
+          : {}),
+        ...(event.payload.requestCeiling !== undefined
+          ? { requestCeiling: event.payload.requestCeiling }
           : {}),
         sentByPerson: message.sentFrom !== undefined,
         createdAt: event.payload.createdAt,
@@ -3806,6 +3940,7 @@ const make = Effect.gen(function* () {
           ...turnRequest,
           requestedAt,
           origin,
+          lane: "main",
           // Its sender reads the reply here: Codex suggests their next message.
           ...(origin === "person" ? { suggestNextMessage: true } : {}),
           ...(resend !== undefined ? { resend } : {}),
@@ -3848,6 +3983,7 @@ const make = Effect.gen(function* () {
             markProviderTurnAccepted({
               threadId: event.payload.threadId,
               turnId: turn.turnId,
+              messageId: event.payload.messageId,
             }),
           ),
           Effect.tap(() =>
@@ -5151,11 +5287,9 @@ const make = Effect.gen(function* () {
       ));
     if (runtime === undefined || !holdsCheckBacks) {
       // Nothing is running that could come back: the list was stale. Jobs
-      // saved to disk outlive the session, so they stay.
+      // saved to disk outlive the session, so they stay listed as dormant.
       const thread = yield* resolveThread(threadId);
-      const kept = (thread?.checkBacks ?? []).filter(
-        (checkBack) => checkBack.participantId === participantId && checkBack.durable,
-      );
+      const kept = markCheckBacksDormant(thread?.checkBacks ?? [], participantId);
       yield* orchestrationEngine
         .dispatch({
           type: "thread.check-backs.set",
@@ -5601,6 +5735,13 @@ const make = Effect.gen(function* () {
     const written = thread.messages.find((message) => message.id === queued.messageId);
     const isReply = queued.fromAgent !== undefined && written?.requestKind === "reply";
     if (!isReply && queued.fromThread?.kind !== "report") {
+      return;
+    }
+    // A thread that reports to a parent reads each report from its own
+    // threads in a turn of its own, which reports in turn: steered into a
+    // running turn, it could be swallowed by the user's turn or a request's
+    // answer (docs/design/agent-autonomy-no-limits.md, rule 9).
+    if (!isReply && isAttachedChild(thread) && (thread.remoteOrigin ?? null) === null) {
       return;
     }
     // Only one that came while this turn ran: one left from before it (its
@@ -6109,6 +6250,12 @@ const make = Effect.gen(function* () {
     if (event.payload.imported === true) {
       return;
     }
+    // A report put back after its start died waits for the next thing that
+    // moves the queue (a restart's send, a new message, a turn's end): sent
+    // on by itself, a start that keeps failing would never stop.
+    if (event.payload.followUp.putBack === true) {
+      return;
+    }
     // A message the user sent after Stop means they are moving on. One an
     // agent queued (in this thread, or from another thread) never does.
     const fromUser = !isAgentOrigin(event.payload.followUp);
@@ -6148,7 +6295,14 @@ const make = Effect.gen(function* () {
     ) {
       return;
     }
-    const next = event.payload.followUp;
+    // In an idle thread, agents' messages run in the order they arrived: one
+    // that waited behind a failed turn goes before the newer one that woke
+    // the queue (docs/design/agent-autonomy-no-limits.md, rule 10).
+    const next =
+      fromUser || waitsForMove
+        ? event.payload.followUp
+        : ((thread.queuedFollowUps ?? []).find((entry) => isAgentOrigin(entry)) ??
+          event.payload.followUp);
     if (yield* releaseSlotForQueuedAgent(thread, next)) {
       releasedMessageByThread.set(thread.id, next.messageId);
       return;
@@ -6485,6 +6639,7 @@ const make = Effect.gen(function* () {
         commandId: serverCommandId("native-session-resend"),
         threadId,
         messageId: payload.value.resendMessageId,
+        ...(payload.value.chainEpoch !== undefined ? { chainEpoch: payload.value.chainEpoch } : {}),
         createdAt: yield* nowIso,
       })
       .pipe(
@@ -6783,6 +6938,7 @@ const make = Effect.gen(function* () {
       ...(deviceNote !== undefined ? { deviceNote } : {}),
       modelSelection,
       interactionMode: "default",
+      lane: isReview ? "side_review" : "side",
       origin: turnMessageOrigin({
         message: question,
         askedByAgent: sideTurn.askedBy !== undefined,
@@ -6906,7 +7062,13 @@ const make = Effect.gen(function* () {
   const processSideTurnSettled = Effect.fn("processSideTurnSettled")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.side-turn-settled" }>,
   ) {
-    const { threadId, sideTurnId, participantId } = event.payload;
+    const { threadId, sideTurnId, participantId, outcome, error } = event.payload;
+    if (Option.isSome(analytics)) {
+      yield* analytics.value.record("room.side_turn.settled", {
+        outcome,
+        timedOut: error === "it ran for 30 minutes and was stopped.",
+      });
+    }
     yield* stopSideRuntime(threadId, { sideTurnId, participantId }).pipe(Effect.forkScoped);
     // Only the agent the message waits for: another agent's answer ending
     // releases nothing.
@@ -7345,6 +7507,25 @@ const make = Effect.gen(function* () {
       });
     }).pipe(Effect.ignoreCause({ log: true }));
 
+  /**
+   * A restart cut off a turn the provider never took: if the start the
+   * thread was waiting on (its pending start, the exact message) was a
+   * child's report, it is taken back. True when the report went back on the
+   * queue, which then sends it.
+   */
+  const takeBackReportCutByRestart = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const pending = yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId });
+      if (Option.isNone(pending)) {
+        // An earlier startup put it back and stopped before it was done.
+        const thread = yield* resolveThread(threadId);
+        return (thread?.queuedFollowUps ?? []).some(
+          (queued) => queued.putBack === true && queued.fromThread?.kind === "report",
+        );
+      }
+      return yield* takeBackReportStart(threadId, pending.value.messageId, "restart");
+    }).pipe(Effect.orElseSucceed(() => false));
+
   const settleSessionsFromPreviousProcess = Effect.fn("settleSessionsFromPreviousProcess")(
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
@@ -7419,6 +7600,11 @@ const make = Effect.gen(function* () {
         if (session.activeTurnId === null) {
           yield* markOutsideMessageCutBeforeStart(thread.id, sessionSlotParticipantId(session));
         }
+        // A child's report cut before its start goes back on the queue first,
+        // for the same reason, and is sent from there: no restart note and no
+        // continue for it.
+        const reportPutBack =
+          session.activeTurnId === null && (yield* takeBackReportCutByRestart(thread.id));
         yield* setThreadSession({
           threadId: thread.id,
           session: {
@@ -7433,6 +7619,9 @@ const make = Effect.gen(function* () {
           createdAt,
         });
         yield* takeBackOutsideQueued(thread.id, createdAt);
+        if (reportPutBack) {
+          continue;
+        }
         // Read now: startup expires the questions the previous process left.
         const activities = (yield* resolveThread(thread.id))?.activities ?? [];
         turnsCutByRestart.push({
@@ -7461,14 +7650,41 @@ const make = Effect.gen(function* () {
         Effect.map((settings) => settings.continueAfterRestart),
         Effect.orElseSucceed(() => false),
       );
+      if (Option.isSome(analytics)) {
+        yield* analytics.value.record("provider.turn.restart_recovery", {
+          count: cut.length,
+          continueAfterRestart: settingOn,
+        });
+      }
       for (const { threadId, turnId, participantId, waitingOnUser } of cut) {
         const createdAt = yield* nowIso;
+        // The message the cut turn was started with, from its turn record:
+        // a check-back's turn has none and is never continued.
+        const turnRow =
+          turnId === null
+            ? undefined
+            : yield* projectionTurnRepository.getByTurnId({ threadId, turnId }).pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.orElseSucceed(() => undefined),
+              );
+        // Not named yet when the process stopped (the send's acknowledgement
+        // never came): the start still pending is the message it was for.
+        const pendingStart =
+          turnRow === undefined || turnRow.pendingMessageId !== null
+            ? Option.none()
+            : yield* projectionTurnRepository
+                .getPendingTurnStartByThreadId({ threadId })
+                .pipe(Effect.orElseSucceed(() => Option.none()));
+        const turnMessageId =
+          turnRow?.pendingMessageId ??
+          (Option.isSome(pendingStart) ? pendingStart.value.messageId : null);
         yield* orchestrationEngine
           .dispatch({
             type: "thread.restart.continue",
             commandId: serverCommandId("restart-continue"),
             threadId,
             turnId,
+            ...(turnRow !== undefined ? { turnMessageId } : {}),
             participantId,
             waitingOnUser,
             continueAfterRestart: settingOn,

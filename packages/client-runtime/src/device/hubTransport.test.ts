@@ -246,4 +246,64 @@ describe("socket", () => {
     await Promise.resolve();
     expect(ownClose).toHaveBeenCalledWith({ code: 1000, reason: "", wasClean: true });
   });
+
+  it("handles synchronous throws from send and suppresses errors during intentional close", async () => {
+    const fake = fakeChannelApi();
+    let throwOnSend = true;
+    const transport = createDeviceHubTransport(
+      {
+        ...fake.api,
+        send: (input) => {
+          if (throwOnSend) throw new Error("disconnected");
+          return fake.api.send(input);
+        },
+        credit: () => {
+          throw new Error("credit failed");
+        },
+      },
+      { channelId: () => "ch-err" },
+    );
+
+    const erroredSocket = transport.socket("/vendor/serve-sim/helper/ws?device=A");
+    const onError = vi.fn();
+    const onClose = vi.fn();
+    erroredSocket.addEventListener("error", onError);
+    erroredSocket.addEventListener("close", onClose);
+    fake.channels[0]!.emit({ _tag: "opened" });
+    erroredSocket.send("boom");
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onClose).toHaveBeenCalledWith({ code: 1006, reason: "disconnected", wasClean: false });
+
+    throwOnSend = false;
+    const closing = transport.socket("/vendor/serve-sim/helper/ws?device=A");
+    const closingError = vi.fn();
+    const closingClose = vi.fn();
+    closing.addEventListener("error", closingError);
+    closing.addEventListener("close", closingClose);
+    fake.channels[1]!.emit({ _tag: "opened" });
+    closing.close(1000, "done");
+    // Channel drops synchronously while closing: should not emit an error or 1006.
+    fake.channels[1]!.close(new Error("transport closed"));
+    await Promise.resolve();
+    expect(closingError).not.toHaveBeenCalled();
+    expect(closingClose).toHaveBeenCalledExactlyOnceWith({
+      code: 1000,
+      reason: "done",
+      wasClean: true,
+    });
+  });
+
+  it("closes cleanly on malformed base64 message parts", () => {
+    const fake = fakeChannelApi();
+    const socket = fake.transport.socket("/vendor/serve-emu/ws?device=emu-1");
+    const onError = vi.fn();
+    const onClose = vi.fn();
+    socket.addEventListener("error", onError);
+    socket.addEventListener("close", onClose);
+    fake.channels[0]!.emit({ _tag: "opened" });
+    fake.channels[0]!.emit({ _tag: "message", binary: true, final: true, data: "%%%bad%%%" });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onClose).toHaveBeenCalledWith(expect.objectContaining({ code: 1002, wasClean: false }));
+    expect(fake.channels[0]!.stopped).toBe(true);
+  });
 });

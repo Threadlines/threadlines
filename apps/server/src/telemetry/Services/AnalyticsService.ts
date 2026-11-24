@@ -10,6 +10,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Context from "effect/Context";
 
+export interface AnalyticsConsentState {
+  readonly isEnabledSync: () => boolean;
+  readonly onDisabled: (listener: () => void) => () => void;
+}
+
 export interface AnalyticsServiceShape {
   /**
    * Capture an event immediately; returns typed failure when capture fails.
@@ -23,6 +28,12 @@ export interface AnalyticsServiceShape {
    * Flush queued telemetry.
    */
   readonly flush: Effect.Effect<void, never>;
+
+  /**
+   * Live consent state so synchronous aggregators (such as DailyCounter) do not
+   * accumulate activity during opted-out periods and drop pending counts on opt-out.
+   */
+  readonly consent?: AnalyticsConsentState;
 }
 
 export class AnalyticsService extends Context.Service<AnalyticsService, AnalyticsServiceShape>()(

@@ -1064,7 +1064,7 @@ without write access.
 Will compared the page with t3code's (screenshots 2026-09-03) and wants the same level of finish:
 GitHub avatars, label pills with a colour dot, a check glyph instead of words, a conflict triangle,
 several pull requests open at once as tabs, a cleaner header, and Filters and Sort as menus. The
-pills are a deliberate exception to the "no pills" rule in AGENTS.md, asked for by Will; keep them
+pills are a deliberate exception to the "no pills" rule in `docs/design/design-language.md`, asked for by Will; keep them
 small and quiet (hairline border, `bg-muted/40`, 10px type) so the page still reads flat.
 
 Facts about t3code's implementation are in the sol fact sheet

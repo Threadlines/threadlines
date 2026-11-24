@@ -2469,6 +2469,8 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
             lastError: null,
             updatedAt: sessionSetAt,
           },
+          // The writer that marked the turn running names its message.
+          turnStartedBy: { messageId },
         },
       });
 

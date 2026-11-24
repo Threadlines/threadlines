@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import {
   IsoDateTime,
+  LeadPassCeiling,
   SideTurnId,
   ChatAttachmentListLenient,
   ChatSkillReferenceList,
@@ -64,6 +65,8 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     trigger: Schema.NullOr(MessageTrigger),
     notSent: Schema.NullOr(Schema.Number),
     afterMove: Schema.NullOr(Schema.Number),
+    requestCeiling: Schema.NullOr(Schema.fromJsonString(LeadPassCeiling)),
+    passBlocked: Schema.NullOr(Schema.Number),
   }),
 );
 
@@ -100,6 +103,8 @@ function toProjectionThreadMessage(
     ...(row.trigger !== null ? { trigger: row.trigger } : {}),
     ...(row.notSent === 1 ? { notSent: true as const } : {}),
     ...(row.afterMove === 1 ? { afterMove: true as const } : {}),
+    ...(row.requestCeiling !== null ? { requestCeiling: row.requestCeiling } : {}),
+    ...(row.passBlocked === 1 ? { passBlocked: true as const } : {}),
   };
 }
 
@@ -146,6 +151,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           message_trigger,
           not_sent,
           after_move,
+          request_ceiling,
+          pass_blocked,
           is_streaming,
           created_at,
           updated_at
@@ -191,6 +198,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.trigger ?? null},
           ${row.notSent === true ? 1 : null},
           ${row.afterMove === true ? 1 : null},
+          ${row.requestCeiling !== undefined ? JSON.stringify(row.requestCeiling) : null},
+          ${row.passBlocked === true ? 1 : null},
           ${row.isStreaming ? 1 : 0},
           ${row.createdAt},
           ${row.updatedAt}
@@ -234,6 +243,11 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           message_trigger = COALESCE(projection_thread_messages.message_trigger, excluded.message_trigger),
           not_sent = COALESCE(excluded.not_sent, projection_thread_messages.not_sent),
           after_move = COALESCE(excluded.after_move, projection_thread_messages.after_move),
+          request_ceiling = COALESCE(
+            projection_thread_messages.request_ceiling,
+            excluded.request_ceiling
+          ),
+          pass_blocked = COALESCE(projection_thread_messages.pass_blocked, excluded.pass_blocked),
           is_streaming = excluded.is_streaming,
           created_at = CASE WHEN ${appendText ? 1 : 0} = 1
             THEN projection_thread_messages.created_at
@@ -284,6 +298,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           message_trigger AS "trigger",
           not_sent AS "notSent",
           after_move AS "afterMove",
+          request_ceiling AS "requestCeiling",
+          pass_blocked AS "passBlocked",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -325,6 +341,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           message_trigger AS "trigger",
           not_sent AS "notSent",
           after_move AS "afterMove",
+          request_ceiling AS "requestCeiling",
+          pass_blocked AS "passBlocked",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

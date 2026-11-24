@@ -8,6 +8,7 @@ import type {
   ThreadId,
 } from "@threadlines/contracts";
 import {
+  EMPTY_CHILD_REQUEST_STATE,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationSession,
@@ -121,6 +122,7 @@ import {
   ThreadChildRequestSubmittedPayload,
   ThreadChildRequestUpdatedPayload,
   ThreadChildRequestsResetPayload,
+  ThreadChildReportDroppedPayload,
   ThreadLeadPassRecordedPayload,
   ThreadSessionStopRequestedPayload,
   ThreadTurnInterruptRequestedPayload,
@@ -477,6 +479,10 @@ export function projectEvent(
             parentThreadId: payload.parentThreadId ?? null,
             parentTurnId: payload.parentTurnId ?? null,
             attachedToParent: payload.attachedToParent ?? false,
+            ...(payload.stopsWithParent === true ? { stopsWithParent: true as const } : {}),
+            ...(payload.reportsTo !== undefined
+              ? { childRequests: { ...EMPTY_CHILD_REQUEST_STATE, reportsTo: payload.reportsTo } }
+              : {}),
             ...(payload.remoteOrigin !== undefined ? { remoteOrigin: payload.remoteOrigin } : {}),
             ...(payload.scheduledRun !== undefined ? { scheduledRun: payload.scheduledRun } : {}),
             ...(payload.worktreeOrigin !== undefined
@@ -940,7 +946,9 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) =>
           updateAgentRequests(nextBase, payload.threadId, (state) =>
-            agentRequestStateOn.held(state, payload.chainEpoch),
+            agentRequestStateOn.held(state, payload.chainEpoch, {
+              keepHold: payload.keepHold === true,
+            }),
           ),
         ),
       );
@@ -1190,13 +1198,36 @@ export function projectEvent(
     // are not work on the child.
     case "thread.handed-back":
       return decodeForEvent(ThreadHandedBackPayload, event.payload, event.type, "payload").pipe(
-        Effect.map((payload) => ({
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            handedBackAt: payload.handedBackAt,
-            handedBackTurnId: payload.turnId,
-          }),
-        })),
+        Effect.map((payload) => {
+          const owedReport = payload.owedReport;
+          const withOwed =
+            owedReport === undefined
+              ? nextBase
+              : updateChildRequests(nextBase, payload.threadId, (state) =>
+                  childRequestStateOn.owedRemoved(state, owedReport),
+                );
+          return {
+            ...withOwed,
+            threads: updateThread(withOwed.threads, payload.threadId, {
+              handedBackAt: payload.handedBackAt,
+              handedBackTurnId: payload.turnId,
+            }),
+          };
+        }),
+      );
+
+    case "thread.child-report-dropped":
+      return decodeForEvent(
+        ThreadChildReportDroppedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) =>
+          updateChildRequests(nextBase, payload.threadId, (state) =>
+            childRequestStateOn.owedRemoved(state, payload.owed),
+          ),
+        ),
       );
 
     case "thread.parent-attachment-set":
@@ -1206,23 +1237,32 @@ export function projectEvent(
         event.type,
         "payload",
       ).pipe(
-        Effect.map((payload) => ({
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            attachedToParent: payload.attached,
-            parentAttachmentEpoch: payload.attachmentEpoch,
-            // Taken back by the thread that started it over a link, which
-            // moved here (ThreadAdoptedFromLink): this computer's child now.
-            ...(payload.adoptedBy !== undefined
-              ? {
-                  parentThreadId: payload.adoptedBy.parentThreadId,
-                  parentTurnId: null,
-                  remoteOrigin: null,
-                  adoptedFromLink: payload.adoptedBy.fromLink,
-                }
-              : {}),
-          }),
-        })),
+        Effect.map((payload) => {
+          // A moved attachment epoch: nothing the thread owed is owed any more.
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          const withOwed =
+            thread !== undefined && thread.parentAttachmentEpoch !== payload.attachmentEpoch
+              ? updateChildRequests(nextBase, payload.threadId, childRequestStateOn.owedCleared)
+              : nextBase;
+          return {
+            ...withOwed,
+            threads: updateThread(withOwed.threads, payload.threadId, {
+              attachedToParent: payload.attached,
+              ...(payload.attached ? { stopsWithParent: undefined } : {}),
+              parentAttachmentEpoch: payload.attachmentEpoch,
+              // Taken back by the thread that started it over a link, which
+              // moved here (ThreadAdoptedFromLink): this computer's child now.
+              ...(payload.adoptedBy !== undefined
+                ? {
+                    parentThreadId: payload.adoptedBy.parentThreadId,
+                    parentTurnId: null,
+                    remoteOrigin: null,
+                    adoptedFromLink: payload.adoptedBy.fromLink,
+                  }
+                : {}),
+            }),
+          };
+        }),
       );
 
     case "thread.participant-removed":
@@ -1273,7 +1313,7 @@ export function projectEvent(
               : thread.participants.map((entry) =>
                   entry.id === participantId ? { ...entry, modelSelection } : entry,
                 );
-          return {
+          const updated = {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               participants,
@@ -1304,6 +1344,17 @@ export function projectEvent(
                 : {}),
             }),
           };
+          // A turn that owes the parent a report: see OwedChildReport.
+          const owes = payload.owesReport;
+          return owes === undefined
+            ? updated
+            : updateChildRequests(updated, payload.threadId, (state) =>
+                childRequestStateOn.owedAdded(state, {
+                  messageId: payload.messageId,
+                  ...owes,
+                  createdAt: payload.createdAt,
+                }),
+              );
         }),
       );
 
@@ -1475,6 +1526,10 @@ export function projectEvent(
               : {}),
             ...(payload.requestError !== undefined ? { requestError: payload.requestError } : {}),
             ...(payload.afterMove === true ? { afterMove: true as const } : {}),
+            ...(payload.requestCeiling !== undefined
+              ? { requestCeiling: payload.requestCeiling }
+              : {}),
+            ...(payload.passBlocked === true ? { passBlocked: true as const } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -1519,16 +1574,26 @@ export function projectEvent(
                     ...(entry.afterMove === true || message.afterMove === true
                       ? { afterMove: true as const }
                       : {}),
+                    ...(entry.requestCeiling === undefined && message.requestCeiling !== undefined
+                      ? { requestCeiling: message.requestCeiling }
+                      : {}),
+                    ...(entry.passBlocked === true || message.passBlocked === true
+                      ? { passBlocked: true as const }
+                      : {}),
                   }
                 : entry,
             )
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
 
+        const madeOwn =
+          payload.role === "user" &&
+          (payload.composer !== undefined || payload.sentFrom !== undefined);
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            ...(madeOwn ? { stopsWithParent: undefined } : {}),
             updatedAt: event.occurredAt,
           }),
         };
@@ -1544,6 +1609,9 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
+            ...(payload.composer !== undefined || payload.sentFrom !== undefined
+              ? { stopsWithParent: undefined }
+              : {}),
             updatedAt: payload.createdAt,
           }),
         })),
@@ -1606,6 +1674,9 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: messages.slice(-MAX_THREAD_MESSAGES),
+            ...(payload.composer !== undefined || payload.sentFrom !== undefined
+              ? { stopsWithParent: undefined }
+              : {}),
             updatedAt: payload.createdAt,
           }),
         };
@@ -1622,6 +1693,9 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               queuedFollowUps: withQueuedFollowUp(thread.queuedFollowUps ?? [], payload.followUp),
+              ...(payload.followUp.composer !== undefined || payload.followUp.sentFrom !== undefined
+                ? { stopsWithParent: undefined }
+                : {}),
               updatedAt: payload.followUp.createdAt,
             }),
           };
@@ -1777,9 +1851,18 @@ export function projectEvent(
             : {}),
         };
 
+        const owedReport = payload.owedReport;
+        const binds = payload.owedReportBinds;
+        const withOwed = updateChildRequests(nextBase, payload.threadId, (state) => {
+          const added =
+            owedReport === undefined ? state : childRequestStateOn.owedAdded(state, owedReport);
+          return binds === undefined
+            ? added
+            : childRequestStateOn.owedBound(added, binds.messageId, binds.turnId);
+        });
         return {
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
+          ...withOwed,
+          threads: updateThread(withOwed.threads, payload.threadId, {
             session,
             latestTurn:
               session.status === "running" && session.activeTurnId !== null

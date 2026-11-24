@@ -146,6 +146,11 @@ const SOFT_DECODE_QUEUE = 8;
 const ANDROID_MAX_TEXT_BYTES = 300;
 // The hub's queue depth is 128; the client does not read queue rejections.
 const ANDROID_MAX_TEXT_CHUNKS = 64;
+// iOS types each character as 2–4 HID key packets; cap huge pastes so they don't flood the WS RPC queue.
+const IOS_MAX_TEXT_CHARS = 256;
+const KEYFRAME_REQUEST_THROTTLE_MS = 1_000;
+const AVCC_INITIAL_BUFFER_BYTES = 64 * 1024;
+const AVCC_SHRINK_BUFFER_THRESHOLD = 1024 * 1024;
 
 const IOS_MSG_TOUCH = 0x03;
 const IOS_MSG_BUTTON = 0x04;
@@ -230,7 +235,7 @@ export function scanAccessUnit(buf: Uint8Array): { isKey: boolean; sps: Uint8Arr
       let codeLen = 0;
       if (buf[i + 2] === 1) codeLen = 3;
       else if (i + 3 < len && buf[i + 2] === 0 && buf[i + 3] === 1) codeLen = 4;
-      if (codeLen) {
+      if (codeLen && i + codeLen < len) {
         const nalType = buf[i + codeLen]! & 0x1f;
         if (nalType === 7 && !sps) sps = buf.subarray(i + codeLen);
         if (nalType === 5) isKey = true;
@@ -257,7 +262,7 @@ const AVCC_TAGS: Record<number, AvccChunk["type"] | undefined> = {
 
 /** Splits serve-sim's length-prefixed, tagged AVCC stream into chunks. */
 export class AvccDemuxer {
-  private buffer = new Uint8Array(64 * 1024);
+  private buffer = new Uint8Array(AVCC_INITIAL_BUFFER_BYTES);
   private length = 0;
 
   push(bytes: Uint8Array): AvccChunk[] {
@@ -295,6 +300,9 @@ export class AvccDemuxer {
     if (offset > 0) {
       this.buffer.copyWithin(0, offset, this.length);
       this.length -= offset;
+      if (this.length === 0 && this.buffer.length > AVCC_SHRINK_BUFFER_THRESHOLD) {
+        this.buffer = new Uint8Array(AVCC_INITIAL_BUFFER_BYTES);
+      }
     }
     return chunks;
   }
@@ -306,7 +314,12 @@ export interface DeviceStreamClient {
   /** Normalized 0..1 coordinates in the displayed frame. */
   readonly sendTouch: (phase: "begin" | "move" | "end", x: number, y: number) => void;
   /** iOS: 0..1 in the display's own framebuffer, as the helper takes it (the Duo view maps its panels). */
-  readonly sendRawTouch: (phase: "begin" | "move" | "end", x: number, y: number) => void;
+  readonly sendRawTouch: (
+    phase: "begin" | "move" | "end",
+    x: number,
+    y: number,
+    visual?: { readonly x: number; readonly y: number },
+  ) => void;
   /** iPhone Duo: a hinge, stance, table mode or orientation command. */
   readonly controlDuo: (command: DuoCommand) => void;
   /**
@@ -493,6 +506,7 @@ export function createDeviceStreamClient(
   const retryTimers = new Map<"video" | "input", ReturnType<typeof setTimeout>>();
   let primeController: AbortController | null = null;
   let stillsTimer: ReturnType<typeof setTimeout> | null = null;
+  let stillsWake: (() => void) | null = null;
   let videoDecoder: VideoDecoder | null = null;
   let decodedVideoGeneration: number | null = null;
   let iosInputAdmitted = false;
@@ -502,6 +516,11 @@ export function createDeviceStreamClient(
   let screen: DeviceScreenSize | null = null;
   let firstFrame = false;
   let configuring = false;
+  let lastKeyframeRequestAt = 0;
+  let pendingAndroidKeyframe: {
+    readonly data: Uint8Array;
+    readonly timestamp: number | null;
+  } | null = null;
   let mode: DeviceVideoMode = "video";
   let generation = 0;
   let decoderEpoch = 0;
@@ -523,7 +542,7 @@ export function createDeviceStreamClient(
   const sendIosTouch = (phase: "begin" | "move" | "end", point: { x: number; y: number }) => {
     if (phase === "begin") touchCut = false;
     else if (touchCut) return;
-    send(taggedJson(IOS_MSG_TOUCH, { type: phase, ...point }));
+    if (!send(taggedJson(IOS_MSG_TOUCH, { type: phase, ...point }))) return;
     heldTouch = phase === "end" ? null : point;
   };
   /** Before a hinge command: lift a held touch on the display it is on. */
@@ -675,15 +694,15 @@ export function createDeviceStreamClient(
     const support = await VideoDecoder.isConfigSupported(full).catch(() => ({ supported: false }));
     if (!isCurrent() || epoch !== decoderEpoch) return false;
     if (!support.supported) {
-      if (!ios) fail(`This browser cannot decode ${config.codec}.`);
+      if (!ios) fallBackToAndroidStills();
       return false;
     }
     try {
       if (!videoDecoder || videoDecoder.state === "closed") videoDecoder = makeDecoder();
       videoDecoder.configure(full);
       return true;
-    } catch (cause) {
-      if (!ios) fail(`Video decoder: ${(cause as Error).message}`);
+    } catch {
+      if (!ios) fallBackToAndroidStills();
       return false;
     }
   };
@@ -719,10 +738,29 @@ export function createDeviceStreamClient(
     }
   };
 
-  const requestKeyframe = () => {
-    if (!ios && socket?.readyState === DEVICE_SOCKET_OPEN) {
-      socket.send(JSON.stringify({ type: "reset-video", ack: false }));
-    }
+  const requestKeyframe = (force = false) => {
+    if (ios || socket?.readyState !== DEVICE_SOCKET_OPEN) return;
+    const now = Date.now();
+    if (!force && now - lastKeyframeRequestAt < KEYFRAME_REQUEST_THROTTLE_MS) return;
+    lastKeyframeRequestAt = now;
+    socket.send(JSON.stringify({ type: "reset-video", ack: false }));
+  };
+
+  const fallBackToAndroidStills = () => {
+    if (stopped || ios || mode === "stills") return;
+    setMode("stills");
+    closeDecoder();
+    configuring = false;
+    pendingAndroidKeyframe = null;
+    const discarded = socket;
+    socket = null;
+    discarded?.close();
+    const retry = retryTimers.get("input");
+    if (retry) clearTimeout(retry);
+    retryTimers.delete("input");
+    connecting();
+    connectAndroid(true);
+    void pollStills();
   };
 
   const scheduleRetry = (channel: "video" | "input", run: () => void) => {
@@ -737,8 +775,9 @@ export function createDeviceStreamClient(
   };
 
   /**
-   * Reads one HTTP body to its end, with a watchdog: a stream that stops
-   * producing for the first-frame timeout is aborted and retried.
+   * Reads one HTTP body to its end, with a watchdog while waiting for the
+   * first frame: once streaming, an idle simulator only writes when the screen
+   * changes, so quiet reads stay open.
    */
   const readBody = async (
     path: string,
@@ -758,20 +797,25 @@ export function createDeviceStreamClient(
         fail(`This simulator's helper has no fixed Duo display feeds (${response.status}).`);
         return;
       }
-      if (!response.ok || !response.body) throw new Error(`Device stream ${response.status}`);
+      if (!response.ok || !response.body) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error(`Device stream ${response.status}`);
+      }
       const reader = response.body.getReader();
       for (;;) {
-        const timer = setTimeout(() => {
-          if (!isCurrent()) return;
-          retryDetail = "The device stream stopped sending video. Reconnecting…";
-          videoController.abort();
-        }, FIRST_FRAME_TIMEOUT_MS);
+        const timer = firstFrame
+          ? null
+          : setTimeout(() => {
+              if (!isCurrent()) return;
+              retryDetail = "The device stream stopped sending video. Reconnecting…";
+              videoController.abort();
+            }, FIRST_FRAME_TIMEOUT_MS);
         videoReadTimer = timer;
         let result: ReadableStreamReadResult<Uint8Array>;
         try {
           result = await reader.read();
         } finally {
-          clearTimeout(timer);
+          if (timer !== null) clearTimeout(timer);
           if (videoReadTimer === timer) videoReadTimer = null;
         }
         if (!isCurrent()) return;
@@ -1015,7 +1059,10 @@ export function createDeviceStreamClient(
           await response.body?.cancel().catch(() => {});
           return;
         }
-        if (!response.ok) throw new Error(`Screenshot ${response.status}`);
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => {});
+          throw new Error(`Screenshot ${response.status}`);
+        }
         const png = extractPng(new Uint8Array(await response.arrayBuffer()));
         if (!png) throw new Error("The device sent an incomplete screenshot.");
         await paintImage(new Blob([png as BlobPart], { type: "image/png" }), isCurrent);
@@ -1029,12 +1076,16 @@ export function createDeviceStreamClient(
         }
       } finally {
         clearTimeout(timeout);
+        request.abort();
         if (controller === request) controller = null;
       }
+      if (!isCurrent()) return;
       const wait = Math.max(0, STILL_FRAME_INTERVAL_MS - (Date.now() - started));
       await new Promise<void>((resolve) => {
+        stillsWake = resolve;
         stillsTimer = setTimeout(() => {
           stillsTimer = null;
+          stillsWake = null;
           resolve();
         }, wait);
       });
@@ -1059,18 +1110,19 @@ export function createDeviceStreamClient(
         if (isVideoSessionMessage(event.data)) {
           closeDecoder();
           configuring = false;
+          pendingAndroidKeyframe = null;
           connecting();
-          requestKeyframe();
+          requestKeyframe(true);
         }
         return;
       }
       const packet = parseSemuPacket(event.data);
-      const needsScan =
-        packet.isKey === null ||
-        (packet.isKey && (!videoDecoder || videoDecoder.state !== "configured"));
+      const decoderReady = videoDecoder !== null && videoDecoder.state === "configured";
+      const needsScan = packet.isKey === null || !decoderReady;
       const scanned = needsScan ? scanAccessUnit(packet.data) : null;
       const isKey = packet.isKey ?? scanned?.isKey ?? false;
-      if (scanned?.sps && (!videoDecoder || videoDecoder.state !== "configured")) {
+      if (scanned?.sps && !decoderReady) {
+        if (isKey) pendingAndroidKeyframe = { data: packet.data, timestamp: packet.timestamp };
         if (configuring) return;
         configuring = true;
         const epoch = decoderEpoch;
@@ -1080,13 +1132,21 @@ export function createDeviceStreamClient(
             if (!isCurrent() || epoch !== decoderEpoch) return;
             configuring = false;
             awaitingKeyframe = true;
-            if (configured) requestKeyframe();
+            if (!configured) {
+              pendingAndroidKeyframe = null;
+              return;
+            }
+            const queuedKey = pendingAndroidKeyframe;
+            pendingAndroidKeyframe = null;
+            if (queuedKey) decode(true, queuedKey.data, queuedKey.timestamp);
+            else requestKeyframe(true);
           },
         );
         return;
       }
-      if (!videoDecoder || videoDecoder.state !== "configured") {
-        if (!isKey) requestKeyframe();
+      if (!decoderReady) {
+        if (isKey) pendingAndroidKeyframe = { data: packet.data, timestamp: packet.timestamp };
+        else if (!configuring) requestKeyframe();
         return;
       }
       decode(isKey, packet.data, packet.timestamp);
@@ -1142,10 +1202,11 @@ export function createDeviceStreamClient(
     const panel: DuoPanelId = screen?.screenId === 1 ? 1 : 3;
     const sinks = panelSinks;
     if (!sinks || !screen?.supportsHingeAngle || panelsRefused || !useWebCodecs) {
+      const hadPanel = panelFeed !== null;
       stopPanelFeed();
       if (!mainVideo) {
-        // Back from a panel feed before any picture: watch the ordinary stream's first frame again.
-        if (!firstFrame && frameTimer === null) connecting();
+        // Back from a panel feed (main canvas may be blank) or before any picture: watch its first frame.
+        if (hadPanel || (!firstFrame && frameTimer === null)) connecting();
         startMainVideo();
       }
       return;
@@ -1169,9 +1230,16 @@ export function createDeviceStreamClient(
       },
       {
         onStatus: (status, detail) => {
-          if (status !== "error" || panelFeed?.client !== client) return;
+          if (panelFeed?.client !== client) return;
+          if (status === "connecting" && firstFrame) {
+            setStatus("connecting", detail);
+            return;
+          }
+          if (status !== "error") return;
           panelsRefused = true;
           stopPanelFeed();
+          // Main canvas may never have painted: force a fresh connecting state + watchdog.
+          connecting();
           events.onDuoUnavailable?.(detail ?? "The Duo display feeds stopped.");
           chooseVideoSource();
         },
@@ -1222,7 +1290,12 @@ export function createDeviceStreamClient(
     generation++;
     videoGeneration++;
     mainVideo = false;
+    screen = null;
+    mode = "video";
+    lastKeyframeRequestAt = 0;
+    pendingAndroidKeyframe = null;
     pendingOrientation = null;
+    forgetHeldTouch();
     duoControl.clear();
     stopPanelFeed();
     // A refusal belongs to the helper this session reached; the next start asks again.
@@ -1232,6 +1305,9 @@ export function createDeviceStreamClient(
     videoReadTimer = null;
     if (stillsTimer !== null) clearTimeout(stillsTimer);
     stillsTimer = null;
+    const wake = stillsWake;
+    stillsWake = null;
+    wake?.();
     for (const timer of retryTimers.values()) clearTimeout(timer);
     retryTimers.clear();
     primeController?.abort();
@@ -1244,13 +1320,16 @@ export function createDeviceStreamClient(
     closeDecoder();
   };
 
-  const send = (payload: Uint8Array<ArrayBuffer> | string) => {
+  const send = (payload: Uint8Array<ArrayBuffer> | string): boolean => {
     if (
       !stopped &&
       (!ios || (iosInputAdmitted && !iosInputUnavailable)) &&
       socket?.readyState === DEVICE_SOCKET_OPEN
-    )
+    ) {
       socket.send(payload);
+      return true;
+    }
+    return false;
   };
 
   const rawPoint = (x: number, y: number) => {
@@ -1309,9 +1388,12 @@ export function createDeviceStreamClient(
       if (ios) {
         // Typed as key presses: a phone's on-screen keyboard gives text, not keys.
         const shift = HID_USAGE_BY_CODE.ShiftLeft!;
+        let sentChars = 0;
         for (const character of text) {
+          if (sentChars >= IOS_MAX_TEXT_CHARS) break;
           const stroke = iosKeystrokeForCharacter(character);
           if (!stroke) continue;
+          sentChars += 1;
           if (stroke.shift) send(taggedJson(IOS_MSG_KEY, { type: "down", usage: shift }));
           send(taggedJson(IOS_MSG_KEY, { type: "down", usage: stroke.usage }));
           send(taggedJson(IOS_MSG_KEY, { type: "up", usage: stroke.usage }));

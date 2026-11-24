@@ -475,7 +475,11 @@ const isStreamPiece = (
  * them there. A question or approval remembers what it was shown with, for
  * the answer.
  */
-export function makeRuntimeEventScrubber(core: SecretScrubberCore, notices: NoticeMemory) {
+export function makeRuntimeEventScrubber(
+  core: SecretScrubberCore,
+  notices: NoticeMemory,
+  options?: { readonly onMatched?: (count: number) => void },
+) {
   /** Per session and request: each string a question or approval was shown with, and its original. */
   const originals = new Map<string, Map<string, string>>();
   const requestKey = (session: string, requestId: string) => `${session}\u0000${requestId}`;
@@ -596,6 +600,7 @@ export function makeRuntimeEventScrubber(core: SecretScrubberCore, notices: Noti
     }
     const names = new Set<string>();
     const scrubbed = isStreamPiece(event) ? scrubPiece(event, names) : scrubWhole(event, names);
+    if (names.size > 0) options?.onMatched?.(names.size);
     forget(event);
     const after = noticesFor(event, names);
     return after.length === 0 ? [scrubbed] : [scrubbed, ...after];

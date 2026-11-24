@@ -30,6 +30,7 @@ import {
   ThreadChildNotesDeliveredPayload as ContractsThreadChildNotesDeliveredPayloadSchema,
   ThreadChildDeliveriesCancelledPayload as ContractsThreadChildDeliveriesCancelledPayloadSchema,
   ThreadChildRequestsResetPayload as ContractsThreadChildRequestsResetPayloadSchema,
+  ThreadChildReportDroppedPayload as ContractsThreadChildReportDroppedPayloadSchema,
   ThreadLeadPassRecordedPayload as ContractsThreadLeadPassRecordedPayloadSchema,
   ThreadHandedBackPayload as ContractsThreadHandedBackPayloadSchema,
   ThreadRemoteCancelQueuedPayload as ContractsThreadRemoteCancelQueuedPayloadSchema,
@@ -131,6 +132,7 @@ export const ThreadChildNotesDeliveredPayload = ContractsThreadChildNotesDeliver
 export const ThreadChildDeliveriesCancelledPayload =
   ContractsThreadChildDeliveriesCancelledPayloadSchema;
 export const ThreadChildRequestsResetPayload = ContractsThreadChildRequestsResetPayloadSchema;
+export const ThreadChildReportDroppedPayload = ContractsThreadChildReportDroppedPayloadSchema;
 export const ThreadLeadPassRecordedPayload = ContractsThreadLeadPassRecordedPayloadSchema;
 export const ThreadHandedBackPayload = ContractsThreadHandedBackPayloadSchema;
 export const ThreadRemoteChildUpdatedPayload = ContractsThreadRemoteChildUpdatedPayloadSchema;

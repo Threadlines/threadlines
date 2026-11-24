@@ -20,6 +20,8 @@ import {
 } from "@threadlines/contracts";
 import {
   ApprovalRequestId,
+  ChildRequestBatchId,
+  ChildRequestId,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EnvironmentId,
@@ -932,11 +934,16 @@ describe("ProviderRuntimeIngestion", () => {
       id: string,
       participantId: ThreadParticipantId | null,
       turn: string | null,
+      startedBy?: string,
     ) =>
       dispatch({
         type: "thread.session.set",
         commandId: CommandId.make(id),
         threadId,
+        // As the reactor names the message the provider took the turn for.
+        ...(startedBy !== undefined
+          ? { turnStartedBy: { messageId: asMessageId(startedBy) } }
+          : {}),
         session: {
           threadId,
           status: turn === null ? "ready" : "running",
@@ -990,7 +997,7 @@ describe("ProviderRuntimeIngestion", () => {
       messageId: asMessageId("hand-off-request"),
       createdAt: now,
     });
-    await setSession("cmd-astra-working", astraId, "turn-astra");
+    await setSession("cmd-astra-working", astraId, "turn-astra", "hand-off-request");
 
     const astraEvent = (id: string, event: Record<string, unknown>) =>
       harness.emit({
@@ -1384,6 +1391,396 @@ describe("ProviderRuntimeIngestion", () => {
     expect(await cancelsSoFar()).toBe(cancelsAtStop + 1);
   });
 
+  it("reports a child's check-back to its parent, and settles one its exiting runtime took with it once (sequence 6)", async () => {
+    const harness = await createHarness();
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const child = asThreadId("child-1");
+    // thread-1 is the parent; child-1 reports to it.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-child-create"),
+        threadId: child,
+        projectId: asProjectId("project-1"),
+        title: "Watch CI",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        parentThreadId: asThreadId("thread-1"),
+        attachedToParent: true,
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-child-session-seed"),
+        threadId: child,
+        session: {
+          threadId: child,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: createdAt,
+          lastError: null,
+        },
+        createdAt,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: child,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const event = (type: string, id: string, extra: Record<string, unknown> = {}) =>
+      ({
+        type,
+        eventId: asEventId(id),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: child,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        ...extra,
+      }) as never;
+    const reportsIn = async () =>
+      (await harness.readModel()).threads
+        .find((entry) => entry.id === asThreadId("thread-1"))
+        ?.messages.filter((message) => message.fromThread?.followUp === true) ?? [];
+
+    // A check-back fires: the provider starts a turn with no message.
+    harness.emit(
+      event("turn.started", "evt-child-check-back", {
+        turnId: asTurnId("child-turn-1"),
+        payload: { trigger: { kind: "check-back" } },
+      }),
+    );
+    await harness.drain();
+    let childThread = await waitForThread(
+      harness.readModel,
+      (entry) => (entry.childRequests.owedReports ?? []).length === 1,
+      10_000,
+      child,
+    );
+    expect(childThread.childRequests.owedReports).toMatchObject([{ turnId: "child-turn-1" }]);
+
+    // Codex exits with only session.exited: the exit's handler settles it.
+    harness.emit(
+      event("session.exited", "evt-child-exited", {
+        payload: { reason: "Codex app-server exited", exitKind: "error" },
+      }),
+    );
+    await harness.drain();
+    childThread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.childRequests.owedReports === undefined,
+      10_000,
+      child,
+    );
+    expect((await reportsIn()).map((message) => message.text)).toEqual([
+      "'Watch CI' stopped before it finished: Codex app-server exited. Send it a message with thread_send to continue.",
+    ]);
+
+    // The next turn starts: nothing is left to settle, so nothing goes twice.
+    harness.emit(event("turn.started", "evt-child-next", { turnId: asTurnId("child-turn-2") }));
+    await harness.drain();
+    expect(await reportsIn()).toHaveLength(1);
+  });
+
+  it("takes a check-back that fires while a message is being prepared for its own turn, not the message's (finding 2)", async () => {
+    const harness = await createHarness();
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const child = asThreadId("child-2");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-child-2-create"),
+        threadId: child,
+        projectId: asProjectId("project-1"),
+        title: "Watch CI",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        parentThreadId: asThreadId("thread-1"),
+        attachedToParent: true,
+        createdAt,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: child,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    // An automatic fix's message is being prepared: it owes a report.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-child-2-turn"),
+        threadId: child,
+        message: {
+          messageId: asMessageId("fix-message"),
+          role: "user",
+          text: "CI failed; fix it.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    // A check-back fires first.
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-child-2-check-back"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: child,
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId: asTurnId("check-back-turn"),
+      payload: { trigger: { kind: "check-back" } },
+    } as never);
+    await harness.drain();
+    const owed = (
+      await waitForThread(
+        harness.readModel,
+        (entry) => (entry.childRequests.owedReports ?? []).length === 2,
+        10_000,
+        child,
+      )
+    ).childRequests.owedReports;
+    // Both stay owed: the message waits for its own turn, the check-back owes its own.
+    expect(owed).toMatchObject([{ messageId: "fix-message" }, { turnId: "check-back-turn" }]);
+    // The check-back starts a task: a second running update that names no message.
+    harness.emit({
+      type: "task.snapshot.updated",
+      eventId: asEventId("evt-child-2-task"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: child,
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {
+        tasks: [
+          { taskId: "task-1", taskType: "local_bash", kind: "command", description: "Run CI" },
+        ],
+      },
+    } as never);
+    await harness.drain();
+    // The check-back's turn ends: it settles its own report, never the message's.
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-child-2-check-back-done"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: child,
+      createdAt: "2026-01-01T00:00:04.000Z",
+      turnId: asTurnId("check-back-turn"),
+      payload: { state: "completed" },
+    } as never);
+    await harness.drain();
+    const after = await waitForThread(
+      harness.readModel,
+      (entry) => (entry.childRequests.owedReports ?? []).length === 1,
+      10_000,
+      child,
+    );
+    expect(after.childRequests.owedReports).toMatchObject([{ messageId: "fix-message" }]);
+  });
+
+  it("takes a turn Claude opens by itself while a message is being prepared for its own (finding 1)", async () => {
+    const harness = await createHarness();
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const child = asThreadId("child-3");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-child-3-create"),
+        threadId: child,
+        projectId: asProjectId("project-1"),
+        title: "Watch CI",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        parentThreadId: asThreadId("thread-1"),
+        attachedToParent: true,
+        createdAt,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: child,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-child-3-turn"),
+        threadId: child,
+        message: {
+          messageId: asMessageId("fix-message-3"),
+          role: "user",
+          text: "CI failed; fix it.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    // A background agent finishes: Claude opens a turn with no trigger.
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-child-3-synthetic"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: child,
+      createdAt: "2026-01-01T00:00:02.000Z",
+      turnId: asTurnId("background-turn"),
+      payload: {},
+      raw: { source: "claude.sdk.message", method: "claude/synthetic-turn-start", payload: {} },
+    } as never);
+    await harness.drain();
+    const owed = (
+      await waitForThread(
+        harness.readModel,
+        (entry) => (entry.childRequests.owedReports ?? []).length === 2,
+        10_000,
+        child,
+      )
+    ).childRequests.owedReports;
+    expect(owed).toMatchObject([{ messageId: "fix-message-3" }, { turnId: "background-turn" }]);
+  });
+
+  it("never lets an unmarked provider turn during a request's preparation answer that request (round 4)", async () => {
+    const harness = await createHarness();
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const parent = asThreadId("thread-1");
+    const child = asThreadId("child-goal");
+    const requestId = ChildRequestId.make("request-goal");
+    const childMessageId = asMessageId("request-goal-message");
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    };
+    const dispatch = (command: Parameters<typeof harness.engine.dispatch>[0]) =>
+      Effect.runPromise(harness.engine.dispatch(command));
+    // The parent's agent asks during its own turn.
+    await dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-goal-parent-running"),
+      threadId: parent,
+      session: {
+        threadId: parent,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: asTurnId("parent-turn"),
+        updatedAt: createdAt,
+        lastError: null,
+      },
+      createdAt,
+    });
+    await dispatch({
+      type: "thread.child.start",
+      commandId: CommandId.make("cmd-goal-child-start"),
+      threadId: parent,
+      batchId: ChildRequestBatchId.make("batch-goal"),
+      from: { participantId: null },
+      callerTurnId: asTurnId("parent-turn"),
+      mode: "auto",
+      children: [
+        {
+          requestId,
+          childThreadId: child,
+          childMessageId,
+          launch: {
+            title: "Watch CI",
+            prompt: "Watch CI until it is green.",
+            modelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            reportBack: true,
+            runSetup: false,
+            workspace: { kind: "project_folder" },
+          },
+        },
+      ],
+      createdAt,
+    });
+    await dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("cmd-goal-child-create"),
+      threadId: child,
+      projectId: asProjectId("project-1"),
+      title: "Watch CI",
+      modelSelection,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      parentThreadId: parent,
+      attachedToParent: true,
+      createdAt,
+    });
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: child,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    // The parent's request is being prepared in the child.
+    await dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-goal-request-turn"),
+      threadId: child,
+      message: {
+        messageId: childMessageId,
+        role: "user",
+        text: "Watch CI until it is green.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      fromThread: { threadId: parent, requestId, kind: "request" },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    // Codex starts a goal's turn, with no trigger and no synthetic mark, and ends it.
+    for (const [type, id] of [
+      ["turn.started", "evt-goal-started"],
+      ["turn.completed", "evt-goal-completed"],
+    ] as const) {
+      harness.emit({
+        type,
+        eventId: asEventId(id),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: child,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        turnId: asTurnId("goal-turn"),
+        ...(type === "turn.completed" ? { payload: { state: "completed" } } : {}),
+      } as never);
+      await harness.drain();
+    }
+    const parentThread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status !== undefined,
+      10_000,
+      parent,
+    );
+    // The request still waits for its own turn.
+    expect(parentThread.childRequests.open).toMatchObject([{ requestId, status: "running" }]);
+  });
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -1485,11 +1882,25 @@ describe("ProviderRuntimeIngestion", () => {
         createdAt: now,
         turnId: asTurnId(`turn-${threadId}-${id}`),
       });
-      await waitForThread(
+      const running = await waitForThread(
         harness.readModel,
         (thread) => thread.session?.activeTurnId === `turn-${threadId}-${id}`,
         10_000,
         threadId,
+      );
+      // The reactor names the message its send started the turn for.
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-carried-named-${threadId}-${id}`),
+          threadId,
+          session: running.session!,
+          turnStartedBy: {
+            messageId: asMessageId(`carried-${threadId}-${id}`),
+            turnId: asTurnId(`turn-${threadId}-${id}`),
+          },
+          createdAt: now,
+        }),
       );
       harness.emit({
         type: "turn.completed",
@@ -8254,5 +8665,234 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("runtime still processed");
+  });
+
+  it("marks saved check-backs dormant on session exit and clears dormant when the runtime reports them again", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "session.check-backs.updated",
+      eventId: asEventId("evt-cb-live"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: now,
+      payload: {
+        checkBacks: [
+          {
+            id: "ephemeral-1",
+            scheduledFor: "2026-01-01T00:10:00.000Z",
+            exact: true,
+            recurring: false,
+            description: "One-off",
+            durable: false,
+          },
+          {
+            id: "saved-1",
+            scheduledFor: "2026-01-01T01:00:00.000Z",
+            exact: true,
+            recurring: true,
+            description: "Saved watcher",
+            durable: true,
+          },
+        ],
+      },
+    });
+    await waitForThread(harness.readModel, (entry) => (entry.checkBacks?.length ?? 0) === 2);
+
+    // Session exits: non-durable check-back drops, saved one becomes dormant.
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-cb-exit"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: "2026-01-01T00:01:00.000Z",
+      payload: { exitKind: "graceful" },
+    });
+    const afterExit = await waitForThread(
+      harness.readModel,
+      (entry) => entry.checkBacks?.length === 1 && entry.checkBacks[0]?.dormant === true,
+    );
+    expect(afterExit.checkBacks).toEqual([
+      expect.objectContaining({ id: "saved-1", durable: true, dormant: true }),
+    ]);
+
+    // Runtime restarts and reports the saved job afresh: dormant clears.
+    harness.emit({
+      type: "session.check-backs.updated",
+      eventId: asEventId("evt-cb-revived"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      createdAt: "2026-01-01T00:02:00.000Z",
+      payload: {
+        checkBacks: [
+          {
+            id: "saved-1",
+            scheduledFor: "2026-01-01T01:00:00.000Z",
+            exact: true,
+            recurring: true,
+            description: "Saved watcher",
+            durable: true,
+          },
+        ],
+      },
+    });
+    const revived = await waitForThread(
+      harness.readModel,
+      (entry) => entry.checkBacks?.length === 1 && entry.checkBacks[0]?.dormant !== true,
+    );
+    expect(revived.checkBacks?.[0]?.dormant).toBeUndefined();
+  });
+
+  it("marks a non-slot room agent's saved check-back dormant on session exit", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const astraId = ThreadParticipantId.make("11111111-1111-4111-8111-111111111111");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    // Astra holds a saved check-back while the primary agent (participantId: null) holds the slot.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.check-backs.set",
+        commandId: CommandId.make("cmd-non-slot-cb"),
+        threadId,
+        participantId: astraId,
+        checkBacks: [
+          {
+            id: "saved-astra",
+            participantId: astraId,
+            scheduledFor: "2026-01-01T01:00:00.000Z",
+            exact: true,
+            recurring: true,
+            description: "Astra watcher",
+            durable: true,
+          },
+        ],
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-non-slot-exit"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId,
+      participantId: astraId,
+      createdAt: "2026-01-01T00:01:00.000Z",
+      payload: { exitKind: "graceful" },
+    });
+    const afterExit = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.checkBacks?.some(
+          (cb) => cb.id === "saved-astra" && cb.participantId === astraId && cb.dormant === true,
+        ) === true,
+    );
+    expect(afterExit.checkBacks).toEqual([
+      expect.objectContaining({ id: "saved-astra", participantId: astraId, dormant: true }),
+    ]);
+  });
+
+  it("does not schedule a carried-session fallback resend when the user already stopped the turn", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-carried-stopped");
+    const msgId = asMessageId("msg-carried-stopped");
+    const turnId = asTurnId("turn-carried-stopped");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.import",
+        commandId: CommandId.make("cmd-import-carried-stopped"),
+        threadId,
+        projectId: asProjectId("project-1"),
+        title: "Moved here",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        movedFrom: {
+          environmentId: EnvironmentId.make("environment-windows"),
+          label: "Windows PC",
+          threadId: ThreadId.make("thread-there-stopped"),
+          movedAt: now,
+        },
+        messages: [],
+        activities: [],
+        nativeSession: "carried",
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-carried-start"),
+        threadId,
+        message: { messageId: msgId, role: "user", text: "Do the thing", attachments: [] },
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: now,
+      }),
+    );
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-carried-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === turnId,
+      10_000,
+      threadId,
+    );
+
+    // User presses Stop while the turn is running.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-carried-stop"),
+        threadId,
+        turnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    // Carried session then reports turn failure (encrypted content refused).
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-carried-turn-failed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId,
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: {
+        state: "failed",
+        errorMessage:
+          '{"error":{"message":"The encrypted content could not be verified.","code":"invalid_encrypted_content"}}',
+      },
+    });
+    const fellBack = await waitForThread(
+      harness.readModel,
+      (entry) => entry.nativeSession === "fell_back",
+      10_000,
+      threadId,
+    );
+    const activity = fellBack.activities.find(
+      (entry) => entry.kind === "thread.native-session-fell-back",
+    );
+    expect(activity?.payload).toEqual({ reason: "turn_failed" });
   });
 });

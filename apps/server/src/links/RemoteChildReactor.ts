@@ -55,7 +55,13 @@ import {
   type ThreadId,
   TurnId,
 } from "@threadlines/contracts";
-import { remoteChildOf, sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
+import {
+  effectiveRequestCeiling,
+  isWidestMode,
+  olderPeerCeilingRefusal,
+  remoteChildOf,
+  sameRemoteThreadFiling,
+} from "@threadlines/shared/childThreads";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -98,7 +104,10 @@ export class RemoteChildReactor extends Context.Service<
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 /** What the reactor needs of a parent, read from its stored row. */
-type Parent = Pick<OrchestrationThread, "id" | "title" | "participants" | "childRequests"> &
+type Parent = Pick<
+  OrchestrationThread,
+  "id" | "title" | "runtimeMode" | "interactionMode" | "participants" | "childRequests"
+> &
   Pick<OrchestrationThread, "move" | "pendingMove"> & {
     readonly archivedAt: string | null;
     readonly deletedAt: string | null;
@@ -243,6 +252,8 @@ const make = Effect.gen(function* () {
           : {
               id: found.value.threadId,
               title: found.value.title,
+              runtimeMode: found.value.runtimeMode,
+              interactionMode: found.value.interactionMode,
               participants: found.value.participants ?? [],
               childRequests: found.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
               move: found.value.move ?? null,
@@ -857,11 +868,27 @@ const make = Effect.gen(function* () {
         });
         return true;
       }
+      const ceiling = request.requestCeiling ?? effectiveRequestCeiling(parent);
+      // An older peer can't enforce a ceiling: only a sender with the widest
+      // access sends it work (docs/design/agent-autonomy-no-limits.md, "Access").
+      if (!isWidestMode(ceiling)) {
+        const descriptor = yield* client.describe(environmentId as EnvironmentId);
+        if (descriptor.enforcesRequestCeiling !== true) {
+          const reason = olderPeerCeilingRefusal(remote.label);
+          yield* settleRequest(parent, request, {
+            outcome: "failed",
+            text: reason,
+            error: reason,
+          });
+          return true;
+        }
+      }
       const answer = yield* client.withPeer(environmentId as EnvironmentId, (peer) =>
         peer["peer.request.send"]({
           requestId: request.requestId,
           threadId: remote.threadId!,
           text,
+          ceiling,
         }),
       );
       if (answer.status === "queued") {

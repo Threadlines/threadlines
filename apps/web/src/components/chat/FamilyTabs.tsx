@@ -16,9 +16,10 @@
 import { parseScopedThreadKey, scopedThreadKey } from "@threadlines/client-runtime";
 import type { ScopedThreadRef } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { CheckIcon, CrownIcon } from "lucide-react";
+import { CheckIcon, CrownIcon, SquareIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 
 import { useInboxThreads } from "../../hooks/useInboxThreads";
 import { useIsMobile } from "../../hooks/useMediaQuery";
@@ -29,9 +30,12 @@ import { useTouchHoldMenu } from "../../hooks/useTouchHoldMenu";
 import { useConnectedComputerCapabilityCheck } from "../../environments/computerCapabilities";
 import { linkedThreadRouteParams } from "../../environments/links/linkedThreads";
 import { requestIdleThreadDetailPrewarm } from "../../environments/runtime/service";
+import { stopThreadsUnder } from "../../lib/threadSessionCommands";
 import { cn } from "../../lib/utils";
+import { selectSidebarThreadsAcrossEnvironments, useStore } from "../../store";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { failureNotice, toastManager } from "../ui/toast";
 import { LeadChatCard, LeadChatSuggestion } from "./LeadChatHints";
 import {
   FAMILY_TAB_MIN_WIDTH_PX,
@@ -61,13 +65,20 @@ export function useFamilyTabsShown(threadKey: string | null): boolean {
 const TAB_BOX_CLASS = "flex h-6 items-center gap-1.5 rounded-md px-2 text-xs";
 /** The "+N" button's box, shared the same way. */
 const OVERFLOW_BOX_CLASS = "relative flex h-6 shrink-0 items-center rounded-md px-2 text-xs";
+/** The "Stop N threads" button's box. */
+const STOP_BOX_CLASS = "flex h-6 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs";
+
+/** "Stop 1 thread", "Stop 3 threads". */
+function stopLabel(count: number): string {
+  return `Stop ${count} ${count === 1 ? "thread" : "threads"}`;
+}
 
 /** What a tab shows as its title: the lead's is "Lead". */
 function tabText(tab: FamilyTab): string {
   return tab.kind === "parent" && tab.lead ? "Lead" : tab.shortTitle;
 }
 
-/** The row as drawn: its width inside the padding, the gap between tabs, and each tab's own width. */
+/** The tab strip as drawn: its width (what the Stop button leaves), the gap between tabs, and each tab's own width. */
 interface RowMeasure {
   readonly rowPx: number;
   readonly gapPx: number;
@@ -89,7 +100,7 @@ function sameRowMeasure(left: RowMeasure | null, right: RowMeasure): boolean {
 }
 
 /**
- * Reads the row and the hidden copies of its tabs (`measureRef`): what fits
+ * Reads the tab strip and the hidden copies of its tabs (`measureRef`): what fits
  * is decided before a tab is drawn, and one behind "+N" isn't drawn at all.
  * The copies are the tabs' own markup and classes, so a larger browser font,
  * a theme's font, or a font that loads late shows up as a resize the
@@ -209,6 +220,7 @@ export function FamilyTabs({ openKey, parentKey }: { openKey: string; parentKey?
  */
 export function useFamilyTabs(openKey: string, parentKey?: string): FamilyTabsModel | null {
   const { entries, nowIso } = useInboxThreads();
+  const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const remoteFamilyChildren = useRemoteFamilyChildren(nowIso);
   const readsLinked = useConnectedComputerCapabilityCheck("linkedThreadRead");
   const family = useMemo(() => {
@@ -217,6 +229,7 @@ export function useFamilyTabs(openKey: string, parentKey?: string): FamilyTabsMo
       openKey,
       parentKey,
       entries,
+      threads,
       remoteChildrenOf: (parent) =>
         remoteFamilyChildren(parent.thread, (threadId) =>
           keys.has(scopedThreadKey({ environmentId: parent.thread.environmentId, threadId })),
@@ -224,7 +237,7 @@ export function useFamilyTabs(openKey: string, parentKey?: string): FamilyTabsMo
       canReadLinked: (parent) => readsLinked(parent.thread.environmentId),
       now: nowIso,
     });
-  }, [entries, nowIso, openKey, parentKey, readsLinked, remoteFamilyChildren]);
+  }, [entries, nowIso, openKey, parentKey, readsLinked, remoteFamilyChildren, threads]);
   return useKept(family, sameFamilyTabs);
 }
 
@@ -254,6 +267,7 @@ const FamilyTabRow = memo(function FamilyTabRow({
     }
   }, [openKey, isMobile]);
 
+  const stop = family.stop;
   const { shown, hidden } =
     measure === null
       ? { shown: family.tabs, hidden: [] as readonly FamilyTab[] }
@@ -284,15 +298,9 @@ const FamilyTabRow = memo(function FamilyTabRow({
   return (
     <>
       <div
-        ref={rowRef}
-        role="tablist"
-        aria-label="This thread's family"
         data-testid="family-tabs"
         data-family-key={family.familyKey}
-        className={cn(
-          "relative flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border px-3 py-1 sm:px-5",
-          isMobile && "overflow-x-auto [scrollbar-width:none]",
-        )}
+        className="relative flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border px-3 py-1 sm:px-5"
       >
         {isMobile ? null : (
           // Every tab and "+N" at full width, unseen, for useRowMeasure.
@@ -316,17 +324,29 @@ const FamilyTabRow = memo(function FamilyTabRow({
             </span>
           </div>
         )}
-        {shown.map((tab) => (
-          <FamilyTabButton
-            key={tab.key}
-            tab={tab}
-            active={tab.key === family.openKey}
-            fill={!isMobile}
-            onOpen={onOpen}
-            buttonRef={tab.key === family.openKey ? openTabRef : undefined}
-          />
-        ))}
-        {hidden.length > 0 ? <FamilyTabOverflow hidden={hidden} onOpen={onOpen} /> : null}
+        {/* The tabs take the room the Stop button leaves; on a phone they scroll sideways under it. */}
+        <div
+          ref={rowRef}
+          role="tablist"
+          aria-label="This thread's family"
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-0.5",
+            isMobile && "overflow-x-auto [scrollbar-width:none]",
+          )}
+        >
+          {shown.map((tab) => (
+            <FamilyTabButton
+              key={tab.key}
+              tab={tab}
+              active={tab.key === family.openKey}
+              fill={!isMobile}
+              onOpen={onOpen}
+              buttonRef={tab.key === family.openKey ? openTabRef : undefined}
+            />
+          ))}
+          {hidden.length > 0 ? <FamilyTabOverflow hidden={hidden} onOpen={onOpen} /> : null}
+        </div>
+        {stop !== null ? <FamilyStopButton threadRef={stop.threadRef} count={stop.count} /> : null}
       </div>
       {suggestLead !== null ? <LeadChatSuggestion parentRef={suggestLead} /> : null}
     </>
@@ -436,6 +456,39 @@ function FamilyTabFace({ tab }: { tab: FamilyTab }) {
     </>
   );
 }
+
+/**
+ * "Stop N threads" at the row's end (docs/design/agent-autonomy-no-limits.md,
+ * "Stop"): a lead waiting on its team has no running turn, so its composer
+ * shows no Stop. It sends what the menu's "Stop N working threads" sends, and
+ * shows only while something in the open thread's reach is still going.
+ */
+const FamilyStopButton = memo(function FamilyStopButton({
+  threadRef,
+  count,
+}: {
+  threadRef: ScopedThreadRef;
+  count: number;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid="family-tabs-stop"
+      className={cn(
+        STOP_BOX_CLASS,
+        "text-muted-foreground transition-colors hover:text-foreground focus-ring",
+      )}
+      onClick={() => {
+        stopThreadsUnder(threadRef).catch((error: unknown) => {
+          toastManager.add(failureNotice({ title: "Couldn't stop its threads", error }));
+        });
+      }}
+    >
+      <SquareIcon aria-hidden="true" className="size-2 shrink-0 fill-current" strokeWidth={0} />
+      <span className="whitespace-nowrap">{stopLabel(count)}</span>
+    </button>
+  );
+});
 
 /** "+N": the tabs that don't fit, with their status; amber while one needs the user. */
 function FamilyTabOverflow({

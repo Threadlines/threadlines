@@ -1133,6 +1133,14 @@ export const ServerSettings = Schema.Struct({
    */
   codexSuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /**
+   * After a turn a person started, Antigravity suggests their next message:
+   * one short isolated answer (preferring Gemini Hydrogen, then Flash, at low
+   * thinking) on the account's usage. Skipped while that model's usage window
+   * is 90% used. Read before each suggestion, and the composer hides
+   * Antigravity suggestions while it is off. Never chosen: on.
+   */
+  antigravitySuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
    * "Continue at reset" for every thread a Claude or Codex usage limit stops,
    * when the limit names its reset time: the thread continues by itself once
    * it resets. Only messages the user typed (and the continue messages that
@@ -1350,6 +1358,7 @@ export const ServerSettingsPatch = Schema.Struct({
   claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
   claudeSuggestionsWhenUsageRunsFast: Schema.optionalKey(Schema.Boolean),
   codexSuggestions: Schema.optionalKey(Schema.Boolean),
+  antigravitySuggestions: Schema.optionalKey(Schema.Boolean),
   continueAfterUsageLimits: Schema.optionalKey(Schema.Boolean),
   continueAfterRestart: Schema.optionalKey(Schema.Boolean),
   enableCommandRequests: Schema.optionalKey(Schema.Boolean),

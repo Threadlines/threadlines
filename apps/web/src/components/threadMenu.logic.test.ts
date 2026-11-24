@@ -1,6 +1,14 @@
+import {
+  EnvironmentId,
+  type OrchestrationCheckBack,
+  ProviderDriverKind,
+  ThreadId,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import type { SidebarThreadSummary } from "../types";
 import {
+  countThreadsToStop,
   describeThreadMenu,
   describeThreadSelectionMenu,
   type ThreadMenuFacts,
@@ -11,7 +19,7 @@ const facts = (overrides: Partial<ThreadMenuFacts> = {}): ThreadMenuFacts => ({
   inbox: { isDone: false, canMarkDone: true },
   attachedChild: false,
   putBack: null,
-  workingChildCount: 0,
+  stopCount: 0,
   moveOffered: false,
   running: false,
   ...overrides,
@@ -28,7 +36,7 @@ describe("the thread menu", () => {
         describeThreadMenu(
           facts({
             attachedChild: true,
-            workingChildCount: 2,
+            stopCount: 2,
             moveOffered: true,
           }),
         ),
@@ -85,5 +93,166 @@ describe("the thread menu", () => {
       describeThreadSelectionMenu({ count: 3, allPinned: false }).map((item) => item.label),
     ).toEqual(["Mark unread (3)", "Pin (3)", "Wrap up (3)", "Archive (3)", "Delete (3)"]);
     expect(describeThreadSelectionMenu({ count: 2, allPinned: true })[1]?.label).toBe("Unpin (2)");
+  });
+});
+
+describe("what Stop N working threads counts", () => {
+  const environmentId = EnvironmentId.make("environment-local");
+  const NOW = "2026-11-23T12:00:00.000Z";
+  const idleSession: NonNullable<SidebarThreadSummary["session"]> = {
+    provider: ProviderDriverKind.make("claude"),
+    status: "ready",
+    orchestrationStatus: "ready",
+    createdAt: "2026-11-23T10:00:00.000Z",
+    updatedAt: "2026-11-23T10:00:00.000Z",
+  };
+  const savedJob: OrchestrationCheckBack = {
+    id: "every-5m",
+    participantId: null,
+    scheduledFor: "2026-11-23T12:05:00.000Z",
+    exact: false,
+    recurring: true,
+    durable: true,
+  };
+  const thread = (
+    id: string,
+    overrides: Partial<SidebarThreadSummary> = {},
+  ): SidebarThreadSummary => ({
+    id: ThreadId.make(id),
+    environmentId,
+    projectId: "project" as SidebarThreadSummary["projectId"],
+    title: id,
+    interactionMode: "default",
+    session: idleSession,
+    createdAt: "2026-11-23T10:00:00.000Z",
+    archivedAt: null,
+    pinnedAt: null,
+    doneOverride: null,
+    lastSeenAt: null,
+    latestTurn: null,
+    branch: null,
+    worktreePath: null,
+    effectiveCwd: null,
+    latestUserMessageAt: null,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    hasActionableProposedPlan: false,
+    cumulativeDiffStat: null,
+    ...overrides,
+  });
+  const childOf = (parent: string, id: string, overrides: Partial<SidebarThreadSummary> = {}) =>
+    thread(id, { parentThreadId: ThreadId.make(parent), attachedToParent: true, ...overrides });
+  const looseOf = (parent: string, id: string, overrides: Partial<SidebarThreadSummary> = {}) =>
+    thread(id, {
+      parentThreadId: ThreadId.make(parent),
+      attachedToParent: false,
+      stopsWithParent: true,
+      session: { ...idleSession, status: "running", orchestrationStatus: "running" },
+      ...overrides,
+    });
+  const count = (threads: readonly SidebarThreadSummary[], root = "lead") =>
+    countThreadsToStop(
+      threads,
+      threads.find((entry) => entry.id === root)!,
+      NOW,
+    );
+
+  it("counts a child that only checks back, until its check-back goes dormant", () => {
+    // Sequence 1: M answered and sits idle with a saved, recurring check-back.
+    const before = [thread("lead"), childOf("lead", "m", { checkBacks: [savedJob] })];
+    expect(count(before)).toBe(1);
+    expect(read(describeThreadMenu(facts({ stopCount: count(before) })))).toContain(
+      "Stop 1 working thread",
+    );
+    // After the Stop its runtime ended, so the job is dormant: nothing to stop.
+    const after = [
+      thread("lead"),
+      childOf("lead", "m", { checkBacks: [{ ...savedJob, dormant: true }] }),
+    ];
+    expect(count(after)).toBe(0);
+    expect(read(describeThreadMenu(facts({ stopCount: count(after) })))).not.toContain(
+      "Stop 0 working threads",
+    );
+  });
+
+  it("counts threads started without report back until the user writes in one", () => {
+    // Sequence 3: five loose threads still at work; then the user made one theirs.
+    const loose = ["a", "b", "c", "d", "e"].map((id) => looseOf("lead", id));
+    expect(count([thread("lead"), ...loose])).toBe(5);
+    const madeOwn = loose.map((child, index) => {
+      if (index !== 0) return child;
+      const { stopsWithParent: _written, ...own } = child;
+      return own;
+    });
+    expect(count([thread("lead"), ...madeOwn])).toBe(4);
+    // Another thread's loose threads, and the thread itself, are not its to stop.
+    expect(
+      count([
+        thread("lead", { session: { ...idleSession, status: "running" } }),
+        looseOf("other", "f"),
+      ]),
+    ).toBe(0);
+  });
+
+  it("reads a summary's own words for a starting turn, a queue and a message no turn took yet", () => {
+    const children = [
+      childOf("lead", "idle"),
+      childOf("lead", "starting", { session: { ...idleSession, status: "connecting" } }),
+      childOf("lead", "queued", { queuedFollowUpCount: 1 }),
+      // Sent a minute ago and newer than its last turn: about to start.
+      childOf("lead", "sent", { latestUserMessageAt: "2026-11-23T11:59:00.000Z" }),
+      childOf("lead", "waiting", { awaitedChildThreadCount: 1 }),
+    ];
+    expect(count([thread("lead"), ...children])).toBe(4);
+  });
+
+  it("counts an idle child waiting on any approval its pill shows", () => {
+    // A summary rebuilt from the thread's detail keeps these apart from hasPendingApprovals.
+    for (const wait of [
+      { pendingSettingsChange: true },
+      { pendingSecretRequest: true },
+      { pendingScheduleApproval: true },
+    ]) {
+      expect(count([thread("lead"), childOf("lead", "asks", wait)])).toBe(1);
+    }
+  });
+
+  it("counts what the stop settles beyond this computer's threads", () => {
+    const linkedChild = (id: string, followed?: boolean) => ({
+      environmentId: EnvironmentId.make("environment-windows"),
+      label: "Windows PC",
+      threadId: ThreadId.make(id),
+      handle: id,
+      title: id,
+      attachmentEpoch: 0,
+      cachedStatus: "working",
+      updatedAt: "2026-11-23T11:00:00.000Z",
+      ...(followed !== undefined ? { followed } : {}),
+    });
+    const lead = thread("lead", {
+      // One it has a request open with (and one from an older server that
+      // doesn't say), and one whose request already settled.
+      remoteChildren: [
+        linkedChild("asked", true),
+        linkedChild("older"),
+        linkedChild("done", false),
+      ],
+      // One being set up here with no thread yet, and one whose thread arrived.
+      localChildStarts: [
+        {
+          requestId: "request-setup" as never,
+          childThreadId: ThreadId.make("setting-up"),
+          title: "setting up",
+          createdAt: "2026-11-23T11:00:00.000Z",
+        },
+        {
+          requestId: "request-arrived" as never,
+          childThreadId: ThreadId.make("arrived"),
+          title: "arrived",
+          createdAt: "2026-11-23T11:00:00.000Z",
+        },
+      ],
+    });
+    expect(count([lead, childOf("lead", "arrived")])).toBe(3);
   });
 });

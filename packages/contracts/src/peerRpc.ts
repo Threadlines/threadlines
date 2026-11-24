@@ -24,6 +24,7 @@ import {
   ChatAttachment,
   ChatSkillReferenceList,
   KnownAssistant,
+  LeadPassCeiling,
   MessageComposer,
   MessageSentFrom,
   ModelSelection,
@@ -287,6 +288,13 @@ export const PeerDescriptor = Schema.Struct({
    */
   moveLinkLineage: Schema.optional(Schema.Boolean),
   /**
+   * Holds a parent's access limit on work sent to a thread it started here
+   * (PeerSendInput's `ceiling`, docs/design/agent-autonomy-no-limits.md,
+   * "Access"). Absent: an older server, which runs the work at the thread's
+   * own access, so only a sender with the widest access sends it work.
+   */
+  enforcesRequestCeiling: Schema.optional(Schema.Boolean),
+  /**
    * Takes back the threads a moving thread's agent started here over this
    * link as that thread's children (docs/design/fleet.md, Part 3f, (g)):
    * PeerMoveManifest's `startedThere`, and `adopted` on the committed answer.
@@ -361,6 +369,12 @@ export const PeerSendInput = Schema.Struct({
   requestId: ChildRequestId,
   threadId: ThreadId,
   text: TrimmedNonEmptyString,
+  /**
+   * The sender's access when it sent (see MessageAccessFields): the thread
+   * refuses the work while it has more. Absent: an older sender, so the
+   * thread gives the request a ceiling of its own.
+   */
+  ceiling: Schema.optional(LeadPassCeiling),
 });
 export type PeerSendInput = typeof PeerSendInput.Type;
 

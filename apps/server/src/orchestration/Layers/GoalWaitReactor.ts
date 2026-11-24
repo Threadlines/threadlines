@@ -18,6 +18,7 @@ import * as Stream from "effect/Stream";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ScheduledTasks } from "../../scheduled/ScheduledTasks.ts";
+import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { GoalWaitReactor, type GoalWaitReactorShape } from "../Services/GoalWaitReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -75,6 +76,7 @@ export const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
+  const analytics = yield* Effect.serviceOption(AnalyticsService);
 
   const scheduleWaiting = Option.isSome(scheduledTasks)
     ? scheduledTasks.value.waitingThreadIds
@@ -122,7 +124,7 @@ export const make = Effect.gen(function* () {
     // Forgetting a mark sends the provider nothing; a pause or resume needs
     // a provider that has one.
     if (step === null || (step.send !== null && !(yield* canPauseGoal(thread)))) return;
-    yield* orchestrationEngine
+    const dispatched = yield* orchestrationEngine
       .dispatch({
         type: "thread.goal.wait.sync",
         commandId: CommandId.make(`goal-wait-sync:${threadId}:${randomUUID()}`),
@@ -133,11 +135,18 @@ export const make = Effect.gen(function* () {
         createdAt: yield* nowIso,
       })
       .pipe(
-        Effect.asVoid,
+        Effect.as(true),
         Effect.catchCause((cause) =>
-          Effect.logWarning("goal wait sync failed", { threadId, cause: Cause.pretty(cause) }),
+          Effect.logWarning("goal wait sync failed", { threadId, cause: Cause.pretty(cause) }).pipe(
+            Effect.as(false),
+          ),
         ),
       );
+    if (dispatched && step.send !== null && Option.isSome(analytics)) {
+      yield* analytics.value.record("provider.goal.wait_sync", {
+        action: step.send,
+      });
+    }
   });
 
   // A thread already queued is looked at once, read as it stands then; the

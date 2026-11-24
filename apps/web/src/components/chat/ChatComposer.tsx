@@ -1905,10 +1905,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const recipientDriverKind = addressedRoomAgent
     ? addressedRoomAgentEntry?.driverKind
     : selectedProvider;
-  // Codex's suggestions are Threadlines' own, with a switch in Settings on
-  // the computer the thread runs on.
+  // Codex and Antigravity suggestions are Threadlines' own, each with a switch
+  // in Settings › Providers on the computer the thread runs on.
   const codexSuggestionsOn = useEnvironmentServerSetting(environmentId, "codexSuggestions");
-  const recipientSuggestionsOff = recipientDriverKind === "codex" && !codexSuggestionsOn;
+  const antigravitySuggestionsOn = useEnvironmentServerSetting(
+    environmentId,
+    "antigravitySuggestions",
+  );
+  const recipientSuggestionsOff =
+    (recipientDriverKind === "codex" && !codexSuggestionsOn) ||
+    (recipientDriverKind === "antigravity" && !antigravitySuggestionsOn);
   const promptSuggestion = useMemo(
     () =>
       selectPromptSuggestion({

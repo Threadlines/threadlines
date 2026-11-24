@@ -665,7 +665,8 @@ const makeServerSettings = Effect.gen(function* () {
         path: settingsPath,
         issues: Cause.pretty(decoded.cause),
       });
-      return DEFAULT_SERVER_SETTINGS;
+      // Fail closed on analytics consent when an existing settings file cannot be parsed.
+      return { ...DEFAULT_SERVER_SETTINGS, usageAnalyticsEnabled: false };
     }
     // Every read, so a token in the file (an older version's, or a hand edit)
     // never reaches a provider, a client or a write.

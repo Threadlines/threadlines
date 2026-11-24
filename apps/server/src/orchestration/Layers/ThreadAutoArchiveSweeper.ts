@@ -168,6 +168,8 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
             yield* orchestrationEngine
               .dispatch({
                 type: "thread.session.stop",
+                // Cleanup: the sweeper's stop leaves no Stop hold.
+                cause: "cleanup",
                 commandId: CommandId.make(`thread-auto-archive-stop:${threadId}:${randomUUID()}`),
                 threadId,
                 createdAt: new Date(nowMs).toISOString(),

@@ -7929,3 +7929,75 @@ describe("AppearanceSettingsPanel", () => {
     expect(tops.filter((top) => top !== start)).toEqual([]);
   });
 });
+
+describe("ProviderSettingsPanel suggestions", () => {
+  beforeEach(async () => {
+    resetAppAtomRegistryForTests();
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    await resetTestPage();
+  });
+
+  afterEach(async () => {
+    Reflect.deleteProperty(window, "nativeApi");
+    await resetTestPage();
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+  });
+
+  it("shows suggestion switches only for enabled providers and updates Antigravity suggestions", async () => {
+    const updateSettings = vi.fn(async (patch: Record<string, unknown>) => ({
+      ...DEFAULT_SERVER_SETTINGS,
+      providers: {
+        ...DEFAULT_SERVER_SETTINGS.providers,
+        antigravity: { ...DEFAULT_SERVER_SETTINGS.providers.antigravity, enabled: true },
+      },
+      ...patch,
+    }));
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        updateClientSettings: vi.fn(async (patch: object) => patch),
+        subscribeClientSettings: () => () => undefined,
+      },
+      server: {
+        updateSettings,
+      },
+    } as unknown as LocalApi;
+
+    // Default settings have Claude and Codex on, Antigravity off.
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    await expect.element(page.getByText("Codex suggestions")).toBeInTheDocument();
+    await expect
+      .element(page.getByText("Keep Claude's suggestions when you're using a lot"))
+      .toBeInTheDocument();
+    await expect.element(page.getByText("Antigravity suggestions")).not.toBeInTheDocument();
+
+    // Turning Antigravity on surfaces its suggestion toggle.
+    const baseConfig = createBaseServerConfig();
+    setServerConfigSnapshot({
+      ...baseConfig,
+      settings: {
+        ...baseConfig.settings,
+        providers: {
+          ...baseConfig.settings.providers,
+          antigravity: { ...baseConfig.settings.providers.antigravity, enabled: true },
+        },
+      },
+    });
+
+    const antigravitySwitch = page.getByRole("switch", { name: "Antigravity suggestions" });
+    await expect.element(antigravitySwitch).toBeInTheDocument();
+    await antigravitySwitch.click();
+    await vi.waitFor(() =>
+      expect(updateSettings).toHaveBeenCalledWith({ antigravitySuggestions: false }),
+    );
+  });
+});

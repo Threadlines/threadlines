@@ -64,6 +64,7 @@ import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { ComputerLinkClient, type PeerClient } from "../links/ComputerLinkClient.ts";
 import { ComputerLinkRepository, isUsableLink } from "../links/ComputerLinkRepository.ts";
 import { generalChatThreadScratchCwd } from "../orchestration/generalChats.ts";
@@ -729,6 +730,7 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment;
   const providers = yield* ProviderService;
   const actionGate = yield* ThreadActionGate;
+  const analytics = yield* Effect.serviceOption(AnalyticsService);
   const descriptor = yield* environment.getDescriptor;
 
   const moveDir = (transferId: string) => NodePath.join(config.stateDir, "moves", transferId);
@@ -1366,6 +1368,10 @@ const make = Effect.gen(function* () {
             : "final"
         }`,
       );
+      const beforeMove =
+        step.kind !== "progress" && Option.isSome(analytics)
+          ? yield* currentMove(threadId, transferId).pipe(Effect.orElseSucceed(() => null))
+          : null;
       const dispatched = engine.dispatch(
         step.kind === "progress"
           ? {
@@ -1412,6 +1418,26 @@ const make = Effect.gen(function* () {
           () => new ThreadMoveFailure({ reason: "The move's outcome couldn't be recorded." }),
         ),
       );
+      if (step.kind !== "progress" && beforeMove !== null && Option.isSome(analytics)) {
+        const startedMs = beforeMove ? Date.parse(beforeMove.startedAt) : Number.NaN;
+        const finishedMs = Date.parse(createdAt);
+        const durationMs =
+          Number.isFinite(startedMs) && Number.isFinite(finishedMs)
+            ? Math.max(0, finishedMs - startedMs)
+            : undefined;
+        yield* analytics.value.record("thread.move.finished", {
+          outcome: step.kind === "complete" ? "completed" : "aborted",
+          ...(step.kind === "abort"
+            ? { abortCode: step.code }
+            : { keptParent: step.keptParent, adoptedCount: step.adopted.length }),
+          isRoom: (beforeMove?.roomAgents?.length ?? 0) > 0,
+          isFamily: beforeMove?.family !== undefined,
+          isBatch: beforeMove?.batchId !== undefined,
+          queued: beforeMove?.queuedRequestId !== undefined,
+          interruptedWork: beforeMove?.interrupted !== undefined,
+          ...(durationMs !== undefined ? { durationMs } : {}),
+        });
+      }
     });
 
   /**
