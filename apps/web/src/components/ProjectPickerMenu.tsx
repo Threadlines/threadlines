@@ -93,6 +93,7 @@ export function ProjectPickerMenu(props: {
   const { rows } = props;
   const [query, setQuery] = useState("");
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
+  const canHoverPin = useMediaQuery("(hover: hover) and (pointer: fine)");
   const showSearch = !isCoarsePointer && rows.length >= PROJECT_SEARCH_MIN_PROJECTS;
   const searching = showSearch && query.trim().length > 0;
 
@@ -206,6 +207,40 @@ export function ProjectPickerMenu(props: {
     const pinned = isProjectPinned(row.cwds, pinnedProjectCwds);
     const visual = dragReorderVisual(drag, row.key);
     const folderHint = searching && !matchesName(row) ? folderTail(row.cwd) : null;
+    const pinButton = (placement: "overlay" | "trailing") => (
+      <button
+        type="button"
+        data-testid={`project-picker-pin-${row.key}`}
+        aria-label={pinned ? `Unpin ${row.name}` : `Pin ${row.name} to the top`}
+        aria-pressed={pinned}
+        title={pinned ? "Unpin (⌥P)" : "Pin to the top (⌥P)"}
+        className={cn(
+          "size-5 cursor-pointer items-center justify-center rounded-sm text-muted-foreground hover:bg-foreground/10 hover:text-foreground focus-ring",
+          placement === "overlay"
+            ? // Swaps into the project icon's footprint on row hover so the menu
+              // width and trailing glyphs never shift. Keyboard users have ⌥P.
+              "absolute inset-1/2 hidden -translate-x-1/2 -translate-y-1/2 group-hover/project-row:inline-flex"
+            : "-me-1 inline-flex shrink-0",
+        )}
+        onKeyDown={keepActivationKeys}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setProjectPinned(row.cwds, !pinned);
+        }}
+      >
+        {pinned ? (
+          placement === "overlay" ? (
+            <PinOffIcon className="size-3.5" />
+          ) : (
+            <PinIcon className="size-3 text-foreground" />
+          )
+        ) : (
+          <PinIcon className={placement === "overlay" ? "size-3.5" : "size-3"} />
+        )}
+      </button>
+    );
+
     return (
       <MenuItem
         key={row.key}
@@ -251,7 +286,15 @@ export function ProjectPickerMenu(props: {
             <GripVerticalIcon className="size-3.5" />
           </span>
         ) : null}
-        <ProjectFavicon cwd={row.cwd} environmentId={row.environmentId} name={row.name} />
+        <span className="relative inline-flex size-3.5 shrink-0 items-center justify-center">
+          <ProjectFavicon
+            cwd={row.cwd}
+            environmentId={row.environmentId}
+            name={row.name}
+            className={cn(canHoverPin && "group-hover/project-row:opacity-0")}
+          />
+          {canHoverPin ? pinButton("overlay") : null}
+        </span>
         <span className="max-w-56 min-w-0 flex-1 truncate">{row.name}</span>
         {folderHint ? (
           <span className="max-w-32 shrink truncate font-mono text-[10px] text-muted-foreground">
@@ -259,36 +302,7 @@ export function ProjectPickerMenu(props: {
           </span>
         ) : null}
         {row.trailing}
-        <button
-          type="button"
-          data-testid={`project-picker-pin-${row.key}`}
-          aria-label={pinned ? `Unpin ${row.name}` : `Pin ${row.name} to the top`}
-          aria-pressed={pinned}
-          title={pinned ? "Unpin (⌥P)" : "Pin to the top (⌥P)"}
-          className={cn(
-            "-me-1 size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground hover:bg-foreground/10 hover:text-foreground focus-ring",
-            // A pin shows where it holds; on other rows only under the pointer
-            // or the keyboard, and always on touch, which has no hover.
-            pinned
-              ? "inline-flex"
-              : "hidden group-data-highlighted/project-row:inline-flex pointer-coarse:inline-flex",
-          )}
-          onKeyDown={keepActivationKeys}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setProjectPinned(row.cwds, !pinned);
-          }}
-        >
-          {pinned ? (
-            <>
-              <PinIcon className="size-3 group-hover/project-row:hidden" />
-              <PinOffIcon className="hidden size-3 group-hover/project-row:block" />
-            </>
-          ) : (
-            <PinIcon className="size-3" />
-          )}
-        </button>
+        {!canHoverPin ? pinButton("trailing") : null}
       </MenuItem>
     );
   };
