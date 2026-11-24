@@ -31,7 +31,7 @@ const PROJECTS = [
   { name: "scratch", cwd: "/work/scratch" },
 ].map((project) => ({ ...project, key: `${ENVIRONMENT_ID}:${project.cwd}` }));
 
-function Harness(props: { onPick: (key: string) => void }) {
+function Harness(props: { onPick: (key: string) => void; trailing?: boolean }) {
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const pinnedProjectCwds = useUiStateStore((store) => store.pinnedProjectCwds);
   const sortOrder = useSettings((settings) => settings.sidebarProjectSortOrder);
@@ -52,9 +52,23 @@ function Harness(props: { onPick: (key: string) => void }) {
         orderKeys: [project.key],
         cwds: [project.cwd],
         selected: false,
+        trailing: props.trailing ? (
+          <span data-testid={`trailing-${project.name}`} className="inline-block size-3 shrink-0" />
+        ) : undefined,
       }))}
       onPick={(row) => props.onPick(row.key)}
     />
+  );
+}
+
+async function waitForProductionStyles(): Promise<void> {
+  await vi.waitFor(
+    () => {
+      expect(
+        getComputedStyle(document.documentElement).getPropertyValue("--background").trim(),
+      ).not.toBe("");
+    },
+    { timeout: 4_000, interval: 16 },
   );
 }
 
@@ -65,11 +79,14 @@ function shownNames(): string[] {
   );
 }
 
-function renderHarness(onPick: (key: string) => void = vi.fn()) {
+function renderHarness(
+  onPick: (key: string) => void = vi.fn(),
+  options?: { readonly trailing?: boolean },
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <Harness onPick={onPick} />
+      <Harness onPick={onPick} trailing={options?.trailing ?? false} />
     </QueryClientProvider>,
   );
 }
@@ -144,6 +161,43 @@ describe("ProjectPickerMenu", () => {
       await page.getByTestId("project-picker-reset-order").click();
       await expect.poll(shownNames).toEqual(PROJECTS.map((project) => project.name));
       await expect.element(page.getByTestId("project-picker-reset-order")).not.toBeInTheDocument();
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("swapping the left icon for the pin on hover never shifts menu width or trailing glyphs, and unpins pinned rows", async () => {
+    await waitForProductionStyles();
+    const mounted = await renderHarness(vi.fn(), { trailing: true });
+    try {
+      await page.getByTestId("picker-trigger").click();
+      const popup = document.querySelector<HTMLElement>('[data-slot="menu-popup"]');
+      expect(popup).not.toBeNull();
+      const trailing = document.querySelector<HTMLElement>('[data-testid="trailing-gateway"]');
+      expect(trailing).not.toBeNull();
+
+      const restWidth = popup!.getBoundingClientRect().width;
+      const restTrailingLeft = trailing!.getBoundingClientRect().left;
+
+      // Hover the widest row: the pin replaces the left icon in place.
+      await userEvent.hover(page.getByRole("menuitem", { name: "gateway" }));
+      const pinButton = page.getByRole("button", { name: "Pin gateway to the top" });
+      await expect.element(pinButton).toBeVisible();
+      expect(popup!.getBoundingClientRect().width).toBe(restWidth);
+      expect(trailing!.getBoundingClientRect().left).toBe(restTrailingLeft);
+
+      // Pinning moves it under "Pinned", and hovering there reveals Unpin without shifting width.
+      await pinButton.click();
+      await expect.element(page.getByText("Pinned", { exact: true })).toBeVisible();
+      expect(useUiStateStore.getState().pinnedProjectCwds).toEqual(["/work/apis/gateway"]);
+
+      await userEvent.hover(page.getByRole("menuitem", { name: "gateway" }));
+      const unpinButton = page.getByRole("button", { name: "Unpin gateway" });
+      await expect.element(unpinButton).toBeVisible();
+      expect(popup!.getBoundingClientRect().width).toBe(restWidth);
+
+      await unpinButton.click();
+      expect(useUiStateStore.getState().pinnedProjectCwds).toEqual([]);
     } finally {
       await mounted.unmount();
     }
