@@ -10,12 +10,15 @@
  */
 import { join } from "node:path";
 
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   ANTIGRAVITY_DRIVER_KIND,
   ANTIGRAVITY_PRESENTATION,
@@ -23,7 +26,17 @@ import {
   validateAntigravityRuntime,
 } from "../acp/AntigravityAcpSupport.ts";
 import { type AcpProviderDriverEnv, makeAcpProviderDriver } from "../acp/AcpProviderDriver.ts";
+import { sampleAcpPromptSuggestion } from "../acp/AcpTextGeneration.ts";
+import {
+  isAntigravitySuggestionUsageNearLimit,
+  selectAntigravitySuggestionTarget,
+} from "../antigravity/AntigravityPromptSuggestions.ts";
+import { buildTranscriptPromptSuggestionPrompt } from "../promptSuggestions.ts";
 import { antigravityReleaseFor } from "../antigravity/AntigravityRelease.ts";
+import {
+  type AntigravityReleaseSource,
+  makeAntigravityReleaseSource,
+} from "../antigravity/AntigravityReleaseSource.ts";
 import { makeAntigravityAuthFlows } from "../antigravity/AntigravityAuth.ts";
 import {
   antigravityInstancePaths,
@@ -43,12 +56,22 @@ import {
   type AntigravityRuntime,
   makeAntigravityRuntime,
 } from "../antigravity/AntigravityRuntime.ts";
+import { makeAntigravityUsageReader } from "../antigravity/AntigravityUsage.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import type { ProviderDriver } from "../ProviderDriver.ts";
 import { AntigravitySettings } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 
-export type AntigravityDriverEnv = AcpProviderDriverEnv;
+export type AntigravityDriverEnv = AcpProviderDriverEnv | ServerSettingsService;
+
+/** Linux's C library: Alpine and other musl systems get Google's musl build. */
+function hostLibc(): "glibc" | "musl" {
+  if (process.platform !== "linux") return "glibc";
+  const report = process.report?.getReport() as
+    | { readonly header?: { readonly glibcVersionRuntime?: unknown } }
+    | undefined;
+  return typeof report?.header?.glibcVersionRuntime === "string" ? "glibc" : "musl";
+}
 
 const decodeAntigravitySettings = Schema.decodeSync(AntigravitySettings);
 const decodeAntigravitySettingsOption = Schema.decodeUnknownOption(AntigravitySettings);
@@ -57,6 +80,20 @@ const decodeAntigravitySettingsOption = Schema.decodeUnknownOption(AntigravitySe
  * its locks then serialize their installs, prunes, and leases.
  */
 const runtimesByRoot = new Map<string, AntigravityRuntime>();
+/** Likewise one release source per state folder, so instances share its hourly check. */
+const releaseSourcesByStateDir = new Map<string, AntigravityReleaseSource>();
+
+const releaseSourceFor = (
+  stateDir: string,
+  builtIn: NonNullable<ReturnType<typeof antigravityReleaseFor>>,
+): AntigravityReleaseSource => {
+  let source = releaseSourcesByStateDir.get(stateDir);
+  if (!source) {
+    source = makeAntigravityReleaseSource({ builtIn, assetKey: builtIn.assetKey });
+    releaseSourcesByStateDir.set(stateDir, source);
+  }
+  return source;
+};
 
 export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityDriverEnv> = {
   driverKind: ANTIGRAVITY_DRIVER_KIND,
@@ -70,7 +107,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig;
       const paths = antigravityInstancePaths(serverConfig.stateDir, input.instanceId);
-      const platformRelease = antigravityReleaseFor(process.platform, process.arch);
+      const platformRelease = antigravityReleaseFor(process.platform, process.arch, hostLibc());
       const runtimeRoot = platformRelease
         ? join(serverConfig.stateDir, "tools", "agy", platformRelease.assetKey)
         : undefined;
@@ -78,11 +115,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       if (platformRelease && runtimeRoot && !runtime) {
         runtime = makeAntigravityRuntime({
           root: runtimeRoot,
-          release: platformRelease,
-          validate: (runtimePaths) => validateAntigravityRuntime(runtimePaths, platformRelease),
+          validate: validateAntigravityRuntime,
         });
         runtimesByRoot.set(runtimeRoot, runtime);
       }
+      const releases = platformRelease
+        ? releaseSourceFor(serverConfig.stateDir, platformRelease)
+        : undefined;
       // Leftovers of processes whose server is gone; best effort, off the
       // start path.
       yield* Effect.forkDetach(
@@ -110,21 +149,87 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       // Sign-in and sign-out close the instance while they run; their own
       // process starts from a descriptor that ignores the gate.
       const gate = makeLaunchGate();
+      const fingerprint = antigravityCredentialFingerprint(signIn);
+      // Plan limits and email, for a Google sign-in (AntigravityUsage.ts).
+      const usage = yield* makeAntigravityUsageReader({
+        profileDir: paths.profileDir,
+        method: signIn.method,
+        fingerprint,
+        ...(signIn.project ? { project: signIn.project } : {}),
+      });
       const descriptor = makeAntigravityDescriptor({
         paths,
         runtime,
-        release: platformRelease,
+        releases,
         gate,
         signIn,
+        skillsCwd: serverConfig.cwd,
+        usage,
       });
-      const instance = yield* makeAcpProviderDriver(descriptor).create(input);
-      const fingerprint = antigravityCredentialFingerprint(signIn);
+      const serverSettings = yield* ServerSettingsService;
+      const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const instance = yield* makeAcpProviderDriver(descriptor, {
+        promptSuggestions: ({ settings: effectiveSettings, environment, getSnapshot }) => {
+          const isAllowed = (targetModelName: string | undefined) =>
+            Effect.gen(function* () {
+              const on = yield* serverSettings.getSettings.pipe(
+                Effect.map((current) => current.antigravitySuggestions),
+                Effect.orElseSucceed(() => false),
+              );
+              if (!on) return false;
+              const current = yield* getSnapshot;
+              return !isAntigravitySuggestionUsageNearLimit(
+                current.accountUsage,
+                targetModelName,
+                yield* Clock.currentTimeMillis,
+              );
+            });
+          return Effect.succeed({
+            shouldSuggest: (model) =>
+              Effect.gen(function* () {
+                const current = yield* getSnapshot;
+                const target = selectAntigravitySuggestionTarget(current.models, model);
+                return yield* isAllowed(target.modelName);
+              }),
+            sample: ({ cwd, model, messages }) =>
+              Effect.gen(function* () {
+                const prompt = buildTranscriptPromptSuggestionPrompt(messages);
+                if (prompt === undefined) return undefined;
+                // Select and quota-check one target from a single snapshot so
+                // a catalog refresh cannot switch models between check and call.
+                const current = yield* getSnapshot;
+                const target = selectAntigravitySuggestionTarget(current.models, model);
+                if (!(yield* isAllowed(target.modelName))) return undefined;
+                let checkedModelName = target.modelName;
+                const sampled = yield* sampleAcpPromptSuggestion({
+                  descriptor,
+                  settings: effectiveSettings,
+                  environment,
+                  commandSpawner,
+                  fileSystem,
+                  cwd,
+                  prompt,
+                  model: target.model,
+                  options: target.options,
+                  allowLiveModel: ({ name }) => {
+                    checkedModelName = name;
+                    return isAllowed(name);
+                  },
+                });
+                if (sampled === undefined) return undefined;
+                return (yield* isAllowed(checkedModelName)) ? sampled : undefined;
+              }),
+          });
+        },
+      }).create(input);
+      usage.attach(instance.snapshot);
       const builtEnvironment = providerInstanceEnvironmentKey(input.environment);
       const authFlows = makeAntigravityAuthFlows({
         descriptor: makeAntigravityDescriptor({
           paths,
           runtime,
-          release: platformRelease,
+          releases,
           signIn,
         }),
         settings: { ...input.config, enabled: input.enabled },
@@ -141,6 +246,10 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         ...instance,
         authFlows: {
           ...authFlows,
+          // A sign-in or sign-out cancels a limits read and forgets the old
+          // account's numbers, before and after.
+          run: (flow) =>
+            usage.reset.pipe(Effect.andThen(authFlows.run(flow)), Effect.ensuring(usage.reset)),
           // The sign-in settings and every variable (ADC paths included)
           // match what this build was created from.
           builtFrom: (entry) => {

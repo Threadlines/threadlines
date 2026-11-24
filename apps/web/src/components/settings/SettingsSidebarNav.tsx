@@ -15,12 +15,12 @@ import {
   HOSTED_STATIC_SETTINGS_NAV_ITEMS,
   SETTINGS_NAV_ITEMS,
   type SettingsNavItem,
-  type SettingsSectionPath,
   startsSettingsNavGroup,
 } from "./settingsNavigation";
+import { type SettingsSectionPath } from "./settingsPaths";
 import {
-  SettingsPlaceSignalsProvider,
-  SettingsSurfaceContext,
+  SettingsAvailabilityProvider,
+  useSettingsStoreSearchHost,
   type SettingsPagePlaceId,
 } from "./settingsPlaceAvailability";
 import { SettingsSearchField } from "./SettingsSearchField";
@@ -33,12 +33,11 @@ const isHostedStatic = () =>
 /** Settings' list beside the rail: its search, then its sections, for the page on screen. */
 export function SettingsDestinationList() {
   const pathname = useLocation({ select: (location) => location.pathname });
+  const searchHost = useSettingsStoreSearchHost();
   return (
-    <SettingsSurfaceContext.Provider value={isHostedStatic() ? "phone" : "full"}>
-      <SettingsPlaceSignalsProvider>
-        <SettingsSidebarNav pathname={pathname} />
-      </SettingsPlaceSignalsProvider>
-    </SettingsSurfaceContext.Provider>
+    <SettingsAvailabilityProvider surface={isHostedStatic() ? "phone" : "full"} host={searchHost}>
+      <SettingsSidebarNav pathname={pathname} />
+    </SettingsAvailabilityProvider>
   );
 }
 

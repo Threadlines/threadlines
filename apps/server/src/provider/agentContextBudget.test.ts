@@ -17,6 +17,7 @@ import { Tool } from "effect/ai";
 import { expect, it } from "vite-plus/test";
 
 import { AlertAssistantsToolkit } from "../mcp/alertAssistantsTools.ts";
+import { ProjectNoteToolkit } from "../mcp/projectNoteTools.ts";
 import { BrowserScreenshotToolkit, BrowserStandardToolkit } from "../mcp/browserTools.ts";
 import { AskUserToRunTool } from "../mcp/commandTools.ts";
 import { GuideToolkit } from "../mcp/guideTools.ts";
@@ -24,6 +25,7 @@ import { PreviewPageTool, ShowPageTool } from "../mcp/pageTools.ts";
 import { roomToolsFor } from "../mcp/roomToolAccess.ts";
 import { RoomToolkit } from "../mcp/roomTools.ts";
 import { ScheduleToolkit } from "../mcp/scheduleTools.ts";
+import { SecretRequestToolkit } from "../mcp/secretRequestTools.ts";
 import { SettingsChangeToolkit } from "../mcp/settingsChangeTools.ts";
 import { FindVsCodeThemeTool, PreviewThemeTool, ShowThemeTool } from "../mcp/themeTools.ts";
 import { ThreadToolkit } from "../mcp/threadTools.ts";
@@ -32,6 +34,20 @@ import budget from "./agentContextBudget.json" with { type: "json" };
 import { buildClaudeSystemPromptAppend } from "./Layers/ClaudeAdapter.ts";
 
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
+
+/**
+ * Runs `measure` as on Linux, where the budget is measured. The prompt names
+ * the user's shell, which is a byte longer on Windows.
+ */
+function onLinux<A>(measure: () => A): A {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "linux" });
+  try {
+    return measure();
+  } finally {
+    if (platform) Object.defineProperty(process, "platform", platform);
+  }
+}
 
 /** Every tool an ordinary thread's Claude session is given over MCP. */
 const threadTools: ReadonlyArray<Tool.Any> = [
@@ -43,7 +59,9 @@ const threadTools: ReadonlyArray<Tool.Any> = [
     ScheduleToolkit,
     GuideToolkit,
     SettingsChangeToolkit,
+    SecretRequestToolkit,
     AlertAssistantsToolkit,
+    ProjectNoteToolkit,
   ].flatMap((toolkit) => Object.values(toolkit.tools) as ReadonlyArray<Tool.Any>),
   ShowPageTool,
   PreviewPageTool,
@@ -71,17 +89,20 @@ it("what a Claude thread is sent on every request matches the committed budget",
   const onDemand = threadTools.filter((tool) => !isLoadedUpFront(tool));
   const measured = {
     // Every optional section on, as in a thread with pages, artifacts,
-    // command requests, schedules and the room tools, in a
+    // command requests, devices, schedules and the room tools, in a
     // Threadlines-managed worktree.
     claudeSystemAppendBytes: utf8Bytes(
-      buildClaudeSystemPromptAppend({
-        pageAssetsDir: "/tmp/threadlines-page-assets/thread",
-        artifacts: true,
-        commandRequests: true,
-        room: { tools: roomToolsFor(undefined), schedules: true },
-        lockdown: false,
-        managedWorktree: true,
-      }),
+      onLinux(() =>
+        buildClaudeSystemPromptAppend({
+          pageAssetsDir: "/tmp/threadlines-page-assets/thread",
+          artifacts: true,
+          commandRequests: true,
+          deviceTools: true,
+          room: { tools: roomToolsFor(undefined), schedules: true },
+          lockdown: false,
+          managedWorktree: true,
+        }),
+      ),
     ),
     // In the prompt from the first turn. `mark_long_running`, Claude's own
     // in-process tool, is there too and is not measured here.

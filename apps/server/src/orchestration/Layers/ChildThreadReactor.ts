@@ -8,6 +8,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationThread,
   type ThreadId,
+  type TurnId,
 } from "@threadlines/contracts";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { agentThreadsMode, agentThreadsShareWorktrees } from "@threadlines/shared/serverSettings";
@@ -23,17 +24,22 @@ import * as Stream from "effect/Stream";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { effectiveRequestCeiling, narrowerModeCeiling } from "@threadlines/shared/childThreads";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import {
   childHasLiveWork,
   childReportMessageId,
   clampLaunchToCeiling,
 } from "../childThreadDecisions.ts";
+import { familyWorkStopped } from "../threadMoveCarry.ts";
 import {
   childDeliveryAfterRestart,
   childDeliveryForQuietCandidate,
+  childReportAfterRestart,
   finishedTurnAfterRestart,
+  isHeldByContinueAtReset,
   isQuietCandidate,
+  stoppedBeforeFinishedText,
 } from "../childThreadDelivery.ts";
 import {
   ChildThreadReactor,
@@ -58,12 +64,41 @@ const QUIET_GRACE = Duration.seconds(15);
  */
 const STOP_GRACE = Duration.seconds(5);
 
+/**
+ * How long an errored child whose answering turn hasn't ended yet gets for
+ * that end before its request is settled from the error. A provider can
+ * report the session's error first and the turn's end, with a usage limit's
+ * reset time, later: Codex refreshes usage first and gives up on that after
+ * 15 s (freshProviderSnapshot). The turn's end decides whether the request
+ * waits to continue at the reset (docs/design/lead-chat.md, ruling 3).
+ */
+const LATE_TURN_END_GRACE = Duration.seconds(20);
+
 type ReactorEvent = Extract<
   OrchestrationEvent,
   { type: "thread.child-request-submitted" | "thread.child-request-updated" | "thread.session-set" }
 >;
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/**
+ * The newest turn a message started: only for a request from before it kept
+ * its turn (`answeringTurnId`), never the first listed.
+ */
+const newestTurnFor = <
+  Turn extends {
+    readonly turnId: TurnId | null;
+    readonly pendingMessageId: MessageId | null;
+    readonly requestedAt: string;
+  },
+>(
+  turns: ReadonlyArray<Turn>,
+  messageId: MessageId,
+): Turn | undefined =>
+  turns
+    .filter((turn) => turn.turnId !== null && turn.pendingMessageId === messageId)
+    .toSorted((left, right) => left.requestedAt.localeCompare(right.requestedAt))
+    .at(-1);
 
 export const makeChildThreadReactor = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
@@ -89,6 +124,12 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * Settles a parent's request, unless the parent's move stopped what acts
+   * for its family (familyWorkStopped): a frozen parent would refuse it, and
+   * an answer refused there is lost. Its move waited for, or ended, every
+   * request it had.
+   */
   const settle = (
     parent: OrchestrationThread,
     request: OrchestrationChildRequest,
@@ -100,6 +141,7 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     },
   ) =>
     Effect.gen(function* () {
+      if (familyWorkStopped(parent)) return;
       yield* dispatch(
         {
           type: "thread.child-request.settle",
@@ -176,11 +218,13 @@ export const makeChildThreadReactor = Effect.gen(function* () {
         const parent = yield* readThread(parentId);
         const request = parent?.childRequests.open.find((entry) => entry.requestId === requestId);
         // A child on a linked computer is set up there (RemoteChildReactor).
+        // A parent whose move stopped its agent starts nothing.
         if (
           parent === undefined ||
           request === undefined ||
           request.status !== "starting" ||
-          request.remote !== undefined
+          request.remote !== undefined ||
+          familyWorkStopped(parent)
         ) {
           return;
         }
@@ -224,6 +268,10 @@ export const makeChildThreadReactor = Effect.gen(function* () {
             // when it asked (an approval can come much later).
             launch: clampLaunchToCeiling(launch, parent),
             fromThread: { threadId: parent.id, requestId, kind: "request" },
+            requestCeiling: narrowerModeCeiling(
+              request.requestCeiling,
+              effectiveRequestCeiling(parent),
+            ),
             createdAt: request.createdAt,
           }),
         );
@@ -282,7 +330,20 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       if ((status === "stopped" || status === "error") && !stopChecks.has(childId)) {
         stopChecks.add(childId);
         yield* Effect.sleep(STOP_GRACE).pipe(
-          Effect.andThen(settleStoppedAnswers(parent.id, childId, status)),
+          // An error whose turn hasn't ended yet: its end may still come,
+          // with the reset time, up to the bound; then the error settles it.
+          Effect.andThen(
+            status === "error"
+              ? readThread(childId).pipe(
+                  Effect.flatMap((latest) =>
+                    latest?.latestTurn?.state === "running"
+                      ? Effect.sleep(Duration.subtract(LATE_TURN_END_GRACE, STOP_GRACE))
+                      : Effect.void,
+                  ),
+                )
+              : Effect.void,
+          ),
+          Effect.andThen(settleStoppedAnswers(parent.id, childId)),
           Effect.ensuring(Effect.sync(() => stopChecks.delete(childId))),
           Effect.forkDetach,
         );
@@ -296,7 +357,7 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       if (parent === undefined || child === undefined || request === undefined) {
         return;
       }
-      if (!isQuietCandidate(child, request)) {
+      if (!isQuietCandidate(child, request) || familyWorkStopped(parent)) {
         return;
       }
       const delivery = childDeliveryForQuietCandidate(child, request);
@@ -308,35 +369,69 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       }
     });
 
-  const settleStoppedAnswers = (
-    parentId: ThreadId,
-    childId: ThreadId,
-    status: "stopped" | "error",
-  ) =>
+  /**
+   * A child's session stopped or errored with a request mid-answer and no
+   * turn end settled it. Read as it is now, not as it was when the check was
+   * set: an error followed by an exit is a stop. Stopped on purpose only when
+   * a Stop named that request's own turn: a runtime that died, or the idle
+   * reaper, is never the user's doing (rule 6), and an answer waiting on
+   * background work whose runtime simply ended stands as it is (the quiet
+   * check settles it answered).
+   */
+  const settleStoppedAnswers = (parentId: ThreadId, childId: ThreadId) =>
     Effect.gen(function* () {
       const [parent, child] = [yield* readThread(parentId), yield* readThread(childId)];
       if (parent === undefined || child === undefined) {
         return;
       }
-      const latestStatus = child.session?.status;
-      if (latestStatus !== "stopped" && latestStatus !== "error") {
+      const status = child.session?.status;
+      if (status !== "stopped" && status !== "error") {
         return;
       }
+      const stopRequestedTurnId = child.session?.stopRequestedTurnId ?? null;
+      const childTurns =
+        stopRequestedTurnId === null
+          ? []
+          : yield* turns
+              .listByThreadId({ threadId: child.id })
+              .pipe(Effect.orElseSucceed(() => [] as const));
+      // The turn the request recorded when it started (a retry or resend
+      // overwrites it); a request from before that goes by its message's
+      // newest turn.
+      const requestTurnId = (request: OrchestrationChildRequest) =>
+        request.status === "awaiting_background"
+          ? (request.candidateTurnId ?? null)
+          : (request.answeringTurnId ??
+            newestTurnFor(childTurns, request.childMessageId)?.turnId ??
+            null);
       for (const request of parent.childRequests.open) {
         if (
           request.childThreadId !== childId ||
-          (request.status !== "running" && request.status !== "awaiting_background")
+          (request.status !== "running" && request.status !== "awaiting_background") ||
+          // Waiting to continue at a usage limit's reset: the continue answers it.
+          isHeldByContinueAtReset(child, request)
         ) {
+          continue;
+        }
+        const stoppedByStop =
+          stopRequestedTurnId !== null && requestTurnId(request) === stopRequestedTurnId;
+        if (request.status === "awaiting_background" && status === "stopped" && !stoppedByStop) {
           continue;
         }
         yield* settle(
           parent,
           request,
           status === "stopped"
-            ? {
-                outcome: "stopped",
-                text: `The user stopped '${child.title}' before it finished.`,
-              }
+            ? stoppedByStop
+              ? {
+                  outcome: "stopped",
+                  text: `The user stopped '${child.title}' before it finished.`,
+                }
+              : {
+                  outcome: "failed",
+                  text: stoppedBeforeFinishedText(child.title, "its session ended"),
+                  error: "Its session ended before it finished.",
+                }
             : {
                 outcome: "failed",
                 text: `'${child.title}' failed: ${child.session?.lastError ?? "its session ended with an error."}`,
@@ -378,7 +473,8 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     for (const summary of shell?.threads ?? []) {
       if (summary.awaitedChildThreadCount === 0 && !summary.pendingChildApproval) continue;
       const parent = yield* readThread(summary.id);
-      if (parent === undefined) continue;
+      // A parent whose move stopped its agent is left as it is (familyWorkStopped).
+      if (parent === undefined || familyWorkStopped(parent)) continue;
       for (const request of parent.childRequests.open) {
         if (request.status === "awaiting_user") {
           if (mode === "off") {
@@ -404,6 +500,11 @@ export const makeChildThreadReactor = Effect.gen(function* () {
             outcome: "cancelled",
             note: "A thread you started is gone, so its answer won't come back.",
           });
+          continue;
+        }
+        // Still waiting to continue at a usage limit's reset (the wait is
+        // kept across a restart): the continue answers it.
+        if (isHeldByContinueAtReset(child, request)) {
           continue;
         }
         const childTurns = yield* turns
@@ -438,6 +539,45 @@ export const makeChildThreadReactor = Effect.gen(function* () {
   });
 
   /**
+   * Reports the previous process owed and never settled (rule 14): every
+   * entry on every child's owed list made before this process started. A
+   * turn that completed is delivered, one that failed delivers its failure,
+   * and one the restart cut off, or that never started, says so. Turns from
+   * before the owed list existed have no entry and send nothing.
+   */
+  const settleOwedReportsFromPreviousProcess = (startedAt: string) =>
+    Effect.gen(function* () {
+      const shell = yield* snapshots.getShellSnapshot().pipe(Effect.orElseSucceed(() => undefined));
+      for (const summary of shell?.threads ?? []) {
+        if (summary.parentThreadId === null || !summary.attachedToParent) continue;
+        const child = yield* readThread(summary.id);
+        const owed = (child?.childRequests.owedReports ?? []).filter(
+          (entry) => entry.createdAt < startedAt,
+        );
+        if (child === undefined || owed.length === 0) continue;
+        const parent = yield* readThread(summary.parentThreadId);
+        // A parent whose move stopped its family's work is left as it is.
+        if (parent !== undefined && familyWorkStopped(parent)) continue;
+        const childTurns = yield* turns
+          .listByThreadId({ threadId: child.id })
+          .pipe(Effect.orElseSucceed(() => [] as const));
+        for (const entry of owed) {
+          // An entry is settled against the turn that claimed it, by id; one
+          // no turn claimed never started and goes with nothing said.
+          const turn =
+            "turnId" in entry
+              ? childTurns.find((candidate) => candidate.turnId === entry.turnId)
+              : undefined;
+          const delivery = childReportAfterRestart(child, entry, turn);
+          yield* dispatch(
+            { ...delivery, threadId: child.id, createdAt: yield* nowIso },
+            "settle a child's owed report after a restart",
+          );
+        }
+      }
+    });
+
+  /**
    * Reports the previous process queued for a parent but never sent: the
    * normal queue only sends when a turn ends, and there is no turn after a
    * restart. Read before anything is settled, since a report settling writes
@@ -448,9 +588,11 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     const shell = yield* snapshots.getShellSnapshot().pipe(Effect.orElseSucceed(() => undefined));
     return (shell?.threads ?? []).flatMap((summary) => {
       const queued = summary.queuedFollowUps ?? [];
+      // The first in line: one put back after its start died is at the front.
       const report = queued.find((entry) => entry.fromThread?.kind === "report");
       const status = summary.session?.status;
       return report === undefined ||
+        familyWorkStopped(summary) ||
         queued.some((entry) => !isAgentOrigin(entry)) ||
         status === "running" ||
         status === "starting"
@@ -467,13 +609,18 @@ export const makeChildThreadReactor = Effect.gen(function* () {
       reports,
       (report) =>
         Effect.gen(function* () {
+          // Its own id each startup: a send an earlier startup tried, whose
+          // start then died and was put back, must not replay that receipt.
+          const createdAt = yield* nowIso;
           yield* dispatch(
             {
               type: "thread.follow-up.send-queued",
-              commandId: CommandId.make(`server:child-report-after-restart:${report.messageId}`),
+              commandId: CommandId.make(
+                `server:child-report-after-restart:${report.messageId}:${createdAt}`,
+              ),
               threadId: report.threadId,
               messageId: report.messageId,
-              createdAt: yield* nowIso,
+              createdAt,
             },
             "send a report queued before a restart",
           );
@@ -515,8 +662,10 @@ export const makeChildThreadReactor = Effect.gen(function* () {
     // Subscribed before the previous process's requests are settled, so the
     // events that settling writes are seen here too.
     const events = yield* engine.subscribeDomainEvents;
+    const startedAt = yield* nowIso;
     const queuedBeforeRestart = yield* reportsQueuedBeforeRestart;
     yield* settleFromPreviousProcess.pipe(
+      Effect.andThen(settleOwedReportsFromPreviousProcess(startedAt)),
       Effect.andThen(sendReportsQueuedBeforeRestart(queuedBeforeRestart)),
       Effect.catchCause((cause) =>
         Effect.logWarning(

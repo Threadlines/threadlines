@@ -98,6 +98,7 @@ function makeFakeBrowserWindow(input?: {
     maximize: vi.fn(() => {
       isMaximized = true;
     }),
+    minimize: vi.fn(),
     on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
       windowHandlers.set(eventName, [...(windowHandlers.get(eventName) ?? []), listener]);
       return window;
@@ -125,6 +126,7 @@ function makeFakeBrowserWindow(input?: {
   return {
     window: window as unknown as Electron.BrowserWindow,
     hide: window.hide,
+    minimize: window.minimize,
     loadURL: window.loadURL,
     maximize: window.maximize,
     center: window.center,
@@ -238,6 +240,8 @@ function makeTestLayer(input: {
   /** The app's state, for a test that changes it while the window lives. */
   readonly desktopState?: DesktopState.DesktopStateShape;
   readonly electronTheme?: ElectronTheme.ElectronThemeShape;
+  /** Counts the times the window is brought back (shown and focused). */
+  readonly reveals?: Ref.Ref<number>;
 }) {
   const themeLayer = input.electronTheme
     ? Layer.succeed(ElectronTheme.ElectronTheme, input.electronTheme)
@@ -274,7 +278,8 @@ function makeTestLayer(input: {
     focusedMainOrFirst: Ref.get(input.mainWindow),
     setMain: (window) => Ref.set(input.mainWindow, Option.some(window)),
     clearMain: () => Ref.set(input.mainWindow, Option.none()),
-    reveal: () => Effect.void,
+    reveal: () =>
+      input.reveals === undefined ? Effect.void : Ref.update(input.reveals, (count) => count + 1),
     guestsOf: () => Effect.succeed(input.guests ?? []),
     sendAll: () => Effect.void,
     destroyAll: Effect.void,
@@ -1333,6 +1338,163 @@ describe("DesktopWindow", () => {
 
         fakeWindow.emitWindow("hide");
         assert.equal(yield* Fiber.join(confirmation), false);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("holds the quit question open while the page moves threads before quitting", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const appQuitCalls = yield* Ref.make(0);
+      const reveals = yield* Ref.make(0);
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        appQuitCalls,
+        initialRunningThreadCount: 1,
+        platform: "win32",
+        reveals,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+        const confirmation = yield* Effect.forkChild(
+          desktopWindow.requestQuitConfirmation({
+            runningThreadCount: 1,
+            busyTerminalCount: 0,
+            activeScheduledTaskCount: 0,
+          }),
+        );
+        yield* waitForMockCallCount(fakeWindow.send, 1);
+        yield* desktopWindow.quitConfirmationShown(quitQuestionAt(fakeWindow.send, 0).requestId);
+        yield* desktopWindow.startQuitAfterMoves("batch-1");
+
+        // On Windows without the tray there'd be no way back to a hidden
+        // window: closing minimizes it, and neither that nor a hide answers
+        // the question.
+        const close = { preventDefault: vi.fn() };
+        fakeWindow.emitWindow("close", close);
+        fakeWindow.emitWindow("hide");
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+        assert.equal(close.preventDefault.mock.calls.length, 1);
+        assert.equal(fakeWindow.minimize.mock.calls.length, 1);
+        assert.equal(fakeWindow.hide.mock.calls.length, 0);
+        assert.equal(yield* Ref.get(appQuitCalls), 0);
+        assert.equal(confirmation.pollUnsafe(), undefined);
+
+        // A move didn't go: the page brings the window back to show why.
+        const revealsBefore = yield* Ref.get(reveals);
+        yield* desktopWindow.showQuitAfterMoves;
+        assert.equal(yield* Ref.get(reveals), revealsBefore + 1);
+
+        // A second quit brings the question back to the same page.
+        assert.equal(yield* desktopWindow.repeatQuitConfirmation, true);
+        yield* waitForMockCallCount(fakeWindow.send, 2);
+        yield* desktopWindow.quitConfirmationShown(quitQuestionAt(fakeWindow.send, 1).requestId);
+
+        // Every move is final: the page answers.
+        yield* desktopWindow.resolveQuitConfirmation(true);
+        assert.equal(yield* Fiber.join(confirmation), true);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("hides the waiting window on macOS, and raises it only while it waits", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const reveals = yield* Ref.make(0);
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        platform: "darwin",
+        reveals,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+        // No wait: a page can't raise the window this way.
+        const revealsAtStart = yield* Ref.get(reveals);
+        yield* desktopWindow.showQuitAfterMoves;
+        assert.equal(yield* Ref.get(reveals), revealsAtStart);
+
+        const confirmation = yield* Effect.forkChild(
+          desktopWindow.requestQuitConfirmation({
+            runningThreadCount: 1,
+            busyTerminalCount: 0,
+            activeScheduledTaskCount: 0,
+          }),
+        );
+        yield* waitForMockCallCount(fakeWindow.send, 1);
+        yield* desktopWindow.quitConfirmationShown(quitQuestionAt(fakeWindow.send, 0).requestId);
+        yield* desktopWindow.startQuitAfterMoves("batch-mac");
+        // The Dock brings it back: closing hides it, as always on macOS.
+        const close = { preventDefault: vi.fn() };
+        fakeWindow.emitWindow("close", close);
+        assert.equal(close.preventDefault.mock.calls.length, 1);
+        assert.equal(fakeWindow.hide.mock.calls.length, 1);
+        assert.equal(fakeWindow.minimize.mock.calls.length, 0);
+        yield* desktopWindow.resolveQuitConfirmation(false);
+        assert.equal(yield* Fiber.join(confirmation), false);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("answers no on hide once the wait is cancelled, and keeps it through a reload", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+        const ask = desktopWindow.requestQuitConfirmation({
+          runningThreadCount: 1,
+          busyTerminalCount: 0,
+          activeScheduledTaskCount: 0,
+        });
+
+        // Cancelled by the page.
+        const cancelled = yield* Effect.forkChild(ask);
+        yield* waitForMockCallCount(fakeWindow.send, 1);
+        yield* desktopWindow.quitConfirmationShown(quitQuestionAt(fakeWindow.send, 0).requestId);
+        yield* desktopWindow.startQuitAfterMoves("batch-1");
+        yield* desktopWindow.cancelQuitAfterMoves;
+        fakeWindow.emitWindow("hide");
+        assert.equal(yield* Fiber.join(cancelled), false);
+
+        // The page reloads mid-wait: the wait and its batch stay, and the page
+        // that comes back is asked again with the batch, to show its progress.
+        const reloaded = yield* Effect.forkChild(ask);
+        yield* waitForMockCallCount(fakeWindow.send, 3);
+        const before = quitQuestionAt(fakeWindow.send, 2);
+        assert.isUndefined(before.quitAfterMoves);
+        yield* desktopWindow.quitConfirmationShown(before.requestId);
+        yield* desktopWindow.startQuitAfterMoves("batch-2");
+        fakeWindow.emitWebContents("render-process-gone", {}, { reason: "crashed", exitCode: 1 });
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+        // Nothing to ask until a page listens.
+        assert.equal(fakeWindow.send.mock.calls.length, 3);
+        yield* desktopWindow.setMenuActionsListening(true);
+        yield* waitForMockCallCount(fakeWindow.send, 4);
+        const again = quitQuestionAt(fakeWindow.send, 3);
+        assert.notEqual(again.requestId, before.requestId);
+        assert.deepEqual(again.quitAfterMoves, { batchId: "batch-2" });
+        yield* desktopWindow.quitConfirmationShown(again.requestId);
+        // Still waiting: a hide doesn't answer, and the new page answers once moved.
+        fakeWindow.emitWindow("hide");
+        assert.equal(reloaded.pollUnsafe(), undefined);
+        yield* desktopWindow.resolveQuitConfirmation(true);
+        assert.equal(yield* Fiber.join(reloaded), true);
       }).pipe(Effect.provide(layer));
     }),
   );

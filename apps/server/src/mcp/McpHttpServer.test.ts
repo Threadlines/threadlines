@@ -18,6 +18,12 @@ import * as PreviewAutomationBroker from "../preview/PreviewAutomationBroker.ts"
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import {
+  makeSecretScrubber,
+  SecretScrubber,
+  type SecretScrubberShape,
+} from "../secrets/SecretScrubber.ts";
+import { AgentSecretRequests } from "../secrets/AgentSecretRequests.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import { normalizeMcpHttpResponse } from "./McpHttpServer.ts";
@@ -147,7 +153,14 @@ describe("McpSessionRegistry", () => {
       registry.credentialFor({ sessionKey: THREAD, browser: true, room: true, guideOnly: true }),
     );
     expect([...((await Effect.runPromise(registry.resolve(main.token)))?.roomTools ?? [])]).toEqual(
-      ["app_guide", "settings_change", "alert_assistants"],
+      [
+        "app_guide",
+        "settings_change",
+        "secret_request",
+        "alert_assistants",
+        "project_note_read",
+        "project_note_write",
+      ],
     );
     const side = await Effect.runPromise(
       registry.credentialFor({
@@ -192,6 +205,7 @@ const ROOM_THREAD = {
 const roomServerStubs = (
   settings?: Parameters<typeof ServerSettingsService.layerTest>[0],
   thread: object = ROOM_THREAD,
+  secretScrubber: SecretScrubberShape = makeSecretScrubber(),
 ) =>
   Layer.mergeAll(
     Layer.succeed(OrchestrationEngineService, {
@@ -208,6 +222,8 @@ const roomServerStubs = (
     Layer.succeed(ProviderRegistry, { getProviders: Effect.succeed([]) } as never),
     Layer.succeed(ProviderService, { listSessions: () => Effect.succeed([]) } as never),
     Layer.succeed(GitVcsDriver, {} as never),
+    Layer.succeed(AgentSecretRequests, { destinations: {} } as never),
+    Layer.succeed(SecretScrubber, secretScrubber),
     ServerSettingsService.layerTest(settings),
     PreviewAutomationBroker.layer,
   );
@@ -372,6 +388,45 @@ describe("MCP endpoints", () => {
     );
   });
 
+  it("refuses a call that would carry a saved key to another agent or thread", async () => {
+    const secretScrubber = makeSecretScrubber();
+    secretScrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = yield* serve(
+            McpRoomServer.layer.pipe(
+              Layer.provide(roomServerStubs(undefined, ROOM_THREAD, secretScrubber)),
+            ),
+          );
+          const agent = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: THREAD,
+            browser: true,
+            room: true,
+          });
+          const result = yield* Effect.promise(async () => ({
+            send: await callTool(`${base}/mcp/room`, agent.token, "thread_send", {
+              threadId: "child-1",
+              message: "Use sk_test_51Hq9xYz for the webhook.",
+            }),
+            ask: await callTool(`${base}/mcp/room`, agent.token, "room_ask", {
+              agent: "Reviewer",
+              question: "Is sk_test_51Hq9xYz the live key?",
+            }),
+          }));
+          for (const call of [result.send, result.ask]) {
+            expect(call.structuredContent).toMatchObject({
+              outcome: "refused",
+              detail:
+                "Your call contains STRIPE_SECRET_KEY. Don't pass a key through this tool. The other agent can ask the user for it.",
+            });
+          }
+          yield* mcpSessionRegistry.revoke(THREAD, agent.generation);
+        }),
+      ).pipe(onLoopback),
+    );
+  });
+
   it("lists only its own tools on each endpoint, and keeps side runtimes off the browser", async () => {
     await Effect.runPromise(
       Effect.scoped(
@@ -453,6 +508,9 @@ describe("MCP endpoints", () => {
           expect("tools" in result.guideOnlyRoom ? result.guideOnlyRoom.tools : []).toEqual([
             "alert_assistants",
             "app_guide",
+            "project_note_read",
+            "project_note_write",
+            "secret_request",
             "settings_change",
           ]);
           for (const listed of [result.browser, result.scheduledRunRoom]) {

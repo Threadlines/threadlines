@@ -1,5 +1,6 @@
 import { FileTextIcon, LoaderIcon, RefreshCwIcon, SaveIcon } from "lucide-react";
 import type {
+  EnvironmentId,
   ProviderInstructionFile,
   ProviderInstructionFilesResult,
   ProviderInstructionFileKind,
@@ -41,6 +42,10 @@ import {
   type ExtensionScopeProjectEntry,
 } from "./ExtensionsSettings.logic";
 import { useScopeMachines } from "./useScopeMachines";
+import { ProjectBriefSection } from "./ProjectBriefSection";
+import { ProjectNotesSection, type ThreadTitleLookup } from "./ProjectNotesSection";
+import { usePrimaryEnvironmentDescriptor } from "../../environments/primary";
+import { useProjectBriefSupport } from "../../projectBrief";
 
 interface InstructionDraft {
   readonly contents: string;
@@ -241,6 +246,33 @@ export function AgentInstructionsSettingsPanel() {
   const selectedProject = projectOptions.find((project) => project.key === picked?.key) ?? picked;
   const cwd = selectedProject?.cwd ?? "";
   const showComputers = projectGroups.length > 1;
+  // The project record behind the pick, for its brief (the picker lists one
+  // entry per computer and folder).
+  const selectedProjectRecord = useMemo(
+    () =>
+      selectedProject === null
+        ? null
+        : (projects.find(
+            (project) =>
+              extensionScopeKey({ environmentId: project.environmentId, cwd: project.cwd }) ===
+              selectedProject.key,
+          ) ?? null),
+    [projects, selectedProject],
+  );
+  const computerLabel = useCallback(
+    (environmentId: EnvironmentId) =>
+      machines.find((machine) => machine.environmentId === environmentId)?.label ?? environmentId,
+    [machines],
+  );
+  const keepsProjectContext = useProjectBriefSupport();
+  const primaryEnvironmentId = usePrimaryEnvironmentDescriptor()?.environmentId ?? null;
+  const threadTitle = useCallback<ThreadTitleLookup>(
+    (environmentId, threadId) =>
+      sidebarThreads.find(
+        (thread) => thread.environmentId === environmentId && thread.id === threadId,
+      )?.title ?? null,
+    [sidebarThreads],
+  );
   // Instruction files live on the machine that owns the project, and the picker
   // spans machines, so the API is resolved from the project rather than from
   // whichever backend this client happens to be paired with. Resolved per call:
@@ -528,7 +560,7 @@ export function AgentInstructionsSettingsPanel() {
           description={
             instructions?.generatedAt
               ? `Files loaded ${new Date(instructions.generatedAt).toLocaleString()}.`
-              : "Pick the project whose agent instruction files you want to edit."
+              : "Pick the project whose brief, notes and instruction files you want to edit."
           }
           status={error}
           control={
@@ -592,6 +624,29 @@ export function AgentInstructionsSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      {selectedProjectRecord !== null && selectedProject !== null ? (
+        <ProjectBriefSection
+          key={selectedProject.key}
+          project={selectedProjectRecord}
+          projects={projects}
+          computerLabel={computerLabel}
+        />
+      ) : null}
+
+      {selectedProjectRecord !== null && selectedProject !== null ? (
+        <ProjectNotesSection
+          key={`notes:${selectedProject.key}`}
+          environmentId={selectedProjectRecord.environmentId}
+          projectId={selectedProjectRecord.id}
+          supported={keepsProjectContext(selectedProjectRecord.environmentId)}
+          threadTitle={threadTitle}
+          ownComputer={selectedProjectRecord.environmentId === primaryEnvironmentId}
+          ownComputerLabel={
+            primaryEnvironmentId === null ? "this device" : computerLabel(primaryEnvironmentId)
+          }
+        />
+      ) : null}
 
       <SettingsSection
         place="instructions.files"

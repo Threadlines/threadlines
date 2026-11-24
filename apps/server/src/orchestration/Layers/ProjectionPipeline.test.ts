@@ -1,4 +1,6 @@
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import * as Schema from "effect/Schema";
+import { ProjectionSideTurnsJson } from "../../persistence/Services/ProjectionThreads.ts";
 import {
   AgentPageId,
   AgentPageVersionId,
@@ -11,12 +13,16 @@ import {
   MessageId,
   OutsideAgentConnectionId,
   ProjectId,
+  SecretRequestId,
   SettingsChangeRequestId,
   ThreadId,
   SideTurnId,
   ThreadParticipantId,
   TurnId,
   ProviderInstanceId,
+  EnvironmentId,
+  ThreadMoveBatchId,
+  ThreadMoveRequestId,
   type OrchestrationThread,
   type OrchestrationWorkflowRunPatch,
 } from "@threadlines/contracts";
@@ -2463,6 +2469,8 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
             lastError: null,
             updatedAt: sessionSetAt,
           },
+          // The writer that marked the turn running names its message.
+          turnStartedBy: { messageId },
         },
       });
 
@@ -2570,6 +2578,291 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       `;
       assert.deepEqual(projectorRows, [{ lastAppliedSequence: 1 }]);
     }),
+  );
+
+  it.effect("keeps a move's outcome in the shell and the detail after its queued move ends", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const snapshots = yield* ProjectionSnapshotQuery;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-move-outcome");
+      const requestId = ThreadMoveRequestId.make("request-move-outcome");
+      const batchId = ThreadMoveBatchId.make("batch-move-outcome");
+      const target = { environmentId: EnvironmentId.make("environment-pc"), label: "Windows PC" };
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-move-outcome-project"),
+        projectId: ProjectId.make("project-move-outcome"),
+        title: "Move Outcome",
+        workspaceRoot: "/tmp/project-move-outcome",
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-move-outcome-thread"),
+        threadId,
+        projectId: ProjectId.make("project-move-outcome"),
+        title: "Move me",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        interactionMode: "default",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.move.queue",
+        commandId: CommandId.make("cmd-move-outcome-queue"),
+        threadId,
+        requestId,
+        target,
+        mode: "when-done",
+        requestedBy: { kind: "user" },
+        batchId,
+        createdAt,
+      });
+      const queued = yield* snapshots.getThreadShellById(threadId);
+      assert.equal(Option.getOrThrow(queued).pendingMove?.batchId, batchId);
+      yield* engine.dispatch({
+        type: "thread.move.queue-end",
+        commandId: CommandId.make("cmd-move-outcome-end"),
+        threadId,
+        requestId,
+        reason: "blocked",
+        words: "Has a goal set. Clear it first.",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      const expected = {
+        result: "not_moved" as const,
+        target,
+        requestId,
+        batchId,
+        words: "Has a goal set. Clear it first.",
+        reason: "blocked" as const,
+        at: "2026-01-01T00:00:01.000Z",
+      };
+      const shell = Option.getOrThrow(yield* snapshots.getThreadShellById(threadId));
+      assert.equal(shell.pendingMove ?? null, null);
+      assert.deepEqual(shell.lastMoveOutcome, expected);
+      const detail = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+      assert.deepEqual(detail.lastMoveOutcome, expected);
+    }),
+  );
+
+  it.effect(
+    "keeps a moved thread's fence and its switch offer through a restart, until the user here ends each",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const snapshots = yield* ProjectionSnapshotQuery;
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-moved-fenced");
+        const projectId = ProjectId.make("project-moved-fenced");
+        const pullRequest = { number: 212, url: "https://github.com/acme/w/pull/212" };
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-moved-fenced-project"),
+          projectId,
+          title: "Moved Fenced",
+          workspaceRoot: "/tmp/project-moved-fenced",
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.import",
+          commandId: CommandId.make("cmd-moved-fenced-import"),
+          threadId,
+          projectId,
+          title: "Fix the flaky test",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          movedFrom: {
+            environmentId: EnvironmentId.make("environment-pc"),
+            label: "Windows PC",
+            threadId: ThreadId.make("thread-there"),
+            movedAt: createdAt,
+            pullRequestSwitches: {
+              autoFix: false,
+              autoMerge: null,
+              linked: [{ ...pullRequest, autoFix: true, autoMerge: null }],
+            },
+          },
+          messages: [],
+          activities: [],
+          pullRequests: {
+            autoFix: false,
+            autoMerge: null,
+            linked: [{ ...pullRequest, autoFix: false, autoMerge: null }],
+          },
+          createdAt,
+        });
+        // What a restart reads: the command model, the shell and the detail.
+        const movedFromNow = () =>
+          Effect.gen(function* () {
+            const model = yield* snapshots.getCommandReadModel();
+            const shell = Option.getOrThrow(yield* snapshots.getThreadShellById(threadId));
+            const detail = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+            assert.deepEqual(shell.movedFrom, detail.movedFrom);
+            return {
+              command: model.threads.find((thread) => thread.id === threadId)?.movedFrom,
+              detail: detail.movedFrom,
+            };
+          });
+        const arrived = yield* movedFromNow();
+        assert.equal(arrived.command?.fenced, true);
+        assert.equal(arrived.detail?.fenced, true);
+        assert.equal(arrived.detail?.pullRequestSwitches?.linked[0]?.autoFix, true);
+
+        // The user here turns the switch on: the offer goes, the fence stays.
+        yield* engine.dispatch({
+          type: "thread.pull-request-automation.set",
+          commandId: CommandId.make("cmd-moved-fenced-switch"),
+          threadId,
+          pullRequestNumber: pullRequest.number,
+          autoFix: true,
+        });
+        const switched = yield* movedFromNow();
+        assert.isUndefined(switched.detail?.pullRequestSwitches);
+        assert.equal(switched.command?.fenced, true);
+
+        // The user here sends it a message: the fence lifts, for good.
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-moved-fenced-turn"),
+          threadId,
+          message: {
+            messageId: MessageId.make("message-moved-fenced"),
+            role: "user",
+            text: "Carry on",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          // Stamped from the app's sign-in, as the server does for a person's send.
+          sentFrom: { kind: "computer", place: "here" },
+          createdAt,
+        });
+        const lifted = yield* movedFromNow();
+        assert.isUndefined(lifted.command?.fenced);
+        assert.isUndefined(lifted.detail?.fenced);
+        assert.equal(lifted.detail?.label, "Windows PC");
+      }),
+  );
+
+  it.effect(
+    "keeps what a move owes back, and the message it wrote for the agent, in every read",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const snapshots = yield* ProjectionSnapshotQuery;
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-move-restore");
+        const requestId = ThreadMoveRequestId.make("request-move-restore");
+        const target = { environmentId: EnvironmentId.make("environment-pc"), label: "Windows PC" };
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-move-restore-project"),
+          projectId: ProjectId.make("project-move-restore"),
+          title: "Move Restore",
+          workspaceRoot: "/tmp/project-move-restore",
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-move-restore-thread"),
+          threadId,
+          projectId: ProjectId.make("project-move-restore"),
+          title: "Move me",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        });
+        const goal = {
+          threadId,
+          objective: "Make the suite pass",
+          status: "active" as const,
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt,
+          updatedAt: createdAt,
+        };
+        yield* engine.dispatch({
+          type: "thread.goal.state.set",
+          commandId: CommandId.make("cmd-move-restore-goal"),
+          threadId,
+          goal,
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.move.queue",
+          commandId: CommandId.make("cmd-move-restore-queue"),
+          threadId,
+          requestId,
+          target,
+          mode: "stop-now",
+          requestedBy: { kind: "user" },
+          targetTakes: { threadState: true },
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.move.unqueue",
+          commandId: CommandId.make("cmd-move-restore-unqueue"),
+          threadId,
+          requestId,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        const owed = Option.getOrThrow(
+          yield* snapshots.getThreadDetailById(threadId),
+        ).moveRestoreOwed;
+        assert.deepEqual(owed, {
+          target,
+          interrupted: { goalActive: true },
+          at: "2026-01-01T00:00:01.000Z",
+        });
+        // What the decider reads after a restart: the same record.
+        const model = yield* snapshots.getCommandReadModel();
+        assert.deepEqual(
+          model.threads.find((thread) => thread.id === threadId)?.moveRestoreOwed,
+          owed,
+        );
+
+        yield* engine.dispatch({
+          type: "thread.move.restore",
+          commandId: CommandId.make("cmd-move-restore-pay"),
+          threadId,
+          at: owed!.at,
+          message: { messageId: MessageId.make("m-put-back"), text: "The move didn't happen." },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+        const paid = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+        assert.equal(paid.queuedFollowUps?.[0]?.afterMove, true);
+        assert.deepInclude(paid.moveRestoreOwed, { goalOwed: true });
+        yield* engine.dispatch({
+          type: "thread.follow-up.send-queued",
+          commandId: CommandId.make("cmd-move-restore-send"),
+          threadId,
+          messageId: MessageId.make("m-put-back"),
+          createdAt: "2026-01-01T00:00:03.000Z",
+        });
+        const sent = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+        assert.equal(sent.messages.find((message) => message.id === "m-put-back")?.afterMove, true);
+        yield* engine.dispatch({
+          type: "thread.move.restore",
+          commandId: CommandId.make("cmd-move-restore-goal-given"),
+          threadId,
+          at: owed!.at,
+          finished: true,
+          createdAt: "2026-01-01T00:00:04.000Z",
+        });
+        const done = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+        assert.equal(done.moveRestoreOwed ?? null, null);
+      }),
   );
 
   it.effect("projects persist updated scripts from project.meta.update", () =>
@@ -2914,14 +3207,24 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         `;
       const answering = yield* sideTurnRow();
       const ownModel = { instanceId: "claudeAgent", model: "fable-5-1" };
-      assert.deepEqual(JSON.parse(answering[0]?.sideTurn ?? "null"), {
-        sideTurnId,
-        participantId: null,
-        messageId: "message-room-side",
-        status: "starting",
-        startedAt: "2026-01-01T00:00:04.000Z",
-        modelSelection: ownModel,
-      });
+      // A row written while a thread ran one side answer at a time holds a
+      // single object; it still reads, as a list of one.
+      const stored = JSON.parse(answering[0]?.sideTurn ?? "null")[0];
+      assert.deepEqual(
+        yield* Schema.decodeUnknownEffect(ProjectionSideTurnsJson)(JSON.stringify(stored)),
+        [stored],
+      );
+      // The column holds the live side answers as a list.
+      assert.deepEqual(JSON.parse(answering[0]?.sideTurn ?? "null"), [
+        {
+          sideTurnId,
+          participantId: null,
+          messageId: "message-room-side",
+          status: "starting",
+          startedAt: "2026-01-01T00:00:04.000Z",
+          modelSelection: ownModel,
+        },
+      ]);
       assert.deepEqual((yield* stampsOf())["message-room-side-answer"], {
         primary: { modelSelection: ownModel, nameIndex: 1 },
       });
@@ -4094,6 +4397,110 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       assert.deepEqual(requestsOf((yield* query.getSnapshot()).threads), folded);
       assert.deepEqual(requestsOf((yield* query.getCommandReadModel()).threads), folded);
     }),
+  );
+
+  it.effect(
+    "reads agents' key requests back as the live fold left them, with the saved answer's message",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const query = yield* ProjectionSnapshotQuery;
+        const threadId = yield* createClaudeThread(engine, "secret-request");
+        const turnId = TurnId.make("turn-secrets");
+        const createdAt = "2026-05-01T00:00:01.000Z";
+        const claim = { claimId: "claim-1", deviceLabel: "iPhone" };
+        const request = (id: string, name: string) =>
+          engine.dispatch({
+            type: "thread.secret-request.request",
+            commandId: CommandId.make(`cmd-secret-${id}`),
+            threadId,
+            requestId: SecretRequestId.make(id),
+            participantId: null,
+            turnId,
+            name,
+            reason: "To run the checkout tests.",
+            use: { kind: "commands" },
+            replaces: false,
+            createdAt,
+          });
+        const shellOf = Effect.map(query.getShellSnapshot(), (shell) =>
+          shell.threads.find((thread) => thread.id === threadId),
+        );
+
+        yield* request("secret-saved", "STRIPE_SECRET_KEY");
+        yield* request("secret-declined", "GITHUB_TOKEN");
+        const waiting = yield* shellOf;
+        assert.isTrue(waiting?.pendingSecretRequest);
+        assert.isTrue(waiting?.hasPendingApprovals);
+
+        yield* engine.dispatch({
+          type: "thread.secret-request.claim",
+          commandId: CommandId.make("cmd-secret-claim"),
+          threadId,
+          requestId: SecretRequestId.make("secret-saved"),
+          claim,
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.secret-request.settle",
+          commandId: CommandId.make("cmd-secret-settle-saved"),
+          threadId,
+          requestId: SecretRequestId.make("secret-saved"),
+          ending: "saved",
+          claim,
+          savedAt: createdAt,
+          expiresAt: "2026-05-02T00:00:01.000Z",
+          message: {
+            messageId: MessageId.make("secret-answer:secret-saved"),
+            text: "I saved STRIPE_SECRET_KEY for your commands in a private file.",
+          },
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.secret-request.settle",
+          commandId: CommandId.make("cmd-secret-settle-declined"),
+          threadId,
+          requestId: SecretRequestId.make("secret-declined"),
+          ending: "declined",
+          claim: { claimId: "claim-2", deviceLabel: "iPhone" },
+          createdAt,
+        });
+        const answered = yield* shellOf;
+        assert.isFalse(answered?.pendingSecretRequest);
+        assert.isFalse(answered?.hasPendingApprovals);
+
+        // The saved answer reached the agent as its own message (queued on an
+        // idle thread), and the declined one waits as a note.
+        const detail = Option.getOrUndefined(yield* query.getThreadDetailById(threadId));
+        const queued = (detail?.queuedFollowUps ?? []).map((entry) => String(entry.messageId));
+        const sent = (detail?.messages ?? []).map((message) => String(message.id));
+        assert.include([...queued, ...sent], "secret-answer:secret-saved");
+
+        const events = yield* Stream.runCollect(engine.readEvents(0));
+        let live = createEmptyReadModel(createdAt);
+        for (const event of events) live = yield* projectEvent(live, event);
+        const requestsOf = (threads: ReadonlyArray<OrchestrationThread>) =>
+          threads.find((thread) => thread.id === threadId)?.secretRequests;
+        const folded = requestsOf(live.threads);
+        assert.deepEqual(
+          folded?.map((entry) => [String(entry.requestId), entry.status, entry.noted]),
+          [
+            ["secret-saved", "saved", true],
+            ["secret-declined", "declined", false],
+          ],
+        );
+        assert.deepEqual(
+          requestsOf(Option.toArray(yield* query.getThreadDetailById(threadId))),
+          folded,
+        );
+        assert.deepEqual(requestsOf((yield* query.getSnapshot()).threads), folded);
+        assert.deepEqual(requestsOf((yield* query.getCommandReadModel()).threads), folded);
+        assert.deepEqual(
+          (yield* query.listSecretRequests()).find((row) => row.threadId === threadId)
+            ?.secretRequests,
+          folded,
+        );
+      }),
   );
 });
 

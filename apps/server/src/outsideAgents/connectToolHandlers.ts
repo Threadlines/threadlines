@@ -108,9 +108,15 @@ import { makeSingleFlight } from "../orchestration/Layers/BootstrapTurnStartRuns
 import { ForwardedGrantCap } from "./forwardedCalls.ts";
 import { type FoundComputer, type OtherComputersShape, peerAgentOf } from "./OtherComputers.ts";
 import {
+  isStillGoing,
+  stillGoingInputOfShell,
+  stopReachOf,
+} from "@threadlines/shared/childThreads";
+import {
   OUTSIDE_ALREADY_QUEUED,
   outsideCeilingDetail,
   outsideQueuedOf,
+  outsideStopRefusal,
   outsideTurnBusy,
 } from "../orchestration/outsideTurns.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -307,7 +313,7 @@ export interface ConnectToolDeps {
 export type ConnectProject = Pick<
   OrchestrationProjectCatalogEntry,
   "id" | "kind" | "title" | "workspaceRoot"
->;
+> & { readonly leadThreadId?: ThreadId | null | undefined };
 
 type Refusal = {
   readonly outcome: "limit" | "not_allowed";
@@ -473,10 +479,16 @@ const newestReply = (
 const TAKEN_BACK =
   "Your message was taken back before it was sent: the user pressed Stop or removed it, its turn didn't finish, or you may no longer send there. Read the thread, then send again if it still makes sense.";
 
-/** Whether `messageId` is neither in the thread nor waiting in its queue. */
-const messageTakenBack = (thread: OrchestrationThread, messageId: string) =>
-  !thread.messages.some((message) => message.id === messageId) &&
-  !(thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
+/**
+ * Whether `messageId` never reached the agent: it left the queue unsent (so
+ * it is neither in the thread nor waiting there), or its turn was refused or
+ * stopped before it started (`notSent`).
+ */
+const messageTakenBack = (thread: OrchestrationThread, messageId: string) => {
+  const message = thread.messages.find((entry) => entry.id === messageId);
+  if (message !== undefined) return message.notSent === true;
+  return !(thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
+};
 
 /** The caller's messages waiting in the thread's queue, for a result; nothing when none. */
 const queuedOf = (caller: OutsideAgentCaller, thread: OrchestrationThread | undefined) => {
@@ -748,6 +760,7 @@ export const makeConnectToolHandlers = (
             projectId: project.id,
             name: project.title,
             folder: assistant ? lastPathSegment(project.workspaceRoot) : project.workspaceRoot,
+            ...(project.leadThreadId != null ? { leadThreadId: project.leadThreadId } : {}),
           })),
         } satisfies ProjectsResult;
       });
@@ -2336,20 +2349,37 @@ export const makeConnectToolHandlers = (
           request === null
             ? Effect.succeed(result)
             : forget(caller, request.requestId).pipe(Effect.as(result));
+        const origin = outsideOrigin(caller, gated.grant);
         const stopped = yield* deps.engine
           .dispatch({
             type: "thread.turn.interrupt",
             commandId,
             threadId: thread.id,
             ...(turnId !== undefined ? { turnId } : {}),
-            fromOutside: outsideOrigin(caller, gated.grant),
+            fromOutside: origin,
             createdAt: isoOf(yield* nowMillis),
           })
           .pipe(Effect.result);
         if (stopped._tag === "Success") {
+          // Threads under this one above this agent's limit were left running
+          // by the decider; name them in the answer.
+          const projectThreads = yield* deps
+            .listThreads({ projectIds: [thread.projectId] })
+            .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<OrchestrationThreadShell>));
+          const leftRunning = stopReachOf(projectThreads, thread.id)
+            .map((entry) => entry.thread)
+            .filter(
+              (child) =>
+                isStillGoing(stillGoingInputOfShell(child)) &&
+                outsideStopRefusal(child, origin) !== null,
+            );
+          const detail =
+            leftRunning.length === 0
+              ? "Stopped. A later thread_send starts it again."
+              : `Stopped. Left running (above your access limit): ${leftRunning.map((entry) => `'${entry.title}'`).join(", ")}.`;
           return yield* answered({
             outcome: "stopped",
-            detail: "Stopped. A later thread_send starts it again.",
+            detail,
             threadId: thread.id,
           });
         }

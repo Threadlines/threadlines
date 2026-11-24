@@ -1,12 +1,12 @@
 ---
-import { getCollection } from "astro:content";
+import { getPublishedChangelog } from "../lib/publishedChangelog";
 
 import Layout from "../layouts/Layout.astro";
 import { AGENTS, isInStableRelease } from "../lib/agents";
 import { latestStableVersion } from "../lib/changelog";
 
 // The setup screenshot comes from the next release; name the agents that aren't in this download yet.
-const stableVersion = latestStableVersion(await getCollection("changelog"));
+const stableVersion = latestStableVersion(await getPublishedChangelog());
 const upcomingAgents = AGENTS.filter((agent) => !isInStableRelease(agent, stableVersion));
 const upcomingVersions = [...new Set(upcomingAgents.map((agent) => agent.since))];
 const upcomingNote =

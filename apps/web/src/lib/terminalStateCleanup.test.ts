@@ -1,5 +1,5 @@
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
-import { ThreadId } from "@threadlines/contracts";
+import { TERMINALS_PAGE_THREAD_ID, ThreadId } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { collectActiveTerminalThreadIds } from "./terminalStateCleanup";
@@ -16,6 +16,7 @@ describe("collectActiveTerminalThreadIds", () => {
         { key: threadKey("env-b", "server-2"), deletedAt: null, archivedAt: null },
       ],
       draftThreadKeys: [],
+      environmentIds: [],
     });
 
     expect(activeThreadIds).toEqual(
@@ -39,6 +40,7 @@ describe("collectActiveTerminalThreadIds", () => {
         },
       ],
       draftThreadKeys: [threadKey("env-a", "local-draft")],
+      environmentIds: [],
     });
 
     expect(activeThreadIds).toEqual(
@@ -58,8 +60,20 @@ describe("collectActiveTerminalThreadIds", () => {
         },
       ],
       draftThreadKeys: [archivedThreadId, threadKey("env-a", "local-draft")],
+      environmentIds: [],
     });
 
     expect(activeThreadIds).toEqual(new Set([threadKey("env-a", "local-draft")]));
+  });
+
+  it("keeps the Terminals page's tabs of every known computer, and no other's", () => {
+    const activeThreadIds = collectActiveTerminalThreadIds({
+      snapshotThreads: [],
+      draftThreadKeys: [],
+      environmentIds: ["env-a" as never],
+    });
+
+    expect(activeThreadIds.has(threadKey("env-a", TERMINALS_PAGE_THREAD_ID))).toBe(true);
+    expect(activeThreadIds.has(threadKey("env-gone", TERMINALS_PAGE_THREAD_ID))).toBe(false);
   });
 });

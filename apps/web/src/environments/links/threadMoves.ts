@@ -5,9 +5,10 @@
  * where that computer can make one.
  */
 import type { EnvironmentId, ExecutionEnvironmentDescriptor } from "@threadlines/contracts";
+import { useCallback } from "react";
 
 import type { WsRpcClient } from "../../rpc/wsRpcClient";
-import { isThreadMoveOffered } from "../../threadMove";
+import { isGeneralChatsThread, isMoveThreadsOffered, isThreadMoveOffered } from "../../threadMove";
 import type { ThreadMoveStatus } from "../../types";
 import { usePrimaryEnvironmentDescriptor } from "../primary";
 import {
@@ -61,40 +62,130 @@ function supportsThreadMove(descriptor: ExecutionEnvironmentDescriptor | null): 
   return descriptor?.capabilities.threadMove === true;
 }
 
+function supportsThreadMoveState(descriptor: ExecutionEnvironmentDescriptor | null): boolean {
+  return descriptor?.capabilities.threadMoveState === true;
+}
+
+/** The thread a move is offered for: where it is, its project, and how its move stands. */
+export interface ThreadMoveOfferTarget {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: string;
+  readonly moveStatus?: ThreadMoveStatus | undefined;
+}
+
 /**
- * isThreadMoveOffered for a thread on `environmentId`, read now: for menus
- * built on a click (the sidebar's thread menu).
+ * isThreadMoveOffered for `thread`, read now: for menus built on a click
+ * (the sidebar's thread menu).
  */
-export function readThreadMoveOffered(
-  environmentId: EnvironmentId,
-  moveStatus: ThreadMoveStatus | undefined,
-): boolean {
+export function readThreadMoveOffered(thread: ThreadMoveOfferTarget): boolean {
+  const descriptor = readEnvironmentDescriptor(thread.environmentId);
   return isThreadMoveOffered({
-    supportsThreadMove: supportsThreadMove(readEnvironmentDescriptor(environmentId)),
-    outbound: liveOutbound(useComputerLinksStore.getState().byEnvironmentId[environmentId]),
-    moveStatus,
+    supportsThreadMove: supportsThreadMove(descriptor),
+    movesThreadState: supportsThreadMoveState(descriptor),
+    generalChat: isGeneralChatsThread(thread),
+    outbound: liveOutbound(useComputerLinksStore.getState().byEnvironmentId[thread.environmentId]),
+    moveStatus: thread.moveStatus,
   });
 }
 
-/** isThreadMoveOffered for a thread on `environmentId`, kept current. */
-export function useThreadMoveOffered(
+/** The descriptor of the computer `environmentId`, kept current; null when not known. */
+function useEnvironmentDescriptor(
   environmentId: EnvironmentId | null,
-  moveStatus: ThreadMoveStatus | undefined,
-): boolean {
+): ExecutionEnvironmentDescriptor | null {
   const primary = usePrimaryEnvironmentDescriptor();
   const saved = useSavedEnvironmentRuntimeStore((state) =>
     environmentId === null ? null : (state.byId[environmentId]?.descriptor ?? null),
   );
+  if (environmentId === null) return null;
+  return primary?.environmentId === environmentId ? primary : saved;
+}
+
+/**
+ * Whether the computer `environmentId` queues moves (`moves.queue`, Part 3b),
+ * kept current. With it every move goes through the queue, a free thread's
+ * included; without it, only `moves.start` exists there.
+ */
+export function useThreadMoveQueueSupported(environmentId: EnvironmentId | null): boolean {
+  return useEnvironmentDescriptor(environmentId)?.capabilities.threadMoveQueue === true;
+}
+
+/**
+ * Whether the computer `environmentId` moves threads with what they had
+ * going (a goal, check-backs, pull request switches, queued messages, plans)
+ * and General Chats threads (`threadMoveState`, Part 3e), kept current.
+ */
+export function useThreadMoveStateSupported(environmentId: EnvironmentId | null): boolean {
+  return supportsThreadMoveState(useEnvironmentDescriptor(environmentId));
+}
+
+/** isThreadMoveOffered for `thread` (null: none open), kept current. */
+export function useThreadMoveOffered(thread: ThreadMoveOfferTarget | null): boolean {
+  const environmentId = thread?.environmentId ?? null;
+  const descriptor = useEnvironmentDescriptor(environmentId);
   const outbound = useComputerLinksStore((state) =>
     environmentId === null ? null : liveOutbound(state.byEnvironmentId[environmentId]),
   );
-  if (environmentId === null) return false;
-  const descriptor = primary?.environmentId === environmentId ? primary : saved;
+  if (thread === null) return false;
   return isThreadMoveOffered({
     supportsThreadMove: supportsThreadMove(descriptor),
+    movesThreadState: supportsThreadMoveState(descriptor),
+    generalChat: isGeneralChatsThread(thread),
     outbound,
-    moveStatus,
+    moveStatus: thread.moveStatus,
   });
+}
+
+/**
+ * Whether the computer `environmentId` moves several threads at once
+ * (`moves.previewMany`, `queueMany`, `setMode`, `batchStatus`, Part 3c),
+ * kept current.
+ */
+export function useThreadMoveBatchSupported(environmentId: EnvironmentId | null): boolean {
+  return useEnvironmentDescriptor(environmentId)?.capabilities.threadMoveBatch === true;
+}
+
+/**
+ * Whether the computer `environmentId` takes moves before its user allows
+ * them and answers several at once (`moves.respondMany`, Part 3c), kept current.
+ */
+export function useThreadMoveStagedApprovalSupported(environmentId: EnvironmentId | null): boolean {
+  return useEnvironmentDescriptor(environmentId)?.capabilities.threadMoveStagedApproval === true;
+}
+
+/**
+ * useThreadMoveStagedApprovalSupported for any computer, as a check: for
+ * lists of moves waiting on several computers, which group per computer.
+ */
+export function useThreadMoveStagedApprovalCheck(): (environmentId: EnvironmentId) => boolean {
+  const primary = usePrimaryEnvironmentDescriptor();
+  const runtimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  return useCallback(
+    (environmentId) => {
+      const descriptor =
+        primary?.environmentId === environmentId
+          ? primary
+          : (runtimeById[environmentId]?.descriptor ?? null);
+      return descriptor?.capabilities.threadMoveStagedApproval === true;
+    },
+    [primary, runtimeById],
+  );
+}
+
+/**
+ * isMoveThreadsOffered from `sourceEnvironmentId`, to `targetEnvironmentId`
+ * when one is named, kept current.
+ */
+export function useMoveThreadsOffered(
+  sourceEnvironmentId: EnvironmentId | null,
+  targetEnvironmentId: EnvironmentId | null,
+): boolean {
+  const supportsBatch = useThreadMoveBatchSupported(sourceEnvironmentId);
+  const outbound = useLiveOutboundLinks(sourceEnvironmentId);
+  return (
+    sourceEnvironmentId !== null &&
+    sourceEnvironmentId !== targetEnvironmentId &&
+    isMoveThreadsOffered({ supportsBatch, outbound, targetEnvironmentId })
+  );
 }
 
 /**

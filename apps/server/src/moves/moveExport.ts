@@ -8,25 +8,40 @@
  * manifest. Written once to temp names and renamed, so a finished export is
  * whole; a resumed move re-reads it and checks its hash.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as NodeFs from "node:fs/promises";
+import * as os from "node:os";
 import * as NodePath from "node:path";
 
 import type {
   EnvironmentId,
+  MessageId,
   ModelSelection,
+  OrchestrationOutsideWork,
   OrchestrationThread,
   OrchestrationThreadActivity,
+  PeerMoveFamily,
+  PeerMoveLinkLineage,
+  PeerMoveGitManifest,
   PeerMoveManifest,
   PeerMovePart,
+  PeerMoveRoom,
+  PeerMoveRoomParticipant,
+  PeerMoveScratchManifest,
+  PeerMoveStartedElsewhere,
+  PeerMoveStartedThere,
+  PeerMoveThreadState,
   ThreadId,
   ThreadImportMessage,
   ThreadMoveId,
+  ThreadParticipantId,
 } from "@threadlines/contracts";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
+import type { ThreadMoveCarry } from "../orchestration/threadMoveCarry.ts";
+import { NATIVE_SESSION_MAX_BYTES, type NativeSessionExport } from "../provider/nativeSession.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
 
 /** A move that can't go on, with the reason in words for the user. */
@@ -97,6 +112,8 @@ export interface MoveCheckout {
   /** The last commit the remote has; null when the head itself is there (nothing unpushed). */
   readonly baseSha: string | null;
   readonly unpushedCommits: number;
+  /** The branch on the remote that `branch` tracks; null: none, or another remote's. */
+  readonly upstreamBranch: string | null;
 }
 
 /**
@@ -168,6 +185,10 @@ export function inspectMoveCheckout(
       remoteName,
       baseSha: baseSha === headSha ? null : baseSha,
       unpushedCommits: unpushed,
+      upstreamBranch:
+        upstream !== null && upstream.startsWith(`${remoteName}/`)
+          ? upstream.slice(remoteName.length + 1)
+          : null,
     };
   });
 }
@@ -264,13 +285,33 @@ interface PendingPart {
   readonly path?: string;
   readonly mode?: NonNullable<PeerMovePart["mode"]>;
   readonly attachmentId?: string;
+  readonly participantId?: ThreadParticipantId;
 }
 
-/** The thread's history, as the move carries it: finished messages and its newest tool steps. */
-export function exportThreadHistory(thread: OrchestrationThread): {
+/**
+ * The thread's history, as the move carries it: finished messages and its
+ * newest tool steps. `room`: for a computer that takes rooms (Part 3f, (i)),
+ * each message keeps the agent it was to or from and the request it made or
+ * answered; an older one gets them as plain messages.
+ */
+export function exportThreadHistory(
+  thread: OrchestrationThread,
+  options: {
+    readonly room?: boolean;
+    /**
+     * A family's members (Part 3f, (g)): a request or report between them
+     * keeps where it came from; one naming any other thread goes plain.
+     */
+    readonly familyThreadIds?: ReadonlySet<string> | undefined;
+  } = {},
+): {
   readonly messages: ReadonlyArray<ThreadImportMessage>;
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
 } {
+  // An agent's message still waiting in the queue is written into the chat
+  // but never ran here, and only the user's own queued messages move: it
+  // arrives as never sent (reachedAgent), so no history there carries it.
+  const queuedIds = new Set((thread.queuedFollowUps ?? []).map((queued) => queued.messageId));
   const messages = thread.messages
     .filter(
       (message) =>
@@ -292,7 +333,9 @@ export function exportThreadHistory(thread: OrchestrationThread): {
       ...(message.fromOutside !== undefined ? { fromOutside: message.fromOutside } : {}),
       ...(message.sentFrom !== undefined ? { sentFrom: message.sentFrom } : {}),
       ...(message.trigger !== undefined ? { trigger: message.trigger } : {}),
-      ...(message.notSent === true ? { notSent: true as const } : {}),
+      ...(message.notSent === true || queuedIds.has(message.id) ? { notSent: true as const } : {}),
+      ...(options.room === true ? roomFieldsOf(message) : {}),
+      ...familyFieldsOf(message, options.familyThreadIds),
       createdAt: message.createdAt,
     }));
   const activities = thread.activities
@@ -313,6 +356,111 @@ export function exportThreadHistory(thread: OrchestrationThread): {
   return { messages, activities };
 }
 
+/**
+ * Where a family's message came from (a request or report between members),
+ * as the move carries it: only between threads that move together on this
+ * computer, never a lead chat's pass or a thread on another computer.
+ */
+function familyFieldsOf(
+  message: OrchestrationThread["messages"][number],
+  familyThreadIds: ReadonlySet<string> | undefined,
+) {
+  const origin = message.fromThread;
+  if (
+    familyThreadIds === undefined ||
+    origin === undefined ||
+    origin.environmentId !== undefined ||
+    origin.ceiling !== undefined ||
+    !familyThreadIds.has(origin.threadId)
+  ) {
+    return {};
+  }
+  return {
+    fromThread: { threadId: origin.threadId, requestId: origin.requestId, kind: origin.kind },
+  };
+}
+
+/** A room message's own fields, as the move carries them. */
+function roomFieldsOf(message: OrchestrationThread["messages"][number]) {
+  return {
+    ...(message.participantId !== undefined && message.participantId !== null
+      ? { participantId: message.participantId }
+      : {}),
+    ...(message.fromAgent !== undefined ? { fromAgent: message.fromAgent } : {}),
+    ...(message.requestId !== undefined ? { requestId: message.requestId } : {}),
+    ...(message.requestKind !== undefined ? { requestKind: message.requestKind } : {}),
+    ...(message.requestOutcome !== undefined ? { requestOutcome: message.requestOutcome } : {}),
+    ...(message.requestError !== undefined ? { requestError: message.requestError } : {}),
+  };
+}
+
+/**
+ * About how many bytes a move of this thread carries besides its agent's
+ * session, without packing it: the commits the remote lacks (their objects'
+ * size on disk), the tracked changes as the export writes them, the new
+ * files and the attachments. The preview weighs a session against it as the
+ * export does (nativeSessionFits). A part it can't read counts nothing.
+ */
+export function estimateMoveOtherBytes(input: {
+  readonly git: GitVcsDriverShape;
+  readonly checkout: MoveCheckout;
+  readonly thread: OrchestrationThread;
+  readonly attachmentsDir: string;
+}) {
+  const { git, checkout } = input;
+  const sizeOf = (path: string) =>
+    Effect.promise(() =>
+      NodeFs.stat(path)
+        .then((stat) => stat.size)
+        .catch(() => 0),
+    );
+  return Effect.gen(function* () {
+    let bytes = 0;
+    if (checkout.baseSha !== null) {
+      const used = yield* gitMaybe(git, checkout.root, [
+        "rev-list",
+        "--objects",
+        "--disk-usage",
+        `${checkout.baseSha}..${checkout.headSha}`,
+      ]);
+      bytes += Number.parseInt(used ?? "", 10) || 0;
+    }
+    // The diff holds the checkout's private changes: it is written inside a
+    // folder only this user can open (mkdtemp makes it 0700), and the folder
+    // goes however the estimate ends.
+    bytes += yield* Effect.acquireUseRelease(
+      Effect.promise(() =>
+        NodeFs.mkdtemp(NodePath.join(os.tmpdir(), "threadlines-move-estimate-")),
+      ),
+      (dir) =>
+        Effect.gen(function* () {
+          const diffPath = NodePath.join(dir, "changes.diff");
+          const diffed = yield* gitMaybe(git, checkout.root, [
+            ...TRANSPORT_DIFF_FLAGS,
+            `--output=${diffPath}`,
+            "HEAD",
+          ]);
+          return diffed === null ? 0 : yield* sizeOf(diffPath);
+        }),
+      (dir) => Effect.promise(() => NodeFs.rm(dir, { recursive: true, force: true })),
+    );
+    const { untracked } = yield* summarizeMoveChanges(git, checkout.root).pipe(
+      Effect.orElseSucceed(() => ({ untracked: [] as ReadonlyArray<string> })),
+    );
+    for (const path of untracked) bytes += yield* sizeOf(NodePath.join(checkout.root, path));
+    const seen = new Set<string>();
+    for (const message of exportThreadHistory(input.thread).messages) {
+      for (const attachment of message.attachments ?? []) {
+        if (seen.has(attachment.id)) continue;
+        seen.add(attachment.id);
+        const path = resolveAttachmentPath({ attachmentsDir: input.attachmentsDir, attachment });
+        if (path !== null) bytes += yield* sizeOf(path);
+      }
+    }
+    return bytes;
+  });
+}
+
 export interface MoveExportInput {
   readonly git: GitVcsDriverShape;
   readonly checkout: MoveCheckout;
@@ -331,7 +479,60 @@ export interface MoveExportInput {
     readonly threadId: ThreadId;
   };
   readonly agent: ModelSelection;
+  /**
+   * The agent session to carry (docs/design/fleet.md, Part 3d), when the
+   * other computer takes it and its agent is the same driver. It goes only
+   * within both caps; past either, the move goes without it and says why.
+   */
+  readonly nativeSession?: NativeSessionExport | null | undefined;
+  /**
+   * What the thread had going (moveThreadStateOf), for a computer that takes
+   * it; its queued messages' attachments travel as parts.
+   */
+  readonly state?: PeerMoveThreadState | undefined;
+  /** What a room carries besides its history (Part 3f, (i)): see MoveRoomExport. */
+  readonly room?: MoveRoomExport | undefined;
+  /** The outside-work marks, for a computer that takes them. */
+  readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork> | undefined;
+  /**
+   * Its family (Part 3f, (g)), for a computer that takes families. With
+   * `sharesCheckoutOf`, the folder is another member's to send: this one
+   * carries none of its files.
+   */
+  readonly family?: PeerMoveFamily | undefined;
+  /** The family's members here, whose requests and reports keep their origin. */
+  readonly familyThreadIds?: ReadonlySet<string> | undefined;
+  /** It moves across the link its work came over (Part 3f, (h)): see PeerMoveLinkLineage. */
+  readonly linkLineage?: PeerMoveLinkLineage | undefined;
+  /** The threads its agent started on the target (Part 3f, (g)): see PeerMoveStartedThere. */
+  readonly startedThere?: ReadonlyArray<PeerMoveStartedThere> | undefined;
+  /** A lone parent's threads on other computers (Part 3f, (g)): see PeerMoveStartedElsewhere. */
+  readonly startedElsewhere?: ReadonlyArray<PeerMoveStartedElsewhere> | undefined;
 }
+
+/**
+ * A room as the move carries it (docs/design/fleet.md, Part 3f, (i)), for a
+ * computer that takes rooms: its agents' records (with the agent each moves
+ * as) and the sessions to carry, one per agent of the same driver there.
+ * Its messages keep their room fields.
+ */
+export interface MoveRoomExport {
+  readonly agentRole?: string | undefined;
+  /** The last moved message the thread's own agent's session saw (seenThroughOf). */
+  readonly ownAgentSeenThroughMessageId?: MessageId | undefined;
+  readonly participants: ReadonlyArray<Omit<PeerMoveRoomParticipant, "session" | "sessionOmitted">>;
+  readonly sessions: ReadonlyArray<{
+    readonly participantId: ThreadParticipantId;
+    readonly session: NativeSessionExport;
+  }>;
+}
+
+/**
+ * Whether a session of `sessionBytes` fits a move whose other parts come to
+ * `otherBytes`: at most 50 MB itself, and the move at most its 100 MB.
+ */
+export const nativeSessionFits = (sessionBytes: number, otherBytes: number) =>
+  sessionBytes <= NATIVE_SESSION_MAX_BYTES && otherBytes + sessionBytes <= MOVE_MAX_BYTES;
 
 /** Where the export lives: `payload.bin` and `manifest.json` in the transfer's folder. */
 export const movePayloadPath = (dir: string) => NodePath.join(dir, "payload.bin");
@@ -372,7 +573,8 @@ export function sha256OfFile(path: string) {
  */
 export function writeMoveExport(
   input: MoveExportInput,
-): Effect.Effect<PeerMoveManifest, ThreadMoveFailure> {
+): Effect.Effect<PeerMoveGitManifest, ThreadMoveFailure> {
+  if (input.family?.sharesCheckoutOf !== undefined) return writeSharerExport(input);
   const { git, checkout, dir } = input;
   const root = checkout.root;
   const attempt = Effect.gen(function* () {
@@ -483,16 +685,196 @@ export function writeMoveExport(
         return yield* fail(`${path} isn't a regular file, so it can't move.`);
       }
     }
-    const history = exportThreadHistory(input.thread);
-    const attachmentIds = new Set<string>();
-    for (const message of history.messages) {
+    const history = exportThreadHistory(input.thread, {
+      room: input.room !== undefined,
+      familyThreadIds: input.familyThreadIds,
+    });
+    parts.push(...(yield* attachmentParts(history, input.attachmentsDir, input.state)));
+    const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
+    if (otherBytes > MOVE_MAX_BYTES) {
+      return yield* fail(
+        `This thread's changes come to ${Math.ceil(otherBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
+      );
+    }
+    const session = yield* sessionParts(
+      input.nativeSession ?? null,
+      input.room?.sessions ?? [],
+      otherBytes,
+    );
+    parts.push(...session.parts);
+
+    const payload = yield* writePayload(dir, parts);
+    if (payload === null) return yield* new CheckoutChanged();
+    const after = yield* checkoutFingerprint(git, root, afterDiffPath);
+    yield* fsCall("Couldn't tidy up.", async () => {
+      await NodeFs.rm(NodePath.join(dir, "bundle.tmp"), { force: true });
+      await NodeFs.rm(diffPath, { force: true });
+      await NodeFs.rm(afterDiffPath, { force: true });
+    });
+    if (after.key !== before.key) return yield* new CheckoutChanged();
+
+    const manifest: PeerMoveGitManifest = {
+      totalBytes: payload.totalBytes,
+      sha256: payload.sha256,
+      parts: payload.table,
+      source: input.source,
+      project: {
+        canonicalKey: input.canonicalKey,
+        subdirectory: input.subdirectory,
+        title: input.projectTitle,
+      },
+      git: {
+        headSha: checkout.headSha,
+        branch: checkout.branch,
+        baseSha: checkout.baseSha,
+        ...(checkout.upstreamBranch !== null ? { upstreamBranch: checkout.upstreamBranch } : {}),
+      },
+      thread: {
+        title: input.thread.title,
+        runtimeMode: input.thread.runtimeMode,
+        interactionMode: input.thread.interactionMode,
+        messages: history.messages,
+        activities: history.activities,
+        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...roomManifestOf(input, session.room),
+      },
+      agent: input.agent,
+      summary: {
+        messageCount: history.messages.length,
+        trackedFiles: tracked.length,
+        untrackedFiles: untracked.length,
+        unpushedCommits: checkout.unpushedCommits,
+      },
+      ...session.manifest,
+      ...(input.family !== undefined ? { family: input.family } : {}),
+      ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
+      ...(input.startedThere !== undefined && input.startedThere.length > 0
+        ? { startedThere: [...input.startedThere] }
+        : {}),
+      ...(input.startedElsewhere !== undefined && input.startedElsewhere.length > 0
+        ? { startedElsewhere: [...input.startedElsewhere] }
+        : {}),
+    };
+    yield* writeManifest(dir, manifest);
+    return manifest;
+  });
+  const changedReason = "The checkout changed while this thread was being packed. Try again.";
+  return attempt.pipe(
+    Effect.catchTag("CheckoutChanged", () => attempt),
+    Effect.catchTag("CheckoutChanged", () => fail(changedReason)),
+  );
+}
+
+/**
+ * Packs a family member that works in another member's folder (docs/design/
+ * fleet.md, Part 3f, (g)): its history, attachments, state and session, but
+ * none of the folder's files, which the folder's owner sends. The other
+ * computer puts it in the folder that owner's move makes. `git` says where
+ * the folder stands, for the record; with no commits of its own it names no
+ * base.
+ */
+function writeSharerExport(
+  input: MoveExportInput,
+): Effect.Effect<PeerMoveGitManifest, ThreadMoveFailure> {
+  return Effect.gen(function* () {
+    yield* fsCall("Couldn't make room to pack this thread.", () =>
+      NodeFs.mkdir(input.dir, { recursive: true }),
+    );
+    const history = exportThreadHistory(input.thread, {
+      room: input.room !== undefined,
+      familyThreadIds: input.familyThreadIds,
+    });
+    const parts = [...(yield* attachmentParts(history, input.attachmentsDir, input.state))];
+    const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
+    if (otherBytes > MOVE_MAX_BYTES) {
+      return yield* fail(
+        `This thread's attachments come to ${Math.ceil(otherBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
+      );
+    }
+    const session = yield* sessionParts(
+      input.nativeSession ?? null,
+      input.room?.sessions ?? [],
+      otherBytes,
+    );
+    parts.push(...session.parts);
+    const payload = yield* writePayload(input.dir, parts);
+    if (payload === null) {
+      return yield* fail("This thread's attachments changed while it was being packed. Try again.");
+    }
+    const checkout = input.checkout;
+    const manifest: PeerMoveGitManifest = {
+      totalBytes: payload.totalBytes,
+      sha256: payload.sha256,
+      parts: payload.table,
+      source: input.source,
+      project: {
+        canonicalKey: input.canonicalKey,
+        subdirectory: input.subdirectory,
+        title: input.projectTitle,
+      },
+      git: {
+        headSha: checkout.headSha,
+        branch: checkout.branch,
+        baseSha: null,
+        ...(checkout.upstreamBranch !== null ? { upstreamBranch: checkout.upstreamBranch } : {}),
+      },
+      thread: {
+        title: input.thread.title,
+        runtimeMode: input.thread.runtimeMode,
+        interactionMode: input.thread.interactionMode,
+        messages: history.messages,
+        activities: history.activities,
+        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...roomManifestOf(input, session.room),
+      },
+      agent: input.agent,
+      summary: {
+        messageCount: history.messages.length,
+        trackedFiles: 0,
+        untrackedFiles: 0,
+        unpushedCommits: 0,
+      },
+      ...session.manifest,
+      ...(input.family !== undefined ? { family: input.family } : {}),
+      ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
+      ...(input.startedThere !== undefined && input.startedThere.length > 0
+        ? { startedThere: [...input.startedThere] }
+        : {}),
+      ...(input.startedElsewhere !== undefined && input.startedElsewhere.length > 0
+        ? { startedElsewhere: [...input.startedElsewhere] }
+        : {}),
+    };
+    yield* writeManifest(input.dir, manifest);
+    return manifest;
+  });
+}
+
+/**
+ * The attachments a move carries, one part each: its history's messages', and
+ * its queued messages' (docs/design/fleet.md, Part 3e, (e)). A missing one
+ * travels as its name alone.
+ */
+function attachmentParts(
+  history: ReturnType<typeof exportThreadHistory>,
+  attachmentsDir: string,
+  state: PeerMoveThreadState | undefined,
+) {
+  return Effect.gen(function* () {
+    const parts: PendingPart[] = [];
+    const seen = new Set<string>();
+    const carriers = [...history.messages, ...(state?.queuedFollowUps ?? [])];
+    for (const message of carriers) {
       for (const attachment of message.attachments ?? []) {
-        if (attachmentIds.has(attachment.id)) continue;
-        attachmentIds.add(attachment.id);
-        const path = resolveAttachmentPath({ attachmentsDir: input.attachmentsDir, attachment });
-        // A missing attachment travels as its name alone.
+        if (seen.has(attachment.id)) continue;
+        seen.add(attachment.id);
+        const path = resolveAttachmentPath({ attachmentsDir, attachment });
         const size =
-          path === null ? null : yield* fileSize(path).pipe(Effect.orElseSucceed(() => null));
+          path === null
+            ? null
+            : yield* fsCall("Couldn't read the packed thread.", () => NodeFs.stat(path)).pipe(
+                Effect.map((stat) => stat.size),
+                Effect.orElseSucceed(() => null),
+              );
         if (path !== null && size !== null) {
           parts.push({
             kind: "attachment",
@@ -503,14 +885,118 @@ export function writeMoveExport(
         }
       }
     }
+    return parts;
+  });
+}
 
-    const totalBytes = parts.reduce((sum, part) => sum + part.size, 0);
-    if (totalBytes > MOVE_MAX_BYTES) {
-      return yield* fail(
-        `This thread's changes come to ${Math.ceil(totalBytes / (1024 * 1024))} MB. Moves carry at most 100 MB.`,
-      );
+/**
+ * Which agents' sessions fit a move that carries `otherBytes` besides them
+ * (Part 3f, (i): they share the move's 100 MB, at most 50 MB each): any
+ * over 50 MB stays behind, then the largest go as a summary first until the
+ * rest fit. Keys are whatever the caller names the sessions by.
+ */
+export function sessionsThatFit<Key>(
+  sessions: ReadonlyArray<{ readonly key: Key; readonly bytes: number }>,
+  otherBytes: number,
+): ReadonlySet<Key> {
+  const kept = sessions
+    .filter((session) => session.bytes <= NATIVE_SESSION_MAX_BYTES)
+    .toSorted((left, right) => left.bytes - right.bytes);
+  let total = kept.reduce((sum, session) => sum + session.bytes, 0);
+  while (kept.length > 0 && otherBytes + total > MOVE_MAX_BYTES) {
+    total -= kept.pop()!.bytes;
+  }
+  return new Set(kept.map((session) => session.key));
+}
+
+/**
+ * The agents' sessions as parts, last and only within the caps
+ * (sessionsThatFit): the thread's own agent's, and a room's agents' (each
+ * part naming its agent). One past them goes without, its agent gets a
+ * summary, and the manifest says why. A session file that can't be read,
+ * or vanished since it was found, leaves that session behind; it never
+ * fails the move.
+ */
+function sessionParts(
+  primary: NativeSessionExport | null,
+  room: MoveRoomExport["sessions"],
+  otherBytes: number,
+) {
+  return Effect.gen(function* () {
+    const all = [
+      ...(primary !== null ? [{ key: null, session: primary }] : []),
+      ...room.map((entry) => ({ key: entry.participantId, session: entry.session })),
+    ];
+    const sizeOf = (session: NativeSessionExport) =>
+      session.files.reduce((sum, file) => sum + file.size, 0);
+    const sized = sessionsThatFit(
+      all.map((entry) => ({ key: entry.key, bytes: sizeOf(entry.session) })),
+      otherBytes,
+    );
+    const read = new Map<ThreadParticipantId | null, ReadonlyArray<Buffer>>();
+    for (const entry of all) {
+      if (!sized.has(entry.key)) continue;
+      const bytes = yield* Effect.tryPromise(() =>
+        Promise.all(entry.session.files.map((file) => NodeFs.readFile(file.absolutePath))),
+      ).pipe(Effect.orElseSucceed(() => null));
+      if (bytes !== null) read.set(entry.key, bytes);
     }
+    // Weighed again as read: a file that grew since it was sized may tip it over.
+    const packed = sessionsThatFit(
+      [...read].map(([key, bytes]) => ({
+        key,
+        bytes: bytes.reduce((sum, chunk) => sum + chunk.length, 0),
+      })),
+      otherBytes,
+    );
+    const parts: PendingPart[] = all.flatMap((entry) => {
+      const bytes = read.get(entry.key);
+      if (bytes === undefined || !packed.has(entry.key)) return [];
+      return entry.session.files.map((file, index) => {
+        const chunk = bytes[index]!;
+        return {
+          kind: "session" as const,
+          path: file.relPath,
+          size: chunk.length,
+          read: () => Promise.resolve(chunk),
+          ...(entry.key !== null ? { participantId: entry.key } : {}),
+        };
+      });
+    });
+    // Too large when it was sized, or when it was read: an unreadable
+    // session is simply left behind.
+    const outcome = (key: ThreadParticipantId | null, session: NativeSessionExport) =>
+      packed.has(key)
+        ? {
+            session: {
+              driver: session.driver,
+              ...(session.cliVersion !== undefined ? { cliVersion: session.cliVersion } : {}),
+              cursor: session.cursor,
+            },
+          }
+        : !sized.has(key) || read.has(key)
+          ? { sessionOmitted: "too_large" as const }
+          : {};
+    const roomOutcomes = new Map(
+      room.map(
+        (entry) => [entry.participantId, outcome(entry.participantId, entry.session)] as const,
+      ),
+    );
+    return {
+      parts,
+      manifest: primary !== null ? outcome(null, primary) : {},
+      room: roomOutcomes,
+    };
+  });
+}
 
+/**
+ * Writes the parts one after another to a temp payload, with each part's
+ * hash and the whole's. Null when a part changed size since it was sized
+ * (the packing runs again).
+ */
+function writePayload(dir: string, parts: ReadonlyArray<PendingPart>) {
+  return Effect.gen(function* () {
     const payloadTemp = NodePath.join(dir, "payload.bin.tmp");
     const whole = createHash("sha256");
     let offset = 0;
@@ -521,7 +1007,6 @@ export function writeMoveExport(
       try {
         for (const part of parts) {
           const bytes = await part.read();
-          // Changed since it was sized: pack it again.
           if (bytes.length !== part.size) {
             resized = true;
             break;
@@ -536,6 +1021,7 @@ export function writeMoveExport(
             ...(part.path !== undefined ? { path: part.path } : {}),
             ...(part.mode !== undefined ? { mode: part.mode } : {}),
             ...(part.attachmentId !== undefined ? { attachmentId: part.attachmentId } : {}),
+            ...(part.participantId !== undefined ? { participantId: part.participantId } : {}),
           });
           offset += bytes.length;
         }
@@ -544,52 +1030,358 @@ export function writeMoveExport(
         await handle.close();
       }
     });
-    if (resized) return yield* new CheckoutChanged();
-    const after = yield* checkoutFingerprint(git, root, afterDiffPath);
-    yield* fsCall("Couldn't tidy up.", async () => {
-      await NodeFs.rm(NodePath.join(dir, "bundle.tmp"), { force: true });
-      await NodeFs.rm(diffPath, { force: true });
-      await NodeFs.rm(afterDiffPath, { force: true });
-    });
-    if (after.key !== before.key) return yield* new CheckoutChanged();
+    if (resized) return null;
+    return { table, totalBytes: offset, sha256: whole.digest("hex") };
+  });
+}
 
-    const manifest: PeerMoveManifest = {
-      totalBytes,
-      sha256: whole.digest("hex"),
-      parts: table,
+/** The manifest and the payload under their final names: a finished export is whole. */
+function writeManifest(dir: string, manifest: PeerMoveManifest) {
+  const manifestTemp = `${moveManifestPath(dir)}.tmp`;
+  return fsCall("Couldn't write the packed thread.", async () => {
+    await NodeFs.writeFile(manifestTemp, JSON.stringify(manifest));
+    await NodeFs.rename(NodePath.join(dir, "payload.bin.tmp"), movePayloadPath(dir));
+    await NodeFs.rename(manifestTemp, moveManifestPath(dir));
+  });
+}
+
+/** At most this many files in a general chat's folder, as in any move. */
+const MOVE_MAX_FILES = 20_000;
+
+/** One file of a general chat's folder, as found. */
+interface ScratchEntry {
+  readonly path: string;
+  readonly absolute: string;
+  readonly kind: "file" | "symlink";
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly executable: boolean;
+}
+
+/**
+ * Every file under a general chat's folder (docs/design/fleet.md, Part 3e,
+ * (d)), with Part 3's rules for new files: regular files keep their
+ * executable bit, symbolic links go as their text, anything else refuses the
+ * move. A folder that was never made has no files.
+ */
+function listScratchFolder(folder: string) {
+  return Effect.gen(function* () {
+    const found: ScratchEntry[] = [];
+    const walk = async (relative: string): Promise<string | null> => {
+      const absoluteDir = relative.length === 0 ? folder : NodePath.join(folder, relative);
+      let entries: Array<import("node:fs").Dirent>;
+      try {
+        entries = await NodeFs.readdir(absoluteDir, { withFileTypes: true });
+      } catch (error) {
+        if (relative.length === 0 && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          return null;
+        }
+        throw error;
+      }
+      for (const entry of entries.toSorted((left, right) => left.name.localeCompare(right.name))) {
+        const path = relative.length === 0 ? entry.name : `${relative}/${entry.name}`;
+        const absolute = NodePath.join(folder, path);
+        const stat = await NodeFs.lstat(absolute);
+        if (stat.isDirectory()) {
+          const refused = await walk(path);
+          if (refused !== null) return refused;
+        } else if (stat.isSymbolicLink()) {
+          const target = await NodeFs.readlink(absolute);
+          found.push({
+            path,
+            absolute,
+            kind: "symlink",
+            size: Buffer.byteLength(target, "utf8"),
+            mtimeMs: stat.mtimeMs,
+            executable: false,
+          });
+        } else if (stat.isFile()) {
+          found.push({
+            path,
+            absolute,
+            kind: "file",
+            size: stat.size,
+            mtimeMs: stat.mtimeMs,
+            executable: (stat.mode & 0o111) !== 0,
+          });
+        } else {
+          return `${path} isn't a regular file, so this chat can't move.`;
+        }
+      }
+      return null;
+    };
+    const refused = yield* fsCall("Couldn't read this chat's folder.", () => walk(""));
+    if (refused !== null) return yield* fail(refused);
+    return found;
+  });
+}
+
+/** A listing's key: equal before and after packing means what was packed is what's there. */
+const scratchKey = (entries: ReadonlyArray<ScratchEntry>) =>
+  entries.map((entry) => `${entry.path}:${entry.kind}:${entry.size}:${entry.mtimeMs}`).join("\n");
+
+/** Why a general chat's folder is too big to move, or null. */
+function scratchSizeRefusal(entries: ReadonlyArray<ScratchEntry>): string | null {
+  const bytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+  if (bytes > MOVE_MAX_BYTES) {
+    return `This chat's folder is ${Math.ceil(bytes / (1024 * 1024))} MB. Moves take up to 100 MB.`;
+  }
+  if (entries.length > MOVE_MAX_FILES) {
+    return `This chat's folder has ${entries.length.toLocaleString("en-US")} files. Moves take up to ${MOVE_MAX_FILES.toLocaleString("en-US")}.`;
+  }
+  return null;
+}
+
+/**
+ * What the move dialog says of a general chat's folder: how many files and
+ * bytes, or why it can't move (too big, or a file that isn't one).
+ */
+export function summarizeScratchFolder(folder: string) {
+  return listScratchFolder(folder).pipe(
+    Effect.map((entries) => ({
+      files: entries.length,
+      bytes: entries.reduce((sum, entry) => sum + entry.size, 0),
+      refusal: scratchSizeRefusal(entries),
+    })),
+    Effect.catch((failure) =>
+      Effect.succeed({ files: 0, bytes: 0, refusal: failure.reason as string | null }),
+    ),
+  );
+}
+
+export interface ScratchExportInput {
+  readonly dir: string;
+  /** The chat's own folder (generalChatThreadScratchCwd). */
+  readonly folder: string;
+  readonly attachmentsDir: string;
+  readonly thread: OrchestrationThread;
+  readonly source: MoveExportInput["source"];
+  readonly agent: ModelSelection;
+  readonly nativeSession?: NativeSessionExport | null | undefined;
+  readonly state?: PeerMoveThreadState | undefined;
+  readonly room?: MoveRoomExport | undefined;
+  readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork> | undefined;
+  /** Its family (Part 3f, (g)): a general chat has its own folder, so it shares none. */
+  readonly family?: PeerMoveFamily | undefined;
+  readonly familyThreadIds?: ReadonlySet<string> | undefined;
+  readonly linkLineage?: PeerMoveLinkLineage | undefined;
+  readonly startedThere?: ReadonlyArray<PeerMoveStartedThere> | undefined;
+  readonly startedElsewhere?: ReadonlyArray<PeerMoveStartedElsewhere> | undefined;
+}
+
+/**
+ * The manifest's room and outside marks: each agent's record with the
+ * session that went for it (or why none did), for a computer that takes them.
+ */
+function roomManifestOf(
+  input: {
+    readonly room?: MoveRoomExport | undefined;
+    readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork> | undefined;
+  },
+  sessions: ReadonlyMap<
+    ThreadParticipantId,
+    Pick<PeerMoveRoomParticipant, "session" | "sessionOmitted">
+  >,
+): {
+  readonly room?: PeerMoveRoom;
+  readonly outsideWork?: ReadonlyArray<OrchestrationOutsideWork>;
+} {
+  const room = input.room;
+  const outsideWork = input.outsideWork ?? [];
+  return {
+    ...(room !== undefined
+      ? {
+          room: {
+            ...(room.agentRole !== undefined ? { agentRole: room.agentRole } : {}),
+            ...(room.ownAgentSeenThroughMessageId !== undefined
+              ? { ownAgentSeenThroughMessageId: room.ownAgentSeenThroughMessageId }
+              : {}),
+            participants: room.participants.map((participant) => ({
+              ...participant,
+              ...sessions.get(participant.id),
+            })),
+          },
+        }
+      : {}),
+    ...(outsideWork.length > 0 ? { outsideWork } : {}),
+  };
+}
+
+/**
+ * Packs a General Chats thread (docs/design/fleet.md, Part 3e, (d)): every
+ * file in its folder, its attachments and its history, and its session. No
+ * bundle and no diff. The folder is listed before and after packing (path,
+ * size, time); a change means it packs once more, then gives up.
+ */
+export function writeScratchExport(
+  input: ScratchExportInput,
+): Effect.Effect<PeerMoveScratchManifest, ThreadMoveFailure> {
+  const attempt = Effect.gen(function* () {
+    yield* fsCall("Couldn't make room to pack this thread.", () =>
+      NodeFs.mkdir(input.dir, { recursive: true }),
+    );
+    const before = yield* listScratchFolder(input.folder);
+    const tooBig = scratchSizeRefusal(before);
+    if (tooBig !== null) return yield* fail(tooBig);
+    const parts: PendingPart[] = before.map((entry) =>
+      entry.kind === "symlink"
+        ? {
+            kind: "file" as const,
+            path: entry.path,
+            mode: "symlink" as const,
+            size: entry.size,
+            read: async () => Buffer.from(await NodeFs.readlink(entry.absolute), "utf8"),
+          }
+        : {
+            kind: "file" as const,
+            path: entry.path,
+            mode: entry.executable ? ("executable" as const) : ("file" as const),
+            size: entry.size,
+            read: () => NodeFs.readFile(entry.absolute),
+          },
+    );
+    const history = exportThreadHistory(input.thread, {
+      room: input.room !== undefined,
+      familyThreadIds: input.familyThreadIds,
+    });
+    parts.push(...(yield* attachmentParts(history, input.attachmentsDir, input.state)));
+    const otherBytes = parts.reduce((sum, part) => sum + part.size, 0);
+    if (otherBytes > MOVE_MAX_BYTES) {
+      return yield* fail(
+        `This chat comes to ${Math.ceil(otherBytes / (1024 * 1024))} MB with its attachments. Moves carry at most 100 MB.`,
+      );
+    }
+    const session = yield* sessionParts(
+      input.nativeSession ?? null,
+      input.room?.sessions ?? [],
+      otherBytes,
+    );
+    parts.push(...session.parts);
+    const payload = yield* writePayload(input.dir, parts);
+    if (payload === null) return yield* new CheckoutChanged();
+    const after = yield* listScratchFolder(input.folder);
+    if (scratchKey(after) !== scratchKey(before)) return yield* new CheckoutChanged();
+    const manifest: PeerMoveScratchManifest = {
+      workspace: "scratch",
+      totalBytes: payload.totalBytes,
+      sha256: payload.sha256,
+      parts: payload.table,
       source: input.source,
-      project: {
-        canonicalKey: input.canonicalKey,
-        subdirectory: input.subdirectory,
-        title: input.projectTitle,
-      },
-      git: { headSha: checkout.headSha, branch: checkout.branch, baseSha: checkout.baseSha },
+      project: { title: "General chats" },
       thread: {
         title: input.thread.title,
         runtimeMode: input.thread.runtimeMode,
         interactionMode: input.thread.interactionMode,
         messages: history.messages,
         activities: history.activities,
+        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...roomManifestOf(input, session.room),
       },
       agent: input.agent,
-      summary: {
-        messageCount: history.messages.length,
-        trackedFiles: tracked.length,
-        untrackedFiles: untracked.length,
-        unpushedCommits: checkout.unpushedCommits,
-      },
+      summary: { messageCount: history.messages.length, files: before.length },
+      ...session.manifest,
+      ...(input.family !== undefined ? { family: input.family } : {}),
+      ...(input.linkLineage !== undefined ? { linkLineage: input.linkLineage } : {}),
+      ...(input.startedThere !== undefined && input.startedThere.length > 0
+        ? { startedThere: [...input.startedThere] }
+        : {}),
+      ...(input.startedElsewhere !== undefined && input.startedElsewhere.length > 0
+        ? { startedElsewhere: [...input.startedElsewhere] }
+        : {}),
     };
-    const manifestTemp = `${moveManifestPath(dir)}.tmp`;
-    yield* fsCall("Couldn't write the packed thread.", async () => {
-      await NodeFs.writeFile(manifestTemp, JSON.stringify(manifest));
-      await NodeFs.rename(payloadTemp, movePayloadPath(dir));
-      await NodeFs.rename(manifestTemp, moveManifestPath(dir));
-    });
+    yield* writeManifest(input.dir, manifest);
     return manifest;
   });
-  const changedReason = "The checkout changed while this thread was being packed. Try again.";
+  const changedReason = "This chat's files changed while it was being packed. Try again.";
   return attempt.pipe(
     Effect.catchTag("CheckoutChanged", () => attempt),
     Effect.catchTag("CheckoutChanged", () => fail(changedReason)),
   );
+}
+
+/**
+ * What a moved thread had going, as the manifest carries it (docs/design/
+ * fleet.md, Part 3e), from what it carries (threadMoveCarry). Only for a
+ * computer that takes it. A goal that finished, or anything but working or
+ * paused, is never picked up, whatever the move's stop recorded. In a room
+ * (Part 3f, (i)), the goal names the agent that held it (`goalHolder`, the
+ * thread's session slot), and check-backs and queued messages their agent.
+ */
+export function moveThreadStateOf(
+  carry: ThreadMoveCarry,
+  goalHolder: ThreadParticipantId | null = null,
+): PeerMoveThreadState | undefined {
+  const goal = carry.goal;
+  const state: PeerMoveThreadState = {
+    ...(goal !== null
+      ? {
+          goal: {
+            objective: goal.objective,
+            status: goal.status,
+            tokenBudget: goal.tokenBudget,
+            tokensUsed: goal.tokensUsed,
+            timeUsedSeconds: goal.timeUsedSeconds,
+            createdAt: goal.createdAt,
+            updatedAt: goal.updatedAt,
+            ...(goal.checks !== undefined ? { checks: goal.checks } : {}),
+            ...(goal.lastCheck !== undefined ? { lastCheck: goal.lastCheck } : {}),
+            pickUp: carry.goalWorking && (goal.status === "active" || goal.status === "paused"),
+            ...(goalHolder !== null ? { participantId: goalHolder } : {}),
+          },
+        }
+      : {}),
+    ...(carry.checkBacks.length > 0
+      ? {
+          checkBacks: carry.checkBacks.map((checkBack) => ({
+            scheduledFor: checkBack.scheduledFor,
+            recurring: checkBack.recurring,
+            exact: checkBack.exact,
+            ...(checkBack.schedule !== undefined ? { schedule: checkBack.schedule } : {}),
+            ...(checkBack.cron !== undefined ? { cron: checkBack.cron } : {}),
+            ...(checkBack.description !== undefined ? { description: checkBack.description } : {}),
+            ...(checkBack.prompt !== undefined ? { prompt: checkBack.prompt } : {}),
+            durable: checkBack.durable,
+            ...(checkBack.participantId !== null ? { participantId: checkBack.participantId } : {}),
+          })),
+        }
+      : {}),
+    ...(carry.pullRequests !== null
+      ? {
+          pullRequests: {
+            autoFix: carry.pullRequests.autoFix,
+            autoMerge: carry.pullRequests.autoMerge,
+            linked: carry.pullRequests.linked.map((entry) => ({
+              number: entry.number,
+              url: entry.url,
+              autoFix: entry.autoFix,
+              autoMerge: entry.autoMerge,
+            })),
+          },
+        }
+      : {}),
+    ...(carry.queuedFollowUps.length > 0
+      ? {
+          queuedFollowUps: carry.queuedFollowUps.map((entry) => ({
+            messageId: entry.messageId,
+            text: entry.text,
+            attachments: entry.attachments,
+            ...(entry.skills !== undefined ? { skills: entry.skills } : {}),
+            ...(entry.composer !== undefined ? { composer: entry.composer } : {}),
+            ...(entry.sentFrom !== undefined ? { sentFrom: entry.sentFrom } : {}),
+            interactionMode: entry.interactionMode,
+            createdAt: entry.createdAt,
+            ...(entry.participantId !== undefined && entry.participantId !== null
+              ? { participantId: entry.participantId }
+              : {}),
+          })),
+        }
+      : {}),
+    ...(carry.proposedPlans.length > 0
+      ? {
+          proposedPlans: carry.proposedPlans.map(({ eventSequence: _sequence, ...plan }) => plan),
+        }
+      : {}),
+    ...(carry.plansLeftBehind > 0 ? { plansLeftBehind: carry.plansLeftBehind } : {}),
+  };
+  return Object.keys(state).length > 0 ? state : undefined;
 }

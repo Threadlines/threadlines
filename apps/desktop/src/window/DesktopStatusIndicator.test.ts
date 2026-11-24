@@ -161,6 +161,9 @@ const makeDesktopWindowLayer = (input: {
     quitConfirmationShown: () => Effect.void,
     resolveQuitConfirmation: () => Effect.void,
     repeatQuitConfirmation: Effect.succeed(false),
+    startQuitAfterMoves: () => Effect.void,
+    cancelQuitAfterMoves: Effect.void,
+    showQuitAfterMoves: Effect.void,
     dispatchMenuAction: (action, payload) =>
       Effect.sync(() => {
         input.dispatchedActions.push(payload === undefined ? { action } : { action, payload });

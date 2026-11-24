@@ -70,6 +70,13 @@ export const CODEX_BROWSER_TOKEN_ENV_VAR = "THREADLINES_MCP_BEARER_TOKEN";
  */
 export const CODEX_ROOM_TOOL_TIMEOUT_SEC = Duration.toSeconds(ROOM_TOOL_CALL_TIMEOUT);
 
+/**
+ * How long Codex waits on one device tool call (its own default is 60s).
+ * A first `device_open` can install expo-device-hub / agent-device and cold-boot
+ * a simulator or emulator (up to 3 min boot timeout).
+ */
+export const CODEX_DEVICE_TOOL_TIMEOUT_SEC = 300;
+
 /** An MCP server over streamable HTTP, its credential from the environment. */
 const httpMcpServerArgs = (serverName: string, url: string): ReadonlyArray<string> => [
   "-c",
@@ -122,6 +129,7 @@ export function codexAppServerArgs(servers?: {
   readonly room?: CodexRoomServer;
   readonly pages?: { readonly url: string; readonly serverName: string };
   readonly commands?: { readonly url: string; readonly serverName: string };
+  readonly device?: { readonly url: string; readonly serverName: string };
 }): ReadonlyArray<string> {
   return [
     ...CODEX_APP_SERVER_ARGS,
@@ -131,14 +139,28 @@ export function codexAppServerArgs(servers?: {
     ...(servers?.room !== undefined ? codexRoomServerArgs(servers.room) : []),
     ...(servers?.pages !== undefined ? codexPagesServerArgs(servers.pages) : []),
     ...(servers?.commands !== undefined ? codexPagesServerArgs(servers.commands) : []),
+    ...(servers?.device !== undefined ? codexDeviceServerArgs(servers.device) : []),
+  ];
+}
+
+function codexDeviceServerArgs(device: {
+  readonly url: string;
+  readonly serverName: string;
+}): ReadonlyArray<string> {
+  return [
+    ...codexPagesServerArgs(device),
+    "-c",
+    `mcp_servers.${device.serverName}.tool_timeout_sec=${CODEX_DEVICE_TOOL_TIMEOUT_SEC}`,
   ];
 }
 
 /**
- * The page tools (McpPagesServer), and `ask_user_to_run` (McpCommandsServer).
- * They never ask: a page shows only in the caller's own thread, and a command
- * card only asks the user. That is why each has a server of its own, since
- * Codex approves per server and the browser tools must still ask.
+ * The page tools (McpPagesServer), `ask_user_to_run` (McpCommandsServer) and
+ * the device tools (McpDeviceServer). They never ask: a page shows only in the
+ * caller's own thread, a command card only asks the user, and the user turned
+ * on "Agents can use devices" for the device tools. That is why each has a
+ * server of its own, since Codex approves per server and the browser tools
+ * must still ask.
  */
 function codexPagesServerArgs(pages: {
   readonly url: string;

@@ -11,6 +11,7 @@
  * decides (busy, the limit, a refusal): those are answers an agent can act
  * on. Agents are named by participant id, key, or an unambiguous name.
  */
+import { MAX_LIVE_SIDE_TURNS } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -47,11 +48,10 @@ const RequestOutcome = Schema.Literals([
   "stopped",
   "timeout",
   "busy",
-  "limit",
   "refused",
 ]);
 
-export const RoomAnswerResult = Schema.Struct({
+const RoomAnswerFields = {
   outcome: RequestOutcome,
   /** Why, for anything but `answered`. */
   detail: Schema.optional(Schema.String),
@@ -62,11 +62,24 @@ export const RoomAnswerResult = Schema.Struct({
   answer: Schema.optional(Schema.String),
   answerClipped: Schema.optional(Schema.Boolean),
   answerMessageId: Schema.optional(Schema.String),
+};
+
+/** One agent's part of a review asked of several. */
+export const RoomReviewEntry = Schema.Struct(RoomAnswerFields);
+export type RoomReviewEntry = typeof RoomReviewEntry.Type;
+
+export const RoomAnswerResult = Schema.Struct({
+  ...RoomAnswerFields,
+  /**
+   * A review asked of several agents (`agents`): each one's result, in the
+   * order asked. `outcome` then sums them up.
+   */
+  reviews: Schema.optional(Schema.Array(RoomReviewEntry)),
 });
 export type RoomAnswerResult = typeof RoomAnswerResult.Type;
 
 export const RoomHandOffResult = Schema.Struct({
-  outcome: Schema.Literals(["queued", "failed", "busy", "limit", "refused"]),
+  outcome: Schema.Literals(["queued", "failed", "busy", "refused"]),
   detail: Schema.optional(Schema.String),
   agent: Schema.optional(AgentLabel),
   requestId: Schema.optional(Schema.String),
@@ -176,7 +189,7 @@ export const RoomInviteResult = Schema.Struct({
    * (invites need no approval here). Either way its review comes back to you
    * as a message (into your turn if you are still working), if it runs.
    */
-  outcome: Schema.Literals(["asked_user", "started", "failed", "busy", "limit", "refused"]),
+  outcome: Schema.Literals(["asked_user", "started", "failed", "busy", "refused"]),
   detail: Schema.optional(Schema.String),
   agent: Schema.optional(AgentLabel),
   /** The reasoning level it reviews at, when the invite named one. */
@@ -217,7 +230,7 @@ export const RoomAgentsTool = readsRoom(
 export const RoomAskTool = asksAgent(
   Tool.make("room_ask", {
     description:
-      "Ask another agent in this room a question. It sees the room conversation and answers read-only. Its answer comes back to you here; one that takes longer than about 25 minutes (one minute on some agents), or that the user writes to you during, returns `continuing` and comes to you later as a message instead. Only while you are working in this room; one side answer runs at a time.",
+      "Ask another agent in this room a question. It sees the room conversation and answers read-only. Its answer comes back to you here; one that takes longer than about 25 minutes (one minute on some agents), or that the user writes to you during, returns `continuing` and comes to you later as a message instead. Only while you are working in this room. Up to three agents answer on the side at once, one answer each.",
     parameters: Schema.Struct({
       agent: AgentName,
       question: Schema.String.annotate({ description: "The question, as you would ask it." }),
@@ -230,9 +243,14 @@ export const RoomReviewTool = loadedOnDemand(
   asksAgent(
     Tool.make("room_review", {
       description:
-        "Get an independent review from another agent. It starts fresh: it sees none of this room's conversation, only your request and the code. Put the goal, the user's requirements and what to check in the request. Leave out your own conclusions. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Its review comes back to you here; one that takes longer than about 25 minutes (one minute on some agents), or that the user writes to you during, returns `continuing` and comes to you later as a message instead.",
+        "Get an independent review from another agent, or from several at once. It starts fresh: it sees none of this room's conversation, only your request and the code. Put the goal, the user's requirements and what to check in the request. Leave out your own conclusions. `basis` is what it reviews: the uncommitted changes (default) or { base } for base..HEAD, captured now. Name one agent in `agent`, or two or three in `agents` to have them review the same captured changes side by side; the result then lists each review in `reviews`. A review comes back to you here; one that takes longer than about 25 minutes (one minute on some agents), or that the user writes to you during, returns `continuing` and comes to you later as a message instead.",
       parameters: Schema.Struct({
-        agent: AgentName,
+        agent: Schema.optional(AgentName),
+        agents: Schema.optional(
+          Schema.Array(AgentName).annotate({
+            description: `Instead of \`agent\`: two or three agents to review at once (up to ${MAX_LIVE_SIDE_TURNS} answer on the side at a time).`,
+          }),
+        ),
         request: Schema.String.annotate({
           description: "The goal, the user's requirements, and what to check.",
         }),

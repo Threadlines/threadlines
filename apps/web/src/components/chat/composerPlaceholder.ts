@@ -32,8 +32,14 @@ export function buildDefaultComposerPlaceholder(
      * model button has little room for its name on a phone.
      */
     recipientName?: string | undefined;
+    /** The thread is this project's lead chat (docs/design/lead-chat.md). */
+    leadProjectName?: string | undefined;
   },
 ): string {
-  const lead = input.recipientName ? `Message ${input.recipientName}` : "Ask anything";
+  const lead = input.recipientName
+    ? `Message ${input.recipientName}`
+    : input.leadProjectName
+      ? `Drop work for ${input.leadProjectName} here`
+      : "Ask anything";
   return `${lead} · ${buildComposerCapabilityHint(input)}`;
 }

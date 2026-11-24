@@ -1,9 +1,10 @@
 "use client";
 
 import { useParams } from "@tanstack/react-router";
-import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
+import { lazy, Profiler, Suspense, useEffect, useRef, type ReactNode } from "react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { isPaletteLaunchedDialogOpen } from "../commands/shortcutBlock";
 import { ComposerHandleContext } from "../composerHandleContext";
 import { resolveShortcutCommand } from "../keybindings";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -11,12 +12,17 @@ import { useServerKeybindings } from "../rpc/serverState";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
+import { AddProjectDialog } from "./addProject/AddProjectDialog";
+import { CodexSessionImportDialog } from "./codexImport/CodexSessionImportDialog";
 import { CommandDialog } from "./ui/command";
 
 const loadCommandPaletteDialog = () => import("./CommandPaletteDialog");
 
 const OpenCommandPaletteDialog = lazy(() =>
   loadCommandPaletteDialog().then((module) => ({ default: module.OpenCommandPaletteDialog })),
+);
+const PaletteInboxCommandSource = lazy(() =>
+  loadCommandPaletteDialog().then((module) => ({ default: module.PaletteInboxCommandSource })),
 );
 
 /**
@@ -26,6 +32,24 @@ const OpenCommandPaletteDialog = lazy(() =>
  */
 export function preloadCommandPaletteDialog(): void {
   void loadCommandPaletteDialog().catch(() => undefined);
+}
+
+type PaletteCommitListener = (phase: "mount" | "update" | "nested-update") => void;
+let paletteCommitListener: PaletteCommitListener | null = null;
+
+/**
+ * Tests only: hears every React commit inside the open palette, so a test can
+ * check that a streaming reply behind it commits nothing there. Counted with a
+ * Profiler, since frame sampling can't see commits.
+ */
+export function setCommandPaletteCommitListenerForTests(
+  listener: PaletteCommitListener | null,
+): void {
+  paletteCommitListener = listener;
+}
+
+function reportPaletteCommit(_id: string, phase: "mount" | "update" | "nested-update"): void {
+  paletteCommitListener?.(phase);
 }
 
 export function CommandPalette({ children }: { children: ReactNode }) {
@@ -59,6 +83,8 @@ export function CommandPalette({ children }: { children: ReactNode }) {
       }
       event.preventDefault();
       event.stopPropagation();
+      // Never over Add project or a Codex import: they own the keyboard.
+      if (isPaletteLaunchedDialogOpen()) return;
       toggleOpen();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -84,6 +110,10 @@ export function CommandPalette({ children }: { children: ReactNode }) {
         {children}
         <CommandPaletteDialog />
       </CommandDialog>
+      {/* Siblings, not children, of the palette's dialog: the palette hands
+          over to them and closes, so they must not count as nested in it. */}
+      <AddProjectDialog />
+      <CodexSessionImportDialog />
     </ComposerHandleContext>
   );
 }
@@ -98,7 +128,12 @@ function CommandPaletteDialog() {
   // Normally preloaded already; until it arrives the palette stays closed.
   return (
     <Suspense fallback={null}>
-      <OpenCommandPaletteDialog />
+      <Profiler id="command-palette" onRender={reportPaletteCommit}>
+        <OpenCommandPaletteDialog />
+      </Profiler>
+      {/* Outside the Profiler on purpose: its rule reads the inbox, which
+          re-derives on every streamed token (see PaletteInboxCommandSource). */}
+      <PaletteInboxCommandSource />
     </Suspense>
   );
 }

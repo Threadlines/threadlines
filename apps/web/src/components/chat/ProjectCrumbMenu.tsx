@@ -1,10 +1,11 @@
 import type { EditorId, EnvironmentId, ResolvedKeybindingsConfig } from "@threadlines/contracts";
 import { areFilesystemPathsEqual, shortenHomePath } from "@threadlines/shared/path";
 import { threadWorkingCwdLabel } from "@threadlines/shared/threadCwd";
-import { memo, useCallback, useEffect, useMemo } from "react";
+import { memo, type MouseEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDownIcon, CopyIcon, FolderGit2Icon } from "lucide-react";
 import { isOpenFavoriteEditorShortcut, shortcutLabelForCommand } from "../../keybindings";
 import { usePreferredEditor } from "../../editorPreferences";
+import { useWindowDragPress } from "../../hooks/useWindowDragPress";
 import {
   Menu,
   MenuGroup,
@@ -21,11 +22,14 @@ import {
 import { copyWithNotice } from "../ui/copyWithNotice";
 import {
   EditorOpenRadioGroup,
+  editorLabel,
   editorOpenActionLabel,
   useEditorOpenOptions,
 } from "../EditorOpenOptions";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { readLocalApi } from "~/localApi";
+import { isKeyboardOwnedByDialog } from "~/commands/shortcutBlock";
+import { useCommandHandlers } from "~/commands/commandHandlers";
 
 /**
  * The project crumb in the chat header, and everything that acts on the
@@ -78,10 +82,24 @@ export const ProjectCrumbMenu = memo(function ProjectCrumbMenu({
     void api.shell.openInEditor(path, editor);
   }, []);
 
+  // Open in editor from the palette: what its shortcut does, where it would act.
+  const preferredEditorLabel = preferredEditor ? editorLabel(preferredEditor) : null;
+  useCommandHandlers({
+    "editor.openFavorite": canOpenInEditor &&
+      preferredEditor !== null &&
+      preferredEditorLabel !== null && {
+        title: `Open in ${preferredEditorLabel}`,
+        keywords: [preferredEditorLabel],
+        run: () => {
+          if (readLocalApi()) openIn(cwd, preferredEditor);
+        },
+      },
+  });
+
   useEffect(() => {
     if (!canOpenInEditor) return;
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (!isOpenFavoriteEditorShortcut(event, keybindings)) return;
+      if (isKeyboardOwnedByDialog() || !isOpenFavoriteEditorShortcut(event, keybindings)) return;
       if (!preferredEditor || !readLocalApi()) return;
       event.preventDefault();
       openIn(cwd, preferredEditor);
@@ -116,11 +134,25 @@ export const ProjectCrumbMenu = memo(function ProjectCrumbMenu({
     </>
   );
 
+  // In the desktop app, press and drag moves the window instead. The press
+  // then doesn't open the menu on mousedown, so a click (not a key, which
+  // the trigger handles itself) opens it here.
+  const dragPress = useWindowDragPress();
+  const [open, setOpen] = useState(false);
+
   return (
-    <Menu>
+    <Menu open={open} onOpenChange={setOpen}>
       <MenuTrigger
         render={
           <button
+            {...(dragPress ?? {})}
+            {...(dragPress
+              ? {
+                  onClick: (event: MouseEvent<HTMLButtonElement>) => {
+                    if (event.detail > 0) setOpen((current) => !current);
+                  },
+                }
+              : {})}
             type="button"
             className="-ms-1 inline-flex min-w-0 max-w-48 items-center gap-0.5 rounded-md px-1 py-0.5 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground"
             aria-label={`${projectName}, project options`}

@@ -6,17 +6,20 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Context from "effect/Context";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { hideWindowsConsole, makeCommandWithShell } from "@threadlines/shared/childProcess";
 
 import { planCliSpawn } from "../../cliSpawn.ts";
+import { processExit, type TrackedAgentProcess } from "../agentProcessLedger.ts";
+import { httpMcpServerToStdioBridge } from "./acpMcpStdioBridge.ts";
 import {
   collectSessionConfigOptionValues,
   extractModelConfigId,
@@ -26,10 +29,12 @@ import {
   LEGACY_MODE_OPTION_ID,
   legacyControlConfigOptions,
   mergeToolCallState,
+  toolCallSubstance,
   parseSessionModeState,
   parseSessionUpdateEvent,
   type AcpParsedSessionEvent,
   type AcpSessionModeState,
+  type AcpToolCallReport,
   type AcpToolCallState,
 } from "./AcpRuntimeModel.ts";
 
@@ -44,18 +49,30 @@ const SESSION_CLOSE_TIMEOUT = Duration.seconds(3);
 /** Short option lists (effort, mode) are worth spelling out in a rejection. */
 const MAX_LISTED_CONFIG_OPTION_VALUES = 8;
 
-/** ACP lets a client pass HTTP/SSE MCP servers only to agents that advertise them. */
+/**
+ * Resolves MCP servers for an ACP agent's advertised capabilities. HTTP servers
+ * pass through when the agent advertises `mcpCapabilities.http` or declares
+ * `assumeHttpMcp` (Antigravity 1.5); otherwise each HTTP server falls back to
+ * the stdio-to-HTTP bridge, since stdio is ACP's baseline MCP transport. SSE
+ * servers still require `mcpCapabilities.sse`.
+ */
 export function supportedMcpServers(
   servers: ReadonlyArray<EffectAcpSchema.McpServer>,
   capabilities: EffectAcpSchema.McpCapabilities | null | undefined,
+  assumeHttpMcp = false,
 ): Array<EffectAcpSchema.McpServer> {
-  return servers.filter((server) =>
-    "type" in server
-      ? server.type === "http"
-        ? capabilities?.http === true
-        : capabilities?.sse === true
-      : true,
-  );
+  const useHttp = assumeHttpMcp || capabilities?.http === true;
+  const resolved: Array<EffectAcpSchema.McpServer> = [];
+  for (const server of servers) {
+    if (!("type" in server)) {
+      resolved.push(server);
+    } else if (server.type === "http") {
+      resolved.push(useHttp ? server : httpMcpServerToStdioBridge(server));
+    } else if (capabilities?.sse === true) {
+      resolved.push(server);
+    }
+  }
+  return resolved;
 }
 
 export interface AcpSpawnInput {
@@ -97,8 +114,16 @@ export interface AcpSessionRuntimeOptions {
   readonly cancelMeta?: Readonly<Record<string, unknown>>;
   readonly clientInfo: {
     readonly name: string;
+    readonly title?: string;
     readonly version: string;
   };
+  /**
+   * Checks the agent's `initialize` answer before anything else is sent.
+   * A failure ends the start with its message (an agent too old to run).
+   */
+  readonly verifyInitialize?: (
+    response: EffectAcpSchema.InitializeResponse,
+  ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   /**
    * ACP auth method to invoke after `initialize`. Omit for agents that
    * authenticate outside the protocol (e.g. fx, which advertises no auth
@@ -109,11 +134,14 @@ export interface AcpSessionRuntimeOptions {
   /** Limit for that `authenticate`; past it the start fails as `auth_required`. */
   readonly authenticateTimeoutMs?: number;
   /**
-   * MCP servers Threadlines offers the session (the browser panel tools).
-   * HTTP/SSE entries are dropped unless the agent's `initialize` says it
-   * speaks that transport, as ACP requires.
+   * MCP servers Threadlines offers the session (the browser panel, room, pages,
+   * commands, and device tools). HTTP entries pass directly when the agent
+   * advertises `mcpCapabilities.http` (or `assumeHttpMcp` is set), and fall
+   * back to the stdio-to-HTTP bridge otherwise.
    */
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  /** Pass `type: "http"` MCP servers even when `initialize` omits `mcpCapabilities.http`. */
+  readonly assumeHttpMcp?: boolean;
   /** Each line the agent writes to stderr (see `AcpClientOptions.onStderrLine`). */
   readonly onStderrLine?: (line: string) => Effect.Effect<void, never>;
   /**
@@ -141,6 +169,33 @@ export interface AcpSessionRuntimeOptions {
    * that starts turns of its own), not replayed history to drop.
    */
   readonly liveOutsidePrompt?: boolean;
+  /** Rewrites each session update before anything reads it (see `AcpProviderDescriptor.normalizeSessionUpdate`). */
+  readonly normalizeSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => EffectAcpSchema.SessionNotification;
+  /** Rewrites each merged tool call (see `AcpProviderDescriptor.normalizeToolCall`). */
+  readonly normalizeToolCall?: (
+    toolCall: AcpToolCallState,
+    report: AcpToolCallReport,
+  ) => AcpToolCallState;
+  /**
+   * Also hand the reader tool call updates that show nothing new (a status
+   * change with no new detail) as `ToolCallTracked`, for a client that keeps
+   * count of running work (`AcpProviderDescriptor.turnMachine`).
+   */
+  readonly trackSilentToolCalls?: boolean;
+  /**
+   * Also hand the reader a tool call update that shows nothing new but
+   * changes what the call would do (`toolCallSubstance`) as
+   * `ToolCallRevised`, for a client with approvals open.
+   */
+  readonly reportRevisedToolCalls?: boolean;
+  /**
+   * Text the agent appends when a prompt is cancelled. A reply chunk that is
+   * just this text comes as `CancellationNotice`, before it starts a
+   * message: the client decides whether it is the notice a cancel owed.
+   */
+  readonly cancellationNotice?: string;
   /** Context fill carried on the agent's own updates (see `AcpProviderDescriptor.contextUsage`). */
   readonly contextUsage?: {
     readonly usedTokens: (notification: EffectAcpSchema.SessionNotification) => number | undefined;
@@ -169,6 +224,8 @@ export interface AcpSessionRuntimeStartResult {
     | EffectAcpSchema.NewSessionResponse
     | EffectAcpSchema.ResumeSessionResponse;
   readonly modelConfigId: string | undefined;
+  /** Names of MCP servers actually passed in `session/new`, `session/resume`, or `session/load`. */
+  readonly attachedMcpServerNames: ReadonlyArray<string>;
   /**
    * Set when a `resumeSessionId` was asked for but the agent could not reopen
    * it, so this is a fresh session without the earlier conversation.
@@ -177,6 +234,11 @@ export interface AcpSessionRuntimeStartResult {
 }
 
 export interface AcpSessionRuntimeShape {
+  /**
+   * The agent's process, for proof it is gone after a stop
+   * (agentProcessLedger). Absent only for test doubles that run none.
+   */
+  readonly process?: TrackedAgentProcess;
   readonly handleRequestPermission: EffectAcpClient.AcpClientShape["handleRequestPermission"];
   readonly handleElicitation: EffectAcpClient.AcpClientShape["handleElicitation"];
   readonly handleReadTextFile: EffectAcpClient.AcpClientShape["handleReadTextFile"];
@@ -199,6 +261,12 @@ export interface AcpSessionRuntimeShape {
   readonly handleForeignSessionUpdate: (
     handler: (notification: EffectAcpSchema.SessionNotification) => Effect.Effect<void>,
   ) => Effect.Effect<void>;
+  /**
+   * What the session knows of a tool call still open (its updates merged),
+   * so a permission request that restates only part of the call is read
+   * with the rest.
+   */
+  readonly getToolCall: (toolCallId: string) => Effect.Effect<AcpToolCallState | undefined>;
   readonly start: () => Effect.Effect<AcpSessionRuntimeStartResult, EffectAcpErrors.AcpError>;
   readonly getEvents: () => Stream.Stream<AcpSessionRuntimeEvent, never>;
   /**
@@ -228,6 +296,19 @@ export interface AcpSessionRuntimeShape {
    */
   readonly closeAssistantSegment: Effect.Effect<void>;
   /**
+   * Ends the reply being streamed at once, for a reader that closes a turn
+   * in place: the item id it closed, for the reader to complete itself.
+   */
+  readonly closeAssistantSegmentNow: Effect.Effect<string | undefined>;
+  /**
+   * The reply being streamed, opened at once if none is, for a reader that
+   * shows text it held back: its item id, and whether the reader must start it.
+   */
+  readonly openAssistantSegmentNow: Effect.Effect<{
+    readonly itemId: string;
+    readonly opened: boolean;
+  }>;
+  /**
    * What the agent answered to `initialize`, as soon as it has: still there
    * when the session is then refused (an agent that wants a sign-in first
    * lists its sign-in methods here).
@@ -238,6 +319,23 @@ export interface AcpSessionRuntimeShape {
   readonly prompt: (
     payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
   ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
+  /**
+   * Sends a prompt whose answer the reader sees in its place among the
+   * agent's updates: `PromptAnswered` with `key` is queued as the response
+   * is read, ahead of every update the agent sent after it, with the reply
+   * it closed already queued before it. `PromptSent` with `key` comes first,
+   * once the prompt is written to the agent; a prompt that fails before
+   * that gets neither. Returns once the prompt is on its way, so prompts
+   * sent one after another reach the agent in that order.
+   * A session sends its prompts this way or with `prompt`, not both.
+   * `beforeQueued` runs on the wire reader just before the answer is
+   * queued (tests hold the reader there).
+   */
+  readonly promptInOrder: (
+    key: number,
+    payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
+    beforeQueued?: Effect.Effect<void>,
+  ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly setMode: (
     modeId: string,
@@ -265,6 +363,42 @@ export interface AcpSessionEventStreamBarrier {
   readonly holdUntil?: Deferred.Deferred<void>;
 }
 
+/** A tool call's state that changed nothing shown (see `trackSilentToolCalls`). */
+export interface AcpSessionToolCallTracked {
+  readonly _tag: "ToolCallTracked";
+  readonly toolCall: AcpToolCallState;
+}
+
+/**
+ * A tool call whose update changed what it would do (`toolCallSubstance`)
+ * but nothing its row shows. Not shown; read by the approval logic, which
+ * must not keep an approval answerable for a call that changed under it.
+ */
+export interface AcpSessionToolCallRevised {
+  readonly _tag: "ToolCallRevised";
+  readonly toolCall: AcpToolCallState;
+}
+
+/** The agent's cancellation notice, not yet shown (see `cancellationNotice`). */
+export interface AcpSessionCancellationNotice {
+  readonly _tag: "CancellationNotice";
+  readonly text: string;
+  readonly rawPayload: unknown;
+}
+
+/** A prompt sent with `promptInOrder` was written to the agent. Always before its `PromptAnswered`. */
+export interface AcpSessionPromptSent {
+  readonly _tag: "PromptSent";
+  readonly key: number;
+}
+
+/** A prompt sent with `promptInOrder` answered (or failed), placed where the answer was read. */
+export interface AcpSessionPromptAnswered {
+  readonly _tag: "PromptAnswered";
+  readonly key: number;
+  readonly answer: Exit.Exit<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
+}
+
 /** Work for the reader to run where it was queued (see `inOrder`). */
 export interface AcpSessionInOrderWork {
   readonly _tag: "InOrder";
@@ -274,7 +408,12 @@ export interface AcpSessionInOrderWork {
 export type AcpSessionRuntimeEvent =
   | AcpParsedSessionEvent
   | AcpSessionEventStreamBarrier
-  | AcpSessionInOrderWork;
+  | AcpSessionInOrderWork
+  | AcpSessionToolCallTracked
+  | AcpSessionToolCallRevised
+  | AcpSessionCancellationNotice
+  | AcpSessionPromptSent
+  | AcpSessionPromptAnswered;
 
 /** Upper bound on waiting for the reader; a dead consumer must not wedge a turn. */
 const EVENT_FLUSH_TIMEOUT = "5 seconds";
@@ -481,8 +620,9 @@ const makeAcpSessionRuntime = (
 
     // `session/load` replays the conversation as ordinary updates; only
     // updates produced by a prompt we sent are live content, or, for an agent
-    // that starts turns of its own, anything after the session opened.
-    const promptInFlightRef = yield* Ref.make(false);
+    // that starts turns of its own, anything after the session opened. A count:
+    // an agent steered by a second prompt has two open at once.
+    const promptsInFlightRef = yield* Ref.make(0);
     /** Turns the agent started or ended itself so far (`markAgentTurnBoundary`). */
     const agentTurnBoundariesRef = yield* Ref.make(0);
     const liveOutsidePromptRef = yield* Ref.make(false);
@@ -495,8 +635,9 @@ const makeAcpSessionRuntime = (
     // A resumed session restarts segment numbering at 0 in this process, so
     // its items would collide with the ones persisted by the previous run.
     const itemIdScope = options.resumeSessionId ? `:r${Date.now().toString(36)}` : "";
-    yield* acp.handleSessionUpdate((notification) =>
+    yield* acp.handleSessionUpdate((received) =>
       Effect.gen(function* () {
+        const notification = options.normalizeSessionUpdate?.(received) ?? received;
         const ownSessionId = yield* Ref.get(ownSessionIdRef);
         if (ownSessionId !== undefined && String(notification.sessionId) !== ownSessionId) {
           const handler = yield* Ref.get(foreignUpdateHandlerRef);
@@ -518,11 +659,20 @@ const makeAcpSessionRuntime = (
           modeStateRef,
           toolCallsRef,
           assistantSegmentRef,
-          promptInFlightRef,
+          promptsInFlightRef,
           liveOutsidePromptRef,
           itemIdScope,
           params: notification,
+          // A descriptor classifies a tool call by what the agent sent, not
+          // by the bounded copy (bounding can drop a field that matters).
+          receivedUpdate: received.update,
           ...(nativeControls ? { configOptionsRef } : {}),
+          ...(options.normalizeToolCall ? { normalizeToolCall: options.normalizeToolCall } : {}),
+          ...(options.trackSilentToolCalls ? { trackSilentToolCalls: true } : {}),
+          ...(options.reportRevisedToolCalls ? { reportRevisedToolCalls: true } : {}),
+          ...(options.cancellationNotice !== undefined
+            ? { cancellationNotice: options.cancellationNotice }
+            : {}),
         });
       }),
     );
@@ -734,6 +884,7 @@ const makeAcpSessionRuntime = (
       );
 
       yield* Ref.set(initializeResultRef, initializeResult);
+      if (options.verifyInitialize) yield* options.verifyInitialize(initializeResult);
 
       if (shouldAuthenticate(options.authMethodId, initializeResult.authMethods)) {
         const authenticatePayload = {
@@ -758,6 +909,7 @@ const makeAcpSessionRuntime = (
       const mcpServers = supportedMcpServers(
         options.mcpServers ?? [],
         initializeResult.agentCapabilities?.mcpCapabilities,
+        options.assumeHttpMcp === true,
       );
 
       let sessionId: string;
@@ -851,6 +1003,7 @@ const makeAcpSessionRuntime = (
         initializeResult,
         sessionSetupResult,
         modelConfigId: extractModelConfigId(sessionSetupResult),
+        attachedMcpServerNames: mcpServers.map((server) => server.name),
         ...(resumeFailure !== undefined ? { resumeFailure } : {}),
       } satisfies AcpStartedState;
       return nextState;
@@ -923,6 +1076,8 @@ const makeAcpSessionRuntime = (
       handleExtRequest: acp.handleExtRequest,
       handleExtNotification: acp.handleExtNotification,
       handleForeignSessionUpdate: (handler) => Ref.set(foreignUpdateHandlerRef, handler),
+      getToolCall: (toolCallId) =>
+        Ref.get(toolCallsRef).pipe(Effect.map((calls) => calls.get(toolCallId))),
       start: () => start,
       getEvents: () => Stream.fromQueue(eventQueue),
       flushEvents: (holdUntil) =>
@@ -947,6 +1102,37 @@ const makeAcpSessionRuntime = (
         queue: eventQueue,
         assistantSegmentRef,
       }),
+      closeAssistantSegmentNow: Ref.modify(assistantSegmentRef, (current) =>
+        current.activeItemId === undefined
+          ? ([undefined, current] as const)
+          : ([current.activeItemId, { nextSegmentIndex: current.nextSegmentIndex }] as const),
+      ),
+      openAssistantSegmentNow: getStartedState.pipe(
+        Effect.orDie,
+        Effect.flatMap((started) =>
+          Ref.modify(
+            assistantSegmentRef,
+            (
+              current,
+            ): readonly [
+              { readonly itemId: string; readonly opened: boolean },
+              AcpAssistantSegmentState,
+            ] => {
+              if (current.activeItemId !== undefined) {
+                return [{ itemId: current.activeItemId, opened: false }, current] as const;
+              }
+              const itemId = assistantItemId(
+                `${started.sessionId}${itemIdScope}`,
+                current.nextSegmentIndex,
+              );
+              return [
+                { itemId, opened: true },
+                { nextSegmentIndex: current.nextSegmentIndex + 1, activeItemId: itemId },
+              ] as const;
+            },
+          ),
+        ),
+      ),
       getInitializeResult: Ref.get(initializeResultRef),
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: readConfigOptions,
@@ -960,21 +1146,117 @@ const makeAcpSessionRuntime = (
             return Effect.gen(function* () {
               yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
               const boundariesBefore = yield* Ref.get(agentTurnBoundariesRef);
-              yield* Ref.set(promptInFlightRef, true);
+              yield* Ref.update(promptsInFlightRef, (count) => count + 1);
               const response = yield* runLoggedRequest(
                 "session/prompt",
                 requestPayload,
                 acp.agent.prompt(requestPayload),
-              ).pipe(Effect.ensuring(Ref.set(promptInFlightRef, false)));
+              ).pipe(Effect.ensuring(Ref.update(promptsInFlightRef, (count) => count - 1)));
               // A turn the agent began before this answer already ended the
-              // prompt's reply; the reply streaming now is that turn's.
-              if ((yield* Ref.get(agentTurnBoundariesRef)) === boundariesBefore) {
+              // prompt's reply; the reply streaming now is that turn's. A
+              // steered prompt's answer leaves the reply of the one that
+              // carries the turn on alone.
+              if (
+                (yield* Ref.get(agentTurnBoundariesRef)) === boundariesBefore &&
+                (yield* Ref.get(promptsInFlightRef)) === 0
+              ) {
                 yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
               }
               return response;
             });
           }),
         ),
+      promptInOrder: (key, payload, beforeQueued) =>
+        Effect.gen(function* () {
+          const started = yield* getStartedState;
+          const requestPayload = {
+            sessionId: started.sessionId,
+            ...payload,
+          } satisfies EffectAcpSchema.PromptRequest;
+          yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
+          const boundariesBefore = yield* Ref.get(agentTurnBoundariesRef);
+          yield* Ref.update(promptsInFlightRef, (count) => count + 1);
+          yield* logRequest({
+            method: "session/prompt",
+            payload: requestPayload,
+            status: "started",
+          });
+          // Queued once: when the request is out, or by its answer if that
+          // is read first (an answer proves the prompt was written).
+          let sentQueued = false;
+          const queueSent = Effect.suspend(() => {
+            if (sentQueued) return Effect.void;
+            sentQueued = true;
+            return Queue.offer(eventQueue, { _tag: "PromptSent", key }).pipe(Effect.asVoid);
+          });
+          // Runs on the reader, as the response is read: nothing the agent
+          // sent after it is handled before this is queued.
+          const onAnswer = (answer: Exit.Exit<unknown, EffectAcpErrors.AcpError>) =>
+            Effect.gen(function* () {
+              // Only a reply from the agent (success or JSON-RPC error) proves
+              // the prompt was written; a synthetic transport failure does not.
+              if (
+                Exit.isSuccess(answer) ||
+                Schema.is(EffectAcpErrors.AcpRequestError)(Cause.squash(answer.cause))
+              ) {
+                yield* queueSent;
+              }
+              yield* Ref.update(promptsInFlightRef, (count) => count - 1);
+              // As `prompt`: the answer ends the prompt's reply, unless a turn
+              // the agent began itself, or a newer prompt, carries one on.
+              if (
+                (yield* Ref.get(agentTurnBoundariesRef)) === boundariesBefore &&
+                (yield* Ref.get(promptsInFlightRef)) === 0
+              ) {
+                yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
+              }
+              const decoded: Exit.Exit<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError> =
+                Exit.isSuccess(answer)
+                  ? Exit.mapError(
+                      decodePromptResponse(answer.value),
+                      (issue) =>
+                        new EffectAcpErrors.AcpProtocolParseError({
+                          detail: "Invalid session/prompt response",
+                          cause: issue,
+                        }),
+                    )
+                  : Exit.failCause(answer.cause);
+              const failed = Exit.isFailure(decoded) ? decoded : undefined;
+              const fatal = failed === undefined ? undefined : yield* Ref.get(fatalRef);
+              const settled =
+                fatal === undefined
+                  ? decoded
+                  : Exit.fail(
+                      new EffectAcpErrors.AcpRequestError({
+                        code: -32000,
+                        errorMessage: fatal,
+                        data: { reason: "stderr" },
+                      }),
+                    );
+              if (beforeQueued !== undefined) yield* beforeQueued;
+              yield* Queue.offer(eventQueue, { _tag: "PromptAnswered", key, answer: settled });
+              // The log only reads it: it never holds the reader up.
+              yield* (
+                Exit.isSuccess(settled)
+                  ? logRequest({
+                      method: "session/prompt",
+                      payload: requestPayload,
+                      status: "succeeded",
+                      result: settled.value,
+                    })
+                  : logRequest({
+                      method: "session/prompt",
+                      payload: requestPayload,
+                      status: "failed",
+                      cause: settled.cause,
+                    })
+              ).pipe(Effect.forkIn(runtimeScope));
+            });
+          yield* acp.raw
+            .requestInOrder("session/prompt", requestPayload, onAnswer)
+            .pipe(Effect.tapError(() => Ref.update(promptsInFlightRef, (count) => count - 1)));
+          yield* queueSent;
+        }),
       cancel: getStartedState.pipe(
         Effect.flatMap((started) =>
           acp.agent.cancel({
@@ -1007,6 +1289,10 @@ const makeAcpSessionRuntime = (
       request: (method, payload) =>
         runLoggedRequest(method, payload, acp.raw.request(method, payload)),
       notify: acp.raw.notify,
+      process: {
+        pid: Number(child.pid),
+        exited: processExit(Number(child.pid), child.exitCode),
+      },
     } satisfies AcpSessionRuntimeShape;
   });
 
@@ -1062,23 +1348,42 @@ const handleSessionUpdate = ({
   modeStateRef,
   toolCallsRef,
   assistantSegmentRef,
-  promptInFlightRef,
+  promptsInFlightRef,
   liveOutsidePromptRef,
   itemIdScope,
   params,
+  receivedUpdate,
   configOptionsRef,
+  normalizeToolCall,
+  trackSilentToolCalls,
+  reportRevisedToolCalls,
+  cancellationNotice,
 }: {
   readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
-  readonly promptInFlightRef: Ref.Ref<boolean>;
+  readonly promptsInFlightRef: Ref.Ref<number>;
   readonly liveOutsidePromptRef: Ref.Ref<boolean>;
   /** Suffix keeping item ids unique across resumes (segment numbering restarts per process). */
   readonly itemIdScope: string;
   readonly params: EffectAcpSchema.SessionNotification;
+  /** The update as the agent sent it, before `normalizeSessionUpdate`. */
+  readonly receivedUpdate?: EffectAcpSchema.SessionNotification["update"];
   /** Given for native controls only: the agent's own option updates land here. */
   readonly configOptionsRef?: Ref.Ref<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
+  readonly normalizeToolCall?: (
+    toolCall: AcpToolCallState,
+    report: AcpToolCallReport,
+  ) => AcpToolCallState;
+  readonly trackSilentToolCalls?: boolean;
+  /**
+   * Also hand the reader a tool call update that shows nothing new but
+   * changes what the call would do (`toolCallSubstance`) as
+   * `ToolCallRevised`, for a client with approvals open.
+   */
+  readonly reportRevisedToolCalls?: boolean;
+  readonly cancellationNotice?: string;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (configOptionsRef && params.update.sessionUpdate === "config_option_update") {
@@ -1090,7 +1395,7 @@ const handleSessionUpdate = ({
         current === undefined ? current : updateModeState(current, parsed.modeId!),
       );
     }
-    const live = (yield* Ref.get(promptInFlightRef)) || (yield* Ref.get(liveOutsidePromptRef));
+    const live = (yield* Ref.get(promptsInFlightRef)) > 0 || (yield* Ref.get(liveOutsidePromptRef));
     for (const event of parsed.events) {
       if (!live && isPromptContentEvent(event)) {
         // History replay after session/load (or stray output between
@@ -1114,7 +1419,9 @@ const handleSessionUpdate = ({
         });
         const { previous, merged } = yield* Ref.modify(toolCallsRef, (current) => {
           const previous = current.get(event.toolCall.toolCallId);
-          const nextToolCall = mergeToolCallState(previous, event.toolCall);
+          const mergedToolCall = mergeToolCallState(previous, event.toolCall);
+          const report = (receivedUpdate ?? params.update) as AcpToolCallReport;
+          const nextToolCall = normalizeToolCall?.(mergedToolCall, report) ?? mergedToolCall;
           const next = new Map(current);
           if (nextToolCall.status === "completed" || nextToolCall.status === "failed") {
             next.delete(nextToolCall.toolCallId);
@@ -1124,6 +1431,12 @@ const handleSessionUpdate = ({
           return [{ previous, merged: nextToolCall }, next] as const;
         });
         if (!shouldEmitToolCallUpdate(previous, merged)) {
+          if (trackSilentToolCalls) {
+            yield* Queue.offer(queue, { _tag: "ToolCallTracked", toolCall: merged });
+          }
+          if (reportRevisedToolCalls && toolCallSubstance(previous) !== toolCallSubstance(merged)) {
+            yield* Queue.offer(queue, { _tag: "ToolCallRevised", toolCall: merged });
+          }
           continue;
         }
         yield* Queue.offer(queue, {
@@ -1134,6 +1447,14 @@ const handleSessionUpdate = ({
         continue;
       }
       if (event._tag === "ContentDelta") {
+        if (cancellationNotice !== undefined && event.text.trim() === cancellationNotice) {
+          yield* Queue.offer(queue, {
+            _tag: "CancellationNotice",
+            text: event.text,
+            rawPayload: event.rawPayload,
+          });
+          continue;
+        }
         if (event.text.trim().length === 0) {
           const assistantSegmentState = yield* Ref.get(assistantSegmentRef);
           if (!assistantSegmentState.activeItemId) {
@@ -1173,6 +1494,11 @@ function shouldEmitToolCallUpdate(
   next: AcpToolCallState,
 ): boolean {
   if (next.status === "completed" || next.status === "failed") {
+    return true;
+  }
+  // A descriptor that retypes a call (`normalizeToolCall`) changes what the
+  // row is, whatever its words; the earlier type must not stay on screen.
+  if (previous !== undefined && previous.itemType !== next.itemType) {
     return true;
   }
   if (!next.detail) {
@@ -1221,6 +1547,8 @@ const ensureActiveAssistantSegment = ({
         : Effect.succeed(result.itemId),
     ),
   );
+
+const decodePromptResponse = Schema.decodeUnknownExit(EffectAcpSchema.PromptResponse);
 
 const closeActiveAssistantSegment = ({
   queue,

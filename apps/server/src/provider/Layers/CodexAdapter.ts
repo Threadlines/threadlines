@@ -96,9 +96,14 @@ import {
   prepareCodexSideAnswerHome,
 } from "../codexSideAnswerHome.ts";
 import { removeSideRuntimeHome, sweepStaleSideRuntimeHomes } from "../sideRuntimeHome.ts";
+import {
+  exportCodexNativeSession,
+  importCodexNativeSession,
+} from "../Drivers/CodexNativeSession.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { initializeCodexAppServerClient, makeCodexAppServerClient } from "./CodexProvider.ts";
 import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
+import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
 import { mcpRoomEndpointUrl } from "../../mcp/McpHttpServer.ts";
 import { roomSideKindOf, roomToolsFor } from "../../mcp/roomToolAccess.ts";
 
@@ -1705,6 +1710,25 @@ function mapNativeSubagentMetadata(
   };
 }
 
+/**
+ * The text of a plain Codex config or runtime warning, or undefined for any
+ * other event. Codex reports a config problem once as `configWarning` when the
+ * app server starts, then again as a `warning` for every thread it opens,
+ * subagents included, so one stale setting would otherwise show once per
+ * agent. A session keeps the texts it has shown and drops repeats.
+ */
+function plainWarningText(event: ProviderEvent): string | undefined {
+  if (event.method === "configWarning") {
+    return trimText(
+      readPayload(EffectCodexSchema.V2ConfigWarningNotification, event.payload)?.summary,
+    );
+  }
+  if (event.method === "warning") {
+    return trimText(readPayload(EffectCodexSchema.V2WarningNotification, event.payload)?.message);
+  }
+  return undefined;
+}
+
 export function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -3248,6 +3272,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  /** Each app-server it started, until proven gone (confirmThreadStopped). */
+  const processes = yield* makeAgentProcessLedger();
   /**
    * Threads whose message went again after a sign-in failure, until their
    * agent answers: a fresh app server that fails too means the sign-in itself
@@ -3405,9 +3431,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { scheduleTools: true }
             : {}),
           ...(input.agentPages === true && sideAnswer === undefined ? { agentPages: true } : {}),
+          ...(input.projectInstructions !== undefined && sideAnswer === undefined
+            ? { projectInstructions: input.projectInstructions }
+            : {}),
           ...(input.commandRequests === true && sideAnswer === undefined
             ? { commandRequests: true }
             : {}),
+          ...(input.deviceTools === true && sideAnswer === undefined ? { deviceTools: true } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
@@ -3463,6 +3493,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
+        if (runtime.process !== undefined) {
+          yield* processes.track(input.threadId, runtime.process);
+        }
+
         const turnProgress: CodexTurnProgress = { workedTurnIds: new Set() };
         const suggestions: CodexSuggestionState = {
           awaiting: new Map(),
@@ -3470,6 +3504,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           making: undefined,
         };
         let resendingTurn = false;
+        const shownWarnings = new Set<string>();
 
         // The session context owns and explicitly interrupts this fiber. It
         // must not inherit the short-lived caller that happens to start the
@@ -3510,6 +3545,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               yield* options.releaseRealtimeAudio(event.threadId);
             }
             yield* writeNativeEvent(event);
+            const warningText = plainWarningText(event);
+            if (warningText !== undefined) {
+              if (shownWarnings.has(warningText)) {
+                return;
+              }
+              shownWarnings.add(warningText);
+            }
             const mappedEvents = yield* withUsageLimitReset(
               mapToRuntimeEvents(event, event.threadId),
             );
@@ -3968,6 +4010,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(input.objective !== undefined ? { objective: input.objective } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
           ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+          ...(input.context !== undefined ? { context: input.context } : {}),
         }),
       ),
       Effect.map(normalizeCodexThreadGoal),
@@ -4623,6 +4666,20 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     listSessions,
     hasSession,
     stopAll,
+    // The home this instance's own sessions live in, found as its runtime finds it.
+    exportNativeSession: ({ resumeCursor }) =>
+      exportCodexNativeSession({
+        home: codexSignInHome(codexConfig.homePath, options?.environment ?? process.env),
+        resumeCursor,
+      }),
+    importNativeSession: (input) =>
+      importCodexNativeSession({
+        ...input,
+        home: codexSignInHome(codexConfig.homePath, options?.environment ?? process.env),
+      }),
+    noteBeforeStop: processes.beforeStop,
+    confirmThreadStopped: processes.confirm,
+    listProcesses: processes.owners,
     get streamEvents() {
       return Stream.fromQueue(runtimeEventQueue);
     },

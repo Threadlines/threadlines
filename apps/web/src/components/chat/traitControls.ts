@@ -22,6 +22,7 @@ import {
 import { useCallback } from "react";
 import { useComposerDraftStore, type DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
+import type { ModelPickerTriggerSummary } from "./ProviderModelPicker";
 
 export type ProviderOptions = ReadonlyArray<ProviderOptionSelection>;
 export type SelectProviderOptionDescriptor = Extract<ProviderOptionDescriptor, { type: "select" }>;
@@ -344,6 +345,42 @@ export function getTraitsSectionVisibility(input: {
     showContextWindow,
     showAgent,
     hasAnyControls: showEffort || showThinking || showFastMode || showContextWindow || showAgent,
+  };
+}
+
+/**
+ * What the model button says besides the model, for the agent `target`
+ * describes: its effort and Fast Mode, and Ultracode's look. Null target
+ * (no options to show): just the model.
+ */
+export function modelPickerTriggerSummary(
+  target: {
+    provider: ProviderDriverKind;
+    models: ReadonlyArray<ServerProviderModel>;
+    model: string | null | undefined;
+    modelOptions?: ProviderOptions | null | undefined;
+  } | null,
+  working: boolean,
+): ModelPickerTriggerSummary {
+  const traits = target
+    ? getTraitsSectionVisibility({
+        provider: target.provider,
+        models: target.models,
+        model: target.model,
+        modelOptions: target.modelOptions,
+      })
+    : null;
+  return {
+    effort: traits?.reasoningDescriptor
+      ? (getProviderOptionCurrentLabel(traits.reasoningDescriptor) ?? null)
+      : null,
+    ultracode: traits?.ultracodeEnabled ?? false,
+    fastMode: traits
+      ? getTraitSwitchControls(traits.descriptors).some(
+          (control) => isFastModeControl(control) && control.checked,
+        )
+      : false,
+    working,
   };
 }
 

@@ -214,7 +214,68 @@ export function describeWaitingUpdate(input: {
   return nightly.complete ? `${changes} since yours` : `${changes} in the newest builds`;
 }
 
-/** The tag a change wears in the nightly list. */
+/** The order type groups show in the nightly list: shorter sections above Fixed. */
+export const NIGHTLY_CHANGE_KIND_ORDER: ReadonlyArray<ReleaseChange["kind"]> = [
+  "new",
+  "faster",
+  "security",
+  "fixed",
+  "changed",
+];
+
+/** One change in a type-grouped nightly list, keeping the build it landed in. */
+export interface NightlyGroupedChange {
+  readonly build: number;
+  readonly change: ReleaseChange;
+}
+
+/** Changes of one kind across one or more nightly builds, in build order. */
+export interface NightlyChangeGroup {
+  readonly kind: ReleaseChange["kind"];
+  readonly items: ReadonlyArray<NightlyGroupedChange>;
+}
+
+/**
+ * Groups changes across nightly builds by kind in display order, omitting
+ * empty kinds. Preserves the order of builds (newest first) and changes
+ * within each build.
+ */
+export function groupNightlyChanges(
+  builds: ReadonlyArray<NightlyBuildChanges>,
+): ReadonlyArray<NightlyChangeGroup> {
+  const byKind = new Map<ReleaseChange["kind"], Array<NightlyGroupedChange>>();
+  for (const build of builds) {
+    for (const change of build.changes) {
+      let bucket = byKind.get(change.kind);
+      if (!bucket) {
+        bucket = [];
+        byKind.set(change.kind, bucket);
+      }
+      bucket.push({ build: build.build, change });
+    }
+  }
+  return NIGHTLY_CHANGE_KIND_ORDER.flatMap((kind) => {
+    const items = byKind.get(kind);
+    return items && items.length > 0 ? [{ kind, items }] : [];
+  });
+}
+
+/** Short summary shown on the collapsed earlier-builds row. */
+export function describeEarlierBuildsSummary(
+  builds: ReadonlyArray<NightlyBuildChanges>,
+  complete = true,
+): string {
+  const buildLabel = complete
+    ? builds.length === 1
+      ? "1 build"
+      : `${builds.length} builds`
+    : builds.length === 1
+      ? "Newest build"
+      : `Newest ${builds.length} builds`;
+  return `${buildLabel} · ${changeCount(countChanges(builds))}`;
+}
+
+/** The heading a change kind wears in the nightly list. */
 export function releaseChangeTag(kind: ReleaseChange["kind"]): string {
   switch (kind) {
     case "new":

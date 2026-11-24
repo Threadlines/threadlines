@@ -23,7 +23,9 @@ import {
   FileDiffIcon,
   GitPullRequestIcon,
   ImagesIcon,
+  ListTreeIcon,
   PlusIcon,
+  SmartphoneIcon,
   XIcon,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -54,6 +56,8 @@ export const RIGHT_PANEL_TAB_ICONS: Readonly<Record<RightPanelTab, Icon>> = {
   pullRequest: GitPullRequestIcon,
   agents: BotIcon,
   media: ImagesIcon,
+  threads: ListTreeIcon,
+  device: SmartphoneIcon,
 };
 
 /** Labelled while they fit, all icons once they do not. Never a mix: dropping

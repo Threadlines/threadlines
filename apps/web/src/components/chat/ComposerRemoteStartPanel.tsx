@@ -1,12 +1,21 @@
-import { memo, useMemo } from "react";
+import { memo, type ReactNode, useMemo } from "react";
 
 import { useEnvironmentProviders } from "../../hooks/useEnvironmentProviders";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
-import { formatThreadMoveAccess, formatThreadMoveChanges } from "../../threadMove";
 import {
+  formatThreadMoveAccess,
+  formatThreadMoveArrival,
+  formatThreadMoveChanges,
+} from "../../threadMove";
+import { useThreadMoveStagedApprovalCheck } from "../../environments/links/threadMoves";
+import {
+  groupPendingLinkRequests,
+  type PendingMoveGroup,
   useComputerLabel,
   useLinkRequestAnswer,
+  useMoveGroupAnswer,
+  usePendingLinkRequests,
   type PendingLinkRequest,
 } from "../sidebar/linkedComputers";
 import { Button } from "../ui/button";
@@ -21,8 +30,9 @@ import { getPickerModelName } from "./providerIconUtils";
  * it would run on; the card leaves when that computer drops the request.
  *
  * A move (`kind: "move"`, Part 3) docks in the thread being moved: which
- * computers, the thread, what goes with it and where it lands, with the same
- * Deny and Allow.
+ * computers, the thread, what goes with it, how much of it is here already
+ * and where it lands, with the same Deny and Allow. When the same computer
+ * asks to move other threads too (Part 3c), it says so and offers Allow all.
  */
 export const ComposerRemoteStartPanel = memo(function ComposerRemoteStartPanel({
   pending,
@@ -43,6 +53,8 @@ export const ComposerRemoteStartPanel = memo(function ComposerRemoteStartPanel({
   // Shared with the inbox row: an answer sent from either holds both.
   const { answering, respond } = useLinkRequestAnswer(pending, computerLabel);
   const access = runtimeModeConfig[request.runtimeMode].label;
+  const moveArrival = request.move ? formatThreadMoveArrival(request.move) : null;
+  const moveGroup = useMoveGroupOf(pending);
   if (request.kind === "move") {
     return (
       <div
@@ -63,13 +75,23 @@ export const ComposerRemoteStartPanel = memo(function ComposerRemoteStartPanel({
           {request.move ? (
             <p className="text-xs text-muted-foreground" data-testid="remote-start-panel-summary">
               {formatThreadMoveChanges(request.move)}
+              {moveArrival !== null ? ` · ${moveArrival}` : null}
             </p>
           ) : null}
           <p className="text-xs text-muted-foreground" data-testid="remote-start-panel-where">
             Lands in {request.projectName} with up to {formatThreadMoveAccess(access)}.
           </p>
+          {moveGroup !== null ? (
+            <p className="text-xs text-muted-foreground" data-testid="remote-start-panel-group">
+              {request.fromLabel} wants to move {moveGroup.requests.length} threads here in all.
+            </p>
+          ) : null}
         </div>
-        <RemoteRequestAnswerButtons answering={answering} respond={respond} />
+        <RemoteRequestAnswerButtons answering={answering} respond={respond}>
+          {moveGroup !== null ? (
+            <AllowAllButton group={moveGroup} computerLabel={computerLabel} />
+          ) : null}
+        </RemoteRequestAnswerButtons>
       </div>
     );
   }
@@ -101,13 +123,58 @@ export const ComposerRemoteStartPanel = memo(function ComposerRemoteStartPanel({
   );
 });
 
+/** The other moves the same computer asked of this one, with this one; null when it asked only this. */
+function useMoveGroupOf(pending: PendingLinkRequest): PendingMoveGroup | null {
+  const all = usePendingLinkRequests();
+  const groupable = useThreadMoveStagedApprovalCheck();
+  const { environmentId, request } = pending;
+  return useMemo(() => {
+    if (request.kind !== "move") return null;
+    for (const item of groupPendingLinkRequests(all, groupable)) {
+      if (
+        item.kind === "moves" &&
+        item.environmentId === environmentId &&
+        item.requests.some((candidate) => candidate.requestId === request.requestId)
+      ) {
+        return item;
+      }
+    }
+    return null;
+  }, [all, environmentId, groupable, request.kind, request.requestId]);
+}
+
+/** Allow all of a computer's moves here at once (useMoveGroupAnswer). */
+function AllowAllButton({
+  group,
+  computerLabel,
+}: {
+  readonly group: PendingMoveGroup;
+  readonly computerLabel: string;
+}) {
+  const { answering, respond } = useMoveGroupAnswer(group, computerLabel);
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      disabled={answering !== null}
+      onClick={() => void respond(true)}
+      data-testid="remote-start-panel-allow-all"
+    >
+      Allow all {group.requests.length}
+    </Button>
+  );
+}
+
 /** Deny and Allow, held once an answer is on its way (useLinkRequestAnswer). */
 function RemoteRequestAnswerButtons({
   answering,
   respond,
+  children,
 }: {
   readonly answering: "allow" | "deny" | null;
   readonly respond: (allow: boolean) => Promise<void>;
+  /** More answers, between Deny and Allow. */
+  readonly children?: ReactNode;
 }) {
   return (
     <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
@@ -120,6 +187,7 @@ function RemoteRequestAnswerButtons({
       >
         Deny
       </Button>
+      {children}
       <Button
         size="sm"
         variant="default"

@@ -3,6 +3,7 @@ import {
   ChatSkillReferenceList,
   CheckpointRef,
   IsoDateTime,
+  LeadPassCeiling,
   MessageId,
   NonNegativeInt,
   OrchestrationCheckpointFile,
@@ -51,6 +52,7 @@ import {
   EMPTY_CHILD_REQUEST_STATE,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
   OrchestrationAwaitedBackgroundTask,
   OrchestrationSessionStartup,
@@ -63,7 +65,11 @@ import {
   RoomAgentInvite,
   ThreadMessageOrigin,
   OrchestrationThreadMove,
+  ThreadPendingMove,
   ThreadMovedFrom,
+  ThreadMoveOutcome,
+  ThreadMoveRestore,
+  ThreadAdoptedFromLink,
   ThreadRemoteOrigin,
   ThreadScheduledRun,
   ThreadWorktreeOrigin,
@@ -81,7 +87,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import type * as Statement from "effect/sql/Statement";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
+import { liveSideTurnFields } from "@threadlines/shared/sideTurns";
 import { hasPendingSettingsChange } from "@threadlines/shared/settingsChangeState";
+import { hasPendingSecretRequest } from "@threadlines/shared/secretRequestState";
 import {
   awaitedChildRequestCount,
   hasPendingChildApproval,
@@ -122,7 +130,10 @@ import {
   toProjectionThreadSubagent,
 } from "../../persistence/Layers/ProjectionThreadSubagents.ts";
 import { decodeWorkflowRunRows } from "../../persistence/Layers/ProjectionThreadWorkflowRuns.ts";
-import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
+import {
+  ProjectionSideTurnsJson,
+  ProjectionThread,
+} from "../../persistence/Services/ProjectionThreads.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
@@ -149,6 +160,7 @@ const ProjectionProjectCatalogDbRowSchema = Schema.Struct({
   kind: ProjectionProject.fields.kind,
   title: ProjectionProject.fields.title,
   workspaceRoot: ProjectionProject.fields.workspaceRoot,
+  leadThreadId: Schema.NullOr(ThreadId),
   createdAt: ProjectionProject.fields.createdAt,
   updatedAt: ProjectionProject.fields.updatedAt,
   deletedAt: ProjectionProject.fields.deletedAt,
@@ -162,6 +174,7 @@ type ThreadLineageRow = Pick<
   | "parentThreadId"
   | "parentTurnId"
   | "attachedToParent"
+  | "stopsWithParent"
   | "parentAttachmentEpoch"
   | "handedBackAt"
   | "handedBackTurnId"
@@ -173,9 +186,14 @@ type ThreadLineageRow = Pick<
   | "outsideOrigin"
   | "outsideWork"
   | "move"
+  | "pendingMove"
   | "movedFrom"
+  | "lastMoveOutcome"
+  | "moveRestoreOwed"
+  | "adoptedFromLink"
   | "historySeedOwed"
   | "historySeedMessageId"
+  | "nativeSession"
 >;
 
 /** Child threads: lineage and family as the decider and the thread detail read them. */
@@ -183,25 +201,34 @@ const threadLineageFields = (row: ThreadLineageRow) => ({
   parentThreadId: row.parentThreadId ?? null,
   parentTurnId: row.parentTurnId ?? null,
   attachedToParent: (row.attachedToParent ?? 0) > 0,
+  ...((row.stopsWithParent ?? 0) > 0 ? { stopsWithParent: true as const } : {}),
   parentAttachmentEpoch: row.parentAttachmentEpoch ?? 0,
   handedBackAt: row.handedBackAt ?? null,
   handedBackTurnId: row.handedBackTurnId ?? null,
   archivedWithParentAt: row.archivedWithParentAt ?? null,
   childRequests: row.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
   ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+  ...(row.adoptedFromLink ? { adoptedFromLink: row.adoptedFromLink } : {}),
   ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
   ...(row.worktreeOrigin ? { worktreeOrigin: row.worktreeOrigin } : {}),
   ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
   ...(row.outsideWork && row.outsideWork.length > 0 ? { outsideWork: row.outsideWork } : {}),
   ...threadMoveFields(row),
+  // What a move that didn't happen owes back: the server's alone, never on a shell.
+  ...(row.moveRestoreOwed ? { moveRestoreOwed: row.moveRestoreOwed } : {}),
   ...((row.historySeedOwed ?? 0) > 0 ? { historySeedOwed: true } : {}),
   ...(row.historySeedMessageId ? { historySeedMessageId: row.historySeedMessageId } : {}),
+  ...(row.nativeSession ? { nativeSession: row.nativeSession } : {}),
 });
 
 /** Moving a thread to a linked computer, or moved here from one (OrchestrationThreadMove). */
-const threadMoveFields = (row: Pick<ProjectionThread, "move" | "movedFrom">) => ({
+const threadMoveFields = (
+  row: Pick<ProjectionThread, "move" | "pendingMove" | "movedFrom" | "lastMoveOutcome">,
+) => ({
   ...(row.move ? { move: row.move } : {}),
+  ...(row.pendingMove ? { pendingMove: row.pendingMove } : {}),
   ...(row.movedFrom ? { movedFrom: row.movedFrom } : {}),
+  ...(row.lastMoveOutcome ? { lastMoveOutcome: row.lastMoveOutcome } : {}),
 });
 
 /**
@@ -219,11 +246,13 @@ const shellLineageFields = (row: ThreadLineageRow) => {
     parentThreadId: row.parentThreadId ?? null,
     parentTurnId: row.parentTurnId ?? null,
     attachedToParent: (row.attachedToParent ?? 0) > 0,
+    ...((row.stopsWithParent ?? 0) > 0 ? { stopsWithParent: true as const } : {}),
     handedBackAt: row.handedBackAt ?? null,
     handedBackTurnId: row.handedBackTurnId ?? null,
     awaitedChildThreadCount: awaitedChildRequestCount(childRequests),
     pendingChildApproval: hasPendingChildApproval(childRequests),
     ...(row.remoteOrigin ? { remoteOrigin: row.remoteOrigin } : {}),
+    ...(row.adoptedFromLink ? { adoptedFromLink: row.adoptedFromLink } : {}),
     ...(row.scheduledRun ? { scheduledRun: row.scheduledRun } : {}),
     ...(row.worktreeOrigin ? { worktreeOrigin: row.worktreeOrigin } : {}),
     ...(row.outsideOrigin ? { outsideOrigin: row.outsideOrigin } : {}),
@@ -260,6 +289,9 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     sentFrom: Schema.NullOr(Schema.fromJsonString(MessageSentFrom)),
     trigger: Schema.NullOr(MessageTrigger),
     notSent: Schema.NullOr(Schema.Number),
+    afterMove: Schema.optional(Schema.NullOr(Schema.Number)),
+    requestCeiling: Schema.optional(Schema.NullOr(Schema.fromJsonString(LeadPassCeiling))),
+    passBlocked: Schema.optional(Schema.NullOr(Schema.Number)),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan.mapFields(
@@ -278,7 +310,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     ),
     queuedFollowUps: Schema.fromJsonString(Schema.Array(OrchestrationQueuedFollowUp)),
     participants: Schema.fromJsonString(Schema.Array(OrchestrationThreadParticipant)),
-    sideTurn: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn))),
+    sideTurns: Schema.optional(Schema.NullOr(ProjectionSideTurnsJson)),
     roomContext: Schema.optional(
       Schema.fromJsonString(Schema.Record(Schema.String, OrchestrationRoomContextCursor)),
     ),
@@ -294,6 +326,9 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     settingsRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSettingsChangeRequest))),
     ),
+    secretRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSecretRequest))),
+    ),
     remoteOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin))),
     scheduledRun: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun))),
     worktreeOrigin: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadWorktreeOrigin))),
@@ -302,7 +337,11 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
       Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationOutsideWork))),
     ),
     move: Schema.optional(Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove))),
+    pendingMove: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadPendingMove))),
     movedFrom: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom))),
+    lastMoveOutcome: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMoveOutcome))),
+    moveRestoreOwed: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadMoveRestore))),
+    adoptedFromLink: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadAdoptedFromLink))),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -400,6 +439,9 @@ const ProjectionStateDbRowSchema = ProjectionState;
 const ProjectionCountsRowSchema = Schema.Struct({
   projectCount: Schema.Number,
   threadCount: Schema.Number,
+  leadChatCount: Schema.Number,
+  projectsWithBriefCount: Schema.Number,
+  projectNoteCount: Schema.Number,
 });
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
@@ -552,6 +594,7 @@ function mapSessionRow(
     ...(row.lastErrorDismissedAt ? { lastErrorDismissedAt: row.lastErrorDismissedAt } : {}),
     ...(row.lastErrorUsageLimit ? { lastErrorUsageLimit: row.lastErrorUsageLimit } : {}),
     ...(row.continueAtReset ? { continueAtReset: row.continueAtReset } : {}),
+    ...(row.stopRequestedTurnId ? { stopRequestedTurnId: row.stopRequestedTurnId } : {}),
     updatedAt: row.updatedAt,
   };
 }
@@ -592,7 +635,7 @@ function mapThreadShellRow(
       : {}),
     queuedFollowUps: row.queuedFollowUps ?? [],
     participants: row.participants ?? [],
-    ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+    ...liveSideTurnFields(row.sideTurns),
     ...(row.agentRole ? { agentRole: row.agentRole } : {}),
     doneOverride: mapThreadDoneOverride(row),
     lastSeenAt: row.lastSeenAt ?? null,
@@ -600,10 +643,12 @@ function mapThreadShellRow(
     latestUserMessageAt: row.latestUserMessageAt,
     ...shellLineageFields(row),
     pendingSettingsChange: hasPendingSettingsChange(row.settingsRequests ?? []),
+    pendingSecretRequest: hasPendingSecretRequest(row.secretRequests ?? []),
     hasPendingApprovals:
       row.pendingApprovalCount > 0 ||
       hasPendingChildApproval(row.childRequests ?? EMPTY_CHILD_REQUEST_STATE) ||
-      hasPendingSettingsChange(row.settingsRequests ?? []),
+      hasPendingSettingsChange(row.settingsRequests ?? []) ||
+      hasPendingSecretRequest(row.secretRequests ?? []),
     hasPendingUserInput: row.pendingUserInputCount > 0 || hasAwaitingInvite(row.agentRequests),
     hasBlockingUserInput: row.blockingUserInputCount > 0,
     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
@@ -639,6 +684,9 @@ function mapThreadMessageRow(
     ...(row.sentFrom !== null ? { sentFrom: row.sentFrom } : {}),
     ...(row.trigger !== null ? { trigger: row.trigger } : {}),
     ...(row.notSent === 1 ? { notSent: true as const } : {}),
+    ...(row.afterMove === 1 ? { afterMove: true as const } : {}),
+    ...(row.requestCeiling != null ? { requestCeiling: row.requestCeiling } : {}),
+    ...(row.passBlocked === 1 ? { passBlocked: true as const } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -743,6 +791,7 @@ function mapProjectShellRow(
     defaultModelSelection: row.defaultModelSelection,
     scripts: row.scripts,
     ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
+    ...((row.leadThreadId ?? null) !== null ? { leadThreadId: row.leadThreadId } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -868,6 +917,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           phone_alerts_muted AS "phoneAlertsMuted",
+          lead_thread_id AS "leadThreadId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -882,15 +932,22 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: () =>
       sql`
         SELECT
-          project_id AS "projectId",
-          kind,
-          title,
-          workspace_root AS "workspaceRoot",
-          created_at AS "createdAt",
-          updated_at AS "updatedAt",
-          deleted_at AS "deletedAt"
-        FROM projection_projects
-        ORDER BY created_at ASC, project_id ASC
+          p.project_id AS "projectId",
+          p.kind,
+          p.title,
+          p.workspace_root AS "workspaceRoot",
+          lead.thread_id AS "leadThreadId",
+          p.created_at AS "createdAt",
+          p.updated_at AS "updatedAt",
+          p.deleted_at AS "deletedAt"
+        FROM projection_projects p
+        -- A pointer at an archived, deleted or missing thread is no lead.
+        LEFT JOIN projection_threads lead
+          ON lead.thread_id = p.lead_thread_id
+          AND lead.project_id = p.project_id
+          AND lead.archived_at IS NULL
+          AND lead.deleted_at IS NULL
+        ORDER BY p.created_at ASC, p.project_id ASC
       `,
   });
 
@@ -925,7 +982,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           agent_role AS "agentRole",
           room_context AS "roomContext",
           sent_models AS "sentModels",
@@ -933,21 +990,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -993,7 +1057,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           agent_role AS "agentRole",
           room_context AS "roomContext",
           sent_models AS "sentModels",
@@ -1001,21 +1065,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1063,7 +1134,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           agent_role AS "agentRole",
           room_context AS "roomContext",
           sent_models AS "sentModels",
@@ -1071,21 +1142,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1133,6 +1211,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sent_from AS "sentFrom",
           message_trigger AS "trigger",
           not_sent AS "notSent",
+          after_move AS "afterMove",
+          request_ceiling AS "requestCeiling",
+          pass_blocked AS "passBlocked",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1194,6 +1275,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sent_from AS "sentFrom",
           message_trigger AS "trigger",
           not_sent AS "notSent",
+          after_move AS "afterMove",
+          request_ceiling AS "requestCeiling",
+          pass_blocked AS "passBlocked",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1352,6 +1436,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error_dismissed_at AS "lastErrorDismissedAt",
           last_error_usage_limit AS "lastErrorUsageLimit",
           continue_at_reset AS "continueAtReset",
+          stop_requested_turn_id AS "stopRequestedTurnId",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -1407,6 +1492,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.last_error_dismissed_at AS "lastErrorDismissedAt",
           sessions.last_error_usage_limit AS "lastErrorUsageLimit",
           sessions.continue_at_reset AS "continueAtReset",
+          sessions.stop_requested_turn_id AS "stopRequestedTurnId",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -1442,6 +1528,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.last_error_dismissed_at AS "lastErrorDismissedAt",
           sessions.last_error_usage_limit AS "lastErrorUsageLimit",
           sessions.continue_at_reset AS "continueAtReset",
+          sessions.stop_requested_turn_id AS "stopRequestedTurnId",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -1456,13 +1543,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Request: Schema.Void,
     Result: Schema.Struct({
       threadId: ThreadId,
-      sideTurn: Schema.fromJsonString(OrchestrationSideTurn),
+      sideTurns: ProjectionSideTurnsJson,
     }),
     execute: () =>
       sql`
         SELECT
           thread_id AS "threadId",
-          side_turn AS "sideTurn"
+          side_turn AS "sideTurns"
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NOT NULL
@@ -1653,6 +1740,25 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  // Threads holding key requests: startup recovery of claimed ones and the
+  // expiry timers of saved `commands` files.
+  const listSecretRequestRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      threadId: ThreadId,
+      secretRequests: Schema.fromJsonString(Schema.Array(OrchestrationSecretRequest)),
+    }),
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          secret_requests AS "secretRequests"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND secret_requests IS NOT NULL
+      `,
+  });
+
   // ISO-8601 UTC stamps compare lexicographically, so the window predicate is
   // plain string comparison. A turn overlaps the window if it started or
   // completed at/after `sinceIso`; a turn that started earlier and is still
@@ -1779,7 +1885,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           (SELECT COUNT(*) FROM projection_projects) AS "projectCount",
-          (SELECT COUNT(*) FROM projection_threads) AS "threadCount"
+          (SELECT COUNT(*) FROM projection_threads) AS "threadCount",
+          (
+            SELECT COUNT(*)
+            FROM projection_projects p
+            INNER JOIN projection_threads lead
+              ON lead.thread_id = p.lead_thread_id
+              AND lead.project_id = p.project_id
+              AND lead.archived_at IS NULL
+              AND lead.deleted_at IS NULL
+            WHERE p.deleted_at IS NULL
+          ) AS "leadChatCount",
+          (
+            SELECT COUNT(*)
+            FROM project_briefs b
+            INNER JOIN projection_projects p ON p.project_id = b.project_id
+            WHERE p.deleted_at IS NULL AND TRIM(b.text) != ''
+          ) AS "projectsWithBriefCount",
+          (
+            SELECT COUNT(*)
+            FROM project_notes n
+            INNER JOIN projection_projects p ON p.project_id = n.project_id
+            WHERE p.deleted_at IS NULL
+          ) AS "projectNoteCount"
       `,
   });
 
@@ -1796,6 +1924,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           phone_alerts_muted AS "phoneAlertsMuted",
+          lead_thread_id AS "leadThreadId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1820,6 +1949,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           phone_alerts_muted AS "phoneAlertsMuted",
+          lead_thread_id AS "leadThreadId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
@@ -1896,7 +2026,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           agent_role AS "agentRole",
           room_context AS "roomContext",
           sent_models AS "sentModels",
@@ -1904,21 +2034,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -1936,12 +2073,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
-  const listThreadMessageRowsByThread = SqlSchema.findAll({
-    Request: ThreadIdLookupInput,
-    Result: ProjectionThreadMessageDbRowSchema,
-    execute: ({ threadId }) =>
-      sql`
-        SELECT
+  /** Every column a thread message row is read with. */
+  const threadMessageColumns = sql`
           message_id AS "messageId",
           event_sequence AS "eventSequence",
           thread_id AS "threadId",
@@ -1967,12 +2100,46 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sent_from AS "sentFrom",
           message_trigger AS "trigger",
           not_sent AS "notSent",
+          after_move AS "afterMove",
+          request_ceiling AS "requestCeiling",
+          pass_blocked AS "passBlocked",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
+  `;
+
+  const listThreadMessageRowsByThread = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT ${threadMessageColumns}
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
         ORDER BY event_sequence ASC, created_at ASC, message_id ASC
+      `,
+  });
+
+  const getThreadMessageRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, messageId: MessageId }),
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId, messageId }) =>
+      sql`
+        SELECT ${threadMessageColumns}
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId} AND message_id = ${messageId}
+      `,
+  });
+
+  const getAssistantMessageIdForTurnRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, turnId: TurnId }),
+    Result: Schema.Struct({ messageId: MessageId }),
+    execute: ({ threadId, turnId }) =>
+      sql`
+        SELECT message_id AS "messageId"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId} AND role = 'assistant'
+        LIMIT 1
       `,
   });
 
@@ -2038,18 +2205,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               {
                 readonly threadId: ThreadId;
                 session: OrchestrationSession | null;
-                sideTurn: OrchestrationSideTurn | null;
+                sideTurns: ReadonlyArray<OrchestrationSideTurn>;
               }
             >();
             const entryFor = (threadId: ThreadId) => {
               const existing = byThread.get(threadId);
               if (existing !== undefined) return existing;
-              const created = { threadId, session: null, sideTurn: null };
+              const created = { threadId, session: null, sideTurns: [] };
               byThread.set(threadId, created);
               return created;
             };
             for (const row of sessionRows) entryFor(row.threadId).session = mapSessionRow(row);
-            for (const row of sideTurnRows) entryFor(row.threadId).sideTurn = row.sideTurn;
+            for (const row of sideTurnRows) entryFor(row.threadId).sideTurns = row.sideTurns;
             return [...byThread.values()];
           }),
           Effect.mapError(
@@ -2322,6 +2489,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error_dismissed_at AS "lastErrorDismissedAt",
           last_error_usage_limit AS "lastErrorUsageLimit",
           continue_at_reset AS "continueAtReset",
+          stop_requested_turn_id AS "stopRequestedTurnId",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -2497,6 +2665,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               kind: row.kind,
               title: row.title,
               workspaceRoot: row.workspaceRoot,
+              ...(row.leadThreadId !== null ? { leadThreadId: row.leadThreadId } : {}),
               createdAt: row.createdAt,
               updatedAt: row.updatedAt,
               deletedAt: row.deletedAt,
@@ -2785,6 +2954,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 defaultModelSelection: row.defaultModelSelection,
                 scripts: row.scripts,
                 ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
+                ...((row.leadThreadId ?? null) !== null ? { leadThreadId: row.leadThreadId } : {}),
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
                 deletedAt: row.deletedAt,
@@ -2819,7 +2989,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 participants: row.participants ?? [],
                 agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
                 ...threadLineageFields(row),
-                ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                ...liveSideTurnFields(row.sideTurns),
                 ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                 ...(row.roomContext && Object.keys(row.roomContext).length > 0
                   ? { roomContext: row.roomContext }
@@ -2836,6 +3006,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 commandRequests: commandRequestsByThread.get(row.threadId) ?? [],
                 commandRuns: commandRunsByThread.get(row.threadId) ?? [],
                 settingsRequests: row.settingsRequests ?? [],
+                secretRequests: row.secretRequests ?? [],
                 activities: dropStaleContextWindowActivities(
                   retainThreadActivities(
                     activitiesByThread.get(row.threadId) ?? [],
@@ -3013,6 +3184,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   defaultModelSelection: row.defaultModelSelection,
                   scripts: row.scripts,
                   ...(row.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
+                  ...((row.leadThreadId ?? null) !== null
+                    ? { leadThreadId: row.leadThreadId }
+                    : {}),
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   deletedAt: row.deletedAt,
@@ -3140,7 +3314,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   participants: row.participants ?? [],
                   agentRequests: row.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
                   ...threadLineageFields(row),
-                  ...(row.sideTurn ? { sideTurn: row.sideTurn } : {}),
+                  ...liveSideTurnFields(row.sideTurns),
                   ...(row.agentRole ? { agentRole: row.agentRole } : {}),
                   ...(row.roomContext && Object.keys(row.roomContext).length > 0
                     ? { roomContext: row.roomContext }
@@ -3157,6 +3331,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   commandRequests: commandRequestsByThread.get(row.threadId) ?? [],
                   commandRuns: commandRunsByThread.get(row.threadId) ?? [],
                   settingsRequests: row.settingsRequests ?? [],
+                  secretRequests: row.secretRequests ?? [],
                   activities: [],
                   workflowRuns: workflowRunsByThread.get(row.threadId) ?? [],
                   checkpoints: [],
@@ -3465,6 +3640,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       Effect.map((row): ProjectionSnapshotCounts => ({
         projectCount: row.projectCount,
         threadCount: row.threadCount,
+        leadChatCount: row.leadChatCount,
+        projectsWithBriefCount: row.projectsWithBriefCount,
+        projectNoteCount: row.projectNoteCount,
       })),
     );
 
@@ -3491,6 +3669,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     defaultModelSelection: option.value.defaultModelSelection,
                     scripts: option.value.scripts,
                     ...(option.value.phoneAlertsMuted ? { phoneAlertsMuted: true } : {}),
+                    ...((option.value.leadThreadId ?? null) !== null
+                      ? { leadThreadId: option.value.leadThreadId }
+                      : {}),
                     createdAt: option.value.createdAt,
                     updatedAt: option.value.updatedAt,
                     deletedAt: option.value.deletedAt,
@@ -3653,6 +3834,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       );
 
+  const listSecretRequests: ProjectionSnapshotQueryShape["listSecretRequests"] = () =>
+    listSecretRequestRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listSecretRequests:query",
+          "ProjectionSnapshotQuery.listSecretRequests:decodeRows",
+        ),
+      ),
+    );
+
   const listThreadTurnOverlapsSince: ProjectionSnapshotQueryShape["listThreadTurnOverlapsSince"] = (
     input,
   ) =>
@@ -3692,7 +3883,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     dismissed_pull_requests AS "dismissedPullRequests",
     queued_follow_ups AS "queuedFollowUps",
     participants AS "participants",
-    side_turn AS "sideTurn",
+    side_turn AS "sideTurns",
     agent_role AS "agentRole",
     room_context AS "roomContext",
     sent_models AS "sentModels",
@@ -3700,21 +3891,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     parent_thread_id AS "parentThreadId",
     parent_turn_id AS "parentTurnId",
     attached_to_parent AS "attachedToParent",
+    stops_with_parent AS "stopsWithParent",
     parent_attachment_epoch AS "parentAttachmentEpoch",
     handed_back_at AS "handedBackAt",
     handed_back_turn_id AS "handedBackTurnId",
     archived_with_parent_at AS "archivedWithParentAt",
     child_requests AS "childRequests",
     settings_requests AS "settingsRequests",
+    secret_requests AS "secretRequests",
     remote_origin_json AS "remoteOrigin",
     scheduled_run_json AS "scheduledRun",
     worktree_origin_json AS "worktreeOrigin",
     outside_origin_json AS "outsideOrigin",
     outside_work_json AS "outsideWork",
     move_json AS "move",
+    pending_move_json AS "pendingMove",
     moved_from_json AS "movedFrom",
+    last_move_outcome_json AS "lastMoveOutcome",
+    move_restore_owed_json AS "moveRestoreOwed",
+    adopted_from_link_json AS "adoptedFromLink",
     history_seed_owed AS "historySeedOwed",
     history_seed_message_id AS "historySeedMessageId",
+    native_session AS "nativeSession",
     done_override AS "doneOverride",
     done_override_at AS "doneOverrideAt",
     last_seen_at AS "lastSeenAt",
@@ -3745,6 +3943,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ...(input.includeArchived === true ? [] : [sql`archived_at IS NULL`]),
             ...(input.threadIds !== undefined ? [sql.in("thread_id", input.threadIds)] : []),
             ...(input.projectIds !== undefined ? [sql.in("project_id", input.projectIds)] : []),
+            ...(input.parentThreadId !== undefined
+              ? [sql`parent_thread_id = ${input.parentThreadId}`]
+              : []),
             ...(input.outsideConnectionId !== undefined
               ? [
                   sql`json_extract(outside_origin_json, '$.connectionId') = ${input.outsideConnectionId}`,
@@ -3783,6 +3984,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               last_error_dismissed_at AS "lastErrorDismissedAt",
               last_error_usage_limit AS "lastErrorUsageLimit",
               continue_at_reset AS "continueAtReset",
+              stop_requested_turn_id AS "stopRequestedTurnId",
+          stop_requested_turn_id AS "stopRequestedTurnId",
               updated_at AS "updatedAt"
             FROM projection_thread_sessions
             WHERE ${sql.in("thread_id", threadIds)}
@@ -3881,6 +4084,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         }),
       );
     });
+
+  const getThreadMessage: ProjectionSnapshotQueryShape["getThreadMessage"] = (input) =>
+    getThreadMessageRow(input).pipe(
+      Effect.map(Option.map(mapThreadMessageRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getThreadMessage:query",
+          "ProjectionSnapshotQuery.getThreadMessage:decodeRow",
+        ),
+      ),
+    );
+
+  const hasAssistantMessageForTurn: ProjectionSnapshotQueryShape["hasAssistantMessageForTurn"] = (
+    input,
+  ) =>
+    getAssistantMessageIdForTurnRow(input).pipe(
+      Effect.map(Option.isSome),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.hasAssistantMessageForTurn:query",
+          "ProjectionSnapshotQuery.hasAssistantMessageForTurn:decodeRow",
+        ),
+      ),
+    );
 
   const getTurnActivities: ProjectionSnapshotQueryShape["getTurnActivities"] = (input) =>
     listThreadActivityRowsByTurn(input).pipe(
@@ -4048,7 +4275,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         participants: threadRow.value.participants ?? [],
         agentRequests: threadRow.value.agentRequests ?? EMPTY_AGENT_REQUEST_STATE,
         ...threadLineageFields(threadRow.value),
-        ...(threadRow.value.sideTurn ? { sideTurn: threadRow.value.sideTurn } : {}),
+        ...liveSideTurnFields(threadRow.value.sideTurns),
         ...(threadRow.value.agentRole ? { agentRole: threadRow.value.agentRole } : {}),
         ...(threadRow.value.roomContext && Object.keys(threadRow.value.roomContext).length > 0
           ? { roomContext: threadRow.value.roomContext }
@@ -4067,6 +4294,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           .slice(-MAX_THREAD_COMMAND_REQUESTS),
         commandRuns: commandRunRows.map((row) => row.json).slice(-MAX_THREAD_COMMAND_RUNS),
         settingsRequests: threadRow.value.settingsRequests ?? [],
+        secretRequests: threadRow.value.secretRequests ?? [],
         // The whole window, superseded context-window readings included: it is
         // what the live feed holds, and the chat tells that older turns' steps
         // were cut from it being full (turnsWithCutSteps in the web app).
@@ -4110,10 +4338,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     listThreadTurnOverlapsSince,
     listThreadIdsWithOpenAgentRequests,
     listClaimedSettingsChanges,
+    listSecretRequests,
     listThreadShells,
     getThreadShellById,
     getThreadDetailById,
     getTurnActivities,
+    getThreadMessage,
+    hasAssistantMessageForTurn,
   } satisfies ProjectionSnapshotQueryShape;
 });
 

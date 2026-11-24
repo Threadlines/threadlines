@@ -45,6 +45,8 @@ export interface ServerDerivedPaths {
   readonly environmentIdPath: string;
   readonly serverRuntimeStatePath: string;
   readonly secretsDir: string;
+  /** Keys agents asked for, kept for their commands (docs/design/secret-requests.md). */
+  readonly agentSecretsDir: string;
   /** Shared by dev and userdata: speech models are large and platform-wide. */
   readonly speechModelsDir: string;
 }
@@ -148,6 +150,7 @@ export const deriveServerPaths = Effect.fn(function* (
     environmentIdPath: join(stateDir, "environment-id"),
     serverRuntimeStatePath: join(stateDir, "server-runtime.json"),
     secretsDir: join(stateDir, "secrets"),
+    agentSecretsDir: join(stateDir, "agent-secrets"),
     speechModelsDir: join(baseDir, "models", "speech"),
   };
 });

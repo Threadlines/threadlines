@@ -3,17 +3,21 @@ import {
   ChildRequestBatchId,
   ChildRequestId,
   CommandId,
+  CommandRunId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EMPTY_AGENT_REQUEST_STATE,
   EnvironmentId,
   EMPTY_CHILD_REQUEST_STATE,
   EventId,
   MessageId,
+  type OrchestrationCheckBack,
   type OrchestrationCommand,
+  type OrchestrationCommandRun,
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type OrchestrationSession,
   type OrchestrationThread,
+  OutsideAgentConnectionId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -23,7 +27,12 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
 
-import { childReportMessageId, isCancelledReport } from "./childThreadDecisions.ts";
+import {
+  childReportMessageId,
+  childRevertRefusal,
+  isCancelledReport,
+} from "./childThreadDecisions.ts";
+import { reportRecipient } from "./childReports.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -499,6 +508,89 @@ describe("decider child threads", () => {
     expect(threadIn(unarchived.model, settled.id).archivedAt).toBeNull();
   });
 
+  it("archiving a parent separates a child with a dev server or a terminal command still running", async () => {
+    // Archiving stops each archived child's runtime and closes its terminals.
+    const commandRun = (status: OrchestrationCommandRun["status"]): OrchestrationCommandRun => ({
+      runId: CommandRunId.make(`run-${status}`),
+      terminalId: "terminal-1",
+      mode: "run",
+      dialect: "posix",
+      command: "pnpm dev",
+      source: { kind: "message", messageId: MessageId.make("reply-1") },
+      turnId: TurnId.make("child-turn-1"),
+      participantId: null,
+      cwd: "/repo",
+      autoSend: false,
+      status,
+      startedAt: now,
+      finishedAt: status === "finished" ? now : null,
+      exitCode: status === "finished" ? 0 : null,
+      error: null,
+      hasOutput: true,
+      heldReason: null,
+      outputSentAt: null,
+      outputMessageId: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const child = (id: string, overrides: Partial<OrchestrationThread>) =>
+      thread(ThreadId.make(id), { parentThreadId: PARENT, attachedToParent: true, ...overrides });
+    // A dev server its agent doesn't wait on: the turn is over.
+    const devServer = child("dev-server", {
+      session: session(ThreadId.make("dev-server"), {
+        status: "ready",
+        activeTurnId: null,
+        pendingBackgroundTaskCount: 1,
+        awaitedBackgroundTaskCount: 0,
+      }),
+    });
+    const inTerminal = child("in-terminal", { commandRuns: [commandRun("running")] });
+    const ranEarlier = child("ran-earlier", { commandRuns: [commandRun("finished")] });
+    const archived = await run(readModel([thread(PARENT), devServer, inTerminal, ranEarlier]), {
+      type: "thread.archive",
+      commandId: CommandId.make("archive"),
+      threadId: PARENT,
+    });
+    for (const live of [devServer, inTerminal]) {
+      expect(threadIn(archived.model, live.id).archivedAt).toBeNull();
+      expect(threadIn(archived.model, live.id).attachedToParent).toBe(false);
+    }
+    expect(threadIn(archived.model, ranEarlier.id).archivedAt).not.toBeNull();
+  });
+
+  it("archiving a parent separates a child whose check-back would die with its runtime", async () => {
+    const checkBack = (id: string, durable: boolean): OrchestrationCheckBack => ({
+      id,
+      participantId: null,
+      scheduledFor: at(20 * 60),
+      exact: true,
+      recurring: false,
+      durable,
+    });
+    const child = (id: string, checkBacks: ReadonlyArray<OrchestrationCheckBack>) =>
+      thread(ThreadId.make(id), { parentThreadId: PARENT, attachedToParent: true, checkBacks });
+    // Idle after answering, set to come back in its session.
+    const willCheckBack = child("will-check-back", [checkBack("cb-soon", false)]);
+    // Saved to disk: it outlives the session the archive stops.
+    const savedCheckBack = child("saved-check-back", [checkBack("cb-saved", true)]);
+    const archived = await run(readModel([thread(PARENT), willCheckBack, savedCheckBack]), {
+      type: "thread.archive",
+      commandId: CommandId.make("archive"),
+      threadId: PARENT,
+    });
+    const eventsFor = (id: ThreadId) =>
+      archived.events
+        .filter((event) => "threadId" in event.payload && event.payload.threadId === id)
+        .map((event) => event.type);
+    expect(eventsFor(willCheckBack.id)).toEqual(["thread.parent-attachment-set"]);
+    // Archived with its parent, it owes it nothing more: its epoch moves.
+    expect(eventsFor(savedCheckBack.id)).toEqual([
+      "thread.archived",
+      "thread.parent-attachment-set",
+    ]);
+    expect(threadIn(archived.model, willCheckBack.id).archivedAt).toBeNull();
+  });
+
   it("lets only the server start a thread as another's child, and never under a child", async () => {
     const childOfChild: OrchestrationCommand = {
       type: "thread.create",
@@ -806,6 +898,41 @@ describe("decider child threads", () => {
     });
     expect(threadIn(stopped.model, PARENT).queuedFollowUps).toEqual([]);
     expect(threadIn(stopped.model, CHILD).parentAttachmentEpoch).toBe(1);
+  });
+
+  it("thread_stop counts the turn it cut off as handed back, so the child can wrap itself", async () => {
+    const family = await familyWithRunningChild();
+    const childTurn = TurnId.make("child-turn-1");
+    const withTurn = (state: "running" | "completed") => ({
+      ...family,
+      threads: family.threads.map((entry) =>
+        entry.id === CHILD
+          ? {
+              ...entry,
+              latestTurn: {
+                turnId: childTurn,
+                state,
+                requestedAt: at(3),
+                startedAt: at(3),
+                completedAt: state === "running" ? null : at(4),
+                assistantMessageId: null,
+              },
+            }
+          : entry,
+      ),
+    });
+    const stop = {
+      type: "thread.children.stop" as const,
+      commandId: CommandId.make("stop-children"),
+      threadId: PARENT,
+      childThreadIds: [CHILD],
+      createdAt: at(5),
+    };
+    const stopped = await run(withTurn("running"), stop);
+    expect(threadIn(stopped.model, CHILD).handedBackTurnId).toBe(childTurn);
+    // A turn that already finished (the user's, say) stays the user's to read.
+    const idle = await run(withTurn("completed"), stop);
+    expect(threadIn(idle.model, CHILD).handedBackTurnId).toBeNull();
   });
 
   it("a separated child keeps the parent's message still queued for it, as its own work", async () => {
@@ -1551,3 +1678,1910 @@ describe("decider on a child's computer", () => {
     expect((await run(reopened.model, wrap("done", 25, "late-linked-wrap"))).events).toEqual([]);
   });
 });
+
+describe("decider: a parent's agent wraps up its thread (thread_wrap)", () => {
+  const finished = {
+    turnId: TurnId.make("child-turn"),
+    state: "completed" as const,
+    requestedAt: at(1),
+    startedAt: at(1),
+    completedAt: at(5),
+    assistantMessageId: null,
+  };
+  const family = (child: Partial<OrchestrationThread> = {}) =>
+    readModel([
+      thread(PARENT),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        latestTurn: finished,
+        ...child,
+      }),
+    ]);
+  const wrap = (byParentAgent: ThreadId) => ({
+    type: "thread.done-override.set" as const,
+    commandId: CommandId.make(`agent-wrap:${byParentAgent}`),
+    threadId: CHILD,
+    state: "done" as const,
+    at: at(20),
+    byParentAgent,
+  });
+
+  it("wraps a finished child up as seen, and refuses another thread's or a working one", async () => {
+    const wrapped = await run(family(), wrap(PARENT));
+    // Seen in the same step, so its unread answer doesn't keep it in view.
+    expect(threadIn(wrapped.model, CHILD)).toMatchObject({
+      doneOverride: { state: "done", at: at(20) },
+      lastSeenAt: at(20),
+    });
+    expect(await refused(family(), wrap(ThreadId.make("stranger")))).toBe(true);
+    expect(await refused(family({ attachedToParent: false }), wrap(PARENT))).toBe(true);
+    expect(
+      await refused(
+        family({ latestTurn: { ...finished, state: "running", completedAt: null } }),
+        wrap(PARENT),
+      ),
+    ).toBe(true);
+  });
+
+  it("leaves a child the user has been writing to for the user to wrap up", async () => {
+    const question = {
+      id: MessageId.make("user-question"),
+      role: "user" as const,
+      text: "Why did you pick that name?",
+      composer: "typed" as const,
+      turnId: TurnId.make("child-turn"),
+      streaming: false,
+      createdAt: at(4),
+      updatedAt: at(4),
+    };
+    const asked = family({ handedBackAt: at(3), messages: [question] });
+    expect(await refused(asked, wrap(PARENT))).toBe(true);
+    // Before its answer went back, it was the parent's work.
+    expect(await refused(family({ handedBackAt: at(5), messages: [question] }), wrap(PARENT))).toBe(
+      false,
+    );
+  });
+});
+
+describe("decider for a link's thread its asker took back (Part 3f, (g))", () => {
+  const origin = {
+    linkDeviceId: "device-windows",
+    environmentId: EnvironmentId.make("env-windows"),
+    environmentPinned: true,
+    environmentLabel: "Windows PC",
+    threadId: ThreadId.make("windows-parent"),
+    threadTitle: "Ship the 0.6 release",
+  };
+  const running = {
+    turnId: TurnId.make("user-turn"),
+    state: "running" as const,
+    requestedAt: at(1),
+    startedAt: at(1),
+    completedAt: null,
+    assistantMessageId: null,
+  };
+  const session = {
+    threadId: CHILD,
+    status: "running" as const,
+    providerName: "codex",
+    runtimeMode: "auto" as const,
+    activeTurnId: TurnId.make("user-turn"),
+    lastError: null,
+    updatedAt: at(1),
+  };
+  /** The same thread, still the link's, and taken back as a child here. */
+  const stillTheLinks = readModel([
+    thread(CHILD, { remoteOrigin: origin, latestTurn: running, session }),
+  ]);
+  const takenBack = readModel([
+    thread(CHILD, {
+      remoteOrigin: null,
+      adoptedFromLink: { environmentId: origin.environmentId, label: "Windows PC", fenced: true },
+      latestTurn: running,
+      session,
+    }),
+  ]);
+  const byLink = { byLink: "device-windows" };
+
+  it("a stop, a Wrap up or an answer's record the link asked for is refused once it isn't the link's", async () => {
+    const stop = {
+      type: "thread.session.stop" as const,
+      commandId: CommandId.make("link-stop"),
+      threadId: CHILD,
+      createdAt: at(10),
+      ...byLink,
+    };
+    const wrap = {
+      type: "thread.done-override.set" as const,
+      commandId: CommandId.make("link-wrap"),
+      threadId: CHILD,
+      state: "done" as const,
+      at: at(10),
+      fromLinkedComputer: true,
+      ...byLink,
+    };
+    const record = {
+      type: "thread.remote-handed-back.record" as const,
+      commandId: CommandId.make("link-record"),
+      threadId: CHILD,
+      turnId: TurnId.make("user-turn"),
+      createdAt: at(10),
+      ...byLink,
+    };
+    expect((await run(stillTheLinks, stop)).events.length).toBeGreaterThan(0);
+    expect((await run(stillTheLinks, wrap)).events.length).toBeGreaterThan(0);
+    expect(await refused(stillTheLinks, record)).toBe(false);
+
+    expect(await refused(takenBack, stop)).toBe(true);
+    expect(await refused(takenBack, wrap)).toBe(true);
+    expect(await refused(takenBack, record)).toBe(true);
+    // This computer's own stop still stops it.
+    const { byLink: _, ...own } = stop;
+    expect((await run(takenBack, own)).events.length).toBeGreaterThan(0);
+  });
+
+  it("a link's queued request is taken back, not run, once the thread isn't the link's", async () => {
+    const messageId = MessageId.make("link-message");
+    const queued = {
+      messageId,
+      text: "Add the security fixes too.",
+      attachments: [],
+      fromThread: {
+        threadId: origin.threadId,
+        requestId: ChildRequestId.make("send-1"),
+        kind: "request" as const,
+        environmentId: origin.environmentId,
+      },
+      runtimeMode: "auto" as const,
+      interactionMode: "default" as const,
+      createdAt: at(2),
+    };
+    const idle = { latestTurn: null, session: null, queuedFollowUps: [queued] };
+    const sendQueued = {
+      type: "thread.follow-up.send-queued" as const,
+      commandId: CommandId.make("send-queued"),
+      threadId: CHILD,
+      messageId,
+      createdAt: at(10),
+    };
+    const sent = await run(
+      readModel([thread(CHILD, { remoteOrigin: origin, ...idle })]),
+      sendQueued,
+    );
+    expect(sent.events.map((event) => event.type)).toContain("thread.turn-start-requested");
+    const taken = await run(
+      readModel([thread(CHILD, { remoteOrigin: null, ...idle })]),
+      sendQueued,
+    );
+    expect(taken.events.map((event) => event.type)).toEqual(["thread.follow-up-unqueued"]);
+    expect(taken.events[0]?.payload).toMatchObject({ reason: "cancelled" });
+  });
+});
+
+describe("decider: a stop meant for one turn", () => {
+  const turn = (turnId: string) => ({
+    latestTurn: {
+      turnId: TurnId.make(turnId),
+      state: "running" as const,
+      requestedAt: at(1),
+      startedAt: at(1),
+      completedAt: null,
+      assistantMessageId: null,
+    },
+    session: {
+      threadId: CHILD,
+      status: "running" as const,
+      providerName: "codex",
+      runtimeMode: "auto" as const,
+      activeTurnId: TurnId.make(turnId),
+      lastError: null,
+      updatedAt: at(1),
+    },
+  });
+  const stop = (expectedTurnId: string | null) => ({
+    type: "thread.session.stop" as const,
+    commandId: CommandId.make(`stop-${expectedTurnId}`),
+    threadId: CHILD,
+    expectedTurnId: expectedTurnId === null ? null : TurnId.make(expectedTurnId),
+    createdAt: at(10),
+  });
+
+  it("never ends the turn that began after it was decided", async () => {
+    // The link's turn ended and the user's began before the stop landed.
+    const usersTurn = readModel([thread(CHILD, turn("user-turn"))]);
+    expect(await refused(usersTurn, stop("link-turn"))).toBe(true);
+    expect(await refused(usersTurn, stop(null))).toBe(true);
+    expect((await run(usersTurn, stop("user-turn"))).events.length).toBeGreaterThan(0);
+  });
+});
+
+describe("decider child reports", () => {
+  /** A child whose answer went back, idle, with the parent's answer queued. */
+  async function answeredFamily() {
+    const delivered = await run(await familyWithRunningChild(), settleAnswered());
+    return {
+      ...delivered.model,
+      threads: delivered.model.threads.map((entry) =>
+        entry.id === CHILD
+          ? {
+              ...entry,
+              session: session(CHILD, { status: "ready", activeTurnId: null }),
+              latestTurn: {
+                turnId: TurnId.make("child-turn-1"),
+                state: "completed" as const,
+                requestedAt: at(3),
+                startedAt: at(3),
+                completedAt: at(9),
+                assistantMessageId: null,
+              },
+            }
+          : entry.id === PARENT
+            ? { ...entry, queuedFollowUps: [] }
+            : entry,
+      ),
+    };
+  }
+
+  const turnStart = (
+    id: string,
+    extra: Partial<Extract<OrchestrationCommand, { type: "thread.turn.start" }>> = {},
+  ): Extract<OrchestrationCommand, { type: "thread.turn.start" }> => ({
+    type: "thread.turn.start",
+    commandId: CommandId.make(`turn-${id}`),
+    threadId: CHILD,
+    message: { messageId: MessageId.make(id), role: "user", text: "Go on.", attachments: [] },
+    runtimeMode: "auto-accept-edits",
+    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    createdAt: at(20),
+    ...extra,
+  });
+
+  const owesOf = (events: ReadonlyArray<Planned>) =>
+    (events as ReadonlyArray<OrchestrationEvent>).flatMap((event) =>
+      event.type === "thread.turn-start-requested" ? [event.payload.owesReport ?? null] : [],
+    );
+
+  const providerTurn = (
+    turnId: string,
+    createdAt = at(30),
+  ): Extract<OrchestrationCommand, { type: "thread.session.set" }> => ({
+    type: "thread.session.set",
+    commandId: CommandId.make(`session-${turnId}`),
+    threadId: CHILD,
+    session: session(CHILD, { activeTurnId: TurnId.make(turnId), updatedAt: createdAt }),
+    turnStartedBy: { provider: true },
+    createdAt,
+  });
+
+  const settleReport = (
+    owed: { readonly turnId: TurnId } | { readonly messageId: MessageId },
+    turnId: string,
+    text: string | undefined = "Found two more bugs; fixed.",
+    createdAt = at(40),
+  ): Extract<OrchestrationCommand, { type: "thread.child-report.settle" }> => ({
+    type: "thread.child-report.settle",
+    commandId: CommandId.make(`report-${turnId}`),
+    threadId: CHILD,
+    owed,
+    turnId: TurnId.make(turnId),
+    ...(text !== undefined ? { text } : {}),
+    createdAt,
+  });
+
+  it("owes a report only for turns nobody else answers for (rule 2)", async () => {
+    const family = await answeredFamily();
+    const owes = async (command: OrchestrationCommand) =>
+      owesOf((await run(family, command)).events)[0];
+    const stamps = { deliveryEpoch: 0, attachmentEpoch: 0 };
+    // The parent's request answers it, and owes nothing more.
+    expect(threadIn(family, CHILD).childRequests.owedReports).toBeUndefined();
+    // A person's message is theirs.
+    expect(await owes(turnStart("typed", { composer: "typed" }))).toBeNull();
+    expect(await owes(turnStart("phone", { sentFrom: { kind: "phone" } as never }))).toBeNull();
+    // A scheduled run, an automatic fix, a report from its own thread: it reports.
+    expect(await owes(turnStart("scheduled", { scheduledTaskId: "task-1" as never }))).toEqual(
+      stamps,
+    );
+    expect(await owes(turnStart("automatic"))).toEqual(stamps);
+    expect(
+      await owes(
+        turnStart("report", {
+          fromThread: {
+            threadId: ThreadId.make("grandchild"),
+            requestId: ChildRequestId.make("g"),
+            kind: "report",
+          },
+        }),
+      ),
+    ).toEqual(stamps);
+    // A continue is judged by the turn it continues.
+    const afterTyped = await run(family, turnStart("typed-2", { composer: "typed" }));
+    const idleAgain = {
+      ...afterTyped.model,
+      threads: afterTyped.model.threads.map((entry) =>
+        entry.id === CHILD
+          ? { ...entry, session: session(CHILD, { status: "ready", activeTurnId: null }) }
+          : entry,
+      ),
+    };
+    const restart = turnStart("restart", { trigger: "serverRestart", createdAt: at(25) });
+    expect(owesOf((await run(idleAgain, restart)).events)[0]).toBeNull();
+    const afterAutomatic = await run(family, turnStart("automatic-2"));
+    const idleAfterAutomatic = {
+      ...afterAutomatic.model,
+      threads: afterAutomatic.model.threads.map((entry) =>
+        entry.id === CHILD
+          ? { ...entry, session: session(CHILD, { status: "ready", activeTurnId: null }) }
+          : entry,
+      ),
+    };
+    expect(owesOf((await run(idleAfterAutomatic, restart)).events)[0]).toEqual(stamps);
+    // A thread with no parent owes nobody.
+    const top = readModel([
+      thread(PARENT, { session: session(PARENT, { status: "ready", activeTurnId: null }) }),
+    ]);
+    expect(
+      owesOf((await run(top, { ...turnStart("top"), threadId: PARENT })).events)[0],
+    ).toBeNull();
+  });
+
+  it("delivers a report into the parent once, for the agent that started the child", async () => {
+    const family = await answeredFamily();
+    const checkBack = await run(family, providerTurn("child-turn-2"));
+    const owed = threadIn(checkBack.model, CHILD).childRequests.owedReports;
+    expect(owed).toEqual([
+      {
+        turnId: TurnId.make("child-turn-2"),
+        deliveryEpoch: 0,
+        attachmentEpoch: 0,
+        createdAt: at(30),
+      },
+    ]);
+    const settled = await run(
+      checkBack.model,
+      settleReport({ turnId: TurnId.make("child-turn-2") }, "child-turn-2"),
+    );
+    const parent = threadIn(settled.model, PARENT);
+    const report = parent.messages.at(-1);
+    expect(report).toMatchObject({
+      role: "user",
+      text: "Found two more bugs; fixed.",
+      fromThread: { threadId: CHILD, kind: "report", followUp: true },
+    });
+    expect(parent.queuedFollowUps?.map((queued) => queued.messageId)).toEqual([report?.id]);
+    expect(threadIn(settled.model, CHILD)).toMatchObject({
+      handedBackTurnId: TurnId.make("child-turn-2"),
+    });
+    expect(threadIn(settled.model, CHILD).childRequests.owedReports).toBeUndefined();
+    // Settled once: a second settle of the same turn is refused.
+    expect(
+      await refused(
+        settled.model,
+        settleReport({ turnId: TurnId.make("child-turn-2") }, "child-turn-2"),
+      ),
+    ).toBe(true);
+  });
+
+  it("drops a report while the parent is wrapped up or held, and delivers again once it is reopened", async () => {
+    const family = await answeredFamily();
+    const owing = (await run(family, providerTurn("child-turn-2"))).model;
+    const wrapped = (
+      await run(owing, {
+        type: "thread.done-override.set",
+        commandId: CommandId.make("wrap"),
+        threadId: PARENT,
+        state: "done",
+        at: at(35),
+      })
+    ).model;
+    const dropped = await run(
+      wrapped,
+      settleReport({ turnId: TurnId.make("child-turn-2") }, "child-turn-2"),
+    );
+    expect(dropped.events.map((event) => event.type)).toEqual(["thread.child-report-dropped"]);
+    expect(threadIn(dropped.model, CHILD).childRequests.owedReports).toBeUndefined();
+
+    const reopened = (
+      await run(dropped.model, {
+        type: "thread.done-override.set",
+        commandId: CommandId.make("reopen"),
+        threadId: PARENT,
+        state: "active",
+        at: at(45),
+      })
+    ).model;
+    const next = (await run(reopened, providerTurn("child-turn-3", at(50)))).model;
+    const delivered = await run(
+      next,
+      settleReport({ turnId: TurnId.make("child-turn-3") }, "child-turn-3", undefined, at(55)),
+    );
+    expect(delivered.events.map((event) => event.type)).toContain("thread.message-sent");
+
+    const held = {
+      ...next,
+      threads: next.threads.map((entry) =>
+        entry.id === PARENT
+          ? { ...entry, agentRequests: { ...entry.agentRequests, hold: true } }
+          : entry,
+      ),
+    };
+    const heldOut = await run(
+      held,
+      settleReport({ turnId: TurnId.make("child-turn-3") }, "child-turn-3", undefined, at(55)),
+    );
+    expect(heldOut.events.map((event) => event.type)).toEqual(["thread.child-report-dropped"]);
+  });
+
+  it("forgets what a child owed once it is separated", async () => {
+    const owing = (await run(await answeredFamily(), providerTurn("child-turn-2"))).model;
+    const separated = await run(owing, {
+      type: "thread.parent-attachment.set",
+      commandId: CommandId.make("separate"),
+      threadId: CHILD,
+      attached: false,
+      createdAt: at(35),
+    });
+    expect(threadIn(separated.model, CHILD).childRequests.owedReports).toBeUndefined();
+  });
+
+  it("settles a request waiting on background work when a turn the provider started begins (sequence 5)", async () => {
+    const family = await familyWithRunningChild();
+    const waiting = {
+      ...family,
+      threads: family.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              childRequests: {
+                ...entry.childRequests,
+                open: entry.childRequests.open.map((request) => ({
+                  ...request,
+                  status: "awaiting_background" as const,
+                  candidateTurnId: TurnId.make("child-turn-1"),
+                })),
+              },
+            }
+          : entry.id === CHILD
+            ? {
+                ...entry,
+                session: session(CHILD, { status: "ready", activeTurnId: null }),
+                messages: [
+                  ...entry.messages,
+                  {
+                    id: MessageId.make("answer-so-far"),
+                    role: "assistant" as const,
+                    text: "Changelog drafted; tests still running.",
+                    turnId: TurnId.make("child-turn-1"),
+                    streaming: false,
+                    createdAt: at(8),
+                    updatedAt: at(8),
+                  },
+                ],
+              }
+            : entry,
+      ),
+    };
+    const goalTurn = await run(waiting, providerTurn("goal-turn"));
+    const parent = threadIn(goalTurn.model, PARENT);
+    expect(parent.childRequests.open).toEqual([]);
+    expect(parent.messages.at(-1)).toMatchObject({
+      text: "Changelog drafted; tests still running.",
+      fromThread: { kind: "report", requestId: REQUEST },
+    });
+    expect(threadIn(goalTurn.model, CHILD).childRequests.owedReports).toEqual([
+      { turnId: TurnId.make("goal-turn"), deliveryEpoch: 0, attachmentEpoch: 0, createdAt: at(30) },
+    ]);
+  });
+
+  it("never settles a starting turn's own report, whichever writer marks it running first (finding 1)", async () => {
+    // A scheduled run's message owes a report; the reactor marks its turn
+    // running before ingestion does.
+    const family = await answeredFamily();
+    const asked = await run(family, turnStart("scheduled", { scheduledTaskId: "task-1" as never }));
+    const accepted = await run(asked.model, {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-accepted"),
+      threadId: CHILD,
+      session: session(CHILD, { activeTurnId: TurnId.make("child-turn-2"), updatedAt: at(21) }),
+      turnStartedBy: { messageId: MessageId.make("scheduled") },
+      createdAt: at(21),
+    });
+    expect(accepted.events.map((event) => event.type)).toEqual(["thread.session-set"]);
+    // The turn claims it: from here on the entry is known by the turn.
+    expect(threadIn(accepted.model, CHILD).childRequests.owedReports).toEqual([
+      expect.objectContaining({ turnId: TurnId.make("child-turn-2") }),
+    ]);
+  });
+
+  /** A follow-up report delivered into the parent, then taken off its queue to start its turn. */
+  async function reportStarting() {
+    const owing = (await run(await answeredFamily(), providerTurn("child-turn-2"))).model;
+    const delivered = await run(
+      owing,
+      settleReport({ turnId: TurnId.make("child-turn-2") }, "child-turn-2"),
+    );
+    const report = threadIn(delivered.model, PARENT).queuedFollowUps?.[0];
+    if (report === undefined) throw new Error("no report queued");
+    const sent = await run(delivered.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("send-report"),
+      threadId: PARENT,
+      messageId: report.messageId,
+      createdAt: at(41),
+    });
+    return { model: sent.model, report };
+  }
+
+  const takeBack = (messageId: MessageId) => ({
+    type: "thread.turn-start.take-back" as const,
+    commandId: CommandId.make("take-back"),
+    threadId: PARENT,
+    messageId,
+    createdAt: at(50),
+  });
+
+  it("puts a report whose start died back at the front, ahead of a newer agent message (finding 3)", async () => {
+    const { model: starting, report } = await reportStarting();
+    // Another agent's message arrived meanwhile.
+    const newer = {
+      ...starting,
+      threads: starting.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              session: session(PARENT, { status: "interrupted", activeTurnId: null }),
+              queuedFollowUps: [
+                {
+                  messageId: MessageId.make("newer-report"),
+                  text: "later",
+                  attachments: [],
+                  fromThread: {
+                    threadId: CHILD,
+                    requestId: ChildRequestId.make("newer"),
+                    kind: "report" as const,
+                  },
+                  runtimeMode: "auto-accept-edits" as const,
+                  interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+                  createdAt: at(45),
+                },
+              ],
+            }
+          : entry,
+      ),
+    };
+    const taken = await run(newer, takeBack(report.messageId));
+    expect(taken.events.map((event) => event.type)).toEqual(["thread.follow-up-queued"]);
+    expect(threadIn(taken.model, PARENT).queuedFollowUps?.map((entry) => entry.messageId)).toEqual([
+      report.messageId,
+      MessageId.make("newer-report"),
+    ]);
+  });
+
+  it("marks a report not run when Stop came after it left the queue, and starts nothing (finding 4)", async () => {
+    const { model: starting, report } = await reportStarting();
+    const stopped = await run(starting, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-after-dequeue"),
+      threadId: PARENT,
+      createdAt: at(45),
+    });
+    const taken = await run(stopped.model, takeBack(report.messageId));
+    expect(taken.events.map((event) => event.type)).toEqual(["thread.continue-at-reset-skipped"]);
+    const parent = threadIn(taken.model, PARENT);
+    expect(parent.queuedFollowUps ?? []).toEqual([]);
+    expect(parent.messages.find((message) => message.id === report.messageId)?.notSent).toBe(true);
+    expect(parent.agentRequests.hold).toBe(true);
+  });
+
+  it("holds a stopped parent with a family, so a child's later report can't wake it (finding 4)", async () => {
+    const family = await answeredFamily();
+    const stopped = await run(family, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-parent"),
+      threadId: PARENT,
+      createdAt: at(15),
+    });
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+    // A check-back after Stop records the new epoch; its report is dropped all the same.
+    const owing = (await run(stopped.model, providerTurn("child-turn-2"))).model;
+    const settled = await run(
+      owing,
+      settleReport({ turnId: TurnId.make("child-turn-2") }, "child-turn-2"),
+    );
+    expect(settled.events.map((event) => event.type)).toEqual(["thread.child-report-dropped"]);
+  });
+
+  it("judges a continue by the message that started the turn, not one steered into it (finding 5)", async () => {
+    const family = await answeredFamily();
+    const typed = await run(family, turnStart("typed", { composer: "typed" }));
+    // A room agent's reply was steered into the person's turn: it carries the turn's id.
+    const withSteer = {
+      ...typed.model,
+      threads: typed.model.threads.map((entry) =>
+        entry.id === CHILD
+          ? {
+              ...entry,
+              session: session(CHILD, { status: "ready", activeTurnId: null }),
+              messages: [
+                ...entry.messages,
+                {
+                  id: MessageId.make("steered-reply"),
+                  role: "user" as const,
+                  text: "Reviewer: looks fine.",
+                  fromAgent: { participantId: null },
+                  requestKind: "reply" as const,
+                  turnId: TurnId.make("child-turn-typed"),
+                  streaming: false,
+                  createdAt: at(21),
+                  updatedAt: at(21),
+                },
+              ],
+            }
+          : entry,
+      ),
+    };
+    const continued = await run(
+      withSteer,
+      turnStart("switch", { trigger: "accountSwitch", createdAt: at(30) }),
+    );
+    expect(owesOf(continued.events)[0]).toBeNull();
+  });
+
+  it("keeps the agent that started a child as its reports' recipient for good (finding 8)", async () => {
+    const reviewer = "reviewer" as never;
+    const family = await familyWithRunningChild();
+    expect(threadIn(family, CHILD).childRequests.reportsTo).toEqual(PRIMARY);
+    // The parent's history no longer shows who started it; a room agent's
+    // report is the oldest one left.
+    const rolled = {
+      ...family,
+      threads: family.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              participants: [
+                {
+                  id: reviewer,
+                  handle: "Reviewer",
+                  modelSelection: model,
+                  joinedAt: now,
+                  leftAt: null,
+                } as never,
+              ],
+              messages: [
+                {
+                  id: MessageId.make("reviewer-report"),
+                  role: "user" as const,
+                  text: "done",
+                  participantId: reviewer,
+                  fromThread: {
+                    threadId: CHILD,
+                    requestId: ChildRequestId.make("r2"),
+                    kind: "report" as const,
+                  },
+                  turnId: null,
+                  streaming: false,
+                  createdAt: at(5),
+                  updatedAt: at(5),
+                },
+              ],
+            }
+          : entry,
+      ),
+    };
+    expect(reportRecipient(threadIn(rolled, PARENT), threadIn(rolled, CHILD))).toBeNull();
+    // A child from before it was kept goes to the thread's own agent, not to
+    // whichever agent's report history still shows.
+    const unkept = { ...threadIn(rolled, CHILD).childRequests, reportsTo: undefined };
+    expect(
+      reportRecipient(threadIn(rolled, PARENT), { childRequests: unkept as never }),
+    ).toBeNull();
+    // A kept room agent still in the room gets them.
+    expect(
+      reportRecipient(threadIn(rolled, PARENT), {
+        childRequests: { ...unkept, reportsTo: { participantId: reviewer } } as never,
+      }),
+    ).toBe(reviewer);
+  });
+
+  it("knows each run of a message by its own turn: a resend reports once, for its own turn (finding 6)", async () => {
+    const family = await answeredFamily();
+    const named = (turn: string, createdAt: string) => ({
+      type: "thread.session.set" as const,
+      commandId: CommandId.make(`session-${turn}`),
+      threadId: CHILD,
+      session: session(CHILD, { activeTurnId: TurnId.make(turn), updatedAt: createdAt }),
+      turnStartedBy: { messageId: MessageId.make("scheduled") },
+      createdAt,
+    });
+    const idle = (model: OrchestrationReadModel) => ({
+      ...model,
+      threads: model.threads.map((entry) =>
+        entry.id === CHILD
+          ? { ...entry, session: session(CHILD, { status: "ready", activeTurnId: null }) }
+          : entry,
+      ),
+    });
+    // First run: its turn claims the message's entry and reports.
+    const asked = await run(family, turnStart("scheduled", { scheduledTaskId: "task-1" as never }));
+    const first = await run(asked.model, named("run-1", at(21)));
+    const reported = await run(
+      idle(first.model),
+      settleReport({ turnId: TurnId.make("run-1") }, "run-1", "First run.", at(22)),
+    );
+    // A resend runs the same message: a new unclaimed entry, then its own turn.
+    const resent = await run(reported.model, {
+      type: "thread.turn.resend",
+      commandId: CommandId.make("resend"),
+      threadId: CHILD,
+      messageId: MessageId.make("scheduled"),
+      createdAt: at(23),
+    });
+    expect(threadIn(resent.model, CHILD).childRequests.owedReports).toEqual([
+      expect.objectContaining({ messageId: MessageId.make("scheduled") }),
+    ]);
+    const second = await run(resent.model, named("run-2", at(24)));
+    expect(threadIn(second.model, CHILD).childRequests.owedReports).toEqual([
+      expect.objectContaining({ turnId: TurnId.make("run-2") }),
+    ]);
+    // The first run's turn has nothing left to settle; the second reports once.
+    expect(
+      await refused(second.model, settleReport({ turnId: TurnId.make("run-1") }, "run-1")),
+    ).toBe(true);
+    const done = await run(
+      idle(second.model),
+      settleReport({ turnId: TurnId.make("run-2") }, "run-2", "Second run.", at(25)),
+    );
+    const reports = threadIn(done.model, PARENT).messages.filter(
+      (message) => message.fromThread?.followUp === true,
+    );
+    expect(reports.map((message) => message.text)).toEqual(["First run.", "Second run."]);
+  });
+
+  it("records the turn that took a parent's request, so readers know it by its id (rule B)", async () => {
+    const family = await familyWithRunningChild();
+    const started = await run(family, {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-request-turn"),
+      threadId: CHILD,
+      session: session(CHILD, { activeTurnId: TurnId.make("child-turn-1"), updatedAt: at(4) }),
+      turnStartedBy: { messageId: CHILD_MESSAGE },
+      createdAt: at(4),
+    });
+    expect(threadIn(started.model, PARENT).childRequests.open).toMatchObject([
+      { requestId: REQUEST, status: "running", answeringTurnId: TurnId.make("child-turn-1") },
+    ]);
+  });
+
+  it("lets the writer that names a person's message undo a turn first taken for the provider's (round 3, finding 1)", async () => {
+    const family = await answeredFamily();
+    // The person's message is being prepared; ingestion sees the turn start
+    // first and, the session no longer starting, takes it for the provider's.
+    const asked = await run(family, turnStart("typed", { composer: "typed" }));
+    const taken = await run(asked.model, providerTurn("child-turn-2"));
+    expect(threadIn(taken.model, CHILD).childRequests.owedReports).toMatchObject([
+      { turnId: TurnId.make("child-turn-2") },
+    ]);
+    // The send's acknowledgement names the message for the same turn.
+    const named = await run(taken.model, {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-named"),
+      threadId: CHILD,
+      session: session(CHILD, { activeTurnId: TurnId.make("child-turn-2"), updatedAt: at(31) }),
+      turnStartedBy: { messageId: MessageId.make("typed") },
+      createdAt: at(31),
+    });
+    expect(threadIn(named.model, CHILD).childRequests.owedReports).toBeUndefined();
+    // A message that owes a report takes the turn's entry over instead.
+    const scheduled = await run(
+      family,
+      turnStart("scheduled", { scheduledTaskId: "task-1" as never }),
+    );
+    const takenAgain = await run(scheduled.model, providerTurn("child-turn-3"));
+    const namedAgain = await run(takenAgain.model, {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-named-again"),
+      threadId: CHILD,
+      session: session(CHILD, { activeTurnId: TurnId.make("child-turn-3"), updatedAt: at(31) }),
+      turnStartedBy: { messageId: MessageId.make("scheduled") },
+      createdAt: at(31),
+    });
+    expect(threadIn(namedAgain.model, CHILD).childRequests.owedReports).toEqual([
+      expect.objectContaining({ turnId: TurnId.make("child-turn-3") }),
+    ]);
+  });
+
+  it("retries a report that was put back, never an earlier message of the user's (round 3, finding 2)", async () => {
+    const { model: starting, report } = await reportStarting();
+    const failed = {
+      ...starting,
+      threads: starting.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              messages: [
+                {
+                  id: MessageId.make("publish"),
+                  role: "user" as const,
+                  text: "Publish the release.",
+                  composer: "typed" as const,
+                  turnId: null,
+                  streaming: false,
+                  createdAt: at(1),
+                  updatedAt: at(1),
+                },
+                ...entry.messages,
+              ],
+              session: session(PARENT, {
+                status: "error",
+                activeTurnId: null,
+                lastError: "spawn failed",
+              }),
+            }
+          : entry,
+      ),
+    };
+    const putBack = await run(failed, takeBack(report.messageId));
+    const retried = await run(putBack.model, {
+      type: "thread.turn.retry",
+      commandId: CommandId.make("retry"),
+      threadId: PARENT,
+      createdAt: at(60),
+    });
+    const started = (retried.events as ReadonlyArray<OrchestrationEvent>).find(
+      (event) => event.type === "thread.turn-start-requested",
+    );
+    expect(started?.payload).toMatchObject({ messageId: report.messageId });
+  });
+
+  it("holds a parent the user stops from its session stop, but not one stopped with its family (round 3, finding 3)", async () => {
+    const family = await answeredFamily();
+    const stop = (cause?: "family") => ({
+      type: "thread.session.stop" as const,
+      commandId: CommandId.make(`session-stop-${cause ?? "user"}`),
+      threadId: PARENT,
+      ...(cause !== undefined ? { cause } : {}),
+      createdAt: at(15),
+    });
+    expect(threadIn((await run(family, stop())).model, PARENT).agentRequests.hold).toBe(true);
+    expect(threadIn((await run(family, stop("family"))).model, PARENT).agentRequests.hold).toBe(
+      false,
+    );
+  });
+
+  it("ends what an archived child owed, so restoring it brings no old report back (round 3, finding 8)", async () => {
+    const owing = (await run(await answeredFamily(), providerTurn("child-turn-2"))).model;
+    const archived = await run(owing, {
+      type: "thread.archive",
+      commandId: CommandId.make("archive-child"),
+      threadId: CHILD,
+    });
+    expect(threadIn(archived.model, CHILD).childRequests.owedReports).toBeUndefined();
+    expect(threadIn(archived.model, CHILD).parentAttachmentEpoch).toBe(1);
+  });
+
+  it("drops a continue's provisional report when its name says it continues a person's turn (round 4, finding 1)", async () => {
+    const family = await answeredFamily();
+    const typed = await run(family, turnStart("typed", { composer: "typed" }));
+    const idle = {
+      ...typed.model,
+      threads: typed.model.threads.map((entry) =>
+        entry.id === CHILD
+          ? { ...entry, session: session(CHILD, { status: "ready", activeTurnId: null }) }
+          : entry,
+      ),
+    };
+    const continued = await run(
+      idle,
+      turnStart("switch", { trigger: "accountSwitch", createdAt: at(25) }),
+    );
+    // Recorded as the provider's at first, then named by the reactor.
+    const provisional = await run(continued.model, providerTurn("continue-turn"));
+    expect(threadIn(provisional.model, CHILD).childRequests.owedReports).toMatchObject([
+      { turnId: TurnId.make("continue-turn") },
+    ]);
+    const named = await run(provisional.model, {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-named-continue"),
+      threadId: CHILD,
+      session: session(CHILD, { activeTurnId: TurnId.make("continue-turn"), updatedAt: at(31) }),
+      turnStartedBy: { messageId: MessageId.make("switch"), turnId: TurnId.make("continue-turn") },
+      createdAt: at(31),
+    });
+    expect(threadIn(named.model, CHILD).childRequests.owedReports).toBeUndefined();
+  });
+
+  it("retries the message whose start failed last, not a report put back before it (round 4, finding 2)", async () => {
+    const { model: starting, report } = await reportStarting();
+    const failed = (model: OrchestrationReadModel) => ({
+      ...model,
+      threads: model.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              session: session(PARENT, {
+                status: "error",
+                activeTurnId: null,
+                lastError: "spawn failed",
+              }),
+            }
+          : entry,
+      ),
+    });
+    // A fails to start and is put back.
+    const putBack = await run(failed(starting), takeBack(report.messageId));
+    // The user types B, and B fails while it is prepared.
+    const typed = await run(failed(putBack.model), {
+      type: "thread.turn.start",
+      commandId: CommandId.make("turn-b"),
+      threadId: PARENT,
+      message: {
+        messageId: MessageId.make("message-b"),
+        role: "user",
+        text: "Ship it.",
+        attachments: [],
+      },
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      composer: "typed",
+      createdAt: at(70),
+    });
+    const retried = await run(failed(typed.model), {
+      type: "thread.turn.retry",
+      commandId: CommandId.make("retry-b"),
+      threadId: PARENT,
+      createdAt: at(80),
+    });
+    const started = (retried.events as ReadonlyArray<OrchestrationEvent>).find(
+      (event) => event.type === "thread.turn-start-requested",
+    );
+    expect(started?.payload).toMatchObject({ messageId: MessageId.make("message-b") });
+  });
+
+  it("hands a leaving agent's queued follow-up report to the thread's own agent, and takes its answers off", async () => {
+    const reviewer = "reviewer" as never;
+    const queued = (id: string, followUp: boolean) => ({
+      messageId: MessageId.make(id),
+      text: "done",
+      attachments: [],
+      participantId: reviewer,
+      fromThread: {
+        threadId: CHILD,
+        requestId: ChildRequestId.make(id),
+        kind: "report" as const,
+        ...(followUp ? { followUp: true as const } : {}),
+      },
+      runtimeMode: "auto-accept-edits" as const,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: at(5),
+    });
+    const room = readModel([
+      thread(PARENT, {
+        session: session(PARENT, { status: "ready", activeTurnId: null }),
+        participants: [
+          {
+            id: reviewer,
+            handle: "Reviewer",
+            modelSelection: model,
+            joinedAt: now,
+            leftAt: null,
+          } as never,
+        ],
+        queuedFollowUps: [
+          queued("answer", false),
+          queued("follow-up", true),
+          { ...queued("newer", true), participantId: undefined },
+        ],
+      }),
+    ]);
+    const left = await run(room, {
+      type: "thread.participant.remove",
+      commandId: CommandId.make("leave"),
+      threadId: PARENT,
+      participantId: reviewer,
+      createdAt: at(10),
+    });
+    // It keeps its place ahead of the newer message (rule 10).
+    expect(threadIn(left.model, PARENT).queuedFollowUps?.map((entry) => entry.messageId)).toEqual([
+      MessageId.make("follow-up"),
+      MessageId.make("newer"),
+    ]);
+    expect(threadIn(left.model, PARENT).queuedFollowUps?.[0]?.participantId).toBeUndefined();
+  });
+});
+
+describe("child thread access ceilings (stage 1 step 3)", () => {
+  const run = async (model: OrchestrationReadModel, command: OrchestrationCommand) => {
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({ command, readModel: model }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+    let next = model;
+    for (const event of events) {
+      next = await Effect.runPromise(
+        projectEvent(next, {
+          ...event,
+          sequence: next.snapshotSequence + 1,
+        } as OrchestrationEvent),
+      );
+    }
+    return { events: events as ReadonlyArray<OrchestrationEvent>, model: next };
+  };
+
+  const threadIn = (model: OrchestrationReadModel, id: ThreadId) =>
+    model.threads.find((entry) => entry.id === id)!;
+
+  it("unqueues a parent's request and fails it when the child was widened before its turn starts", async () => {
+    const start = readModel([
+      thread(PARENT, {
+        runtimeMode: "auto-accept-edits",
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "auto-accept-edits",
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+    const requestId = ChildRequestId.make("req-wide");
+    const messageId = MessageId.make("msg-wide");
+    const sent = await run(start, {
+      type: "thread.child.send",
+      commandId: CommandId.make("send-wide"),
+      threadId: PARENT,
+      requestId,
+      from: PRIMARY,
+      callerTurnId: CALLER_TURN,
+      childThreadId: CHILD,
+      childMessageId: messageId,
+      text: "Check the build.",
+      createdAt: at(10),
+    });
+    expect(threadIn(sent.model, CHILD).queuedFollowUps?.[0]?.requestCeiling).toEqual({
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    });
+    // The user widens the child before the queued request runs.
+    const widened = await run(sent.model, {
+      type: "thread.runtime-mode.set",
+      commandId: CommandId.make("widen-child"),
+      threadId: CHILD,
+      runtimeMode: "full-access",
+      createdAt: at(15),
+    });
+    const drained = await run(widened.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("drain-wide"),
+      threadId: CHILD,
+      messageId,
+      createdAt: at(20),
+    });
+    expect(threadIn(drained.model, CHILD).queuedFollowUps ?? []).toHaveLength(0);
+    expect(drained.events.some((event) => event.type === "thread.turn-start-requested")).toBe(
+      false,
+    );
+    // The parent's open request settles failed with the ceiling refusal.
+    expect(threadIn(drained.model, PARENT).childRequests.open).toHaveLength(0);
+    const settled = drained.events.find((event) => event.type === "thread.child-request-settled");
+    expect(settled?.payload).toMatchObject({ requestId, outcome: "failed" });
+  });
+
+  it("refuses a usage-limit continue when the child was widened, and settles the held request failed", async () => {
+    const requestId = ChildRequestId.make("req-limit");
+    const requestMessageId = MessageId.make("msg-limit");
+    const limitAt = at(20);
+    const resetAt = at(30);
+    const start = readModel([
+      thread(PARENT, {
+        runtimeMode: "auto-accept-edits",
+        childRequests: {
+          ...EMPTY_CHILD_REQUEST_STATE,
+          open: [
+            {
+              requestId,
+              batchId: ChildRequestBatchId.make("batch-limit"),
+              kind: "send",
+              from: PRIMARY,
+              callerTurnId: CALLER_TURN,
+              deliveryEpoch: 0,
+              status: "running",
+              childThreadId: CHILD,
+              childMessageId: requestMessageId,
+              requestCeiling: {
+                runtimeMode: "auto-accept-edits",
+                interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              },
+              createdAt: at(5),
+            },
+          ],
+        },
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "full-access",
+        messages: [
+          {
+            id: requestMessageId,
+            role: "user",
+            text: "Do the check.",
+            fromThread: { threadId: PARENT, requestId, kind: "request" },
+            requestCeiling: {
+              runtimeMode: "auto-accept-edits",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            },
+            turnId: null,
+            streaming: false,
+            createdAt: at(5),
+            updatedAt: at(5),
+          },
+        ],
+        session: session(CHILD, {
+          status: "error",
+          activeTurnId: null,
+          lastError: "Usage limit reached",
+          lastErrorAt: limitAt,
+          continueAtReset: { resetsAt: resetAt, at: resetAt },
+        }),
+      }),
+    ]);
+    const fired = await run(start, {
+      type: "thread.continue-at-reset.fire",
+      commandId: CommandId.make("fire-continue"),
+      threadId: CHILD,
+      messageId: MessageId.make("msg-continue"),
+      lastErrorAt: limitAt,
+      createdAt: at(35),
+    });
+    expect(threadIn(fired.model, CHILD).session?.continueAtReset ?? null).toBeNull();
+    expect(fired.events.some((event) => event.type === "thread.turn-start-requested")).toBe(false);
+    expect(threadIn(fired.model, PARENT).childRequests.open).toHaveLength(0);
+    const settled = fired.events.find((event) => event.type === "thread.child-request-settled");
+    expect(settled?.payload).toMatchObject({ requestId, outcome: "failed" });
+  });
+
+  it("holds an older linked computer's request (and pre-upgrade queued work) to launchedAccess (sequence 2)", async () => {
+    const REMOTE_ENV = EnvironmentId.make("env-old");
+    const REMOTE_PARENT = ThreadId.make("remote-parent");
+    const remoteOrigin = {
+      linkDeviceId: "dev-old",
+      environmentId: REMOTE_ENV,
+      environmentLabel: "Old Mac",
+      threadId: REMOTE_PARENT,
+      threadTitle: "Old parent",
+      launchedAccess: {
+        runtimeMode: "auto-accept-edits" as const,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      },
+    };
+    const fromThread = {
+      threadId: REMOTE_PARENT,
+      requestId: ChildRequestId.make("req-remote-1"),
+      kind: "request" as const,
+      environmentId: REMOTE_ENV,
+    };
+    // 1) Widened child: no ceiling in -> gets launchedAccess -> turn refused.
+    const widenedModel = readModel([
+      thread(CHILD, {
+        runtimeMode: "full-access",
+        remoteOrigin,
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+    const queuedWidened = await run(widenedModel, {
+      type: "thread.remote-request.queue",
+      commandId: CommandId.make("remote-q-wide"),
+      threadId: CHILD,
+      messageId: MessageId.make("remote-msg-wide"),
+      text: "Check logs.",
+      fromThread,
+      createdAt: at(10),
+    });
+    expect(threadIn(queuedWidened.model, CHILD).queuedFollowUps?.[0]?.requestCeiling).toEqual(
+      remoteOrigin.launchedAccess,
+    );
+    const triedWidened = await run(queuedWidened.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("remote-send-wide"),
+      threadId: CHILD,
+      messageId: MessageId.make("remote-msg-wide"),
+      createdAt: at(15),
+    });
+    expect(triedWidened.events.some((event) => event.type === "thread.turn-start-requested")).toBe(
+      false,
+    );
+    expect(threadIn(triedWidened.model, CHILD).queuedFollowUps ?? []).toHaveLength(0);
+
+    // 2) Unchanged child: runs as today.
+    const unchangedModel = readModel([
+      thread(CHILD, {
+        runtimeMode: "auto-accept-edits",
+        remoteOrigin,
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+    const queuedUnchanged = await run(unchangedModel, {
+      type: "thread.remote-request.queue",
+      commandId: CommandId.make("remote-q-ok"),
+      threadId: CHILD,
+      messageId: MessageId.make("remote-msg-ok"),
+      text: "Check logs.",
+      fromThread,
+      createdAt: at(10),
+    });
+    const triedUnchanged = await run(queuedUnchanged.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("remote-send-ok"),
+      threadId: CHILD,
+      messageId: MessageId.make("remote-msg-ok"),
+      createdAt: at(15),
+    });
+    expect(
+      triedUnchanged.events.some((event) => event.type === "thread.turn-start-requested"),
+    ).toBe(true);
+
+    // 3) Pre-upgrade queued entry (no requestCeiling on entry or message) on a widened child.
+    const preUpgradeId = MessageId.make("remote-msg-legacy");
+    const legacyModel = readModel([
+      thread(CHILD, {
+        runtimeMode: "full-access",
+        remoteOrigin,
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+        messages: [
+          {
+            id: preUpgradeId,
+            role: "user",
+            text: "Legacy work.",
+            fromThread,
+            turnId: null,
+            streaming: false,
+            createdAt: at(5),
+            updatedAt: at(5),
+          },
+        ],
+        queuedFollowUps: [
+          {
+            messageId: preUpgradeId,
+            text: "Legacy work.",
+            attachments: [],
+            fromThread,
+            runtimeMode: "auto-accept-edits",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt: at(5),
+          },
+        ],
+      }),
+    ]);
+    const triedLegacy = await run(legacyModel, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("remote-send-legacy"),
+      threadId: CHILD,
+      messageId: preUpgradeId,
+      createdAt: at(20),
+    });
+    expect(triedLegacy.events.some((event) => event.type === "thread.turn-start-requested")).toBe(
+      false,
+    );
+    expect(threadIn(triedLegacy.model, CHILD).queuedFollowUps ?? []).toHaveLength(0);
+  });
+
+  it("propagates a pass block to a child's turn and lifts it on the parent's next unblocked request", async () => {
+    const passCeiling = {
+      runtimeMode: "auto-accept-edits" as const,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    };
+    const start = readModel([
+      thread(PARENT, {
+        runtimeMode: "auto-accept-edits",
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+        childRequests: { ...EMPTY_CHILD_REQUEST_STATE, passCeiling },
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "auto-accept-edits",
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+    const req1 = ChildRequestId.make("req-pass-1");
+    const msg1 = MessageId.make("msg-pass-1");
+    const sent = await run(start, {
+      type: "thread.child.send",
+      commandId: CommandId.make("send-pass-1"),
+      threadId: PARENT,
+      requestId: req1,
+      from: PRIMARY,
+      callerTurnId: CALLER_TURN,
+      childThreadId: CHILD,
+      childMessageId: msg1,
+      text: "Handle passed work.",
+      createdAt: at(10),
+    });
+    expect(threadIn(sent.model, CHILD).queuedFollowUps?.[0]?.passBlocked).toBe(true);
+    const started = await run(sent.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("drain-pass-1"),
+      threadId: CHILD,
+      messageId: msg1,
+      createdAt: at(15),
+    });
+    expect(threadIn(started.model, CHILD).childRequests.passCeiling).toEqual(passCeiling);
+
+    // Parent's pass block lifts when user writes there; next request has no passBlocked -> lifts child's block.
+    const parentCleared: OrchestrationReadModel = {
+      ...started.model,
+      threads: started.model.threads.map((entry) =>
+        entry.id === PARENT
+          ? {
+              ...entry,
+              childRequests: { ...EMPTY_CHILD_REQUEST_STATE, open: [] },
+            }
+          : entry.id === CHILD
+            ? { ...entry, session: session(CHILD, { status: "ready", activeTurnId: null }) }
+            : entry,
+      ),
+    };
+    const req2 = ChildRequestId.make("req-pass-2");
+    const msg2 = MessageId.make("msg-pass-2");
+    const sent2 = await run(parentCleared, {
+      type: "thread.child.send",
+      commandId: CommandId.make("send-pass-2"),
+      threadId: PARENT,
+      requestId: req2,
+      from: PRIMARY,
+      callerTurnId: CALLER_TURN,
+      childThreadId: CHILD,
+      childMessageId: msg2,
+      text: "Normal work now.",
+      createdAt: at(25),
+    });
+    expect(threadIn(sent2.model, CHILD).queuedFollowUps?.[0]?.passBlocked).toBeUndefined();
+    const started2 = await run(sent2.model, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("drain-pass-2"),
+      threadId: CHILD,
+      messageId: msg2,
+      createdAt: at(30),
+    });
+    expect(threadIn(started2.model, CHILD).childRequests.passCeiling).toBeUndefined();
+  });
+
+  it("stops an idle child with a saved check-back, and revert unlocks once it is dormant (sequence 1)", async () => {
+    const savedJob: OrchestrationCheckBack = {
+      id: "saved-job-1",
+      participantId: null,
+      scheduledFor: "2026-10-05T10:00:00.000Z",
+      exact: true,
+      recurring: true,
+      description: "Check deploy status",
+      durable: true,
+    };
+    const start = readModel([
+      thread(PARENT, {
+        session: session(PARENT, { status: "ready", activeTurnId: null }),
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+        checkBacks: [savedJob],
+      }),
+    ]);
+
+    expect(childRevertRefusal(start, threadIn(start, PARENT))).toContain(
+      "Finish or stop its threads first",
+    );
+
+    const stopped = await run(start, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-seq-1"),
+      threadId: PARENT,
+      createdAt: at(10),
+    });
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+    expect(threadIn(stopped.model, CHILD).agentRequests.hold).toBe(false);
+    expect(
+      stopped.events.some(
+        (event) =>
+          event.type === "thread.session-stop-requested" && event.payload.threadId === CHILD,
+      ),
+    ).toBe(true);
+    expect(
+      stopped.events.some(
+        (event) =>
+          event.type === "thread.check-back-cancel-requested" && event.payload.threadId === CHILD,
+      ),
+    ).toBe(true);
+
+    // Once the child's runtime exits and marks the saved job dormant, revert is allowed.
+    const dormant = await run(stopped.model, {
+      type: "thread.check-backs.set",
+      commandId: CommandId.make("mark-dormant-seq-1"),
+      threadId: CHILD,
+      participantId: null,
+      checkBacks: [{ ...savedJob, dormant: true }],
+      createdAt: at(15),
+    });
+    expect(childRevertRefusal(dormant.model, threadIn(dormant.model, PARENT))).toBeNull();
+  });
+
+  it("stops flagged loose threads with their starter until a person writes in one (sequence 3)", async () => {
+    const looseIds = [1, 2, 3, 4, 5].map((index) => ThreadId.make(`loose-${index}`));
+    let model = readModel([
+      thread(PARENT, { session: session(PARENT, { status: "ready", activeTurnId: null }) }),
+    ]);
+    for (const [index, looseId] of looseIds.entries()) {
+      const created = await run(model, {
+        type: "thread.create",
+        commandId: CommandId.make(`create-loose-${index}`),
+        threadId: looseId,
+        projectId,
+        title: `Loose ${index + 1}`,
+        modelSelection: modelSelectionOf(threadIn(model, PARENT)),
+        runtimeMode: "auto-accept-edits",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        parentThreadId: PARENT,
+        parentTurnId: CALLER_TURN,
+        attachedToParent: false,
+        stopsWithParent: true,
+        createdAt: at(index + 1),
+      });
+      model = {
+        ...created.model,
+        threads: created.model.threads.map((entry) =>
+          entry.id === looseId
+            ? {
+                ...entry,
+                session: session(looseId, {
+                  status: "running",
+                  activeTurnId: TurnId.make(`loose-turn-${index}`),
+                }),
+              }
+            : entry,
+        ),
+      };
+      expect(threadIn(model, looseId).stopsWithParent).toBe(true);
+    }
+
+    // Stop on the parent reaches all 5 flagged loose threads.
+    const firstStop = await run(model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-all-loose"),
+      threadId: PARENT,
+      createdAt: at(20),
+    });
+    const stoppedFirst = new Set(
+      firstStop.events
+        .filter((event) => event.type === "thread.session-stop-requested")
+        .map((event) => event.payload.threadId),
+    );
+    for (const looseId of looseIds) {
+      expect(stoppedFirst.has(looseId)).toBe(true);
+    }
+
+    // A person writes in loose-1: its flag clears for good, so Stop leaves it alone.
+    const claimed = await run(model, {
+      type: "thread.turn.start",
+      commandId: CommandId.make("person-claims-loose-1"),
+      threadId: looseIds[0]!,
+      message: {
+        messageId: MessageId.make("msg-claim-loose-1"),
+        role: "user",
+        text: "I'll take this thread from here.",
+        attachments: [],
+      },
+      composer: "typed",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "auto-accept-edits",
+      createdAt: at(30),
+    });
+    expect(threadIn(claimed.model, looseIds[0]!).stopsWithParent).toBeUndefined();
+    const secondStop = await run(claimed.model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-remaining-loose"),
+      threadId: PARENT,
+      createdAt: at(35),
+    });
+    const stoppedSecond = new Set(
+      secondStop.events
+        .filter((event) => event.type === "thread.session-stop-requested")
+        .map((event) => event.payload.threadId),
+    );
+    expect(stoppedSecond.has(looseIds[0]!)).toBe(false);
+    for (const looseId of looseIds.slice(1)) {
+      expect(stoppedSecond.has(looseId)).toBe(true);
+    }
+  });
+
+  it("stops a 3-level subtree without putting new holds on children, keeps existing holds, and skips holds on cleanup", async () => {
+    const GRANDCHILD = ThreadId.make("grandchild");
+    const HELD_SIBLING = ThreadId.make("held-sibling");
+    const start = readModel([
+      thread(PARENT, {
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        session: session(CHILD, { status: "running", activeTurnId: TurnId.make("child-turn") }),
+        // Even with an agent message queued, a family stop does not add a hold.
+        queuedFollowUps: [
+          {
+            messageId: MessageId.make("queued-agent-msg"),
+            text: "Queued from parent",
+            attachments: [],
+            runtimeMode: "auto-accept-edits",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            fromThread: {
+              threadId: PARENT,
+              requestId: ChildRequestId.make("req-queued"),
+              kind: "request",
+            },
+            createdAt: at(2),
+          },
+        ],
+      }),
+      thread(GRANDCHILD, {
+        parentThreadId: CHILD,
+        attachedToParent: true,
+        session: session(GRANDCHILD, {
+          status: "running",
+          activeTurnId: TurnId.make("grandchild-turn"),
+        }),
+      }),
+      thread(HELD_SIBLING, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, hold: true, chainEpoch: 2 },
+        session: session(HELD_SIBLING, {
+          status: "running",
+          activeTurnId: TurnId.make("held-turn"),
+        }),
+      }),
+    ]);
+
+    const stopped = await run(start, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-3-levels"),
+      threadId: PARENT,
+      createdAt: at(10),
+    });
+    const stoppedIds = new Set(
+      stopped.events
+        .filter((event) => event.type === "thread.session-stop-requested")
+        .map((event) => event.payload.threadId),
+    );
+    expect(stoppedIds.has(CHILD)).toBe(true);
+    expect(stoppedIds.has(GRANDCHILD)).toBe(true);
+    expect(stoppedIds.has(HELD_SIBLING)).toBe(true);
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+    expect(threadIn(stopped.model, CHILD).agentRequests.hold).toBe(false);
+    expect(threadIn(stopped.model, GRANDCHILD).agentRequests.hold).toBe(false);
+    expect(threadIn(stopped.model, HELD_SIBLING).agentRequests.hold).toBe(true);
+
+    // A cleanup stop (archive/sweeper) never adds a hold either.
+    const cleanup = await run(start, {
+      type: "thread.session.stop",
+      commandId: CommandId.make("cleanup-stop"),
+      threadId: CHILD,
+      cause: "cleanup",
+      createdAt: at(12),
+    });
+    expect(threadIn(cleanup.model, CHILD).agentRequests.hold).toBe(false);
+  });
+
+  it("refuses sending work to a child the user stopped, and refuses a fallback resend after Stop", async () => {
+    const start = readModel([
+      thread(PARENT, {
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+        nativeSession: "carried",
+        messages: [
+          {
+            id: MessageId.make("m-fallback"),
+            role: "user",
+            text: "Try again",
+            turnId: null,
+            streaming: false,
+            createdAt: at(1),
+            updatedAt: at(1),
+          },
+        ],
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, hold: true, chainEpoch: 1 },
+        session: session(CHILD, { status: "ready", activeTurnId: null }),
+      }),
+    ]);
+
+    // Parent can't send to a held child.
+    const sendExit = await Effect.runPromiseExit(
+      decideOrchestrationCommand({
+        readModel: start,
+        command: {
+          type: "thread.child.send",
+          commandId: CommandId.make("send-to-held-child"),
+          threadId: PARENT,
+          requestId: ChildRequestId.make("req-held"),
+          from: PRIMARY,
+          callerTurnId: CALLER_TURN,
+          childThreadId: CHILD,
+          childMessageId: MessageId.make("m-held"),
+          text: "Do more work",
+          createdAt: at(5),
+        },
+      }),
+    );
+    expect(Exit.isFailure(sendExit)).toBe(true);
+
+    // Fallback records chainEpoch 0; Stop bumps chainEpoch and sets hold; resend with 0 is refused.
+    const fellBack = await run(start, {
+      type: "thread.native-session.fall-back",
+      commandId: CommandId.make("fallback-with-epoch"),
+      threadId: PARENT,
+      reason: "turn_failed",
+      resendMessageId: MessageId.make("m-fallback"),
+      chainEpoch: 0,
+      createdAt: at(6),
+    });
+    const fallbackActivity = threadIn(fellBack.model, PARENT).activities.at(-1);
+    expect(fallbackActivity?.payload).toMatchObject({
+      reason: "turn_failed",
+      resendMessageId: "m-fallback",
+      chainEpoch: 0,
+    });
+
+    const stopped = await run(fellBack.model, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-before-resend"),
+      threadId: PARENT,
+      createdAt: at(7),
+    });
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+
+    expect(
+      await refused(stopped.model, {
+        type: "thread.turn.resend",
+        commandId: CommandId.make("stale-fallback-resend"),
+        threadId: PARENT,
+        messageId: MessageId.make("m-fallback"),
+        chainEpoch: 0,
+        createdAt: at(8),
+      }),
+    ).toBe(true);
+    expect(threadIn(stopped.model, PARENT).agentRequests.hold).toBe(true);
+  });
+
+  it("deletes only the attached unarchived children named in alsoDelete and separates the rest", async () => {
+    const LISTED = ThreadId.make("child-listed");
+    const RACED = ThreadId.make("child-raced");
+    const ARCHIVED = ThreadId.make("child-archived");
+    const start = readModel([
+      thread(PARENT),
+      thread(LISTED, { parentThreadId: PARENT, attachedToParent: true }),
+      thread(RACED, { parentThreadId: PARENT, attachedToParent: true }),
+      thread(ARCHIVED, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        archivedAt: at(1),
+      }),
+    ]);
+
+    const deleted = await run(start, {
+      type: "thread.delete",
+      commandId: CommandId.make("delete-with-also-delete"),
+      threadId: PARENT,
+      alsoDelete: [LISTED, ARCHIVED],
+    });
+    expect(threadIn(deleted.model, PARENT).deletedAt).not.toBeNull();
+    expect(threadIn(deleted.model, LISTED).deletedAt).not.toBeNull();
+    expect(threadIn(deleted.model, RACED).deletedAt).toBeNull();
+    expect(threadIn(deleted.model, RACED).attachedToParent).toBe(false);
+    expect(threadIn(deleted.model, ARCHIVED).deletedAt).toBeNull();
+    expect(threadIn(deleted.model, ARCHIVED).attachedToParent).toBe(false);
+  });
+
+  it("leaves a descendant raised above an outside agent's access limit running on Stop", async () => {
+    const RAISED = ThreadId.make("child-raised");
+    const WITHIN = ThreadId.make("child-within");
+    const start = readModel([
+      thread(PARENT, {
+        runtimeMode: "auto-accept-edits",
+        session: session(PARENT, { status: "running", activeTurnId: CALLER_TURN }),
+      }),
+      thread(WITHIN, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "auto-accept-edits",
+        session: session(WITHIN, { status: "running", activeTurnId: TurnId.make("within-turn") }),
+      }),
+      thread(RAISED, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "full-access",
+        session: session(RAISED, { status: "running", activeTurnId: TurnId.make("raised-turn") }),
+      }),
+    ]);
+
+    const stopped = await run(start, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("outside-stop"),
+      threadId: PARENT,
+      fromOutside: {
+        connectionId: OutsideAgentConnectionId.make("conn-1"),
+        name: "Outside Helper",
+        access: "work",
+        maxRuntimeMode: "auto-accept-edits",
+      },
+      createdAt: at(10),
+    });
+    const stoppedIds = new Set(
+      stopped.events
+        .filter((event) => event.type === "thread.session-stop-requested")
+        .map((event) => event.payload.threadId),
+    );
+    expect(stoppedIds.has(WITHIN)).toBe(true);
+    expect(stoppedIds.has(RAISED)).toBe(false);
+  });
+
+  it("carries requestCeiling and passBlocked across accountSwitch continues, and refuses if widened", async () => {
+    const narrowCeiling = {
+      runtimeMode: "auto-accept-edits" as const,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    };
+    const originalMsgId = MessageId.make("m-orig-acct");
+    const origTurnId = TurnId.make("t-orig-acct");
+    const base = readModel([
+      thread(PARENT, { runtimeMode: "auto-accept-edits" }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        runtimeMode: "auto-accept-edits",
+        messages: [
+          {
+            id: originalMsgId,
+            role: "user",
+            text: "Narrow passed work",
+            turnId: null,
+            streaming: false,
+            fromThread: { threadId: PARENT, requestId: REQUEST, kind: "request" },
+            requestCeiling: narrowCeiling,
+            passBlocked: true,
+            createdAt: at(1),
+            updatedAt: at(1),
+          },
+        ],
+        latestTurn: {
+          turnId: origTurnId,
+          state: "error",
+          requestedAt: at(1),
+          startedAt: at(1),
+          completedAt: at(2),
+          assistantMessageId: null,
+        },
+        session: session(CHILD, { status: "error", activeTurnId: null }),
+      }),
+    ]);
+
+    // Still narrow: accountSwitch continues, carrying both requestCeiling and passBlocked.
+    const switched = await run(base, {
+      type: "thread.turn.start",
+      commandId: CommandId.make("acct-switch-ok"),
+      threadId: CHILD,
+      message: {
+        messageId: MessageId.make("m-acct-switch"),
+        role: "user",
+        text: "Continue after account switch",
+        attachments: [],
+      },
+      trigger: "accountSwitch",
+      runtimeMode: "auto-accept-edits",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: at(5),
+    });
+    const switchMsg = threadIn(switched.model, CHILD).messages.at(-1);
+    expect(switchMsg?.requestCeiling).toEqual(narrowCeiling);
+    expect(switchMsg?.passBlocked).toBe(true);
+    expect(threadIn(switched.model, CHILD).childRequests.passCeiling).toEqual(narrowCeiling);
+
+    // Widened before accountSwitch: refused by the ceiling.
+    const widened: OrchestrationReadModel = {
+      ...base,
+      threads: base.threads.map((entry) =>
+        entry.id === CHILD ? { ...entry, runtimeMode: "full-access" } : entry,
+      ),
+    };
+    expect(
+      await refused(widened, {
+        type: "thread.turn.start",
+        commandId: CommandId.make("acct-switch-widened"),
+        threadId: CHILD,
+        message: {
+          messageId: MessageId.make("m-acct-switch-widened"),
+          role: "user",
+          text: "Continue after account switch",
+          attachments: [],
+        },
+        trigger: "accountSwitch",
+        runtimeMode: "full-access",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: at(6),
+      }),
+    ).toBe(true);
+  });
+
+  it("bumps chainEpoch without adding a hold on family stop of a starting single-agent child or loose thread", async () => {
+    const LOOSE = ThreadId.make("loose-starting");
+    const start = readModel([
+      thread(PARENT, { session: session(PARENT, { status: "ready", activeTurnId: null }) }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        session: session(CHILD, { status: "starting", activeTurnId: null }),
+      }),
+      thread(LOOSE, {
+        parentThreadId: PARENT,
+        attachedToParent: false,
+        stopsWithParent: true,
+        session: session(LOOSE, { status: "starting", activeTurnId: null }),
+      }),
+    ]);
+
+    const stopped = await run(start, {
+      type: "thread.turn.interrupt",
+      commandId: CommandId.make("stop-starting-children"),
+      threadId: PARENT,
+      createdAt: at(10),
+    });
+    expect(threadIn(stopped.model, CHILD).agentRequests.chainEpoch).toBe(1);
+    expect(threadIn(stopped.model, CHILD).agentRequests.hold).toBe(false);
+    expect(threadIn(stopped.model, LOOSE).agentRequests.chainEpoch).toBe(1);
+    expect(threadIn(stopped.model, LOOSE).agentRequests.hold).toBe(false);
+  });
+
+  it("drops a child follow-up report when the parent is frozen for a move", async () => {
+    const turnId = TurnId.make("child-owed-turn");
+    const start = readModel([
+      thread(PARENT, {
+        move: {
+          transferId: "move-1" as never,
+          target: { environmentId: EnvironmentId.make("env-remote"), label: "Mac mini" },
+          agent: model,
+          startedAt: at(1),
+          phase: "sending",
+          cancelRequested: false,
+        },
+      }),
+      thread(CHILD, {
+        parentThreadId: PARENT,
+        attachedToParent: true,
+        childRequests: {
+          ...EMPTY_CHILD_REQUEST_STATE,
+          owedReports: [{ turnId, deliveryEpoch: 0, attachmentEpoch: 0, createdAt: at(1) }],
+        },
+      }),
+    ]);
+
+    const settled = await run(start, {
+      type: "thread.child-report.settle",
+      commandId: CommandId.make("settle-frozen-parent"),
+      threadId: CHILD,
+      owed: { turnId },
+      turnId,
+      text: "Late report after freeze",
+      createdAt: at(5),
+    });
+    expect(threadIn(settled.model, CHILD).childRequests.owedReports ?? []).toEqual([]);
+    expect(threadIn(settled.model, PARENT).messages).toEqual([]);
+    expect(threadIn(settled.model, PARENT).queuedFollowUps ?? []).toEqual([]);
+  });
+});
+
+function modelSelectionOf(entry: OrchestrationThread) {
+  return entry.modelSelection;
+}

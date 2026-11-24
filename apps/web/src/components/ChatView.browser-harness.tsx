@@ -63,11 +63,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vite-plu
 import { render } from "vitest-browser-react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useAddProjectStore } from "./addProject/addProjectStore";
+import { useCodexImportStore } from "./codexImport/codexImportStore";
 import {
   __resetComputerLinksForTests,
   type ComputerLinksClient,
 } from "../environments/links/computerLinks";
 import { __resetThreadMovesForTests } from "../environments/links/threadMoves";
+import { __resetMoveBatchProgressForTests } from "../moveBatchProgress";
 import {
   __resetProjectSetupsForTests,
   type ProjectSetupsClient,
@@ -75,7 +78,9 @@ import {
 import { closeConnectComputerDialog } from "./settings/connections/JoinComputerDialog";
 import { closeProjectSetupDialog } from "./ProjectSetupDialog";
 import { closeThreadMoveDialog } from "./ThreadMoveDialog";
+import { closeMoveThreadsDialog } from "./MoveThreadsDialog";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
+import { resetFollowUpDeliveryOverridesForTests } from "../followUpDeliveryStore";
 import { connectEnvironmentBrowserHost } from "./browser/previewAutomationHost";
 import { closeThreadBrowser, useBrowserPageWatchers } from "./browser/BrowserHostLayer";
 import {
@@ -116,6 +121,7 @@ import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test
 
 import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
 import { resetTestPage } from "../lib/testPage.browser-harness";
+import { forgetThreadScrollExcept } from "../threadScrollMemory";
 
 export const THREAD_ID = "thread-browser-test" as ThreadId;
 export const THREAD_TITLE = "Browser test thread";
@@ -399,6 +405,7 @@ export function createMockEnvironmentApi(input: {
     attachments: {} as EnvironmentApi["attachments"],
     previewAutomation: input.previewAutomation ?? ({} as EnvironmentApi["previewAutomation"]),
     previewLoopback: {} as EnvironmentApi["previewLoopback"],
+    device: {} as EnvironmentApi["device"],
     filesystem: {
       browse: input.browse,
     },
@@ -882,12 +889,21 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     doneOverride: thread.doneOverride,
     lastSeenAt: thread.lastSeenAt,
     session: thread.session,
+    // A child thread's family, as the server's shell stream carries it: the
+    // app knows a thread's parent from the first snapshot, not only once a
+    // later detail stream reports it.
+    parentThreadId: thread.parentThreadId,
+    parentTurnId: thread.parentTurnId,
+    attachedToParent: thread.attachedToParent,
+    handedBackAt: thread.handedBackAt,
+    handedBackTurnId: thread.handedBackTurnId,
     latestUserMessageAt:
       thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     ...(thread.move ? { move: thread.move } : {}),
+    ...(thread.pendingMove ? { pendingMove: thread.pendingMove } : {}),
     ...(thread.movedFrom ? { movedFrom: thread.movedFrom } : {}),
     ...(thread.outsideWork ? { outsideWork: thread.outsideWork } : {}),
   };
@@ -907,6 +923,7 @@ export function toShellSnapshot(snapshot: OrchestrationReadModel) {
       ...(project.phoneAlertsMuted !== undefined
         ? { phoneAlertsMuted: project.phoneAlertsMuted }
         : {}),
+      ...(project.leadThreadId !== undefined ? { leadThreadId: project.leadThreadId } : {}),
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     })),
@@ -1099,6 +1116,11 @@ function withPrimaryCapabilities(
 /** This computer's server takes agents outside Threadlines (docs/design/outside-agents.md). */
 export function withOutsideAgentsFixture(nextFixture: TestFixture): void {
   withPrimaryCapabilities(nextFixture, { outsideAgents: true });
+}
+
+/** This computer's server reads its threads' children on linked computers for the app (`links.readThread`). */
+export function withLinkedThreadReadFixture(nextFixture: TestFixture): void {
+  withPrimaryCapabilities(nextFixture, { computerLinks: true, linkedThreadRead: true });
 }
 
 /** This computer's server, and the computers saved from its config, take links. */
@@ -2358,6 +2380,10 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
   if (tag === WS_METHODS.shellOpenInEditor) {
     return null;
   }
+  // They answer nothing, as the server does; a kill that fails keeps its tab.
+  if (tag === WS_METHODS.terminalClose || tag === WS_METHODS.terminalClear) {
+    return null;
+  }
   if (tag === WS_METHODS.terminalOpen) {
     // A script names tabs it may go into; here the first is always free.
     const reuseTerminalIds = Array.isArray(body.reuseTerminalIds) ? body.reuseTerminalIds : [];
@@ -3093,6 +3119,31 @@ export async function openCommandPaletteFromTrigger(): Promise<void> {
   );
 }
 
+/**
+ * Switches the open palette to every command, through its "All commands" row
+ * (the Commands filter). The palette opens on recent threads and a few
+ * suggestions, so a test that runs a command by name goes here first, as a
+ * user would.
+ */
+export async function showAllPaletteCommands(): Promise<void> {
+  await page.getByTestId("command-palette").getByText("All commands", { exact: true }).click();
+  await vi.waitFor(
+    () => {
+      const chosen = document.querySelector<HTMLElement>(
+        '[data-testid="command-palette"] [data-slot="command-filter"][aria-pressed="true"]',
+      );
+      expect(chosen?.textContent).toBe("Commands");
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+}
+
+/** Opens the palette from the sidebar and shows every command. */
+export async function openCommandPaletteCommands(): Promise<void> {
+  await openCommandPaletteFromTrigger();
+  await showAllPaletteCommands();
+}
+
 export async function waitForNewThreadShortcutLabel(): Promise<void> {
   const newThreadButton = page.getByTestId("new-thread-button");
   await expect.element(newThreadButton).toBeInTheDocument();
@@ -3121,9 +3172,12 @@ export async function waitForCommandPaletteInput(placeholder: string): Promise<H
   );
 }
 
+/** Clicks a row in the palette, or in Add project or the Codex import it hands over to. */
 export async function clickCommandPaletteAction(label: string): Promise<void> {
   await waitForElement(() => {
-    const palette = document.querySelector('[data-testid="command-palette"]');
+    const palette = document.querySelector(
+      '[data-testid="command-palette"], [data-testid="add-project-dialog"], [data-testid="codex-import-dialog"]',
+    );
     if (!palette) return null;
     const candidates = Array.from(
       palette.querySelectorAll<HTMLElement>('[data-slot="command-item"]'),
@@ -3201,6 +3255,8 @@ export async function dispatchInputKey(
   await waitForLayout();
 }
 
+const NO_THREADS: ReadonlySet<string> = new Set();
+
 export async function mountChatView(options: {
   viewport: ViewportSpec;
   snapshot: OrchestrationReadModel;
@@ -3211,6 +3267,8 @@ export async function mountChatView(options: {
   /** Mount under StrictMode, as main.tsx does, so mount-time effect cleanups run. */
   strictMode?: boolean;
 }): Promise<MountedChatView> {
+  // Where chats were left lives for the page; each mount starts with none.
+  forgetThreadScrollExcept(NO_THREADS);
   fixture = buildFixture(options.snapshot);
   options.configureFixture?.(fixture);
   customWsRpcResolver = options.resolveRpc ?? null;
@@ -3255,6 +3313,7 @@ export async function mountChatView(options: {
   const cleanup = async () => {
     customWsRpcResolver = null;
     await finishCleanupStep("React's unmount", screen.unmount());
+    forgetThreadScrollExcept(NO_THREADS);
     host.remove();
     await finishCleanupStep("the animation frames after unmount", waitForLayout());
   };
@@ -3422,13 +3481,16 @@ export function registerChatViewSuiteHooks(): void {
     __resetComputerLinksForTests();
     closeConnectComputerDialog();
     closeThreadMoveDialog();
+    closeMoveThreadsDialog();
     __resetThreadMovesForTests();
+    __resetMoveBatchProgressForTests();
     closeProjectSetupDialog();
     __resetProjectSetupsForTests();
     __resetEnvironmentApiOverridesForTests();
     resetSavedEnvironmentRegistryStoreForTests();
     resetSavedEnvironmentRuntimeStoreForTests();
     resetRightPanelTabsForTests();
+    resetFollowUpDeliveryOverridesForTests();
     __resetComposerPullRequestDismissalsForTests();
     Reflect.deleteProperty(window, "desktopBridge");
     useComposerDraftStore.setState({
@@ -3444,6 +3506,8 @@ export function registerChatViewSuiteHooks(): void {
       open: false,
       openIntent: null,
     });
+    useAddProjectStore.setState({ session: null });
+    useCodexImportStore.setState({ session: null });
     useStore.setState({
       activeEnvironmentId: null,
       environmentStateById: {},
@@ -3457,6 +3521,7 @@ export function registerChatViewSuiteHooks(): void {
       inboxProjectScopeKeys: [],
       collapsedInboxGroups: {},
       inboxWrappedOpen: false,
+      inboxGeneralChatsOpen: true,
       sidebarListOpen: true,
     });
     useTerminalStateStore.persist.clearStorage();

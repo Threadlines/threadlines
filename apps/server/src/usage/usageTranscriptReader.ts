@@ -43,13 +43,15 @@ export interface TranscriptFile {
  *
  * Errors on individual entries are swallowed: session files rotate and get
  * removed while the walk is in flight, and a partial listing is far better than
- * failing the page.
+ * failing the page. `onUnreadableFolder` hears of a folder that exists but
+ * could not be listed, for callers that must know the listing is partial.
  */
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
   /** Only files with this name (Grok keeps usage in `updates.jsonl` beside other logs). */
   fileName?: string,
+  onUnreadableFolder?: (dir: string) => void,
 ): Promise<readonly TranscriptFile[]> {
   const found: TranscriptFile[] = [];
 
@@ -57,7 +59,11 @@ export async function listTranscriptFiles(
     let entries;
     try {
       entries = await NodeFSP.readdir(dir, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      // A folder removed mid-walk held nothing to miss.
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+        onUnreadableFolder?.(dir);
+      }
       return;
     }
     for (const entry of entries) {

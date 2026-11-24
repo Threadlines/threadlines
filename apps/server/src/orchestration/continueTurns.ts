@@ -1,4 +1,5 @@
 import type {
+  MessageId,
   MessageTrigger,
   OrchestrationMessage,
   OrchestrationSession,
@@ -43,7 +44,8 @@ export function turnStartingMessage(
 }
 
 /** The newest user message that started a turn for `participantId` (null: the thread's own agent). */
-function latestTurnStartFor(
+/** The message the newest turn for `participantId` was asked for with. */
+export function latestTurnStartFor(
   thread: OrchestrationThread,
   participantId: ThreadParticipantId | null,
 ): OrchestrationMessage | undefined {
@@ -99,6 +101,12 @@ export function restartContinueVerdict(
     readonly waitingOnUser: boolean;
     readonly settingOn: boolean;
     readonly now: string;
+    /**
+     * The message the cut turn was started with, when known: null for a turn
+     * the provider started. A continue is judged by that turn, never by the
+     * newest message.
+     */
+    readonly turnMessageId?: MessageId | null | undefined;
   },
 ): RestartContinueVerdict {
   const stopped = { kind: "note", detail: RESTART_STOPPED_DETAIL } as const;
@@ -124,7 +132,12 @@ export function restartContinueVerdict(
   ) {
     return stopped;
   }
-  const startedBy = latestTurnStartFor(thread, participantId);
+  const startedBy =
+    input.turnMessageId === undefined
+      ? latestTurnStartFor(thread, participantId)
+      : input.turnMessageId === null
+        ? undefined
+        : thread.messages.find((message) => message.id === input.turnMessageId);
   if (startedBy === undefined || !userAskedForTurn(startedBy)) {
     return stopped;
   }

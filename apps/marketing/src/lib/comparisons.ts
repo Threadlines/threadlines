@@ -106,34 +106,26 @@ export const COMPARISONS: readonly Comparison[] = [
     maker: "Meta",
     title: "Conductor app alternative for Claude Code and Codex | Threadlines",
     description:
-      "Conductor is joining Meta and stopped new sign-ups. Threadlines is a free, open-source app for Mac, Windows and Linux that runs Claude Code, Codex and more.",
+      "Conductor is a Mac app for coding agents, now part of Meta. Threadlines is a free, open-source app for Mac, Windows and Linux that runs Claude Code, Codex and more.",
     headline: "A free, open-source Conductor alternative",
     summary:
-      "A Mac app that's joining Meta and closed to new users. Threadlines is free, open source, and runs on Mac, Windows and Linux.",
+      "A closed-source Mac app, now part of Meta. Threadlines is free, open source, and runs on Mac, Windows and Linux.",
     intro:
-      "Conductor (conductor.build) is a polished Mac app for running coding agents side by side, each in its own Git worktree, and it's joining Meta. Threadlines works the same way, on Mac, Windows and Linux, and two agents can share one thread. It's free and MIT-licensed, so the code stays public whatever happens to the project.",
+      "Conductor (conductor.build) is a polished Mac app for running coding agents side by side, each in its own Git worktree. It joined Meta in November 2026. Threadlines works the same way, on Mac, Windows and Linux, and two agents can share one thread. It's free and MIT-licensed, so the code stays public whatever happens to the project.",
     status: {
-      heading: "Conductor is joining Meta",
-      text: "On November 4, 2026, Conductor announced it's joining Meta and stopped new sign-ups and downloads. If you already use it, the Mac app keeps working for now, and Pro users keep Pro features for free.",
+      heading: "Conductor joined Meta and kept going",
+      text: "On November 4, 2026, Conductor said it was joining Meta and would wind down. A week later it changed course. It's now part of Meta and still being developed, and its announcement no longer says Conductor Cloud is closing.",
       timeline: [
         {
           date: "Nov 4",
-          text: "No new sign-ups or downloads. Pro users keep Pro features for free.",
+          text: "Joining Meta. New sign-ups and downloads stop, and Conductor Cloud is set to close.",
         },
         {
           date: "Nov 13",
-          text: "Conductor Cloud goes read-only. Active subscribers get a refund.",
-        },
-        {
-          date: "Nov 20",
-          text: "Conductor Cloud shuts down, and Conductor starts deleting its data.",
-        },
-        {
-          date: "Early 2027",
-          text: "New models and critical fixes for the Mac app end, and it starts winding down.",
+          text: "Version 0.94.2 says Conductor isn't shutting down. Work on it continues, and the Cloud shutdown notice is withdrawn.",
         },
       ],
-      label: "Joining Meta",
+      label: "Part of Meta",
       announcement: {
         label: "Read Conductor's announcement",
         url: "https://www.conductor.build/announcement",
@@ -144,7 +136,7 @@ export const COMPARISONS: readonly Comparison[] = [
         icon: "download",
         label: "Availability",
         threadlines: { mark: "yes", text: "Free download" },
-        other: { mark: "partial", text: "Existing users only, since Nov 4" },
+        other: { mark: "yes", text: "Open to new users again" },
       },
       {
         icon: "monitor",
@@ -176,19 +168,19 @@ export const COMPARISONS: readonly Comparison[] = [
         icon: "computers",
         label: "Your other computers",
         threadlines: THREADLINES_COMPUTERS,
-        other: { mark: "no", text: "Its own cloud machines, until Nov 13" },
+        other: { mark: "no", text: "Its own cloud machines, not yours" },
       },
       {
         icon: "clock",
         label: "Scheduled and event tasks",
         threadlines: THREADLINES_TASKS,
-        other: { mark: "partial", text: "Routines in the cloud, until Nov 13" },
+        other: { mark: "partial", text: "Routines in the cloud" },
       },
       {
         icon: "terminal",
         label: "Agents in your terminal",
         threadlines: THREADLINES_TERMINAL_AGENTS,
-        other: { mark: "partial", text: "MCP and a CLI for cloud work, until Nov 13" },
+        other: { mark: "partial", text: "MCP and a CLI for cloud work" },
       },
       {
         icon: "branch",
@@ -230,13 +222,13 @@ export const COMPARISONS: readonly Comparison[] = [
         icon: "cloud",
         label: "Cloud agents",
         threadlines: { mark: "no", text: "Agents run on your computers" },
-        other: { mark: "partial", text: "Read-only Nov 13, closes Nov 20" },
+        other: { mark: "yes", text: "Conductor Cloud workspaces" },
       },
       {
         icon: "accounts",
         label: "Teams",
         threadlines: { mark: "no", text: "Made for one person" },
-        other: { mark: "partial", text: "Shared cloud workspaces, until Nov 13" },
+        other: { mark: "partial", text: "Shared cloud workspaces" },
       },
       {
         icon: "phone",
@@ -253,7 +245,7 @@ export const COMPARISONS: readonly Comparison[] = [
       "You use Antigravity or fx.",
     ],
     pickOther: [
-      "You already use it, and the Mac app keeps working into early 2027.",
+      "You already use it and like how focused it is.",
       "You use GitHub stacks or Graphite.",
       "You start work from Linear issues.",
       "You like editing code right in the diff.",
@@ -263,7 +255,7 @@ export const COMPARISONS: readonly Comparison[] = [
       steps: [
         {
           title: "Bring cloud workspaces to your Mac",
-          text: "In Conductor, right-click a cloud workspace and choose Transfer to local before November 20. Settings › Account › Export data saves an archive of the rest.",
+          text: "In Conductor, right-click a cloud workspace and choose Transfer to local. Settings › Account › Export data saves an archive of the rest.",
         },
         {
           title: "Add your repo",
@@ -293,12 +285,12 @@ export const COMPARISONS: readonly Comparison[] = [
       {
         question: "Is Conductor shutting down?",
         answer:
-          "Partly. On November 4, 2026, Conductor announced it's joining Meta and stopped new sign-ups. Conductor Cloud goes read-only on November 13 and shuts down on November 20. The Mac app keeps getting new models and critical fixes until early 2027, then starts winding down.",
+          "No. On November 4, 2026, Conductor announced it was joining Meta and winding down. On November 13 it said plans had changed: Conductor isn't shutting down, and it's still being developed as part of Meta.",
       },
       {
         question: "Can I still download Conductor?",
         answer:
-          "Not as a new user. Since November 4, new users can't sign up for Conductor or download it. If you already have it, it keeps working, and Pro users keep Pro features for free.",
+          "Its website offers it to new users again. Sign-ups and downloads stopped on November 4, when it announced the Meta deal, and the Get Conductor button came back after it changed course.",
       },
       {
         question: "Will my Conductor workspaces open in Threadlines?",
@@ -321,9 +313,13 @@ export const COMPARISONS: readonly Comparison[] = [
           "No. Threadlines runs agents on your own computer. You can reach it from your phone or another computer, but the work happens on your machine.",
       },
     ],
-    checkedOn: "2026-11-04",
+    checkedOn: "2026-11-15",
     sources: [
       { label: "Conductor's announcement", url: "https://www.conductor.build/announcement" },
+      {
+        label: "0.94.2 release notes",
+        url: "https://www.conductor.build/changelog/0.94.2-conductor-is-back",
+      },
       {
         label: "0.93.0 release notes",
         url: "https://www.conductor.build/changelog/0.93.0-conductor-is-joining-meta",

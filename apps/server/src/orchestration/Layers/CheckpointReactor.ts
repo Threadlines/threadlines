@@ -1222,10 +1222,67 @@ const make = Effect.gen(function* () {
     }
     const context = contextResult.context;
 
-    const revertOutcome = yield* checkpointRevert.applyRevert(context);
-    if (revertOutcome === null) {
+    const rolledBackTurns = Math.max(0, context.currentTurnCount - event.payload.turnCount);
+    const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
+      thread: context.thread,
+      targetTurnCount: event.payload.turnCount,
+    });
+    // An agent that forgets by starting over (Antigravity) is stopped, and
+    // its conversation forgotten, before any file is restored: a command it
+    // still ran could otherwise write over a restored file. Nothing is
+    // started for an agent that isn't running.
+    // The lookup fails only when the thread's provider instance is no longer
+    // registered (removed or turned off). Removing an instance ends its
+    // runtimes, so nothing of it can still write: the files are restored as
+    // for an agent that isn't running.
+    const capabilities =
+      rolledBackTurns > 0
+        ? yield* Effect.result(
+            providerService.getCapabilities(
+              context.thread.session?.providerInstanceId ??
+                context.thread.modelSelection.instanceId,
+            ),
+          )
+        : undefined;
+    const startsOver =
+      capabilities?._tag === "Success" &&
+      capabilities.success.conversationRollback === "new-session";
+    // Undefined: not such an agent. A failure means it couldn't be found or
+    // stopped: something it runs could still write, so no file is restored.
+    const stopped = startsOver
+      ? yield* Effect.result(
+          providerService.rollbackConversation({
+            threadId: event.payload.threadId,
+            numTurns: rolledBackTurns,
+            ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
+          }),
+        )
+      : undefined;
+    if (stopped !== undefined && stopped._tag === "Failure") {
+      yield* Effect.logWarning("checkpoint revert could not stop the agent", {
+        threadId: event.payload.threadId,
+        cause: String(stopped.failure),
+      });
       yield* failRevert(
-        `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
+        "The agent couldn't be stopped, so no file was restored: something it runs could still write to them. Stop it and try again.",
+      );
+      return;
+    }
+    const startedOver =
+      stopped?._tag === "Success" ? stopped.success.conversationRolledBack : undefined;
+
+    const restored = yield* Effect.result(checkpointRevert.applyRevert(context));
+    const revertOutcome = restored._tag === "Success" ? restored.success : null;
+    if (revertOutcome === null) {
+      const filesDetail =
+        restored._tag === "Failure"
+          ? restored.failure.message
+          : `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`;
+      // Both facts: the agent already forgot, the files stayed as they were.
+      yield* failRevert(
+        startedOver === true
+          ? `${filesDetail} The agent's conversation was already reset: it no longer remembers the turns after this point.`
+          : filesDetail,
       );
       return;
     }
@@ -1241,18 +1298,16 @@ const make = Effect.gen(function* () {
       createdAt: now,
     }).pipe(Effect.catch(() => Effect.void));
 
-    const rolledBackTurns = Math.max(0, context.currentTurnCount - event.payload.turnCount);
     if (rolledBackTurns > 0) {
-      if (context.hasProviderSession) {
-        const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
-          thread: context.thread,
-          targetTurnCount: event.payload.turnCount,
-        });
-        const rollback = yield* providerService.rollbackConversation({
-          threadId: event.payload.threadId,
-          numTurns: rolledBackTurns,
-          ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
-        });
+      if (startsOver || context.hasProviderSession) {
+        const rollback =
+          startedOver !== undefined
+            ? { conversationRolledBack: startedOver }
+            : yield* providerService.rollbackConversation({
+                threadId: event.payload.threadId,
+                numTurns: rolledBackTurns,
+                ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
+              });
         if (!rollback.conversationRolledBack) {
           yield* orchestrationEngine
             .dispatch({

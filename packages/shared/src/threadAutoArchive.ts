@@ -1,3 +1,5 @@
+import { runtimeCheckBackOwed, type OwedCheckBackFields } from "./checkBacks.ts";
+
 export const AUTO_ARCHIVE_SUGGESTED_INACTIVE_DAYS = 30 as const;
 
 export interface AutoArchiveThreadFields {
@@ -6,6 +8,9 @@ export interface AutoArchiveThreadFields {
   readonly latestUserMessageAt: string | null;
   readonly archivedAt: string | null;
   readonly pinnedAt: string | null;
+  /** It is its project's lead chat (docs/design/lead-chat.md): kept like a
+   *  pinned thread, since archiving it would end its role. */
+  readonly lead?: boolean | undefined;
   readonly hasPendingApprovals: boolean;
   readonly hasPendingUserInput: boolean;
   readonly hasActionableProposedPlan: boolean;
@@ -14,6 +19,8 @@ export interface AutoArchiveThreadFields {
   readonly awaitedChildThreadCount?: number | undefined;
   /** Child threads: threads its agent asked to start wait for the user. */
   readonly pendingChildApproval?: boolean | undefined;
+  /** Times its agents set to come back (runtimeCheckBackOwed). */
+  readonly checkBacks?: ReadonlyArray<OwedCheckBackFields> | undefined;
   readonly session: {
     readonly status: string;
     readonly orchestrationStatus?: string | undefined;
@@ -28,8 +35,11 @@ export function getAutoArchiveThreadInactiveSince(thread: AutoArchiveThreadField
   return thread.updatedAt ?? thread.latestUserMessageAt ?? thread.createdAt;
 }
 
-export function isAutoArchiveProtectedThread(thread: AutoArchiveThreadFields): boolean {
-  if (thread.archivedAt !== null || thread.pinnedAt !== null) {
+export function isAutoArchiveProtectedThread(
+  thread: AutoArchiveThreadFields,
+  nowMs: number = Date.now(),
+): boolean {
+  if (thread.archivedAt !== null || thread.pinnedAt !== null || thread.lead === true) {
     return true;
   }
 
@@ -47,6 +57,17 @@ export function isAutoArchiveProtectedThread(thread: AutoArchiveThreadFields): b
   }
 
   if (thread.latestTurn?.state === "running") {
+    return true;
+  }
+
+  // Its agent will come back in a runtime archiving would stop. A stale
+  // entry (its runtime ended unreported) runs out with its time.
+  const idleDurationMs = nowMs - Date.parse(getAutoArchiveThreadInactiveSince(thread));
+  if (
+    (thread.checkBacks ?? []).some((checkBack) =>
+      runtimeCheckBackOwed(checkBack, nowMs, idleDurationMs),
+    )
+  ) {
     return true;
   }
 
@@ -75,10 +96,11 @@ export function selectAutoArchiveCandidates<T extends AutoArchiveThreadFields>(i
     return [];
   }
 
-  const cutoffMs = (input.nowMs ?? Date.now()) - input.inactiveDays * 24 * 60 * 60 * 1_000;
+  const nowMs = input.nowMs ?? Date.now();
+  const cutoffMs = nowMs - input.inactiveDays * 24 * 60 * 60 * 1_000;
   return input.threads
     .flatMap((thread): Array<T & { readonly inactiveSince: string }> => {
-      if (input.isExcluded?.(thread) === true || isAutoArchiveProtectedThread(thread)) {
+      if (input.isExcluded?.(thread) === true || isAutoArchiveProtectedThread(thread, nowMs)) {
         return [];
       }
 

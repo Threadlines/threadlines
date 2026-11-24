@@ -2,6 +2,7 @@ import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpCommandsEndpointUrl,
+  mcpDeviceEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
@@ -10,6 +11,8 @@ import {
   buildCommandRequestInstructions,
   COMMANDS_MCP_SERVER_NAME,
 } from "../../mcp/commandTools.ts";
+import { DEVICE_MCP_SERVER_NAME } from "../../mcp/deviceTools.ts";
+import { buildDeviceInstructions } from "../deviceInstructions.ts";
 import {
   buildAgentPageInstructions,
   CODEX_PAGE_RIVAL,
@@ -22,6 +25,7 @@ import { buildGuideInstructions } from "../../mcp/guideTools.ts";
 import { buildScheduleInstructions } from "../../mcp/scheduleTools.ts";
 import { type CodexBorrowedSignIn, type CodexSideAnswerHomeError } from "../codexSideAnswerHome.ts";
 import { removeSideRuntimeHome } from "../sideRuntimeHome.ts";
+import { projectBriefPreface } from "../projectBriefPreface.ts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -54,6 +58,7 @@ import { isLinkedWorktreeCheckout } from "../../vcs/CheckoutPresence.ts";
 import { MANAGED_WORKTREE_INSTRUCTION } from "@threadlines/shared/contextSeed";
 import { normalizeModelSlug } from "@threadlines/shared/model";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -85,6 +90,7 @@ import {
   CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
+import { processExit, type TrackedAgentProcess } from "../agentProcessLedger.ts";
 import {
   CODEX_BROWSER_TOKEN_ENV_VAR,
   codexAppServerArgs,
@@ -92,6 +98,19 @@ import {
 } from "../codexAppServerArgs.ts";
 
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+const SIGNAL_EXIT_PATTERN = /receipt of signal:\s*'([^']+)'/i;
+
+function formatCodexExitError(error: unknown): string {
+  const detail =
+    error instanceof Error
+      ? `${error.message} ${error.cause instanceof Error ? error.cause.message : ""}`
+      : String(error);
+  const match = SIGNAL_EXIT_PATTERN.exec(detail);
+  if (match?.[1]) {
+    return `Codex App Server exited with signal ${match[1]}.`;
+  }
+  return "Codex App Server exited unexpectedly.";
+}
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
   EffectCodexSchema.V2ReviewStartResponse,
@@ -185,6 +204,14 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
 
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
+  /**
+   * The rollout's absolute path, when this home's Codex may not know it yet:
+   * a session a move carried here (docs/design/fleet.md, Part 3d). Resumed by
+   * path, as a side answer's copy is.
+   */
+  rolloutPath: Schema.optional(Schema.String),
+  /** The hash of the project brief this conversation holds (projectBriefPreface). */
+  projectBriefHash: Schema.optional(Schema.String),
 });
 const CodexUserInputAnswerObject = Schema.Struct({
   answers: Schema.Array(Schema.String),
@@ -244,6 +271,14 @@ export interface CodexSessionRuntimeOptions {
   readonly agentPages?: boolean;
   /** Attach `ask_user_to_run` (ProviderSessionStartInput.commandRequests). Never for a side runtime. */
   readonly commandRequests?: boolean;
+  /** Attach the device tools (ProviderSessionStartInput.deviceTools). Never for a side runtime. */
+  readonly deviceTools?: boolean;
+  /**
+   * The project's brief (ProviderSessionStartInput.projectInstructions). The
+   * provider thread keeps it as its developer instructions, set at every
+   * start, resume and fork, after the user's own from Codex's config.
+   */
+  readonly projectInstructions?: string;
   readonly onRealtimeAudio?: (audio: ProviderRealtimeAudioChunk) => Effect.Effect<void>;
 }
 
@@ -428,6 +463,11 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly events: Stream.Stream<ProviderEvent, never>;
   readonly close: Effect.Effect<void>;
+  /**
+   * The app-server process, for proof it is gone after a stop
+   * (agentProcessLedger). Absent only for test doubles that run none.
+   */
+  readonly process?: TrackedAgentProcess;
 }
 
 export type CodexThreadGoal = EffectCodexSchema.V2ThreadGoalSetResponse__ThreadGoal;
@@ -443,6 +483,10 @@ export interface CodexSessionRuntimeSetGoalInput {
   /** Codex 0.163+ records only "user" edits in the model's history; older
    *  app-servers ignore the field. */
   readonly origin: "user" | "automatic";
+  /** Put in the model's history as a developer message just before the goal
+   *  is set, so the turns Codex runs for the goal read it (a lead chat's
+   *  role). Best effort: an app-server that refuses it still gets the goal. */
+  readonly context?: string;
 }
 
 export type CodexSessionRuntimeError =
@@ -563,6 +607,26 @@ function readResumeCursorThreadId(
   return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.threadId : undefined;
 }
 
+function readResumeCursorProjectBriefHash(resumeCursor: unknown): string | undefined {
+  return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.projectBriefHash : undefined;
+}
+
+/** The cursor as it was, the brief's hash left out (its other fields, a carried rollout's path, kept). */
+function withoutProjectBriefHash(
+  resumeCursor: unknown,
+  providerThreadId: string,
+): CodexResumeCursor {
+  if (!isCodexResumeCursorSchema(resumeCursor)) return { threadId: providerThreadId };
+  const { projectBriefHash: _held, ...rest } = resumeCursor;
+  return rest;
+}
+
+function readResumeCursorRolloutPath(
+  resumeCursor: ProviderSession["resumeCursor"],
+): string | undefined {
+  return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.rolloutPath : undefined;
+}
+
 function runtimeModeToThreadConfig(input: RuntimeMode): {
   readonly approvalPolicy: EffectCodexSchema.V2ThreadStartParams__AskForApproval;
   readonly sandbox: EffectCodexSchema.V2ThreadStartParams__SandboxMode;
@@ -604,6 +668,8 @@ function buildThreadStartParams(input: {
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly lockdown?: boolean;
+  /** The thread's developer instructions (codexThreadDeveloperInstructions). */
+  readonly developerInstructions: string | undefined;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config: ReturnType<typeof runtimeModeToThreadConfig> = input.lockdown
     ? SIDE_ANSWER_THREAD_CONFIG
@@ -616,6 +682,9 @@ function buildThreadStartParams(input: {
     ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.developerInstructions !== undefined && input.lockdown !== true
+      ? { developerInstructions: input.developerInstructions }
+      : {}),
   };
 }
 
@@ -626,6 +695,7 @@ function buildThreadForkParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly developerInstructions: string | undefined;
 }): EffectCodexSchema.V2ThreadForkParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -639,7 +709,30 @@ function buildThreadForkParams(input: {
     ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.developerInstructions !== undefined
+      ? { developerInstructions: input.developerInstructions }
+      : {}),
   };
+}
+
+/**
+ * What a provider thread opened for this session keeps as its developer
+ * instructions: the user's own from Codex's config, then the project's brief
+ * (docs/design/project-brief-notes.md). Set on the thread rather than per
+ * turn, because a goal's cold start runs with no `turn/start`. Codex replaces
+ * the config's value with the thread's, so the config's comes first; without
+ * it (it could not be read) the brief is left out rather than the user's
+ * own instructions dropped. Undefined: leave Codex's own.
+ */
+export function codexThreadDeveloperInstructions(input: {
+  readonly projectInstructions: string | undefined;
+  readonly config: Option.Option<string | null | undefined>;
+}): string | undefined {
+  const project = input.projectInstructions?.trim();
+  if (project === undefined || project.length === 0) return undefined;
+  if (Option.isNone(input.config)) return undefined;
+  const own = input.config.value?.trim();
+  return own === undefined || own.length === 0 ? project : `${own}\n\n${project}`;
 }
 
 function runtimeModeToTurnSandboxPolicy(
@@ -673,6 +766,8 @@ function buildCodexCollaborationMode(input: {
   readonly agentPageAssetsDir?: string;
   /** The session has `ask_user_to_run`. */
   readonly commandRequests?: boolean;
+  /** The session has the device tools. */
+  readonly deviceTools?: boolean;
   /** The thread's own runtime has the room tools, schedule tools among them. */
   readonly scheduleTools?: boolean;
   /** The thread's own runtime has the room endpoint, so the app guide. */
@@ -704,6 +799,7 @@ function buildCodexCollaborationMode(input: {
             ]
           : []),
         ...(input.commandRequests ? [buildCommandRequestInstructions({})] : []),
+        ...(input.deviceTools ? [buildDeviceInstructions()] : []),
         ...(input.scheduleTools
           ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
           : []),
@@ -734,6 +830,8 @@ export function buildTurnStartParams(input: {
   readonly agentPageAssetsDir?: string;
   /** The session has `ask_user_to_run`. */
   readonly commandRequests?: boolean;
+  /** The session has the device tools. */
+  readonly deviceTools?: boolean;
   /** The thread's own runtime has the room tools, schedule tools among them. */
   readonly scheduleTools?: boolean;
   /** The thread's own runtime has the room endpoint, so the app guide. */
@@ -770,6 +868,7 @@ export function buildTurnStartParams(input: {
       ? { agentPageAssetsDir: input.agentPageAssetsDir }
       : {}),
     ...(input.commandRequests ? { commandRequests: true } : {}),
+    ...(input.deviceTools && !input.lockdown ? { deviceTools: true } : {}),
     ...(input.scheduleTools && !input.lockdown ? { scheduleTools: true } : {}),
     ...(input.guide && !input.lockdown ? { guide: true } : {}),
   });
@@ -986,7 +1085,11 @@ export const openCodexThread = (input: {
   readonly cwd: string;
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  /** See codexThreadDeveloperInstructions. Never for a side answer. */
+  readonly developerInstructions?: string | undefined;
   readonly resumeThreadId: string | undefined;
+  /** Where the rollout to resume is, when this home's Codex may not know it (a carried session). */
+  readonly resumePath?: string | undefined;
   readonly resumeRequired?: boolean | undefined;
   /** Same-driver native fork. `beforeTurnId` is preferred for exact
    *  user-prompt replacement; `lastTurnId` remains the stable compatibility
@@ -1007,6 +1110,7 @@ export const openCodexThread = (input: {
     model: input.requestedModel,
     serviceTier: input.serviceTier,
     ...(input.lockdown !== undefined ? { lockdown: true } : {}),
+    developerInstructions: input.developerInstructions,
   });
 
   if (input.lockdown !== undefined) {
@@ -1044,6 +1148,7 @@ export const openCodexThread = (input: {
             runtimeMode: input.runtimeMode,
             model: input.requestedModel,
             serviceTier: input.serviceTier,
+            developerInstructions: input.developerInstructions,
           }),
         );
       const forkRequest =
@@ -1057,6 +1162,7 @@ export const openCodexThread = (input: {
                   runtimeMode: input.runtimeMode,
                   model: input.requestedModel,
                   serviceTier: input.serviceTier,
+                  developerInstructions: input.developerInstructions,
                 }),
                 beforeTurnId: forkFrom.beforeTurnId,
               })
@@ -1090,6 +1196,7 @@ export const openCodexThread = (input: {
     "resume a Codex thread",
     input.client.request("thread/resume", {
       threadId: resumeThreadId,
+      ...(input.resumePath !== undefined ? { path: input.resumePath } : {}),
       excludeTurns: true,
       ...resumeParams,
     }),
@@ -1099,23 +1206,29 @@ export const openCodexThread = (input: {
     return resume;
   }
 
+  // A rollout carried from another computer (resumed by path) may be one this
+  // Codex can't read at all, a newer format say: any failure to open it falls
+  // back to a fresh thread, and the reactor gives it the summary instead.
+  const carried = input.resumePath !== undefined;
   return resume.pipe(
-    Effect.catchIf(isRecoverableThreadResumeError, (error) =>
-      Effect.logWarning("codex app-server thread resume fell back to fresh start", {
-        threadId: input.threadId,
-        requestedRuntimeMode: input.runtimeMode,
-        resumeThreadId,
-        recoverable: true,
-        cause: error.message,
-      }).pipe(
-        Effect.andThen(input.onResumeFallback?.(error.message) ?? Effect.void),
-        Effect.andThen(
-          withCodexRequestTimeout(
-            "start a Codex thread",
-            input.client.request("thread/start", startParams),
+    Effect.catchIf(
+      (error) => carried || isRecoverableThreadResumeError(error),
+      (error) =>
+        Effect.logWarning("codex app-server thread resume fell back to fresh start", {
+          threadId: input.threadId,
+          requestedRuntimeMode: input.runtimeMode,
+          resumeThreadId,
+          recoverable: true,
+          cause: error.message,
+        }).pipe(
+          Effect.andThen(input.onResumeFallback?.(error.message) ?? Effect.void),
+          Effect.andThen(
+            withCodexRequestTimeout(
+              "start a Codex thread",
+              input.client.request("thread/start", startParams),
+            ),
           ),
         ),
-      ),
     ),
   );
 };
@@ -1231,6 +1344,8 @@ export const rollbackCodexThread = (input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  /** See codexThreadDeveloperInstructions. */
+  readonly developerInstructions?: string | undefined;
 }): Effect.Effect<CodexThreadRollbackResult, CodexErrors.CodexAppServerError> =>
   Effect.gen(function* () {
     const { client, providerThreadId, numTurns } = input;
@@ -1250,6 +1365,7 @@ export const rollbackCodexThread = (input: {
                 runtimeMode: input.runtimeMode,
                 model: input.model,
                 serviceTier: input.serviceTier,
+                developerInstructions: input.developerInstructions,
               }),
             ),
           ),
@@ -1311,6 +1427,7 @@ export const rollbackCodexThread = (input: {
             runtimeMode: input.runtimeMode,
             model: input.model,
             serviceTier: input.serviceTier,
+            developerInstructions: input.developerInstructions,
           });
           yield* withCodexRequestTimeout(
             "reload a reverted Codex thread",
@@ -1361,6 +1478,7 @@ export const rollbackCodexThread = (input: {
           runtimeMode: input.runtimeMode,
           model: input.model,
           serviceTier: input.serviceTier,
+          developerInstructions: input.developerInstructions,
         }),
         ...(lastSurvivingTurn === undefined ? { beforeTurnId: firstUndoneTurn.id } : {}),
         deferGoalContinuation: true,
@@ -2010,6 +2128,7 @@ const makeCodexSessionRuntimeIn = (
     const roomGrant = roomEndpointGrant(options, lockdown?.kind);
     const agentPages = options.agentPages === true && lockdown === undefined;
     const commandRequests = options.commandRequests === true && lockdown === undefined;
+    const deviceTools = options.deviceTools === true && lockdown === undefined;
     const credential =
       lockdown === undefined || roomGrant.attach
         ? yield* mcpSessionRegistry.credentialFor({
@@ -2018,6 +2137,7 @@ const makeCodexSessionRuntimeIn = (
             room: roomGrant.attach,
             pages: agentPages,
             commands: commandRequests,
+            device: deviceTools,
             ...(lockdown !== undefined ? { sideKind: lockdown.kind } : {}),
             scheduledRun: options.scheduledRunTools === true,
             guideOnly: roomGrant.guideOnly,
@@ -2065,6 +2185,14 @@ const makeCodexSessionRuntimeIn = (
                   commands: {
                     url: mcpCommandsEndpointUrl(options.serverPort),
                     serverName: COMMANDS_MCP_SERVER_NAME,
+                  },
+                }
+              : {}),
+            ...(deviceTools
+              ? {
+                  device: {
+                    url: mcpDeviceEndpointUrl(options.serverPort),
+                    serverName: DEVICE_MCP_SERVER_NAME,
                   },
                 }
               : {}),
@@ -2325,7 +2453,7 @@ const makeCodexSessionRuntimeIn = (
             return Effect.void;
           }
           return updateSession(sessionRef, {
-            resumeCursor: { threadId: payload.thread.id },
+            resumeCursor: withProjectBriefHash({ threadId: payload.thread.id }),
             providerThreadId: payload.thread.id,
           });
         }),
@@ -2791,30 +2919,55 @@ const makeCodexSessionRuntimeIn = (
     );
 
     yield* child.exitCode.pipe(
-      Effect.flatMap((exitCode) =>
+      Effect.result,
+      Effect.flatMap((result) =>
         Ref.get(closedRef).pipe(
           Effect.flatMap((closed) => {
             if (closed) {
               return Effect.void;
             }
+            const exitCode = Result.isSuccess(result) ? Number(result.success) : undefined;
             const nextStatus = exitCode === 0 ? "closed" : "error";
+            const reason = Result.isSuccess(result)
+              ? exitCode === 0
+                ? "Codex App Server exited."
+                : `Codex App Server exited with code ${exitCode}.`
+              : formatCodexExitError(result.failure);
             return updateSession(sessionRef, {
               status: nextStatus,
               activeTurnId: undefined,
-            }).pipe(
-              Effect.andThen(
-                emitSessionEvent(
-                  "session/exited",
-                  exitCode === 0
-                    ? "Codex App Server exited."
-                    : `Codex App Server exited with code ${exitCode}.`,
-                ),
-              ),
-            );
+            }).pipe(Effect.andThen(emitSessionEvent("session/exited", reason)));
           }),
         ),
       ),
       Effect.forkIn(runtimeScope),
+    );
+
+    /** What the session's provider threads keep (codexThreadDeveloperInstructions), set at start. */
+    let threadDeveloperInstructions: string | undefined;
+    /**
+     * The hash of the project brief the conversation holds, kept in every
+     * resume cursor this session writes. A thread Codex creates (start, fork,
+     * a rollback's copy) gets the brief in its opening context; a resumed one
+     * keeps the context it opened with, so a changed brief is added to it.
+     */
+    let projectBriefHashHeld: string | undefined;
+    const withProjectBriefHash = <C extends { readonly threadId: string }>(cursor: C) =>
+      projectBriefHashHeld !== undefined
+        ? { ...cursor, projectBriefHash: projectBriefHashHeld }
+        : cursor;
+    /** The user's own `developer_instructions` for this folder; none when Codex can't say. */
+    const readConfiguredDeveloperInstructions = withCodexRequestTimeout(
+      "read Codex's config",
+      client.request("config/read", { cwd: options.cwd }),
+    ).pipe(
+      Effect.map((response) => Option.some(response.config.developer_instructions)),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("codex config could not be read; the project brief is left out", {
+          threadId: options.threadId,
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as(Option.none<string | null | undefined>())),
+      ),
     );
 
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
@@ -2843,6 +2996,20 @@ const makeCodexSessionRuntimeIn = (
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
+      const resumeThreadId =
+        lockdown === undefined ? readResumeCursorThreadId(options.resumeCursor) : undefined;
+      const resumePath =
+        lockdown === undefined ? readResumeCursorRolloutPath(options.resumeCursor) : undefined;
+      // The reactor owes a session that came up without its conversation the
+      // thread's history (ProviderSession.resumeFailed).
+      let resumeFailed = false;
+      threadDeveloperInstructions =
+        lockdown === undefined && options.projectInstructions !== undefined
+          ? codexThreadDeveloperInstructions({
+              projectInstructions: options.projectInstructions,
+              config: yield* readConfiguredDeveloperInstructions,
+            })
+          : undefined;
       const opened = yield* openCodexThread({
         client,
         threadId: options.threadId,
@@ -2850,28 +3017,81 @@ const makeCodexSessionRuntimeIn = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
-        resumeThreadId:
-          lockdown === undefined ? readResumeCursorThreadId(options.resumeCursor) : undefined,
+        developerInstructions: threadDeveloperInstructions,
+        resumeThreadId,
+        resumePath,
         resumeRequired: options.resumeRequired,
         forkFrom: lockdown === undefined ? options.forkFrom : undefined,
         lockdown,
         onResumeFallback: (cause) =>
-          emitEvent({
-            kind: "notification",
-            threadId: options.threadId,
-            method: "warning",
-            message: `Could not restore this thread's previous Codex session (${cause}). Starting fresh — the provider no longer has this thread's earlier context.`,
-          }),
+          Effect.sync(() => {
+            resumeFailed = true;
+          }).pipe(
+            Effect.andThen(
+              emitEvent({
+                kind: "notification",
+                threadId: options.threadId,
+                method: "warning",
+                message: `Could not restore this thread's previous Codex session (${cause}). Starting fresh — the provider no longer has this thread's earlier context.`,
+              }),
+            ),
+          ),
       });
 
       const providerThreadId = opened.thread.id;
+      if (threadDeveloperInstructions !== undefined || options.projectInstructions === undefined) {
+        // Left alone when Codex's config could not be read: the brief was
+        // left out, so what the conversation holds is unknown.
+        const resumed = resumeThreadId !== undefined && providerThreadId === resumeThreadId;
+        const heldBefore = resumed
+          ? readResumeCursorProjectBriefHash(options.resumeCursor)
+          : undefined;
+        const preface = projectBriefPreface({
+          projectInstructions: options.projectInstructions,
+          sentHash: heldBefore,
+        });
+        projectBriefHashHeld = preface.hash;
+        if (resumed && preface.text !== undefined) {
+          const added = yield* withCodexRequestTimeout(
+            "add the project brief to a Codex thread",
+            client.raw.request("thread/inject_items", {
+              threadId: providerThreadId,
+              items: [
+                {
+                  type: "message",
+                  role: "developer",
+                  content: [{ type: "input_text", text: preface.text }],
+                },
+              ],
+            }),
+          ).pipe(
+            Effect.as(true),
+            Effect.catch((cause) =>
+              Effect.logWarning("codex project brief was not added", {
+                threadId: providerThreadId,
+                cause,
+              }).pipe(Effect.as(false)),
+            ),
+          );
+          if (!added) projectBriefHashHeld = heldBefore;
+        }
+      } else if (resumeThreadId !== undefined && providerThreadId === resumeThreadId) {
+        projectBriefHashHeld = readResumeCursorProjectBriefHash(options.resumeCursor);
+      }
       const session = {
         ...(yield* Ref.get(sessionRef)),
         status: "ready",
         cwd: opened.cwd,
         model: opened.model,
-        resumeCursor: { threadId: providerThreadId },
+        // A rollout resumed by path keeps its path until this home's Codex
+        // has surely indexed it: it is the same conversation.
+        resumeCursor: withProjectBriefHash(
+          resumePath !== undefined && providerThreadId === resumeThreadId
+            ? { threadId: providerThreadId, rolloutPath: resumePath }
+            : { threadId: providerThreadId },
+        ),
         providerThreadId,
+        ...(resumeFailed ? { resumeFailed: true } : {}),
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
@@ -2935,6 +3155,7 @@ const makeCodexSessionRuntimeIn = (
             ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
             ...(agentPageAssetsDir !== undefined ? { agentPageAssetsDir } : {}),
             ...(commandRequests ? { commandRequests: true } : {}),
+            ...(deviceTools ? { deviceTools: true } : {}),
             ...(roomTools && options.scheduleTools === true && lockdown === undefined
               ? { scheduleTools: true }
               : {}),
@@ -2961,7 +3182,7 @@ const makeCodexSessionRuntimeIn = (
             threadId: options.threadId,
             turnId,
             ...(resumedProviderThreadId
-              ? { resumeCursor: { threadId: resumedProviderThreadId } }
+              ? { resumeCursor: withProjectBriefHash({ threadId: resumedProviderThreadId }) }
               : {}),
           } satisfies ProviderTurnStartResult;
         }),
@@ -2994,7 +3215,7 @@ const makeCodexSessionRuntimeIn = (
             reviewThreadId: response.reviewThreadId,
             delivery,
             ...(resumedProviderThreadId
-              ? { resumeCursor: { threadId: resumedProviderThreadId } }
+              ? { resumeCursor: withProjectBriefHash({ threadId: resumedProviderThreadId }) }
               : {}),
           } satisfies ProviderStartReviewResult;
         }),
@@ -3030,7 +3251,7 @@ const makeCodexSessionRuntimeIn = (
             threadId: options.threadId,
             turnId,
             ...(resumedProviderThreadId
-              ? { resumeCursor: { threadId: resumedProviderThreadId } }
+              ? { resumeCursor: withProjectBriefHash({ threadId: resumedProviderThreadId }) }
               : {}),
           } satisfies ProviderTurnStartResult;
         }),
@@ -3215,6 +3436,28 @@ const makeCodexSessionRuntimeIn = (
       setGoal: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
+          if (input.context !== undefined && input.context.trim().length > 0) {
+            yield* withCodexRequestTimeout(
+              "add a Codex goal's context",
+              client.raw.request("thread/inject_items", {
+                threadId: providerThreadId,
+                items: [
+                  {
+                    type: "message",
+                    role: "developer",
+                    content: [{ type: "input_text", text: input.context }],
+                  },
+                ],
+              }),
+            ).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("codex goal context was not added", {
+                  threadId: providerThreadId,
+                  cause,
+                }),
+              ),
+            );
+          }
           const rawResponse = yield* withCodexRequestTimeout(
             "set a Codex thread goal",
             client.raw.request("thread/goal/set", {
@@ -3298,15 +3541,20 @@ const makeCodexSessionRuntimeIn = (
             runtimeMode: options.runtimeMode,
             model: normalizeCodexModelSlug(session.model),
             serviceTier: options.serviceTier,
+            developerInstructions: threadDeveloperInstructions,
           });
+          // A revert may take the brief a resume added along with the turns
+          // after it: the next resume adds it again (at worst one copy more).
+          projectBriefHashHeld = undefined;
           yield* updateSession(sessionRef, {
             status: "ready",
             activeTurnId: undefined,
+            resumeCursor:
+              replacementProviderThreadId !== undefined
+                ? withProjectBriefHash({ threadId: replacementProviderThreadId })
+                : withoutProjectBriefHash(session.resumeCursor, providerThreadId),
             ...(replacementProviderThreadId !== undefined
-              ? {
-                  resumeCursor: { threadId: replacementProviderThreadId },
-                  providerThreadId: replacementProviderThreadId,
-                }
+              ? { providerThreadId: replacementProviderThreadId }
               : {}),
           });
           if (replacementProviderThreadId !== undefined) {
@@ -3404,5 +3652,6 @@ const makeCodexSessionRuntimeIn = (
         }),
       events: Stream.fromQueue(events),
       close,
+      process: { pid: child.pid, exited: processExit(child.pid, child.exitCode) },
     } satisfies CodexSessionRuntimeShape;
   });

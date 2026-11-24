@@ -260,10 +260,12 @@ const toSubmission = (row: ThemeShowcaseSubmissionRow): ThemeShowcaseSubmission 
         entryId: row.entryId,
         sourceHash: row.sourceHash,
         publishedHash: row.publishedHash,
+        slug: row.slug,
         login: row.login,
         pullRequestUrl: row.pullRequestUrl,
         state: row.state,
         ...(row.state === "notAdded" && row.takenBack === true ? { takenBack: true } : {}),
+        ...(row.updateBaseSha !== null ? { isUpdate: true } : {}),
         createdAt: row.createdAt,
       };
 
@@ -272,11 +274,14 @@ function pullRequestBody(input: {
   readonly manifest: ThemeManifest;
   readonly fonts: ReadonlyArray<ThemeShowcaseFont>;
   readonly submissionId: string;
+  readonly isUpdate: boolean;
 }): string {
   const { manifest, fonts } = input;
   const credits = manifest.credits;
   const lines = [
-    `Adds **${manifest.name}** to the Showcase, shared from Threadlines.`,
+    input.isUpdate
+      ? `Updates **${manifest.name}** in the Showcase, shared from Threadlines.`
+      : `Adds **${manifest.name}** to the Showcase, shared from Threadlines.`,
     "",
     `- License: ${credits?.license ?? "none"}`,
     `- Credit: ${[credits?.author, credits?.link].filter(Boolean).join(", ") || "none"}`,
@@ -789,6 +794,15 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
         const own = rows.find((row) => row.submissionId === input.submissionId);
         const settled = own === undefined ? null : toSubmission(own);
         if (settled !== null) return settled;
+        if (
+          own !== undefined &&
+          ((own.updateBaseSha !== null) !== (input.updateSlug !== undefined) ||
+            (own.updateBaseSha !== null && own.slug !== input.updateSlug))
+        ) {
+          return yield* showcaseError(
+            "This share already started for a different Showcase target.",
+          );
+        }
 
         const share = yield* buildShare(input);
         if (share.problems.length > 0 || share.pictureBytes === null) {
@@ -797,7 +811,8 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
           );
         }
         // The list says which folders are taken and what's already there: share only against a fresh one.
-        const showcase = yield* list({});
+        // An update refreshes the list so it checks the latest owner and file digest on main.
+        const showcase = yield* list(input.updateSlug === undefined ? {} : { refresh: true });
         if (showcase.issue !== null) {
           return yield* showcaseError(
             showcase.issue === "updateNeeded"
@@ -805,14 +820,48 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
               : "Couldn't reach the Showcase. Check your connection and try again.",
           );
         }
-        if (showcase.themes.some((entry) => entry.hash === share.hash)) {
+        const encode = (text: string) => new TextEncoder().encode(text);
+        const fileBytes = encode(themeFileText(share.manifest));
+        const fileSha = yield* Effect.promise(() => sha256Hex(fileBytes));
+        const target =
+          input.updateSlug === undefined
+            ? null
+            : (showcase.themes.find((entry) => entry.id === input.updateSlug) ?? null);
+        if (input.updateSlug !== undefined && target === null) {
+          return yield* showcaseError("That theme isn't in the Showcase anymore.");
+        }
+        if (target !== null) {
+          if (target.sharedBy === null) {
+            return yield* showcaseError(
+              `${target.name} wasn't shared from a GitHub account, so it can't be updated here.`,
+            );
+          }
+          if (target.sharedBy.toLowerCase() !== input.login.toLowerCase()) {
+            return yield* showcaseError(
+              `Only @${target.sharedBy} can update ${target.name} in the Showcase.`,
+            );
+          }
+          if (
+            showcase.themes.some((entry) => entry.id !== target.id && entry.hash === share.hash)
+          ) {
+            return yield* showcaseError("This theme is already in the Showcase.");
+          }
+          if (share.hash === target.hash && fileSha === target.file.sha256) {
+            return yield* showcaseError("This theme is already up to date in the Showcase.");
+          }
+        } else if (showcase.themes.some((entry) => entry.hash === share.hash)) {
           return yield* showcaseError("This theme is already in the Showcase.");
         }
         const inReview = rows.find(
           (row) =>
-            row.publishedHash === share.hash &&
             row.state === "inReview" &&
-            row.pullRequestUrl !== null,
+            row.pullRequestUrl !== null &&
+            (row.publishedFileSha !== null
+              ? row.publishedFileSha === fileSha
+              : row.publishedHash === share.hash) &&
+            (target === null
+              ? row.updateBaseSha === null
+              : row.slug === target.id && row.updateBaseSha !== null),
         );
         const reviewing = inReview === undefined ? null : toSubmission(inReview);
         if (reviewing !== null) return reviewing;
@@ -822,13 +871,32 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
         // and the pull request GitHub may have opened from it, are found, not made twice.
         const before =
           own ??
-          rows.find((row) => row.pullRequestUrl === null && row.entryId === share.entry.entryId);
+          rows.find(
+            (row) =>
+              row.pullRequestUrl === null &&
+              row.entryId === share.entry.entryId &&
+              (target === null
+                ? row.updateBaseSha === null
+                : row.slug === target.id && row.updateBaseSha !== null),
+          );
         const submissionId = before?.submissionId ?? input.submissionId;
         const branch = `showcase/${submissionId}`;
         const account = yield* expectLogin(input.login, { uncertain: before !== undefined });
+        if (
+          target !== null &&
+          target.sharedBy !== null &&
+          target.sharedBy.toLowerCase() !== account.login.toLowerCase()
+        ) {
+          return yield* showcaseError(
+            `Only @${target.sharedBy} can update ${target.name} in the Showcase.`,
+          );
+        }
         const slug =
+          target?.id ??
           before?.slug ??
           showcaseSlugFor(share.manifest.name, new Set(showcase.themes.map((entry) => entry.id)));
+        const updateBaseSha =
+          target === null ? null : (before?.updateBaseSha ?? target.file.sha256);
         const row: ThemeShowcaseSubmissionRow = {
           submissionId,
           entryId: share.entry.entryId,
@@ -840,6 +908,8 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
           pullRequestUrl: null,
           state: "inReview",
           takenBack: null,
+          updateBaseSha,
+          publishedFileSha: fileSha,
           createdAt: before?.createdAt ?? (yield* nowIso),
           checkedAt: null,
         };
@@ -860,6 +930,7 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
               ...themeAnalyticsProperties(share.manifest),
               license: share.manifest.credits?.license ?? "none",
               prompt: share.manifest.prompt !== undefined,
+              ...(holds.updateBaseSha !== null ? { updated: true } : {}),
             });
             return toSubmission(done) ?? (yield* showcaseError(REASONS.unreachable));
           });
@@ -875,32 +946,39 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
         yield* storedShares(submissionsRepo.put(row));
 
         const fork = yield* forkFor(input.login);
-        const encode = (text: string) => new TextEncoder().encode(text);
+        const isUpdate = updateBaseSha !== null;
+        const actionTitle = isUpdate
+          ? `Update ${share.manifest.name}`
+          : `Add ${share.manifest.name}`;
+        // An update leaves meta.json (sharedBy, featured) and NOTICE.md alone on main.
+        const files = [
+          { path: `themes/${slug}/theme.threadlines-theme`, bytes: fileBytes },
+          { path: `themes/${slug}/thumbnail.png`, bytes: share.pictureBytes },
+          ...(isUpdate
+            ? []
+            : [
+                {
+                  path: `themes/${slug}/meta.json`,
+                  bytes: encode(`${JSON.stringify({ sharedBy: fork.owner }, null, 2)}\n`),
+                },
+              ]),
+        ];
         yield* pushBranch({
           fork: fork.name,
           branch,
-          message: `Add ${share.manifest.name}`,
+          message: actionTitle,
           author: account,
-          files: [
-            {
-              path: `themes/${slug}/theme.threadlines-theme`,
-              bytes: encode(themeFileText(share.manifest)),
-            },
-            { path: `themes/${slug}/thumbnail.png`, bytes: share.pictureBytes },
-            {
-              path: `themes/${slug}/meta.json`,
-              bytes: encode(`${JSON.stringify({ sharedBy: fork.owner }, null, 2)}\n`),
-            },
-          ],
+          files,
         });
         const pullRequest = yield* openPullRequest({
           login: input.login,
           head: `${fork.owner}:${branch}`,
-          title: `Add ${share.manifest.name}`,
+          title: actionTitle,
           body: pullRequestBody({
             manifest: share.manifest,
             fonts: share.fonts,
             submissionId,
+            isUpdate,
           }),
         });
         return yield* settle(pullRequest, row);
@@ -938,12 +1016,27 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
    */
   const recheck = (
     row: ThemeShowcaseSubmissionRow,
-    listed: { readonly hashes: ReadonlySet<string>; readonly ids: ReadonlySet<string> },
+    listed: {
+      readonly hashes: ReadonlySet<string>;
+      readonly byId: ReadonlyMap<string, ThemeShowcaseEntry>;
+    },
   ) =>
     Effect.gen(function* () {
       const known = { state: row.state, takenBack: row.takenBack };
-      if (listed.hashes.has(row.publishedHash))
-        return { state: "listed", takenBack: null } as const;
+      if (row.updateBaseSha === null) {
+        if (listed.hashes.has(row.publishedHash)) {
+          return { state: "listed", takenBack: null } as const;
+        }
+      } else {
+        const entry = listed.byId.get(row.slug);
+        if (
+          entry !== undefined &&
+          row.publishedFileSha !== null &&
+          entry.file.sha256 === row.publishedFileSha
+        ) {
+          return { state: "listed", takenBack: null } as const;
+        }
+      }
       if (row.pullRequestNumber === null) return known;
       const pulls = `repos/${THEME_SHOWCASE_REPOSITORY}/pulls/${row.pullRequestNumber}`;
       const pull = Option.getOrUndefined(
@@ -954,8 +1047,13 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
       if (pull === undefined) return known;
       // Merged but not in the list yet (the list rebuilds after a merge): still on its way.
       if (pull.merged) {
+        const entry = listed.byId.get(row.slug);
+        const landed =
+          row.updateBaseSha === null
+            ? entry !== undefined
+            : entry !== undefined && entry.file.sha256 !== row.updateBaseSha;
         return {
-          state: listed.ids.has(row.slug) ? "listed" : "inReview",
+          state: landed ? "listed" : "inReview",
           takenBack: null,
         } as const;
       }
@@ -977,7 +1075,7 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
       const showcase = yield* list({});
       const listed = {
         hashes: new Set(showcase.themes.map((entry) => entry.hash)),
-        ids: new Set(showcase.themes.map((entry) => entry.id)),
+        byId: new Map(showcase.themes.map((entry) => [entry.id, entry])),
       };
       const checkedAt = yield* nowIso;
       yield* Effect.forEach(
@@ -1014,7 +1112,9 @@ export const makeThemeShowcase = Effect.fn("ThemeShowcase.make")(function* (
         if (row.state === "notAdded" && row.takenBack !== null) return settled;
         const added = () =>
           showcaseError(
-            "It's already in the Showcase. To have it removed, open a takedown request in the Threadlines/themes repository on GitHub.",
+            row.updateBaseSha !== null
+              ? "That update is already in the Showcase."
+              : "It's already in the Showcase. To have it removed, open a takedown request in the Threadlines/themes repository on GitHub.",
           );
         if (row.state === "listed") return yield* added();
         // Only the account that opened the pull request (or a maintainer) can close it.

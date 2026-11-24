@@ -9,8 +9,10 @@ run-name: WinGet ${{ inputs.version }}${{ inputs.dry_run && ' (dry run)' || '' }
 # exempt. Run it by hand to retry a version.
 #
 # Needs the WINGET_TOKEN secret: a classic GitHub token with the public_repo
-# scope. The pull request opens from that account's fork of winget-pkgs, which
-# the first run creates. That account's first pull request there also needs
+# and workflow scopes (komac brings the fork up to date with winget-pkgs, whose
+# own workflow files change, and GitHub refuses that push without workflow).
+# The pull request opens from that account's fork of winget-pkgs, which the
+# first run creates. That account's first pull request there also needs
 # Microsoft's CLA, agreed to once in a comment on it.
 on:
   workflow_dispatch:
@@ -38,8 +40,59 @@ env:
   KOMAC_SHA256: b03b020eec98acfb0b53e284a6e21815b884be33de6785b97e7a120f0e748966
 
 jobs:
+  # Until a moderator approves our first ("New package") pull request,
+  # Threadlines isn't in winget-pkgs and every version we send is another new
+  # package request that waits weeks in the same queue. So while one is open,
+  # skip instead of piling up more; the oldest keeps our place in line. Once
+  # it's approved, versions go out as normal updates. Send the newest version
+  # by hand that day so winget doesn't sit on the approved one.
+  check:
+    name: Check whether Threadlines is listed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      waiting: ${{ steps.listing.outputs.waiting }}
+    steps:
+      - name: Look for the package and a waiting request
+        id: listing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          set -euo pipefail
+          status="$(gh api --include repos/microsoft/winget-pkgs/contents/manifests/t/Threadlines/Threadlines 2> /dev/null | head -n 1 || true)"
+          if [[ "$status" == *" 200"* ]]; then
+            echo "Threadlines.Threadlines is in winget-pkgs; sending an update."
+            echo "waiting=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$status" != *" 404"* ]]; then
+            echo "::error::Couldn't tell whether Threadlines is in winget-pkgs (got '${status}')."
+            exit 1
+          fi
+          # Only our own requests count: anyone can open a pull request with
+          # this title, and a stranger's must not hold back our releases.
+          if [[ -z "$WINGET_TOKEN" ]]; then
+            echo "::error::Add a WINGET_TOKEN secret (a classic GitHub token with public_repo and workflow) to send releases to winget."
+            exit 1
+          fi
+          owner="$(GH_TOKEN="$WINGET_TOKEN" gh api user --jq .login)"
+          pending="$(gh api -X GET search/issues \
+            -f q="repo:microsoft/winget-pkgs is:pr is:open author:${owner} in:title \"New package: Threadlines.Threadlines\"" \
+            --jq '[.items[].html_url] | join(" ")')"
+          if [[ -n "$pending" ]]; then
+            echo "::notice::Skipped: our first winget request still waits for a moderator (${pending}). Send the newest version by hand once it's approved."
+            echo "waiting=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No Threadlines package and no waiting request; sending a new one."
+            echo "waiting=false" >> "$GITHUB_OUTPUT"
+          fi
+
   submit:
     name: Send to winget-pkgs
+    needs: check
+    # A dry run only builds and checks the manifests, so it runs either way.
+    if: ${{ inputs.dry_run || needs.check.outputs.waiting != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -48,7 +101,7 @@ jobs:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           if [[ -z "$WINGET_TOKEN" ]]; then
-            echo "::error::Add a WINGET_TOKEN secret (a classic GitHub token with public_repo) to send releases to winget."
+            echo "::error::Add a WINGET_TOKEN secret (a classic GitHub token with public_repo and workflow) to send releases to winget."
             exit 1
           fi
 

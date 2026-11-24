@@ -46,9 +46,12 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
     listThreadTurnOverlapsSince: () => Effect.die("unused"),
     listThreadIdsWithOpenAgentRequests: () => Effect.die("unused"),
     listClaimedSettingsChanges: () => Effect.die("unused"),
+    listSecretRequests: () => Effect.die("unused"),
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: () => Effect.die("unused"),
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () => Effect.die("unused"),
   });
 
@@ -73,6 +76,7 @@ describe("ProjectSetupScriptRunner", () => {
                 subscribe: () => Effect.succeed(() => undefined),
                 startCommandRun: () => Effect.die(new Error("unused")),
                 readCommandRunOutput: () => Effect.succeed(null),
+                listShells: Effect.succeed([]),
                 subscribeCommandRuns: () => Effect.succeed(() => undefined),
                 subscribeMetadata: () => Effect.succeed(() => undefined),
                 subscribeThread: () => Effect.succeed(() => undefined),
@@ -141,6 +145,7 @@ describe("ProjectSetupScriptRunner", () => {
                 subscribe: () => Effect.succeed(() => undefined),
                 startCommandRun: () => Effect.die(new Error("unused")),
                 readCommandRunOutput: () => Effect.succeed(null),
+                listShells: Effect.succeed([]),
                 subscribeCommandRuns: () => Effect.succeed(() => undefined),
                 subscribeMetadata: () => Effect.succeed(() => undefined),
                 subscribeThread: () => Effect.succeed(() => undefined),

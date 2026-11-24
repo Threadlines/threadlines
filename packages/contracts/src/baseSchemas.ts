@@ -62,6 +62,9 @@ export type SideTurnId = typeof SideTurnId.Type;
 /** One request a room agent made of another through a room tool. */
 export const RoomAgentRequestId = makeEntityId("RoomAgentRequestId");
 export type RoomAgentRequestId = typeof RoomAgentRequestId.Type;
+/** One `room_review` call for several agents: its requests share it (and count once). */
+export const RoomAgentBatchId = makeEntityId("RoomAgentBatchId");
+export type RoomAgentBatchId = typeof RoomAgentBatchId.Type;
 /** A page an agent showed in a thread (docs/agent-pages.md). */
 export const AgentPageId = makeEntityId("AgentPageId");
 export type AgentPageId = typeof AgentPageId.Type;
@@ -77,12 +80,28 @@ export type CommandRunId = typeof CommandRunId.Type;
 /** A settings change an agent asked for (`settings_change`), answered on a card. */
 export const SettingsChangeRequestId = makeEntityId("SettingsChangeRequestId");
 export type SettingsChangeRequestId = typeof SettingsChangeRequestId.Type;
+/** A key an agent asked the user for (`secret_request`), answered on a card. */
+export const SecretRequestId = makeEntityId("SecretRequestId");
+export type SecretRequestId = typeof SecretRequestId.Type;
 /** One piece of work a thread's agent asked of a thread it started. */
 export const ChildRequestId = makeEntityId("ChildRequestId");
 export type ChildRequestId = typeof ChildRequestId.Type;
 /** One move of a thread to a linked computer (docs/design/fleet.md, Part 3). */
 export const ThreadMoveId = makeEntityId("ThreadMoveId");
 export type ThreadMoveId = typeof ThreadMoveId.Type;
+/** One queued move of a thread, waiting for it to be free (docs/design/fleet.md, Part 3b). */
+export const ThreadMoveRequestId = makeEntityId("ThreadMoveRequestId");
+export type ThreadMoveRequestId = typeof ThreadMoveRequestId.Type;
+/** Threads queued to move together (`moves.queueMany`, docs/design/fleet.md, Part 3c). */
+export const ThreadMoveBatchId = makeEntityId("ThreadMoveBatchId");
+export type ThreadMoveBatchId = typeof ThreadMoveBatchId.Type;
+/**
+ * A parent and the children that move with it (docs/design/fleet.md, Part
+ * 3f, (g)): one id on each member's move, so the other computer can tell the
+ * family apart and land the parent first.
+ */
+export const ThreadMoveFamilyId = makeEntityId("ThreadMoveFamilyId");
+export type ThreadMoveFamilyId = typeof ThreadMoveFamilyId.Type;
 /** The requests one `thread_start` call made, approved or declined together. */
 export const ChildRequestBatchId = makeEntityId("ChildRequestBatchId");
 export type ChildRequestBatchId = typeof ChildRequestBatchId.Type;
@@ -117,3 +136,10 @@ export const ApprovalRequestId = makeEntityId("ApprovalRequestId");
 export type ApprovalRequestId = typeof ApprovalRequestId.Type;
 export const CheckpointRef = makeEntityId("CheckpointRef");
 export type CheckpointRef = typeof CheckpointRef.Type;
+
+/** A kept project note (projectContext.ts). */
+export const ProjectNoteId = makeEntityId("ProjectNoteId");
+export type ProjectNoteId = typeof ProjectNoteId.Type;
+/** An agent's project note waiting for the user (projectContext.ts). */
+export const ProjectNoteSuggestionId = makeEntityId("ProjectNoteSuggestionId");
+export type ProjectNoteSuggestionId = typeof ProjectNoteSuggestionId.Type;

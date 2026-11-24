@@ -19,12 +19,21 @@ import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import { relayDirectRouteLayer } from "./relay/directRoute.ts";
 import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionThreads.ts";
+import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects.ts";
+import { ProjectBriefRepositoryLive } from "./projectContext/ProjectBriefRepository.ts";
+import { ProjectContextLive } from "./projectContext/ProjectContext.ts";
+import { ProjectNoteRepositoryLive } from "./projectContext/ProjectNoteRepository.ts";
+import { ProjectNotesUndoLive } from "./projectContext/ProjectNotesUndo.ts";
+import { ProjectInstructionsLive } from "./projectContext/ProjectInstructionsLive.ts";
 import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
 import { ComputerLinkClientLive } from "./links/ComputerLinkClient.ts";
 import { ComputerLinkRepositoryLive } from "./links/ComputerLinkRepository.ts";
 import { ComputerLinksLive } from "./links/ComputerLinks.ts";
 import { LinkMoveRepositoryLive } from "./links/LinkMoveRepository.ts";
 import { LinkMovesLive } from "./links/LinkMoves.ts";
+import { MoveQueueLive } from "./moves/MoveQueue.ts";
+import { ThreadMoveBatchRepositoryLive } from "./moves/ThreadMoveBatchRepository.ts";
+import { ThreadActionGateLive } from "./moves/ThreadActionGate.ts";
 import { ThreadMovesLive } from "./moves/ThreadMoves.ts";
 import { layer as ProcessRunnerLive } from "./processRunner.ts";
 import { ProjectSetupRepositoryLive } from "./projectSetup/ProjectSetupRepository.ts";
@@ -59,6 +68,7 @@ import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/Provi
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
 import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
+import { ThreadSessionAdmissionLive } from "./provider/Layers/ThreadSessionAdmission.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { ThreadAutoArchiveSweeperLive } from "./orchestration/Layers/ThreadAutoArchiveSweeper.ts";
 import { ContinueAtResetSweeperLive } from "./orchestration/Layers/ContinueAtResetSweeper.ts";
@@ -85,6 +95,7 @@ import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRun
 import { RealtimeVoiceDevicesLive } from "./orchestration/Layers/RealtimeVoiceDevices.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { ChildThreadReactorLive } from "./orchestration/Layers/ChildThreadReactor.ts";
+import { GoalWaitReactorLive } from "./orchestration/Layers/GoalWaitReactor.ts";
 import { ThreadContextSeedBuilderLive } from "./provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
@@ -96,6 +107,10 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpRoomServer from "./mcp/McpRoomServer.ts";
 import * as McpPagesServer from "./mcp/McpPagesServer.ts";
 import * as McpCommandsServer from "./mcp/McpCommandsServer.ts";
+import * as McpDeviceServer from "./mcp/McpDeviceServer.ts";
+import * as DeviceChannels from "./device/DeviceChannels.ts";
+import * as DeviceService from "./device/DeviceService.ts";
+import * as DeviceThreadReactor from "./device/DeviceThreadReactor.ts";
 import * as McpConnectServer from "./outsideAgents/McpConnectServer.ts";
 import { AssistantMcpServerLive } from "./assistants/AssistantMcpServer.ts";
 import { OtherComputersLive } from "./outsideAgents/OtherComputers.ts";
@@ -111,6 +126,8 @@ import * as McpApps from "./mcpApps/McpApps.ts";
 import { McpAppCallRepositoryLive } from "./persistence/Layers/McpAppCalls.ts";
 import * as CommandRuns from "./commandRuns/CommandRuns.ts";
 import * as AgentSettingsChanges from "./settingsChanges/AgentSettingsChanges.ts";
+import * as AgentSecretRequests from "./secrets/AgentSecretRequests.ts";
+import * as SecretScrubber from "./secrets/SecretScrubber.ts";
 import { PageFileSweepLive } from "./pages/PageFileSweep.ts";
 import * as PagePreview from "./pages/preview/PagePreview.ts";
 import { ThemeLibraryLive } from "./themes/ThemeLibrary.ts";
@@ -178,6 +195,7 @@ import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as ThreadCpuUsage from "./diagnostics/ThreadCpuUsage.ts";
 import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
@@ -298,14 +316,22 @@ const PlatformServicesLive = ChildEnvironment.layer.pipe(
 // computers and what it does for computers linked to it. Each side's reactor
 // starts with the orchestration reactor; runtime ingestion hands turns that
 // end in a linked computer's thread to the ledger (RemoteRequestTurnEnds).
-const ComputerLinksLayerLive = Layer.mergeAll(ComputerLinkReactorsLive, ComputerLinksLive).pipe(
+const ComputerLinksLayerLive = ComputerLinkReactorsLive.pipe(
+  // Moves that wait for their thread watch the links too.
+  Layer.provideMerge(MoveQueueLive),
+  Layer.provideMerge(ComputerLinksLive),
   Layer.provideMerge(RemoteChildReactorLive),
   Layer.provideMerge(ThreadMovesLive),
   Layer.provideMerge(LinkMovesLive),
   Layer.provideMerge(LinkRequestsLive),
   Layer.provideMerge(ComputerLinkClientLive),
   Layer.provideMerge(
-    Layer.mergeAll(ComputerLinkRepositoryLive, LinkRequestRepositoryLive, LinkMoveRepositoryLive),
+    Layer.mergeAll(
+      ComputerLinkRepositoryLive,
+      LinkRequestRepositoryLive,
+      LinkMoveRepositoryLive,
+      ThreadMoveBatchRepositoryLive,
+    ),
   ),
   Layer.provide(Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadRepositoryLive)),
   Layer.provide(ServerSecretStoreLive),
@@ -346,8 +372,19 @@ const ScheduledTasksLayerLive = Layer.mergeAll(
 // Part 8): the reads for a copy of this computer's projects, and the jobs
 // that make copies here. Jobs a restart cut short are finished or undone
 // as the layer starts.
+// A project's brief and notes (docs/design/project-brief-notes.md): the
+// app's `projectContext.*` RPCs, the project_note_* tools, and the copy "Set
+// up on another computer" carries. An undone turn's note suggestions go.
+const ProjectContextLayerLive = ProjectNotesUndoLive.pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provideMerge(ProjectContextLive),
+  Layer.provideMerge(Layer.mergeAll(ProjectBriefRepositoryLive, ProjectNoteRepositoryLive)),
+  Layer.provide(ProjectionProjectRepositoryLive),
+);
+
 const ProjectSetupsLayerLive = Layer.mergeAll(ProjectSetupsLive, ProjectSetupSourceLive).pipe(
   Layer.provideMerge(ProjectSetupRepositoryLive),
+  Layer.provideMerge(ProjectContextLayerLive),
   Layer.provide(ProcessRunnerLive),
 );
 
@@ -362,8 +399,12 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
-  // Both reactors above take these (optionally), so they come after them.
-  Layer.provideMerge(Layer.mergeAll(RemoteRequestTurnEndsLive, RemoteRequestGateLive)),
+  // Both reactors above take the remote request layers (optionally), so they
+  // come after them. The goal wait reactor (started by the orchestration
+  // reactor) reads the scheduler's waiting cards, so it comes before it.
+  Layer.provideMerge(
+    Layer.mergeAll(GoalWaitReactorLive, RemoteRequestTurnEndsLive, RemoteRequestGateLive),
+  ),
   // Ingestion reads who spoke; the WebSocket route notes it.
   Layer.provideMerge(RealtimeVoiceDevicesLive),
   Layer.provideMerge(ScheduledTasksLayerLive),
@@ -381,8 +422,10 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(PullRequestAutomationWatcherLive),
   Layer.provideMerge(
     // Adapters ask it before the provider's own scheduling tools (step 3 of
-    // docs/design/assistants.md).
-    Layer.mergeAll(ThreadPullRequestLinkerLive, OutsideWorkLookupLive),
+    // docs/design/assistants.md). The pull request watcher and the move share
+    // the action gate: no act for a thread lands across its freeze
+    // (docs/design/fleet.md, Part 3e).
+    Layer.mergeAll(ThreadPullRequestLinkerLive, OutsideWorkLookupLive, ThreadActionGateLive),
   ),
 );
 
@@ -398,7 +441,26 @@ const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
 // `ProviderService` and the per-instance drivers read the same logger pair.
 const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provide(ProviderAdapterRegistryLive),
+  // Watched keys, read back from their files before any provider event
+  // passes the hook in ProviderService (docs/design/secret-scrubbing.md).
+  // The registry itself sits at the bottom of the runtime, for every door.
+  Layer.provide(SecretScrubber.loadSavedKeys),
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
+  // The session fence reads the thread's row (docs/design/fleet.md, Part 3b).
+  Layer.provide(ThreadSessionAdmissionLive.pipe(Layer.provide(ProjectionThreadRepositoryLive))),
+  // Every session starts with its project's brief, read as it starts.
+  Layer.provide(
+    ProjectInstructionsLive.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ProjectionThreadRepositoryLive,
+          ProjectionProjectRepositoryLive,
+          ProjectBriefRepositoryLive,
+          ProjectNoteRepositoryLive,
+        ),
+      ),
+    ),
+  ),
 );
 
 const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
@@ -524,7 +586,7 @@ const RelayLayerLive = RelayHostLive.pipe(
 const AssistantsLayerLive = AssistantsLive.pipe(
   Layer.provide(AssistantRelayLive),
   Layer.provide(RelayLayerLive),
-  Layer.provide(OutsideAgentConnectionRepositoryLive),
+  Layer.provideMerge(OutsideAgentConnectionRepositoryLive),
   Layer.provide(ServerSecretStoreLive),
 );
 
@@ -548,8 +610,11 @@ const ProviderRuntimeLayerLive = Layer.mergeAll(
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services. ThreadBootstrap sets threads up: the reactor starts child
   // threads with it, and the WebSocket routes run first-send bootstraps
-  // through the same instance.
-  Layer.provideMerge(Layer.mergeAll(CheckpointingLayerLive, ThreadBootstrapLive)),
+  // through the same instance. CPU by thread (Settings > Diagnostics) needs
+  // the providers' and the terminals' processes, so it sits above both.
+  Layer.provideMerge(
+    Layer.mergeAll(CheckpointingLayerLive, ThreadBootstrapLive, ThreadCpuUsage.layer),
+  ),
   Layer.provideMerge(
     Layer.mergeAll(SourceControlProviderRegistryLayerLive, PullRequestServiceLayerLive),
   ),
@@ -572,6 +637,17 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       // Answers to agents' settings changes; it settles at startup what a
       // previous run left mid-change.
       AgentSettingsChanges.layer,
+      // Answers to agents' requests for keys; it settles at startup what a
+      // previous run left mid-save and sets saved files' expiry timers.
+      AgentSecretRequests.layer.pipe(Layer.provide(ProcessRunnerLive)),
+      // Simulators and emulators (docs/design/devices.md): the service, the
+      // Device tab's channels to the hub, and the reactor that lets a thread
+      // put away let go of its devices (and sweeps claims at startup).
+      DeviceThreadReactor.layer.pipe(
+        Layer.provideMerge(DeviceChannels.layer),
+        Layer.provideMerge(DeviceService.layer),
+        Layer.provide(ProcessRunnerLive),
+      ),
       // The calls' table also serves thread deletion's cleanup.
       McpApps.layer.pipe(Layer.provideMerge(McpAppCallRepositoryLive)),
       // Outside agents' starts and sends by request id (`/mcp/connect`);
@@ -648,7 +724,12 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // `ProviderService` (canonical stream, written after event normalization).
   // Provided once at the runtime level so every consumer sees the same
   // logger instances.
-  Layer.provideMerge(ProviderEventLoggersLive),
+  //
+  // Under them, the watched keys (docs/design/secret-scrubbing.md): one
+  // registry under every place that shows, stores or logs agent text, the
+  // native log included. Filled by the provider layer's `loadSavedKeys` and
+  // by Save.
+  Layer.provideMerge(ProviderEventLoggersLive.pipe(Layer.provideMerge(SecretScrubber.layer))),
   Layer.provideMerge(ServerSettingsLive),
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLive),
@@ -666,7 +747,8 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   // Misc.
   Layer.provideMerge(ProcessDiagnosticsLayerLive),
   Layer.provideMerge(TraceDiagnostics.layer),
-  Layer.provideMerge(AnalyticsServiceLayerLive),
+  // Same ServerSettingsLive instance as RuntimeCoreDependenciesLive: Effect memoizes it.
+  Layer.provideMerge(AnalyticsServiceLayerLive.pipe(Layer.provide(ServerSettingsLive))),
   Layer.provideMerge(ExternalLauncher.layer),
   Layer.provideMerge(ServerLifecycleEventsLive),
   Layer.provide(NetService.layer),
@@ -708,6 +790,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   McpRoomServer.layer,
   McpPagesServer.layer,
   McpCommandsServer.layer,
+  McpDeviceServer.layer,
   // Outside agents' tools (docs/design/outside-agents.md).
   McpConnectServer.layer,
   // The same tools for assistants, over the relay (docs/design/assistants.md).

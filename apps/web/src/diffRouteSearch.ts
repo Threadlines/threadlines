@@ -3,8 +3,8 @@ import { MessageId, TurnId } from "@threadlines/contracts";
 /**
  * The right sidebar's tabs are filed under the params they have always used:
  * `sourceControl=1` is the Source tab, `diff=1` the Diff tab, `pullRequest=1`
- * the Pull request tab, `agents=1` the Agents tab, `media=1` the Media tab. At
- * most one reads as open,
+ * the Pull request tab, `agents=1` the Agents tab, `media=1` the Media tab,
+ * `threads=1` the Threads tab, `device=1` the Device tab. At most one reads as open,
  * and that one is the active tab; an explicit `0` means the sidebar is closed.
  * `pullRequestNumber` names which of the thread's pull requests the Pull
  * request tab shows, the way the diff params name what the Diff tab shows.
@@ -17,6 +17,8 @@ export interface DiffRouteSearch {
   pullRequestNumber?: number | undefined;
   agents?: "1" | "0" | undefined;
   media?: "1" | "0" | undefined;
+  threads?: "1" | "0" | undefined;
+  device?: "1" | "0" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFilePath?: string | undefined;
   focusMessageId?: MessageId | undefined;
@@ -83,6 +85,8 @@ type RightPanelSearchKey =
   | "pullRequestNumber"
   | "agents"
   | "media"
+  | "threads"
+  | "device"
   | "diffTurnId"
   | "diffFilePath";
 
@@ -94,6 +98,8 @@ interface ClearedRightPanelSearchParams {
   pullRequestNumber?: undefined;
   agents?: undefined;
   media?: undefined;
+  threads?: undefined;
+  device?: undefined;
   diffTurnId?: undefined;
   diffFilePath?: undefined;
 }
@@ -113,6 +119,8 @@ export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
     pullRequestNumber: _pullRequestNumber,
     agents: _agents,
     media: _media,
+    threads: _threads,
+    device: _device,
     diffTurnId: _diffTurnId,
     diffFilePath: _diffFilePath,
     ...rest
@@ -126,6 +134,8 @@ export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
     pullRequestNumber: undefined,
     agents: undefined,
     media: undefined,
+    threads: undefined,
+    device: undefined,
     diffTurnId: undefined,
     diffFilePath: undefined,
   } as Omit<T, RightPanelSearchKey> & ClearedRightPanelSearchParams;
@@ -142,6 +152,8 @@ export function closeRightPanelSearchParams<T extends Record<string, unknown>>(p
     pullRequest: "0" as const,
     agents: "0" as const,
     media: "0" as const,
+    threads: "0" as const,
+    device: "0" as const,
   };
 }
 
@@ -153,7 +165,8 @@ export function closeRightPanelSearchParams<T extends Record<string, unknown>>(p
 export function preserveRightPanelSearchParamsForDraftNavigation<T extends Record<string, unknown>>(
   params: T,
 ) {
-  const { sourceControl, pullRequest, agents, media } = parseDiffRouteSearch(params);
+  const { sourceControl, pullRequest, agents, media, threads, device } =
+    parseDiffRouteSearch(params);
   const stripped = stripRightPanelSearchParams(params);
   return {
     ...stripped,
@@ -161,6 +174,8 @@ export function preserveRightPanelSearchParamsForDraftNavigation<T extends Recor
     ...(pullRequest ? { pullRequest } : {}),
     ...(agents ? { agents } : {}),
     ...(media ? { media } : {}),
+    ...(threads ? { threads } : {}),
+    ...(device ? { device } : {}),
   };
 }
 
@@ -193,6 +208,18 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
       : !diff && isExplicitClosedValue(search.media)
         ? "0"
         : undefined;
+  const threads =
+    !diff && isDiffOpenValue(search.threads)
+      ? "1"
+      : !diff && isExplicitClosedValue(search.threads)
+        ? "0"
+        : undefined;
+  const device =
+    !diff && isDiffOpenValue(search.device)
+      ? "1"
+      : !diff && isExplicitClosedValue(search.device)
+        ? "0"
+        : undefined;
   const diffTurnIdRaw =
     diff && diffMode !== "workingTree" ? normalizeSearchString(search.diffTurnId) : undefined;
   const diffTurnId = diffTurnIdRaw ? TurnId.make(diffTurnIdRaw) : undefined;
@@ -212,6 +239,8 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
     ...(pullRequestNumber ? { pullRequestNumber } : {}),
     ...(agents ? { agents } : {}),
     ...(media ? { media } : {}),
+    ...(threads ? { threads } : {}),
+    ...(device ? { device } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFilePath ? { diffFilePath } : {}),
     ...(focusMessageId ? { focusMessageId } : {}),

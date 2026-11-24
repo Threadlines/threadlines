@@ -30,6 +30,7 @@ const threadCache = new WeakMap<
     agentRequests: NonNullable<Thread["agentRequests"]>;
     childRequests: Thread["childRequests"];
     settingsRequests: Thread["settingsRequests"];
+    secretRequests: Thread["secretRequests"];
     pages: Thread["pages"];
     workflowRuns: Thread["workflowRuns"];
     subagents: Thread["subagents"];
@@ -116,6 +117,8 @@ export function getThreadFromEnvironmentState(
   const childRequests = state.childRequestsByThreadId[threadId];
   // Likewise: the shell's pendingSettingsChange stands until the detail loads.
   const settingsRequests = state.settingsRequestsByThreadId?.[threadId];
+  // And the shell's pendingSecretRequest.
+  const secretRequests = state.secretRequestsByThreadId?.[threadId];
   const pages = state.pagesByThreadId?.[threadId];
   const workflowRuns = state.workflowRunsByThreadId?.[threadId];
   const subagents = state.subagentsByThreadId?.[threadId];
@@ -134,6 +137,7 @@ export function getThreadFromEnvironmentState(
     cached.agentRequests === agentRequests &&
     cached.childRequests === childRequests &&
     cached.settingsRequests === settingsRequests &&
+    cached.secretRequests === secretRequests &&
     cached.pages === pages &&
     cached.workflowRuns === workflowRuns &&
     cached.subagents === subagents &&
@@ -155,6 +159,7 @@ export function getThreadFromEnvironmentState(
     agentRequests,
     ...(childRequests !== undefined ? { childRequests } : {}),
     ...(settingsRequests !== undefined ? { settingsRequests } : {}),
+    ...(secretRequests !== undefined ? { secretRequests } : {}),
     ...(pages !== undefined ? { pages } : {}),
     ...(workflowRuns !== undefined ? { workflowRuns } : {}),
     ...(subagents !== undefined ? { subagents } : {}),
@@ -172,6 +177,7 @@ export function getThreadFromEnvironmentState(
     agentRequests,
     childRequests,
     settingsRequests,
+    secretRequests,
     pages,
     workflowRuns,
     subagents,

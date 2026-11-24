@@ -90,6 +90,36 @@ export function isAccountUsageNearLimit(
   return readAccountUsageBlockAt(accountUsage, nowMs, percent).state === "blocked";
 }
 
+/**
+ * `isAccountUsageNearLimit` for one model: checks both plan-wide windows and
+ * any model-scoped windows (`scoped`) covering `modelName`, so a provider with
+ * per-family pools (Antigravity) pauses extras only when that model's own
+ * pool is near its limit.
+ */
+export function isModelUsageNearLimit(
+  accountUsage: ServerProviderAccountUsage | undefined,
+  modelName: string,
+  nowMs: number,
+  percent: number,
+): boolean {
+  if (isAccountUsageNearLimit(accountUsage, nowMs, percent)) return true;
+  if (accountUsage === undefined) return false;
+  for (const limit of accountUsage.limits) {
+    for (const window of limit.scoped ?? []) {
+      const scope = {
+        name: window.scopeLabel,
+        models: window.scopeModels,
+        excludes: window.scopeExcludes,
+      };
+      if (!isUsedUpTo(window, percent) || !usageScopeHoldsModel(scope, modelName)) continue;
+      const resetsAtMs = usageResetTimeMs(window.resetsAt);
+      if (resetsAtMs !== undefined && resetsAtMs <= nowMs) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
 function readAccountUsageBlockAt(
   accountUsage: ServerProviderAccountUsage | undefined,
   nowMs: number,
@@ -147,6 +177,12 @@ export interface ProviderUsageWindowReading {
   readonly resetsAtMs: number | undefined;
   /** When this window was last read: a reading can carry a window over from an earlier one. */
   readonly readAtMs: number;
+  /**
+   * For a window that covers one family of models (`scopeModels`, Antigravity),
+   * the family: a spent one stops only threads on that family's models.
+   * Undefined for every other window.
+   */
+  readonly family?: string;
 }
 
 /**
@@ -174,6 +210,7 @@ export function listProviderUsageWindows(
       ServerProviderUsageWindow,
       "usedPercent" | "remainingPercent" | "resetsAt" | "checkedAt"
     >,
+    family?: string,
   ) => {
     const resetsAtMs = usageResetTimeMs(window.resetsAt);
     const readAtMs = Date.parse(window.checkedAt ?? accountUsage.checkedAt);
@@ -182,6 +219,7 @@ export function listProviderUsageWindows(
       spent: isUsedUpTo(window, 100) && (resetsAtMs === undefined || resetsAtMs > nowMs),
       resetsAtMs,
       readAtMs: Number.isFinite(readAtMs) ? readAtMs : 0,
+      ...(family !== undefined ? { family } : {}),
     });
   };
   accountUsage.limits.forEach((limit, index) => {
@@ -190,7 +228,11 @@ export function listProviderUsageWindows(
     if (limit.secondary) add(`${limitKey}:secondary`, limit.secondary);
     // One label can name a model's session, daily and weekly windows at once.
     for (const scoped of limit.scoped ?? []) {
-      add(`${limitKey}:scoped:${scoped.scopeLabel}:${scoped.windowDurationMins ?? ""}`, scoped);
+      add(
+        `${limitKey}:scoped:${scoped.scopeLabel}:${scoped.windowDurationMins ?? ""}`,
+        scoped,
+        scoped.scopeModels !== undefined ? scoped.scopeLabel : undefined,
+      );
     }
   });
   return windows;
@@ -211,4 +253,72 @@ export function usageLimitFromAccountUsage(
     ...(block.window ? { window: block.window } : {}),
     resetsAt: new Date(block.resetsAtMs).toISOString(),
   };
+}
+
+/** What a model-scoped window covers: its name, and for a family limit the names it holds and leaves out. */
+export interface UsageScope {
+  readonly name: string;
+  readonly models?: ReadonlyArray<string> | undefined;
+  readonly excludes?: ReadonlyArray<string> | undefined;
+}
+
+const nameWords = (name: string) => name.toLowerCase().split(/\s+/).filter(Boolean);
+/** Family names also split at hyphens and slashes, so "GPT" holds "GPT-OSS 120B". */
+const familyWords = (name: string) =>
+  name
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}.]+/u)
+    .filter(Boolean);
+
+const holdsWords = (model: ReadonlyArray<string>, words: ReadonlyArray<string>) =>
+  words.length > 0 &&
+  model.some((_, start) => words.every((word, offset) => model[start + offset] === word));
+
+/**
+ * Whether a model-scoped window holds the model named `modelName`. Providers
+ * name such a limit, not the model's id, so it matches whole words: "Fable"
+ * holds "Claude Fable 5.2" but "Opus 5" doesn't hold "Opus 5.5". A family
+ * limit (`models`) holds a model with any of its names and none of its
+ * `excludes`.
+ */
+export function usageScopeHoldsModel(scope: UsageScope, modelName: string): boolean {
+  if (scope.models === undefined) return holdsWords(nameWords(modelName), nameWords(scope.name));
+  const model = familyWords(modelName);
+  return (
+    scope.models.some((name) => holdsWords(model, familyWords(name))) &&
+    !(scope.excludes ?? []).some((name) => holdsWords(model, familyWords(name)))
+  );
+}
+
+/**
+ * `usageLimitFromAccountUsage` for one model: also the model's own windows
+ * (`scoped` ones that hold it), for providers whose limits each cover a family
+ * of models (Antigravity). The latest reset among the spent windows wins.
+ */
+export function usageLimitForModel(
+  accountUsage: ServerProviderAccountUsage | undefined,
+  modelName: string,
+  nowMs: number,
+): RuntimeUsageLimit | undefined {
+  const planWide = usageLimitFromAccountUsage(accountUsage, nowMs);
+  if (planWide !== undefined || accountUsage === undefined) return planWide;
+  let latest: { resetsAtMs: number; minutes: number | undefined } | undefined;
+  for (const limit of accountUsage.limits) {
+    for (const window of limit.scoped ?? []) {
+      const scope = {
+        name: window.scopeLabel,
+        models: window.scopeModels,
+        excludes: window.scopeExcludes,
+      };
+      if (!isUsedUpTo(window, 100) || !usageScopeHoldsModel(scope, modelName)) continue;
+      const resetsAtMs = usageResetTimeMs(window.resetsAt);
+      if (resetsAtMs === undefined || resetsAtMs <= nowMs) continue;
+      if (latest === undefined || resetsAtMs > latest.resetsAtMs) {
+        latest = { resetsAtMs, minutes: window.windowDurationMins };
+      }
+    }
+  }
+  if (latest === undefined) return undefined;
+  const window = usageLimitWindowFromMinutes(latest.minutes);
+  return { ...(window ? { window } : {}), resetsAt: new Date(latest.resetsAtMs).toISOString() };
 }

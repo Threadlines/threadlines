@@ -98,6 +98,7 @@ export const OutsideWaitingItem = Schema.Struct({
       "terminal-input",
       "scheduled-task",
       "settings",
+      "secret",
       "start-threads",
       "other",
     ]),
@@ -129,7 +130,13 @@ export const ProjectsResult = Schema.Struct({
   detail: Detail,
   retryAfterSeconds: RetryAfter,
   projects: Schema.Array(
-    Schema.Struct({ projectId: Schema.String, name: Schema.String, folder: Schema.String }),
+    Schema.Struct({
+      projectId: Schema.String,
+      name: Schema.String,
+      folder: Schema.String,
+      /** The project's lead chat: send work for the project there. Absent: none. */
+      leadThreadId: Schema.optional(Schema.String),
+    }),
   ),
 });
 export type ProjectsResult = typeof ProjectsResult.Type;
@@ -206,8 +213,8 @@ export const ThreadWaitResult = Schema.Struct({
    * `done`: it left `working`, with none of your messages left in its queue.
    * `still_working`: the wait ran out first (or, for an assistant, it is still
    * being set up); wait again. `failed` (assistants): its setup failed before
-   * it existed. `taken_back`: the message you waited on (`messageId`) left
-   * the queue unsent.
+   * it existed. `taken_back`: the message you waited on (`messageId`) never
+   * reached the agent: it left the queue unsent, or its turn never ran.
    */
   outcome: Schema.Literals([
     "done",
@@ -554,7 +561,7 @@ export const ThreadWaitTool = readsThreads(
       messageId: Schema.optional(
         Schema.String.annotate({
           description:
-            "A message you sent or queued (thread_send's `messageId`): wait for the turn it starts, or `taken_back` if it leaves the queue unsent.",
+            "A message you sent or queued (thread_send's `messageId`): wait for the turn it starts, or `taken_back` if it never reaches the agent (it leaves the queue unsent, or its turn never runs).",
         }),
       ),
     }),

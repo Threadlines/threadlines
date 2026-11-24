@@ -81,6 +81,14 @@ class FakeElement {
     return matches;
   }
 
+  focus() {
+    (document as unknown as FakeDocument).activeElement = this;
+  }
+
+  get isConnected() {
+    return this.parent !== null;
+  }
+
   getBoundingClientRect() {
     const left = Number.parseInt(this.style.left ?? "0", 10) || 0;
     const top = Number.parseInt(this.style.top ?? "0", 10) || 0;
@@ -116,10 +124,18 @@ class FakeBody extends FakeElement {
 
 class FakeDocument {
   body = new FakeBody();
+  activeElement: FakeElement | null = null;
   private readonly listeners = new Map<string, FakeListener[]>();
 
   createElement(tagName: string) {
     return new FakeElement(tagName);
+  }
+
+  dispatchEvent(event: FakeDomEvent) {
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(event);
+    }
+    return true;
   }
 
   addEventListener(type: string, listener: FakeListener) {
@@ -217,5 +233,74 @@ describe("showContextMenuFallback", () => {
     childButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
     await expect(selectionPromise).resolves.toBe("rename:project-b");
+  });
+
+  it("takes focus for the keyboard, walks it with the arrows, and gives it back", async () => {
+    const fakeDocument = document as unknown as FakeDocument;
+    const opener = new FakeElement("button");
+    fakeDocument.body.appendChild(opener);
+    opener.focus();
+    const selectionPromise = showContextMenuFallback([
+      { id: "rename", label: "Rename" },
+      { id: "pin", label: "Pin", disabled: true },
+      { id: "move", label: "Move to another computer" },
+    ]);
+
+    // The menu holds focus, with no item picked, until an arrow picks one.
+    const menu = findButton("Rename")?.parent;
+    expect(fakeDocument.activeElement).toBe(menu);
+    const press = (key: string) => fakeDocument.dispatchEvent(new FakeDomEvent("keydown", { key }));
+    press("ArrowDown");
+    expect(fakeDocument.activeElement).toBe(findButton("Rename"));
+    // Past the item that takes no press, and round from the last to the first.
+    press("ArrowDown");
+    expect(fakeDocument.activeElement).toBe(findButton("Move to another computer"));
+    press("ArrowDown");
+    expect(fakeDocument.activeElement).toBe(findButton("Rename"));
+
+    press("Escape");
+    await expect(selectionPromise).resolves.toBeNull();
+    expect(fakeDocument.activeElement).toBe(opener);
+  });
+
+  it("opens and leaves a submenu from the keyboard", async () => {
+    const fakeDocument = document as unknown as FakeDocument;
+    const selectionPromise = showContextMenuFallback([
+      { id: "copy", label: "Copy path" },
+      {
+        id: "open:submenu",
+        label: "Open in",
+        children: [
+          { id: "open:cursor", label: "Cursor" },
+          { id: "open:zed", label: "Zed" },
+        ],
+      },
+    ]);
+    const press = (key: string) => fakeDocument.dispatchEvent(new FakeDomEvent("keydown", { key }));
+    const parent = findButton("Open in")!;
+
+    // The right arrow on its item opens it, with its first item focused.
+    parent.focus();
+    press("ArrowRight");
+    expect(fakeDocument.activeElement).toBe(findButton("Cursor"));
+    // The left arrow closes it and goes back to the item that opened it.
+    press("ArrowLeft");
+    expect(findButton("Cursor")).toBeUndefined();
+    expect(fakeDocument.activeElement).toBe(parent);
+
+    // Enter or Space on the item (a click with no press) opens it too; Escape
+    // there closes only the submenu.
+    parent.dispatchEvent(new FakeDomEvent("click", { detail: 0 }));
+    expect(fakeDocument.activeElement).toBe(findButton("Cursor"));
+    press("Escape");
+    expect(findButton("Cursor")).toBeUndefined();
+    expect(fakeDocument.activeElement).toBe(parent);
+
+    // Down in the submenu, and Enter picks.
+    press("ArrowRight");
+    press("ArrowDown");
+    expect(fakeDocument.activeElement).toBe(findButton("Zed"));
+    findButton("Zed")!.dispatchEvent(new FakeDomEvent("click", { detail: 0 }));
+    await expect(selectionPromise).resolves.toBe("open:zed");
   });
 });

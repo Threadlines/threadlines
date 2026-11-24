@@ -1159,6 +1159,24 @@ function findNumberedListEntry(
 }
 
 /**
+ * The open listing's row for one of a thread's pull requests, found by the
+ * thread's repository and the pull request's number, so a pull request its
+ * agent opened on another branch is found as well as its own. The row is
+ * where the review decision and the checks live, which the thread's own
+ * reading does not carry.
+ */
+export function findThreadOpenPullRequestEntry(input: {
+  readonly thread: Pick<ThreadPullRequestSubject, "environmentId" | "projectId">;
+  readonly number: number;
+  readonly projects: readonly Project[];
+  readonly openEntries: readonly PullRequestEntry[];
+}): PullRequestEntry | undefined {
+  const project = findThreadProject(input.thread, input.projects);
+  const scope = project === undefined ? null : projectRepositoryScope(project);
+  return scope === null ? undefined : findNumberedListEntry(scope, input.number, input.openEntries);
+}
+
+/**
  * The pull requests a thread's agent opened on other branches (its
  * `linkedPullRequests`), as the composer rows, the Pull request tab and the
  * sidebar tag draw them: what the listings and lookups know about each, or

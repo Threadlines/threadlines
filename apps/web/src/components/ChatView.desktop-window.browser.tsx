@@ -1,6 +1,6 @@
 import { MessageId } from "@threadlines/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { cdp } from "vite-plus/test/browser";
+import { cdp, page } from "vite-plus/test/browser";
 // Types `cdp()` as Playwright's session.
 import type {} from "vite-plus/test/browser-playwright";
 
@@ -9,8 +9,11 @@ import {
   DEFAULT_VIEWPORT,
   mountChatView,
   registerChatViewSuiteHooks,
+  setPrimarySessionRole,
   waitForElement,
+  waitForServerConfigToApply,
 } from "./ChatView.browser-harness";
+import { useCommandPaletteStore } from "../commandPaletteStore";
 
 // The desktop app: `isElectron` is read when modules load, so this whole file
 // runs as the app's own window would (the other ChatView suites are a browser).
@@ -132,19 +135,37 @@ describe("ChatView (full app): the desktop app's window", () => {
         if (event.layers) layers = event.layers;
       });
       await session.send("LayerTree.enable");
-      // The tree is reported on the next frame the page draws.
-      await vi.waitFor(() => {
-        document.body.style.outline = document.body.style.outline ? "" : "0 solid transparent";
-        expect(layers).not.toBeNull();
-      });
+      // The tree is reported on the next frame the page draws, and again as
+      // it changes: wait for one where the chat's scroller is drawn on its
+      // own, so there is something to mask (an early frame can come before
+      // it is). A busy runner can take seconds to composite the chat.
+      const awaitScrollerLayer = () =>
+        vi.waitFor(
+          () => {
+            document.body.style.outline = document.body.style.outline ? "" : "0 solid transparent";
+            expect(layers?.some((layer) => layer.drawsContent && layer.backendNodeId)).toBe(true);
+          },
+          { timeout: 5_000 },
+        );
+      await awaitScrollerLayer();
+      // While something fades (a pill or button appearing in the chat), the
+      // browser lifts what it overlaps onto layers of their own until the
+      // fade ends. The rounded clip's masks stay for good: read the tree
+      // once the fades that end have ended (a spinner never does).
+      await Promise.all(
+        document
+          .getAnimations()
+          .filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity)
+          .map((animation) => animation.finished.catch(() => undefined)),
+      );
+      layers = null;
+      await awaitScrollerLayer();
       const masks = layers!.filter(
         (layer) =>
           layer.drawsContent &&
           layer.backendNodeId === undefined &&
           layer.width * layer.height >= panelArea * 0.5,
       );
-      // The chat's scroller is drawn on its own: there is something to mask.
-      expect(layers!.some((layer) => layer.drawsContent && layer.backendNodeId)).toBe(true);
       expect(masks).toEqual([]);
     } finally {
       await session.send("LayerTree.disable");
@@ -171,6 +192,46 @@ describe("ChatView (full app): the desktop app's window", () => {
         "The desktop app should mount the browser host layer at its root.",
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers the one-time link in the palette when other devices can reach this computer", async () => {
+    // The palette's Settings source asks what exists as Settings does: here
+    // the desktop app's owner, with the computer open to its network.
+    setPrimarySessionRole("owner");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-palette-settings-desktop" as MessageId,
+        targetText: "palette settings desktop",
+      }),
+    });
+    window.desktopBridge = {
+      getServerExposureState: vi.fn().mockResolvedValue({
+        mode: "network-accessible",
+        endpointUrl: "http://192.168.1.44:3773",
+        advertisedHost: "192.168.1.44",
+        tailscaleServeEnabled: false,
+        tailscaleServePort: 443,
+      }),
+      getAdvertisedEndpoints: vi.fn().mockResolvedValue([]),
+    } as unknown as NonNullable<typeof window.desktopBridge>;
+
+    try {
+      await waitForServerConfigToApply();
+      useCommandPaletteStore.getState().setOpen(true);
+      await page.getByPlaceholder("Search threads, commands and settings").fill("one-time link");
+      await expect
+        .element(
+          page
+            .getByTestId("command-palette")
+            .getByText("One-time link for this network", { exact: true }),
+        )
+        .toBeInTheDocument();
+    } finally {
+      setPrimarySessionRole(null);
+      Reflect.deleteProperty(window, "desktopBridge");
       await mounted.cleanup();
     }
   });

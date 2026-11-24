@@ -719,6 +719,25 @@ export function resolveNewWorktreeBaseBranch(input: {
   return preferred ?? defaultBranch ?? input.currentBranch;
 }
 
+/**
+ * The branch the "New worktrees from" setting will give, from what is known
+ * before the branch list loads (which takes seconds on a busy repository):
+ * the checkout's branch when the setting is the current branch, or when it is
+ * the default branch and the checkout is on it; the named branch. Null when
+ * only the list can say.
+ */
+export function predictNewWorktreeBaseBranch(input: {
+  readonly base: NewWorktreeBaseSettings | undefined;
+  readonly currentGitBranch: string | null;
+  readonly currentIsDefault: boolean;
+}): string | null {
+  const { base, currentGitBranch, currentIsDefault } = input;
+  if (base === undefined) return null;
+  if (base.from === "current") return currentGitBranch;
+  if (base.from === "named" && base.branch.length > 0) return base.branch;
+  return currentIsDefault ? currentGitBranch : null;
+}
+
 export function detectSourceControlProviderFromGitRemoteUrl(
   remoteUrl: string,
 ): SourceControlProviderInfo | null {

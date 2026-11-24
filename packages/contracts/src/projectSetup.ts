@@ -9,6 +9,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ProjectScript } from "./orchestration.ts";
+import { PROJECT_BRIEF_MAX_CHARS } from "./projectContext.ts";
 
 /**
  * Setting up a project on another computer (docs/design/fleet.md, Part 8).
@@ -70,6 +71,8 @@ export const ProjectSetupSource = Schema.Struct({
    * few large files make up most of the bytes. Absent from older servers.
    */
   sizeBytes: Schema.optional(NonNegativeInt),
+  /** The project's brief there (ProjectBrief.text); absent when it has none or the server is older. */
+  brief: Schema.optional(Schema.String),
 });
 export type ProjectSetupSource = typeof ProjectSetupSource.Type;
 
@@ -123,6 +126,8 @@ export const ProjectSetupStartInput = Schema.Struct({
   files: Schema.Array(ProjectSetupFile),
   /** The source's `sizeBytes`: the download's progress is measured against it. */
   expectedBytes: Schema.optional(NonNegativeInt),
+  /** The source's brief, given to the new project here once it is added. */
+  brief: Schema.optional(Schema.String.check(Schema.isMaxLength(PROJECT_BRIEF_MAX_CHARS))),
 });
 export type ProjectSetupStartInput = typeof ProjectSetupStartInput.Type;
 

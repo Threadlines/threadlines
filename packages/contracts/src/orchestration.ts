@@ -14,8 +14,12 @@ import {
   ChildRequestBatchId,
   ChildRequestId,
   ThreadMoveId,
+  ThreadMoveBatchId,
+  ThreadMoveFamilyId,
+  ThreadMoveRequestId,
   CommandId,
   CommandRequestId,
+  SecretRequestId,
   SettingsChangeRequestId,
   CommandRunId,
   EnvironmentId,
@@ -27,6 +31,7 @@ import {
   PositiveInt,
   ProjectId,
   ProviderItemId,
+  RoomAgentBatchId,
   RoomAgentRequestId,
   RuntimeTaskId,
   ScheduledTaskId,
@@ -438,6 +443,12 @@ export const OrchestrationProject = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   /** This project's threads send no phone alerts. Absent means they do. */
   phoneAlertsMuted: Schema.optional(Schema.Boolean),
+  /**
+   * The project's lead chat (docs/design/lead-chat.md). Absent or null: none.
+   * Read it through `projectLeadThreadId` (@threadlines/shared/projectLead),
+   * which treats a pointer at an archived or missing thread as none.
+   */
+  leadThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -456,6 +467,8 @@ export const OrchestrationProjectCatalogEntry = Schema.Struct({
   kind: ProjectKind.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROJECT_KIND))),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
+  /** The project's lead chat, when it has an open one (docs/design/lead-chat.md). */
+  leadThreadId: Schema.optional(ThreadId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -602,6 +615,35 @@ export const AgentThreadsMode = Schema.Literals(["off", "ask", "auto"]);
 export type AgentThreadsMode = typeof AgentThreadsMode.Type;
 
 /**
+ * The most a lead chat's pass may run with (docs/design/lead-chat.md,
+ * "Access"): the lead's access and interaction mode when it passed it.
+ */
+export const LeadPassCeiling = Schema.Struct({
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+});
+export type LeadPassCeiling = typeof LeadPassCeiling.Type;
+
+/**
+ * The most a parent thread's work may run with in the thread it sent it to
+ * (docs/design/agent-autonomy-no-limits.md, "Access"), kept on the message
+ * that carries it and on what starts a turn from it. `requestCeiling`: the
+ * sender's access when it sent, or its pass ceiling if that was narrower;
+ * every decision that starts a turn from the message, and the reactor when it
+ * prepares and starts that turn, refuse when the thread has more access by
+ * then. A continue (a usage limit reset, a restart, an account switch) copies
+ * it from the message that started the turn it continues. `passBlocked`: the
+ * sender was working on a lead chat's pass, so the turn this starts blocks
+ * the receiver from starting threads too (docs/design/lead-chat.md, "No
+ * fan-out"). Absent: no ceiling (the user's own messages, and work queued
+ * before the ceiling existed, which gets one when its turn starts).
+ */
+export const MessageAccessFields = {
+  requestCeiling: Schema.optional(LeadPassCeiling),
+  passBlocked: Schema.optional(Schema.Literal(true)),
+};
+
+/**
  * A message that crossed between a thread and one it started: a `request` its
  * parent's agent wrote into the child, or a `report`, the child's answer
  * delivered into the parent. An agent wrote it either way, never the user. A
@@ -626,14 +668,35 @@ export const ThreadMessageOrigin = Schema.Struct({
    * With no child to check, only Stop or a wrap (the delivery epoch) cancels it.
    */
   neverMade: Schema.optional(Schema.Boolean),
+  /**
+   * A pass (docs/design/lead-chat.md): the project's lead chat passed this
+   * message into a thread it did not start. The lead's access and interaction
+   * mode when it passed it, kept on the message for good: every decision that
+   * starts a turn from it refuses when the thread has more access by then.
+   * Nothing is owed back for a pass: no request is recorded on the lead.
+   * Only a pass carries it.
+   */
+  ceiling: Schema.optional(LeadPassCeiling),
+  /** A pass: the lead's agent that passed it (a room's agent), for its notes. Absent: its own. */
+  passedBy: Schema.optional(ThreadParticipantId),
+  /**
+   * A report no request asked for: a turn the child took on its own after
+   * its answer went back (a report from one of its own threads, a check-back,
+   * a scheduled run, background work that finished). `requestId` is then
+   * derived from the child's turn. Absent: an answer to a request.
+   */
+  followUp: Schema.optional(Schema.Literal(true)),
 });
 export type ThreadMessageOrigin = typeof ThreadMessageOrigin.Type;
 
 /**
  * A thread another computer's agent started here over a computer link
  * (docs/design/fleet.md, "Fence"): which link asked, and the asking thread on
- * that computer. Set once, at creation, and only by the server's link
- * handler; such a thread gets no Threadlines agent tools.
+ * that computer. Set at creation, and only by the server's link handler; such
+ * a thread gets no Threadlines agent tools. Cleared in one case only, by this
+ * computer: the asking thread moved here over that same link and took the
+ * thread back as its own child (ThreadAdoptedFromLink, docs/design/fleet.md,
+ * Part 3f, (g)).
  */
 export const ThreadRemoteOrigin = Schema.Struct({
   /** The asking computer's device id on this server (its link). */
@@ -648,8 +711,31 @@ export const ThreadRemoteOrigin = Schema.Struct({
   environmentLabel: TrimmedNonEmptyString,
   threadId: ThreadId,
   threadTitle: TrimmedNonEmptyString,
+  /**
+   * The access the link started the thread with. A request that arrives over
+   * the link with no ceiling (an older sender) runs with no more than this
+   * (docs/design/agent-autonomy-no-limits.md, "Access"). Absent: a thread
+   * started before it was kept.
+   */
+  launchedAccess: Schema.optional(LeadPassCeiling),
 });
 export type ThreadRemoteOrigin = typeof ThreadRemoteOrigin.Type;
+
+/**
+ * A thread another computer's agent started here that became a child here
+ * when that agent's thread moved here over the same link (docs/design/
+ * fleet.md, Part 3f, (g), "Also when the child's computer is the target"):
+ * the computer it was started from. `fenced`: it still works behind the link
+ * fence (no Threadlines tools, and it moves only back to `environmentId`)
+ * until a message the user sends here starts a turn in it. Written only by
+ * this computer, in the decision that imports the parent.
+ */
+export const ThreadAdoptedFromLink = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+  fenced: Schema.Boolean,
+});
+export type ThreadAdoptedFromLink = typeof ThreadAdoptedFromLink.Type;
 
 /**
  * A thread a scheduled task's run started (docs/design/fleet.md, Part 6):
@@ -764,7 +850,15 @@ export const OrchestrationOutsideWork = Schema.Struct({
   version: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(1))),
 });
 export type OrchestrationOutsideWork = typeof OrchestrationOutsideWork.Type;
-/** Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far it got. */
+/**
+ * Moving a thread to a linked computer (docs/design/fleet.md, Part 3): how far
+ * it got. `awaiting_approval`: its user is asked first; when it took every
+ * byte already (`sentBytes` equals `totalBytes`), only their Allow is left.
+ *
+ * Closed, and decoded by every client inside thread shells: a new phase here
+ * would break an older client's whole shell stream. New states go in new
+ * optional fields instead (OrchestrationThreadMove.waitingForTarget).
+ */
 export const ThreadMovePhase = Schema.Literals([
   "exporting",
   "awaiting_approval",
@@ -780,6 +874,161 @@ export const ThreadMoveTarget = Schema.Struct({
 });
 export type ThreadMoveTarget = typeof ThreadMoveTarget.Type;
 
+/** A check-back's prompt is kept up to this many characters (OrchestrationCheckBack.prompt). */
+export const CHECK_BACK_PROMPT_MAX_CHARS = 2_000;
+
+/**
+ * A time an agent set itself to come back to the thread (Claude's
+ * ScheduleWakeup and CronCreate). It belongs to the agent that set it, not
+ * to the session slot, and lives only as long as that agent's runtime unless
+ * `durable`.
+ */
+export const OrchestrationCheckBack = Schema.Struct({
+  /** The provider's id for the schedule. */
+  id: TrimmedNonEmptyString,
+  /** The room agent that set it; null for the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  /** When it fires next. */
+  scheduledFor: IsoDateTime,
+  /** True when the provider stated the time; false when it was worked out
+   *  from the schedule, which the provider may run a little late. */
+  exact: Schema.Boolean,
+  recurring: Schema.Boolean,
+  /** The provider's own wording of a repeating schedule ("every 5 minutes"). */
+  schedule: Schema.optional(TrimmedNonEmptyString),
+  /** Why the agent will come back, in its words, clipped. */
+  description: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * What the agent will be told when it comes back, as it wrote it, clipped
+   * at CHECK_BACK_PROMPT_MAX_CHARS: what a moved thread's agent is told to
+   * set again on the computer it moved to (docs/design/fleet.md, Part 3e).
+   */
+  prompt: Schema.optional(TrimmedNonEmptyString),
+  /** The schedule as a cron expression, when the agent gave one. */
+  cron: Schema.optional(TrimmedNonEmptyString),
+  /** Saved by the provider to outlive the runtime that set it. */
+  durable: Schema.Boolean,
+  /**
+   * The runtime that could fire it has ended (any reason), so it can't fire
+   * until that agent runs again, whose runtime then reports its list afresh
+   * and clears this. A dormant check-back doesn't make a thread still going
+   * (docs/design/agent-autonomy-no-limits.md, "Stop"). Set by the server.
+   */
+  dormant: Schema.optional(Schema.Literal(true)),
+});
+export type OrchestrationCheckBack = typeof OrchestrationCheckBack.Type;
+
+/**
+ * What the other computer takes beyond a plain thread (docs/design/fleet.md,
+ * Part 3e), as it said when the move was checked: `threadState`, a goal,
+ * check-backs, pull request switches, queued messages and plans;
+ * `generalChats`, a thread with no git checkout. Absent fields: it doesn't.
+ * The decider can't see links, so the answer travels on the move's commands.
+ */
+export const ThreadMoveTakes = Schema.Struct({
+  threadState: Schema.optional(Schema.Literal(true)),
+  generalChats: Schema.optional(Schema.Literal(true)),
+  /**
+   * A thread with more than one agent, its agents' sessions and records
+   * (docs/design/fleet.md, Part 3f, (i)).
+   */
+  rooms: Schema.optional(Schema.Literal(true)),
+  /**
+   * The marks outside work left on the thread's agents
+   * (OrchestrationOutsideWork), so an agent limited here is limited there.
+   */
+  outsideWork: Schema.optional(Schema.Literal(true)),
+  /**
+   * A thread that started threads (docs/design/fleet.md, Part 3f, (g)): it
+   * moves with the children picked to come, lands before them, and the rest
+   * stay here as their own threads.
+   */
+  families: Schema.optional(Schema.Literal(true)),
+  /**
+   * A thread moving across the link its work came over (docs/design/fleet.md,
+   * Part 3f, (h)): a child without its parent, which stays its parent's child
+   * there, and a thread another computer's agent started, going back home.
+   */
+  linkLineage: Schema.optional(Schema.Literal(true)),
+  /**
+   * A thread that started threads on that computer (docs/design/fleet.md,
+   * Part 3f, (g)): those threads become its children there again
+   * (PeerMoveManifest.startedThere).
+   */
+  adoptsChildren: Schema.optional(Schema.Literal(true)),
+});
+export type ThreadMoveTakes = typeof ThreadMoveTakes.Type;
+
+/**
+ * A parent and the children that move with it (docs/design/fleet.md, Part
+ * 3f, (g)), as each member's move records it: the family's id, and on a
+ * child, its parent. A child's move is only ever queued while its parent
+ * holds a move with the same id, and the other computer lands the parent
+ * first. Absent on a move: it moves on its own.
+ */
+export const ThreadMoveFamily = Schema.Struct({
+  id: ThreadMoveFamilyId,
+  /** A child's: the parent it moves with. Absent: the parent. */
+  parentThreadId: Schema.optional(ThreadId),
+});
+export type ThreadMoveFamily = typeof ThreadMoveFamily.Type;
+
+/**
+ * Which of the other computer's agents a room agent moves as
+ * (docs/design/fleet.md, Part 3f, (i)): one of its agents by its own
+ * instance id, or null to leave the agent out (it arrives as having left).
+ * An agent of the room not listed takes the agent that computer suggests.
+ */
+export const ThreadMoveRoomAgentChoice = Schema.Struct({
+  participantId: ThreadParticipantId,
+  agent: Schema.NullOr(ModelSelection),
+});
+export type ThreadMoveRoomAgentChoice = typeof ThreadMoveRoomAgentChoice.Type;
+
+/**
+ * What a move's stop took from the thread (docs/design/fleet.md, Part 3e,
+ * "What the stop takes"): its goal was working (`goalActive`), and the
+ * check-backs its agent had set, which end with its session. Recorded by the
+ * decision that plans the stop, and only ever added to, so the thread gets
+ * them back if the move doesn't happen and the other computer picks them up
+ * if it does.
+ */
+export const ThreadMoveInterrupted = Schema.Struct({
+  goalActive: Schema.optional(Schema.Literal(true)),
+  checkBacks: Schema.optional(Schema.Array(OrchestrationCheckBack)),
+  /**
+   * "Stop and move now" ended the thread's waiting on this many threads it
+   * started, as Stop does (docs/design/fleet.md, Part 3f, (g)): the "Moved
+   * here" line says so. Absent: none.
+   */
+  childRequestsStopped: Schema.optional(PositiveInt),
+});
+export type ThreadMoveInterrupted = typeof ThreadMoveInterrupted.Type;
+
+/**
+ * What a move that didn't happen owes the thread back (docs/design/fleet.md,
+ * Part 3e, "Put back"): what its stop took (`interrupted`), and a send of the
+ * queued messages that waited for the move. Recorded by the decision that
+ * ends the move without moving it, and cleared once the server paid it, so a
+ * restart in between still pays it.
+ */
+export const ThreadMoveRestore = Schema.Struct({
+  target: ThreadMoveTarget,
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  /** The queued messages it held back: the queue is sent again. */
+  queued: Schema.optional(Schema.Literal(true)),
+  /**
+   * Paid, but not yet through: the message the agent was told (`told`, queued
+   * ahead of the user's) and, once it and the queue are sent, the goal the
+   * provider is given again (`goalOwed`). Set only with neither `interrupted`
+   * nor `queued`; cleared once done, so a restart in between finishes it.
+   */
+  told: Schema.optional(MessageId),
+  goalOwed: Schema.optional(Schema.Literal(true)),
+  at: IsoDateTime,
+});
+export type ThreadMoveRestore = typeof ThreadMoveRestore.Type;
+
 /**
  * A thread moving, or moved, to a linked computer. From the moment it starts
  * the thread is frozen here: the decider refuses everything but archiving,
@@ -793,11 +1042,33 @@ export const OrchestrationThreadMove = Schema.Struct({
   /** The agent the other computer will run it with (its own instance id). */
   agent: ModelSelection,
   phase: ThreadMovePhase,
+  /**
+   * The other computer is busy with other moves and takes this one once
+   * they're done (Part 3c); the thread stays frozen, at the phase it had.
+   * Absent: not waiting for it.
+   */
+  waitingForTarget: Schema.optional(Schema.Boolean),
   sentBytes: Schema.optional(NonNegativeInt),
   totalBytes: Schema.optional(NonNegativeInt),
   /** The user asked to stop it; it stops once the other computer confirms. */
   cancelRequested: Schema.Boolean,
   startedAt: IsoDateTime,
+  /**
+   * The queued move this one started from (ThreadPendingMove.requestId), so a
+   * Cancel the user pressed on the queued move cancels the transfer instead.
+   * Absent: started straight away.
+   */
+  queuedRequestId: Schema.optional(ThreadMoveRequestId),
+  /** The batch its queued move was part of (`moves.queueMany`). Absent: moved on its own. */
+  batchId: Schema.optional(ThreadMoveBatchId),
+  /** What the move's stop took from the thread (ThreadMoveInterrupted). Absent: nothing. */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  /** What the other computer said it takes (ThreadMoveTakes). Absent: nothing beyond v1. */
+  targetTakes: Schema.optional(ThreadMoveTakes),
+  /** A room: the agent each of its agents moves as (ThreadMoveRoomAgentChoice). */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  /** The family it moves with (ThreadMoveFamily). Absent: on its own. */
+  family: Schema.optional(ThreadMoveFamily),
   /** The other computer took it: the thread there. */
   movedAway: Schema.optional(
     Schema.Struct({
@@ -808,14 +1079,275 @@ export const OrchestrationThreadMove = Schema.Struct({
 });
 export type OrchestrationThreadMove = typeof OrchestrationThreadMove.Type;
 
+/**
+ * What a queued move waits for (docs/design/fleet.md, Part 3b). Each goes
+ * away on its own: the turn ends, the user answers, the background work
+ * finishes. `words` finish "Moves to <computer> …", e.g. "when this turn ends".
+ */
+export const ThreadMoveWaitCode = Schema.Literals([
+  "turn",
+  "approval",
+  "question",
+  "side_turn",
+  "background",
+  "command_run",
+  "workflow_run",
+  "voice",
+  "shared_checkout",
+]);
+export type ThreadMoveWaitCode = typeof ThreadMoveWaitCode.Type;
+
+export const ThreadMoveWait = Schema.Struct({
+  code: ThreadMoveWaitCode,
+  words: TrimmedNonEmptyString,
+});
+export type ThreadMoveWait = typeof ThreadMoveWait.Type;
+
+/**
+ * `when-done`: the move starts once the thread is free. `stop-now`: the
+ * thread's agent session ends first (its turn and background work with it).
+ */
+export const ThreadPendingMoveMode = Schema.Literals(["when-done", "stop-now"]);
+export type ThreadPendingMoveMode = typeof ThreadPendingMoveMode.Type;
+
+/**
+ * `waiting`: for the thread to be free. `quiescing`: free, and its agent
+ * sessions are being ended and proven gone; no session of the thread may
+ * start or recover from here (ThreadSessionAdmission on the server).
+ */
+export const ThreadPendingMoveStage = Schema.Literals(["waiting", "quiescing"]);
+export type ThreadPendingMoveStage = typeof ThreadPendingMoveStage.Type;
+
+/** Who queued the move: the user, or the thread's own agent (`thread_move`) in that turn. */
+export const ThreadMoveRequester = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("user") }),
+  Schema.Struct({ kind: Schema.Literal("agent"), turnId: TurnId }),
+]);
+export type ThreadMoveRequester = typeof ThreadMoveRequester.Type;
+
+/**
+ * Why a move that is ready doesn't start yet. `target_unreachable`: the
+ * other computer can't be reached ("Waiting for Mac mini to connect.").
+ * `stop_unconfirmed`: an agent's processes couldn't be proven gone ("Couldn't
+ * confirm the agent stopped: …"); the move never goes ahead without that.
+ */
+export const ThreadMoveHold = Schema.Struct({
+  kind: Schema.Literals(["target_unreachable", "stop_unconfirmed"]),
+  words: TrimmedNonEmptyString,
+});
+export type ThreadMoveHold = typeof ThreadMoveHold.Type;
+
+/**
+ * A move waiting for the thread to be free (docs/design/fleet.md, Part 3b).
+ * While one waits the thread takes no new work (approvals and answers the
+ * running turn needs still go through); once the thread is free the move
+ * becomes an ordinary move (OrchestrationThreadMove) in the same decision.
+ * A thread has a pending move or a move, never both.
+ */
+export const ThreadPendingMove = Schema.Struct({
+  requestId: ThreadMoveRequestId,
+  target: ThreadMoveTarget,
+  /**
+   * The agent the other computer will run it with (its own instance id).
+   * Absent: the one that computer suggests when the move starts.
+   */
+  agent: Schema.optional(ModelSelection),
+  mode: ThreadPendingMoveMode,
+  stage: ThreadPendingMoveStage,
+  requestedAt: IsoDateTime,
+  requestedBy: ThreadMoveRequester,
+  /** What it waits for now, as the server last saw it. Absent or empty: nothing. */
+  waitsFor: Schema.optional(Schema.Array(ThreadMoveWait)),
+  /** Why a move that is ready doesn't start yet. Absent or null: nothing holds it. */
+  hold: Schema.optional(Schema.NullOr(ThreadMoveHold)),
+  /** Queued with other threads (`moves.queueMany`): their batch. Absent: on its own. */
+  batchId: Schema.optional(ThreadMoveBatchId),
+  /** What the move's stop took from the thread (ThreadMoveInterrupted). Absent: nothing yet. */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  /**
+   * What the other computer takes (ThreadMoveTakes), as it said when the move
+   * was queued; one that couldn't be reached then is taken to take
+   * everything, and is asked again before the thread's agent is stopped.
+   * Absent: nothing beyond v1.
+   */
+  targetTakes: Schema.optional(ThreadMoveTakes),
+  /** A room: the agent each of its agents moves as (ThreadMoveRoomAgentChoice). */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  /** The family it moves with (ThreadMoveFamily). Absent: on its own. */
+  family: Schema.optional(ThreadMoveFamily),
+});
+export type ThreadPendingMove = typeof ThreadPendingMove.Type;
+
+/** How a queued move ended: it started, the user cancelled it, it can't go, or the thread is gone. */
+export const ThreadPendingMoveEndReason = Schema.Literals([
+  "started",
+  "cancelled",
+  "blocked",
+  "gone",
+]);
+export type ThreadPendingMoveEndReason = typeof ThreadPendingMoveEndReason.Type;
+
+/**
+ * Activity appended when a queued move ends without starting (blocked, or
+ * the thread archived or deleted): "Didn't move: <words>". Its payload is a
+ * ThreadMoveNotStartedPayload.
+ */
+export const ThreadMoveNotStartedActivityKind = "thread.move-not-started";
+export const ThreadMoveNotStartedPayload = Schema.Struct({
+  requestId: ThreadMoveRequestId,
+  targetLabel: TrimmedNonEmptyString,
+  reason: Schema.Literals(["blocked", "gone"]),
+  words: TrimmedNonEmptyString,
+});
+export type ThreadMoveNotStartedPayload = typeof ThreadMoveNotStartedPayload.Type;
+
+/**
+ * A moved thread's agent session, when the move carried it (docs/design/fleet.md,
+ * Part 3d): `carried`, it arrived with the thread and hasn't proven itself yet;
+ * `resumed`, a turn succeeded on it; `fell_back`, it couldn't be used here,
+ * so the agent got a summary of the conversation instead. Absent: the move
+ * carried no session (the summary), or the thread didn't move here. Only
+ * ever an optional field: an older app that doesn't know it never reads it.
+ */
+export const ThreadNativeSession = Schema.Literals(["carried", "resumed", "fell_back"]);
+export type ThreadNativeSession = typeof ThreadNativeSession.Type;
+
+/**
+ * Activity appended when a moved thread's carried agent session couldn't be
+ * used here and its agent got a summary instead: "Couldn't resume the agent's
+ * session here, so it got a summary instead." Its payload is a
+ * ThreadNativeSessionFellBackPayload.
+ */
+export const ThreadNativeSessionFellBackActivityKind = "thread.native-session-fell-back";
+export const ThreadNativeSessionFellBackReason = Schema.Literals(["resume_failed", "turn_failed"]);
+export const ThreadNativeSessionFellBackPayload = Schema.Struct({
+  /** `resume_failed`: the session wouldn't open here; `turn_failed`: its first turn was refused. */
+  reason: ThreadNativeSessionFellBackReason,
+  /** `turn_failed`: the message the refused turn sent, sent again once on a seeded session. */
+  resendMessageId: Schema.optional(MessageId),
+  /** Stop count when the refused turn ran: a resend that arrives after a Stop is refused. */
+  chainEpoch: Schema.optional(NonNegativeInt),
+  /** A room agent's carried session (OrchestrationThreadParticipant.nativeSession). Absent: the thread's own agent's. */
+  participantId: Schema.optional(ThreadParticipantId),
+});
+export type ThreadNativeSessionFellBackPayload = typeof ThreadNativeSessionFellBackPayload.Type;
+
 /** A thread that moved here from another computer, and where it came from. */
 export const ThreadMovedFrom = Schema.Struct({
   environmentId: EnvironmentId,
+  /**
+   * `environmentId` is the computer the link it came over was made for
+   * (pinned by the invite this server made), not only what the sending
+   * computer said. Absent: unconfirmed, so while it is fenced it moves
+   * nowhere (docs/design/fleet.md, Part 3f, (h)).
+   */
+  environmentPinned: Schema.optional(Schema.Literal(true)),
   label: TrimmedNonEmptyString,
   threadId: ThreadId,
   movedAt: IsoDateTime,
+  /**
+   * What it carried came from another computer, so it works fenced, as a
+   * thread another computer's agent started here does (ThreadRemoteOrigin):
+   * no Threadlines tools, until a message the user sends here starts a turn
+   * (docs/design/fleet.md, Part 3e). Absent: not fenced (anymore).
+   */
+  fenced: Schema.optional(Schema.Literal(true)),
+  /**
+   * A moved room's: the last moved message the thread's own agent's carried
+   * session saw (OrchestrationThreadParticipant.movedSeenThrough). Absent: none known.
+   */
+  seenThrough: Schema.optional(MessageId),
+  /**
+   * It moved with its family (docs/design/fleet.md, Part 3f, (g)): the
+   * family as this computer names it, from the link it came over. A child
+   * that arrives later is put under its parent only when both carry the same
+   * key. Absent: it moved on its own.
+   */
+  familyKey: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * The pull request switches that were on there. They arrive off: a switch
+   * acts with this computer's GitHub sign-in, so only this computer's user
+   * turns it on (`thread.pull-request-automation.set`, which clears this).
+   * Absent: none was on, or they were turned on here since.
+   */
+  pullRequestSwitches: Schema.optional(
+    Schema.Struct({
+      autoFix: Schema.Boolean,
+      autoMerge: Schema.NullOr(PullRequestMergeMethod),
+      linked: Schema.Array(
+        Schema.Struct({
+          number: PositiveInt,
+          url: TrimmedNonEmptyString,
+          autoFix: Schema.Boolean,
+          autoMerge: Schema.NullOr(PullRequestMergeMethod),
+        }),
+      ),
+    }),
+  ),
 });
 export type ThreadMovedFrom = typeof ThreadMovedFrom.Type;
+
+/**
+ * How the thread's last move went, as far as this computer can tell
+ * (docs/design/fleet.md, Part 3c). `moved`: it lives on the other computer
+ * now. `not_moved`: it stays here (cancelled, blocked, refused, dropped
+ * there), with why in `words`. `awaiting_approval`: the other computer has
+ * every byte and waits for its user's Allow; this copy stays frozen until it
+ * hears the answer, so for quitting it counts as done.
+ */
+export const ThreadMoveOutcomeResult = Schema.Literals(["moved", "not_moved", "awaiting_approval"]);
+export type ThreadMoveOutcomeResult = typeof ThreadMoveOutcomeResult.Type;
+
+/**
+ * Why a move didn't happen, as a code (`words` says it for the user).
+ * `cancelled`: the user here cancelled it. `blocked`: something on the
+ * thread came to block it while it waited. `gone`: the thread, the link or
+ * the target's agent went away while it waited. `aborted`: the transfer was
+ * dropped for another reason. `staging_full`: the other computer holds as
+ * many moves waiting for Allow as it holds. `denied`: its user said Don't
+ * allow. `expired`: nobody there allowed it in time.
+ */
+export const ThreadMoveOutcomeReason = Schema.Literals([
+  "cancelled",
+  "blocked",
+  "gone",
+  "aborted",
+  "staging_full",
+  "denied",
+  "expired",
+]);
+export type ThreadMoveOutcomeReason = typeof ThreadMoveOutcomeReason.Type;
+
+/** Why a move under way was dropped, as a code (ThreadMoveOutcomeReason's). */
+export const ThreadMoveAbortCode = Schema.Literals([
+  "cancelled",
+  "aborted",
+  "staging_full",
+  "denied",
+  "expired",
+]);
+export type ThreadMoveAbortCode = typeof ThreadMoveAbortCode.Type;
+
+/**
+ * Set by every decision that ends a queued move or settles a move, and kept
+ * after the queued move and the move are cleared, so a batch (and the quit
+ * that waits on it) can read each thread's answer.
+ */
+export const ThreadMoveOutcome = Schema.Struct({
+  result: ThreadMoveOutcomeResult,
+  target: ThreadMoveTarget,
+  /** The queued move it answers. Absent: a move started straight away. */
+  requestId: Schema.optional(ThreadMoveRequestId),
+  /** The transfer it answers. Absent: the queued move ended before one started. */
+  transferId: Schema.optional(ThreadMoveId),
+  batchId: Schema.optional(ThreadMoveBatchId),
+  /** Why, for `not_moved`. */
+  words: Schema.optional(TrimmedNonEmptyString),
+  /** Why, as a code, for `not_moved`. Absent: an older server, or an older move. */
+  reason: Schema.optional(ThreadMoveOutcomeReason),
+  at: IsoDateTime,
+});
+export type ThreadMoveOutcome = typeof ThreadMoveOutcome.Type;
 
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
@@ -913,6 +1445,8 @@ export const OrchestrationMessage = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** Child threads: a message another thread's agent wrote. See ThreadMessageOrigin. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageAccessFields. */
+  ...MessageAccessFields,
   /** A user-role message an outside agent wrote. See OutsideAgentRef. */
   fromOutside: Schema.optional(OutsideAgentRef),
   /** See MessageComposer. Absent on every message an agent or automation wrote. */
@@ -922,8 +1456,12 @@ export const OrchestrationMessage = Schema.Struct({
   /** See MessageTrigger. Written with the message and kept. */
   trigger: Schema.optional(MessageTrigger),
   /**
-   * A message Threadlines wrote for the user (`trigger`) that never reached
-   * the agent: the user wrote before it went, and theirs went instead.
+   * A message that never reached the agent, kept in the chat: a continue
+   * Threadlines wrote for the user (`trigger`) that the user's own message
+   * overtook, a lead chat's pass that was taken back or refused at its
+   * ceiling, or an outside agent's message that was taken back or whose turn
+   * never ran. Once set, kept. No history an agent is given includes it
+   * (`reachedAgent`), and it is never retried.
    */
   notSent: Schema.optional(Schema.Literal(true)),
   /**
@@ -950,6 +1488,13 @@ export const OrchestrationMessage = Schema.Struct({
    * count: this computer's turns start after it.
    */
   imported: Schema.optional(Schema.Literal(true)),
+  /**
+   * Threadlines wrote it for the agent when the thread moved here, or when a
+   * move didn't happen (docs/design/fleet.md, Part 3e, "The arrival
+   * message"): shown as a quiet system-written row. Not a MessageTrigger, a
+   * closed list older clients decode; an older client shows it as the user's.
+   */
+  afterMove: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1019,6 +1564,13 @@ export type ThreadCheckoutSwitchDeferredPayload = typeof ThreadCheckoutSwitchDef
  * turn is refused (CheckpointRevert).
  */
 export const ThreadCheckoutMovedActivityKind = "thread.checkout.moved";
+
+/**
+ * A lead chat's pass that never ran here: its turn would have started with
+ * more access than the lead had when it passed it (docs/design/lead-chat.md,
+ * "Access"). Payload `{ messageId }`; the summary is the line the chat shows.
+ */
+export const LEAD_PASS_NOT_RUN_ACTIVITY_KIND = "lead-chat.pass-not-run";
 export const ThreadCheckoutMovedPayload = Schema.Struct({
   /** The thread whose checkout it moved into, with its title then. */
   ownerThreadId: ThreadId,
@@ -1284,6 +1836,98 @@ export const SettingsChangeEnding = Schema.Literals([
   "cancelled",
 ]);
 export type SettingsChangeEnding = typeof SettingsChangeEnding.Type;
+
+/**
+ * Where a key an agent asked for goes (docs/design/secret-requests.md, "Uses").
+ * `env_file`: a `NAME=value` line in a git-ignored env file in the thread's
+ * folder. `commands`: a private file for the agent's shell commands, removed
+ * after 24 hours. Bound when asked; the value goes only there.
+ */
+export const SecretRequestUse = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("env_file"),
+    /** Relative to the thread's folder, e.g. ".env.local". */
+    path: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("commands"),
+    /** A PEM key or JSON credentials: the card shows a text area. */
+    multiline: Schema.optional(Schema.Boolean),
+  }),
+]);
+export type SecretRequestUse = typeof SecretRequestUse.Type;
+
+/**
+ * waiting: on the card. claimed: an app pressed Save and the computer is
+ * writing it. The rest are endings: saved, failed, uncertain (Threadlines
+ * stopped mid-save), declined (Not now), replaced (asked again for the same
+ * name and use), cancelled (archived, moved, reverted away, or the agent left).
+ */
+export const SecretRequestStatus = Schema.Literals([
+  "waiting",
+  "claimed",
+  "saved",
+  "failed",
+  "uncertain",
+  "declined",
+  "replaced",
+  "cancelled",
+]);
+export type SecretRequestStatus = typeof SecretRequestStatus.Type;
+
+/** The app that answered: Save claims the card for it; Not now records it too. */
+export const SecretRequestClaim = Schema.Struct({
+  claimId: TrimmedNonEmptyString,
+  /** That app's device, as "Answered on <deviceLabel>" reads. */
+  deviceLabel: TrimmedNonEmptyString,
+});
+export type SecretRequestClaim = typeof SecretRequestClaim.Type;
+
+/**
+ * A key an agent asked the user for on its thread, from the card to the note
+ * it gets back. Never holds the value, its length or a hash of it.
+ */
+export const OrchestrationSecretRequest = Schema.Struct({
+  requestId: SecretRequestId,
+  /** The agent that asked, and the only one told. Null: the thread's own agent. */
+  participantId: Schema.NullOr(ThreadParticipantId),
+  turnId: TurnId,
+  /** The variable name, e.g. STRIPE_SECRET_KEY. */
+  name: TrimmedNonEmptyString,
+  /** Why the agent wants it, in its own words. Shown behind "<agent> says:". */
+  reason: TrimmedNonEmptyString,
+  use: SecretRequestUse,
+  /** env_file: the file already had this name when asked, so Save replaces it. */
+  replaces: Schema.Boolean,
+  /** env_file: the real path of the thread's folder when asked; the answer writes there or nowhere. */
+  folder: Schema.optional(TrimmedNonEmptyString),
+  /** env_file: the real path of the file's parent folder when asked. */
+  parent: Schema.optional(TrimmedNonEmptyString),
+  status: SecretRequestStatus,
+  claim: Schema.optional(SecretRequestClaim),
+  /** Why it ended as it did, for the note and the card. */
+  detail: Schema.optional(TrimmedNonEmptyString),
+  savedAt: Schema.optional(IsoDateTime),
+  /** commands: when its file is removed. */
+  expiresAt: Schema.optional(IsoDateTime),
+  /** commands: when its file was removed (Remove now, expiry, thread cleanup). */
+  removedAt: Schema.optional(IsoDateTime),
+  createdAt: IsoDateTime,
+  settledAt: Schema.optional(IsoDateTime),
+  /** The asking agent has been told how it ended (or nobody is left to tell). */
+  noted: Schema.Boolean,
+});
+export type OrchestrationSecretRequest = typeof OrchestrationSecretRequest.Type;
+
+/** How a card ends: by the answer, or by the thread moving on. */
+export const SecretRequestEnding = Schema.Literals([
+  "saved",
+  "failed",
+  "uncertain",
+  "declined",
+  "cancelled",
+]);
+export type SecretRequestEnding = typeof SecretRequestEnding.Type;
 
 /**
  * `run`: started as its own process, tracked to the end with its exit code.
@@ -1602,6 +2246,14 @@ export const OrchestrationSession = Schema.Struct({
    * the thread is archived. See OrchestrationContinueAtReset.
    */
   continueAtReset: Schema.optional(Schema.NullOr(OrchestrationContinueAtReset)),
+  /**
+   * The turn the user asked to stop (`thread.turn.interrupt` or
+   * `thread.session.stop` while it ran), kept until the next turn starts. A
+   * usage limit failure that lands after Stop never arms "Continue at reset"
+   * for it (docs/design/lead-chat.md, "Rulings after the third review").
+   * The projections own it; a writer's copy is ignored.
+   */
+  stopRequestedTurnId: Schema.optional(Schema.NullOr(TurnId)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
@@ -1637,34 +2289,16 @@ export const OrchestrationThreadGoal = Schema.Struct({
   checks: Schema.optional(NonNegativeInt),
   /** Claude: the evaluator's latest reason (not met yet, or why it is done). */
   lastCheck: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Threadlines pauses a goal while the thread waits on a card or on threads
+   * it started, and resumes it when that wait ends (docs/design/goal-wait-pause.md).
+   * `paused`: paused for the wait. `resuming`: the resume went out, not yet
+   * confirmed. `user`: the user acted on it during the wait, so nothing
+   * automatic happens until the wait is over.
+   */
+  waitPause: Schema.optional(Schema.Literals(["paused", "resuming", "user"])),
 });
 export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
-
-/**
- * A time an agent set itself to come back to the thread (Claude's
- * ScheduleWakeup and CronCreate). It belongs to the agent that set it, not
- * to the session slot, and lives only as long as that agent's runtime unless
- * `durable`.
- */
-export const OrchestrationCheckBack = Schema.Struct({
-  /** The provider's id for the schedule. */
-  id: TrimmedNonEmptyString,
-  /** The room agent that set it; null for the thread's own agent. */
-  participantId: Schema.NullOr(ThreadParticipantId),
-  /** When it fires next. */
-  scheduledFor: IsoDateTime,
-  /** True when the provider stated the time; false when it was worked out
-   *  from the schedule, which the provider may run a little late. */
-  exact: Schema.Boolean,
-  recurring: Schema.Boolean,
-  /** The provider's own wording of a repeating schedule ("every 5 minutes"). */
-  schedule: Schema.optional(TrimmedNonEmptyString),
-  /** Why the agent will come back, in its words, clipped. */
-  description: Schema.optional(TrimmedNonEmptyString),
-  /** Saved by the provider to outlive the runtime that set it. */
-  durable: Schema.Boolean,
-});
-export type OrchestrationCheckBack = typeof OrchestrationCheckBack.Type;
 
 export const ThreadDoneOverrideState = Schema.Literals(["done", "active"]);
 export type ThreadDoneOverrideState = typeof ThreadDoneOverrideState.Type;
@@ -1893,6 +2527,8 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
    * exists and it is never the user's.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageAccessFields. */
+  ...MessageAccessFields,
   /** See MessageComposer: kept so the message is written with it when sent. */
   composer: Schema.optional(MessageComposer),
   /** See MessageSentFrom: kept so the message is written with it when sent. */
@@ -1918,6 +2554,21 @@ export const OrchestrationQueuedFollowUp = Schema.Struct({
    * if it has, this one is steered into its turn.
    */
   overtakes: Schema.optional(MessageId),
+  /** See OrchestrationMessage.afterMove: kept so the message is written with it when sent. */
+  afterMove: Schema.optional(Schema.Literal(true)),
+  /**
+   * A child's report whose turn start died before the provider took it, put
+   * back (`thread.turn-start.take-back`): it goes ahead of every other
+   * message an agent queued, behind an earlier one put back. The user's own
+   * queued messages keep their place. Absent: queued in the usual order.
+   */
+  putBack: Schema.optional(Schema.Literal(true)),
+  /**
+   * Carried from another computer by a move (docs/design/fleet.md, Part 3e):
+   * written by the user there, not here, so sending it doesn't lift the
+   * thread's fence (ThreadMovedFrom.fenced).
+   */
+  imported: Schema.optional(Schema.Literal(true)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
@@ -1961,6 +2612,20 @@ export const OrchestrationThreadParticipant = Schema.Struct({
    * review's author, and never makes the thread a room.
    */
   guest: Schema.optional(Schema.Boolean),
+  /**
+   * It came with the thread when the thread moved here (docs/design/fleet.md,
+   * Part 3f, (i)): until its conversation is caught up here (a room context
+   * cursor), its first send carries the whole conversation, unless it
+   * reopened its carried session. Absent: it joined here.
+   */
+  movedIn: Schema.optional(Schema.Literal(true)),
+  /** Its own carried agent session, as the thread's (OrchestrationThread.nativeSession). */
+  nativeSession: Schema.optional(ThreadNativeSession),
+  /**
+   * Moved in with its carried session: the last moved message that session
+   * saw, so its first turn here is caught up on everything after it.
+   */
+  movedSeenThrough: Schema.optional(MessageId),
 });
 export type OrchestrationThreadParticipant = typeof OrchestrationThreadParticipant.Type;
 
@@ -1968,9 +2633,10 @@ export const OrchestrationSideTurnStatus = Schema.Literals(["starting", "running
 export type OrchestrationSideTurnStatus = typeof OrchestrationSideTurnStatus.Type;
 
 /**
- * A side answer in progress: a room agent answering the user read-only, in
- * its own locked-down runtime, while another agent holds the thread. At most
- * one per thread. See docs/design/rooms-slice-2.md.
+ * A side answer in progress: a room agent answering read-only, in its own
+ * locked-down runtime, while another agent holds the thread. A thread runs at
+ * most MAX_LIVE_SIDE_TURNS at once, one per agent. See
+ * docs/design/rooms-slice-2.md.
  */
 export const OrchestrationSideTurn = Schema.Struct({
   sideTurnId: SideTurnId,
@@ -1996,6 +2662,9 @@ export const OrchestrationSideTurn = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
 });
 export type OrchestrationSideTurn = typeof OrchestrationSideTurn.Type;
+
+/** How many side answers a thread runs at once (a council of three reviewers). */
+export const MAX_LIVE_SIDE_TURNS = 3;
 
 /**
  * An open room request: made, not yet over. A hand-off is `pending` until
@@ -2026,6 +2695,8 @@ export const OrchestrationAgentRequest = Schema.Struct({
   requestMessageId: MessageId,
   /** Asks, reviews and invites: the side turn answering it. */
   sideTurnId: Schema.optional(SideTurnId),
+  /** A review asked of several agents in one call: its requests share this. */
+  batchId: Schema.optional(RoomAgentBatchId),
   /**
    * An ask or review whose caller stopped waiting for it (the call ran out of
    * time, or the user wrote to the caller): its answer comes back to the caller
@@ -2037,17 +2708,14 @@ export const OrchestrationAgentRequest = Schema.Struct({
 export type OrchestrationAgentRequest = typeof OrchestrationAgentRequest.Type;
 
 /**
- * How many requests agents may make of each other before they wait for the
- * user. The user's next submission resets the count.
- */
-export const ROOM_AGENT_REQUEST_LIMIT = 3;
-
-/**
  * Room tools state on a thread. `hold` is set by Stop and cleared by the
  * user's next submission; `chainEpoch` is raised by Stop, and no request
- * from an older epoch survives it; `requestsSinceUser` counts requests
- * toward ROOM_AGENT_REQUEST_LIMIT; `invitesPaused` is set when the user
+ * from an older epoch survives it; `invitesPaused` is set when the user
  * declines an invite, and cleared, like `hold`, when the user next writes.
+ * Agents make as many requests of each other as they like
+ * (docs/design/agent-autonomy-no-limits.md): `requestsSinceUser` and
+ * `batchesSinceUser` are no longer counted or read, and stay only so older
+ * clients still decode a thread.
  */
 export const OrchestrationAgentRequestState = Schema.Struct({
   open: Schema.Array(OrchestrationAgentRequest),
@@ -2055,6 +2723,10 @@ export const OrchestrationAgentRequestState = Schema.Struct({
   chainEpoch: NonNegativeInt,
   requestsSinceUser: NonNegativeInt,
   invitesPaused: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** No longer counted; see above. */
+  batchesSinceUser: Schema.Array(RoomAgentBatchId).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type OrchestrationAgentRequestState = typeof OrchestrationAgentRequestState.Type;
 
@@ -2064,6 +2736,7 @@ export const EMPTY_AGENT_REQUEST_STATE: OrchestrationAgentRequestState = {
   chainEpoch: 0,
   requestsSinceUser: 0,
   invitesPaused: false,
+  batchesSinceUser: [],
 };
 
 /**
@@ -2341,6 +3014,13 @@ export const OrchestrationChildRequest = Schema.Struct({
   callerTurnId: TurnId,
   /** This thread's delivery epoch when it was asked; see OrchestrationChildRequestState. */
   deliveryEpoch: NonNegativeInt,
+  /**
+   * This thread's access when it asked, and its pass's block (see
+   * MessageAccessFields): kept on the request so a send delivered later, or
+   * retried over a link, carries the limit that was in force when the agent
+   * sent it. Absent: a request from before it was kept.
+   */
+  ...MessageAccessFields,
   status: ChildRequestStatus,
   /** Reserved when it is asked for, before the child exists. */
   childThreadId: ThreadId,
@@ -2350,6 +3030,14 @@ export const OrchestrationChildRequest = Schema.Struct({
   launch: Schema.optional(ChildThreadLaunch),
   /** `awaiting_background`: the finished turn whose last answer stands so far. */
   candidateTurnId: Schema.optional(TurnId),
+  /**
+   * The child's turn that took `childMessageId`, recorded when the turn
+   * starts; a retry, resend or continue that runs the message again
+   * overwrites it. Every reader matches the request's turn by this
+   * (docs/design/agent-autonomy-no-limits.md, "Restart and turn binding",
+   * rule B). Absent: not started yet, or a request from before it was kept.
+   */
+  answeringTurnId: Schema.optional(TurnId),
   /** The child is on a linked computer: see RemoteChildRequest. */
   remote: Schema.optional(RemoteChildRequest),
   /**
@@ -2378,19 +3066,86 @@ export type ChildRequestNote = typeof ChildRequestNote.Type;
 /**
  * Child threads on the thread that started them. `deliveryEpoch` is raised by
  * Stop and by wrapping this thread: no answer asked for under an older epoch
- * comes back. The counts are toward the per-message limits and start over
- * when the user writes; pending approvals count.
+ * comes back. Agents start and message as many threads as they like
+ * (docs/design/agent-autonomy-no-limits.md): `startsSinceUser` and
+ * `sendsSinceUser` are no longer counted or read, and stay only so older
+ * clients still decode a thread.
  */
+/**
+ * The epochs a child's report is delivered under (docs/design/
+ * agent-autonomy-no-limits.md, "Delivery rules", rule 7): its parent's
+ * delivery epoch and its own attachment epoch when the turn that owes it
+ * started. A report whose stamps no longer match is dropped.
+ */
+export const OwedReportStamps = Schema.Struct({
+  deliveryEpoch: NonNegativeInt,
+  attachmentEpoch: NonNegativeInt,
+});
+export type OwedReportStamps = typeof OwedReportStamps.Type;
+
+/**
+ * A report this thread owes its parent: a turn it takes on its own after its
+ * answer went back (rule 2). Added by the decision that starts the turn,
+ * keyed by the message that starts it or, for a turn the provider starts with
+ * no message, by the turn. Removed when the report is settled, and the whole
+ * list empties when the thread's attachment epoch moves.
+ */
+export const OwedChildReport = Schema.Union([
+  Schema.Struct({ messageId: MessageId, ...OwedReportStamps.fields, createdAt: IsoDateTime }),
+  Schema.Struct({ turnId: TurnId, ...OwedReportStamps.fields, createdAt: IsoDateTime }),
+]);
+export type OwedChildReport = typeof OwedChildReport.Type;
+
+/**
+ * What started a turn (docs/design/agent-autonomy-no-limits.md, "Restart and
+ * turn binding"). Only the writer that sent a message names it: the reactor,
+ * once the provider took the turn for it, with the turn's id (`turnId`, which
+ * may have ended or been superseded by then). Every other turn start is
+ * recorded as the provider's, provisionally: a report a provider-started turn
+ * owes a parent is recorded, and the naming update corrects it. The turn
+ * record is bound to the pending message only when a writer names it.
+ * Absent: nothing to say about what started the turn.
+ */
+export const TurnStartedBy = Schema.Union([
+  Schema.Struct({ messageId: MessageId, turnId: Schema.optional(TurnId) }),
+  Schema.Struct({ provider: Schema.Literal(true) }),
+]);
+export type TurnStartedBy = typeof TurnStartedBy.Type;
+
+/** Which owed report: the one keyed by the message that starts its turn, or by the turn. */
+export const OwedReportKey = Schema.Union([
+  Schema.Struct({ messageId: MessageId }),
+  Schema.Struct({ turnId: TurnId }),
+]);
+export type OwedReportKey = typeof OwedReportKey.Type;
+
 export const OrchestrationChildRequestState = Schema.Struct({
   open: Schema.Array(OrchestrationChildRequest),
   deliveryEpoch: NonNegativeInt,
   startsSinceUser: NonNegativeInt,
   sendsSinceUser: NonNegativeInt,
   pendingNotes: Schema.Array(ChildRequestNote),
+  /** Reports this thread owes its parent, oldest first. Absent: none. */
+  owedReports: Schema.optional(Schema.Array(OwedChildReport)),
+  /**
+   * The agent of its parent whose request started this thread, kept for
+   * good: its later reports go to that agent while it is in the room
+   * (docs/design/agent-autonomy-no-limits.md, rule 8). Absent: a thread
+   * started before it was kept, or put back under a parent.
+   */
+  reportsTo: Schema.optional(RoomAgentRef),
   /** Children on linked computers, kept after their requests settle. Absent: none. */
   remoteChildren: Schema.optional(Schema.Array(RemoteChildThread)),
   /** Cancels still owed to linked computers, oldest first. Absent: none. */
   remoteCancels: Schema.optional(Schema.Array(RemoteChildCancel)),
+  /**
+   * A message the lead chat passed on started a turn here since the user
+   * last wrote (docs/design/lead-chat.md, "No fan-out"): the narrowest
+   * ceiling of those passes. Until the user writes here, this thread's agents
+   * can't start threads, and message only their own threads that are within
+   * it on this computer. Absent: no pass holds them.
+   */
+  passCeiling: Schema.optional(LeadPassCeiling),
 });
 export type OrchestrationChildRequestState = typeof OrchestrationChildRequestState.Type;
 
@@ -2404,10 +3159,6 @@ export const EMPTY_CHILD_REQUEST_STATE: OrchestrationChildRequestState = {
 
 /** Threads one `thread_start` call may start. */
 export const CHILD_THREADS_PER_CALL = 5;
-/** Threads an agent may start per user message, pending approvals included. */
-export const CHILD_THREAD_START_LIMIT = 5;
-/** Messages an agent may send its threads per user message. */
-export const CHILD_THREAD_SEND_LIMIT = 10;
 /** Notes kept for an agent's next turn; the oldest give way. */
 export const CHILD_REQUEST_NOTE_LIMIT = 20;
 
@@ -2503,9 +3254,11 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationThreadShell.sideTurn. */
   sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
+  /** See OrchestrationThreadShell.sideTurns. */
+  sideTurns: Schema.optional(Schema.Array(OrchestrationSideTurn)),
   /** See OrchestrationThreadShell.agentRole. */
   agentRole: Schema.optional(RoomAgentRole),
-  /** Room tools: open agent requests, the Stop hold and the limit's count. */
+  /** Room tools: open agent requests and the Stop hold. */
   agentRequests: OrchestrationAgentRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_AGENT_REQUEST_STATE)),
   ),
@@ -2515,6 +3268,8 @@ export const OrchestrationThread = Schema.Struct({
   parentTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   /** See OrchestrationThreadShell.attachedToParent. */
   attachedToParent: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** See OrchestrationThreadShell.stopsWithParent. */
+  stopsWithParent: Schema.optional(Schema.Literal(true)),
   /**
    * Raised each time this child's answers to its parent are cut off (it was
    * separated, put back, or stopped), so an answer delivered under an earlier
@@ -2533,6 +3288,8 @@ export const OrchestrationThread = Schema.Struct({
   ),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /** See OrchestrationThreadShell.adoptedFromLink. */
+  adoptedFromLink: Schema.optional(Schema.NullOr(ThreadAdoptedFromLink)),
   /** See OrchestrationThreadShell.scheduledRun. */
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /** See OrchestrationThreadShell.worktreeOrigin. */
@@ -2543,8 +3300,18 @@ export const OrchestrationThread = Schema.Struct({
   outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
   /** See OrchestrationThreadShell.move. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** See OrchestrationThreadShell.pendingMove. */
+  pendingMove: Schema.optional(Schema.NullOr(ThreadPendingMove)),
   /** See OrchestrationThreadShell.movedFrom. */
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
+  /** See OrchestrationThreadShell.lastMoveOutcome. */
+  lastMoveOutcome: Schema.optional(Schema.NullOr(ThreadMoveOutcome)),
+  /**
+   * A move that didn't happen owes the thread what its stop took
+   * (ThreadMoveRestore); cleared once the server put it back. Absent or null:
+   * nothing owed.
+   */
+  moveRestoreOwed: Schema.optional(Schema.NullOr(ThreadMoveRestore)),
   /**
    * Moved here: the next turn's agent hasn't been given the conversation yet.
    * Its first send carries a seed built from the imported transcript; the
@@ -2556,7 +3323,14 @@ export const OrchestrationThread = Schema.Struct({
    * revert that takes that message away owes the conversation again.
    */
   historySeedMessageId: Schema.optional(MessageId),
-  /** Child threads this thread started: open requests, limits and notes. */
+  /**
+   * Moved here with its agent's own session (ThreadNativeSession). While
+   * `carried`, `historySeedOwed` stays set but no seed is sent: the carried
+   * session holds the conversation, and only a turn that succeeds on it
+   * clears the debt (`resumed`). One that can't be used pays it (`fell_back`).
+   */
+  nativeSession: Schema.optional(ThreadNativeSession),
+  /** Child threads this thread started: open requests and notes. */
   childRequests: OrchestrationChildRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_CHILD_REQUEST_STATE)),
   ),
@@ -2603,6 +3377,11 @@ export const OrchestrationThread = Schema.Struct({
     Schema.optional,
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** Keys its agents asked the user for: see OrchestrationSecretRequest. */
+  secretRequests: Schema.Array(OrchestrationSecretRequest).pipe(
+    Schema.optional,
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   activities: Schema.Array(OrchestrationThreadActivity),
   subagents: Schema.Array(OrchestrationSubagent).pipe(
     Schema.optional,
@@ -2643,6 +3422,12 @@ export const OrchestrationProjectShell = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   /** This project's threads send no phone alerts. Absent means they do. */
   phoneAlertsMuted: Schema.optional(Schema.Boolean),
+  /**
+   * The project's lead chat (docs/design/lead-chat.md). Absent or null: none.
+   * Read it through `projectLeadThreadId` (@threadlines/shared/projectLead),
+   * which treats a pointer at an archived or missing thread as none.
+   */
+  leadThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -2721,9 +3506,16 @@ export const OrchestrationThreadShell = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /**
-   * In a room, the side answer in progress, if any. It counts as live work
-   * everywhere the app counts work, next to the session. Absent or null:
-   * none.
+   * In a room, the side answers in progress, oldest first: up to
+   * MAX_LIVE_SIDE_TURNS, one per agent. They count as live work everywhere
+   * the app counts work, next to the session. Absent: an older server, whose
+   * one side answer is `sideTurn`. Read both through `liveSideTurns`
+   * (`@threadlines/shared/threadParticipants`).
+   */
+  sideTurns: Schema.optional(Schema.Array(OrchestrationSideTurn)),
+  /**
+   * The first of `sideTurns`, or null, for clients older than `sideTurns`:
+   * they see one side answer at a time.
    */
   sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
   /** In a room, the user's name for the thread's own agent (RoomAgentRole). */
@@ -2744,10 +3536,21 @@ export const OrchestrationThreadShell = Schema.Struct({
    */
   attachedToParent: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
-   * The turn whose answer last went back to the parent, and when. The parent's
-   * agent read that answer, so that exact completion may be filed without the
-   * user opening it (the "wrap up finished child threads" setting). Like
-   * `doneOverride`, it does not move `updatedAt`.
+   * Started without report back (`thread_start` with `reportBack: false`),
+   * and not yet the user's: it is under its parent's Stop though it was never
+   * attached (docs/design/agent-autonomy-no-limits.md, "Stop"). Cleared for
+   * good by the first message a person writes in it, or by putting it back
+   * under its parent. Absent: the user's own (and every such thread started
+   * before it was kept).
+   */
+  stopsWithParent: Schema.optional(Schema.Literal(true)),
+  /**
+   * The turn whose answer last went back to the parent, and when: as a report,
+   * as a late reply its agent was told of at its next turn, or a turn the
+   * parent's agent cut off with thread_stop. The parent's agent has that
+   * turn, so that exact completion may be filed without the user opening it
+   * (the "wrap up finished child threads" setting). Like `doneOverride`, it
+   * does not move `updatedAt`.
    */
   handedBackAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   handedBackTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -2760,15 +3563,27 @@ export const OrchestrationThreadShell = Schema.Struct({
   pendingChildApproval: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** A settings change its agent asked for is on its card, or being made. */
   pendingSettingsChange: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** A key its agent asked for is on its card, or being saved. */
+  pendingSecretRequest: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
    * Started by an agent on a linked computer (ThreadRemoteOrigin): "Started
    * by <thread> on <computer>". Absent or null: started here.
    */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /**
+   * Started over a link, then taken back as a child here by the thread that
+   * started it, when that thread moved here (ThreadAdoptedFromLink). Absent
+   * or null: neither.
+   */
+  adoptedFromLink: Schema.optional(Schema.NullOr(ThreadAdoptedFromLink)),
   /** Moving, or moved, to a linked computer: see OrchestrationThreadMove. Absent or null: neither. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** A move waiting for the thread to be free: see ThreadPendingMove. Absent or null: none. */
+  pendingMove: Schema.optional(Schema.NullOr(ThreadPendingMove)),
   /** Moved here from another computer: see ThreadMovedFrom. Absent or null: started here. */
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
+  /** How its last move went: see ThreadMoveOutcome. Absent or null: it never tried to move. */
+  lastMoveOutcome: Schema.optional(Schema.NullOr(ThreadMoveOutcome)),
   /**
    * Started by a scheduled task's run (ThreadScheduledRun): "Scheduled ·
    * <task>". Absent or null: not a run thread.
@@ -2945,6 +3760,18 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   phoneAlertsMuted: Schema.optional(Schema.Boolean),
 });
 
+/**
+ * Make a thread the project's lead chat, or (null) stop having one. A command
+ * of its own rather than part of `project.meta.update`: it checks the thread
+ * and replaces any other lead in the same decision.
+ */
+const ProjectLeadSetCommand = Schema.Struct({
+  type: Schema.Literal("project.lead.set"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  threadId: Schema.NullOr(ThreadId),
+});
+
 const ProjectDeleteCommand = Schema.Struct({
   type: Schema.Literal("project.delete"),
   commandId: CommandId,
@@ -2984,6 +3811,8 @@ const ThreadCreateLineageFields = {
   /** The parent's turn whose agent started it. */
   parentTurnId: Schema.optional(TurnId),
   attachedToParent: Schema.optional(Schema.Boolean),
+  /** Started without report back: see OrchestrationThreadShell.stopsWithParent. */
+  stopsWithParent: Schema.optional(Schema.Literal(true)),
   /** Started over a computer link: see ThreadRemoteOrigin. Only the link handler sets it. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
   /** Started by a scheduled run: see ThreadScheduledRun. Only the scheduler sets it. */
@@ -3089,6 +3918,13 @@ const ThreadDeleteCommand = Schema.Struct({
    * they are separated and live on as threads of their own.
    */
   withChildren: Schema.optional(Schema.Boolean),
+  /**
+   * With `withChildren`: the threads the confirm dialog listed. The server
+   * deletes exactly those that are still attached, unarchived threads under
+   * this one, and separates any other. Absent (an older client): every
+   * attached child, one level.
+   */
+  alsoDelete: Schema.optional(Schema.Array(ThreadId)),
 });
 
 const ThreadArchiveCommand = Schema.Struct({
@@ -3174,6 +4010,16 @@ const ThreadDoneOverrideSetCommand = Schema.Struct({
    * `at` unless it was seen later, in the same step.
    */
   fromLinkedComputer: Schema.optional(Schema.Boolean),
+  /** See ThreadSessionStopCommand.byLink. */
+  byLink: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Server only (the agent of the thread named here wrapped up a thread it
+   * started, `thread_wrap`): a Wrap up only, refused unless the thread is
+   * still that thread's attached child with nothing running, waiting on the
+   * user or owed to it; and it marks the thread seen as of `at` unless it was
+   * seen later, in the same step. Clients can't send it (Normalizer.ts).
+   */
+  byParentAgent: Schema.optional(ThreadId),
 });
 
 /**
@@ -3368,6 +4214,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
    * client turn-start schema has no such field). See ThreadMessageOrigin.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** Server only. See MessageAccessFields. */
+  ...MessageAccessFields,
   /**
    * An outside agent's turn (server only, set by `/mcp/connect`). The decider
    * refuses it when the thread's access is above `maxRuntimeMode`.
@@ -3684,6 +4532,12 @@ const ThreadChildRequestRespondCommand = Schema.Struct({
   threadId: ThreadId,
   batchId: ChildRequestBatchId,
   choice: Schema.Literals(["start", "decline"]),
+  /**
+   * With `start`: only these of the batch start, and the rest are declined in
+   * the same answer (capability `childStartSelection`). Absent: the whole
+   * batch.
+   */
+  requestIds: Schema.optional(Schema.Array(ChildRequestId)),
   createdAt: IsoDateTime,
 });
 
@@ -3726,6 +4580,29 @@ const ThreadSessionStopCommand = Schema.Struct({
   type: Schema.Literal("thread.session.stop"),
   commandId: CommandId,
   threadId: ThreadId,
+  /**
+   * Server only: a linked computer asked for it over its link (this device
+   * id). It does nothing unless the thread is still that link's
+   * (`remoteOrigin`), decided atomically with the stop, so a thread its
+   * asker took back as a child here (ThreadAdoptedFromLink) is never stopped
+   * by a request that was read before that.
+   */
+  byLink: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Server only: the turn it means to stop (null: no turn has started yet).
+   * Refused when the thread is at another turn by then, so a stop decided
+   * for one turn never ends the next one, which may be the user's.
+   */
+  expectedTurnId: Schema.optional(Schema.NullOr(TurnId)),
+  /**
+   * Server only: why the session stops, which decides whether it leaves the
+   * Stop hold (docs/design/agent-autonomy-no-limits.md, "Stop"). `family`:
+   * stopped with a thread above it (its starter's Stop, "Stop N working
+   * threads", an agent's thread_stop); no new hold, and it takes its
+   * parent's next message. `cleanup`: archive, delete, the sweeper, a move,
+   * a link; no new hold and no cascade. Absent: the thread's own Stop.
+   */
+  cause: Schema.optional(Schema.Literals(["family", "cleanup"])),
   createdAt: IsoDateTime,
 });
 
@@ -3761,6 +4638,25 @@ const ThreadCheckBacksSetCommand = Schema.Struct({
   threadId: ThreadId,
   participantId: Schema.NullOr(ThreadParticipantId),
   checkBacks: Schema.Array(OrchestrationCheckBack),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Server-internal: bring the thread's goal in line with what the thread waits
+ * on (docs/design/goal-wait-pause.md). The decider pauses an active goal while
+ * the thread waits, and resumes one it paused when the wait is over; anything
+ * else is a no-op. `scheduleAnswerWaiting`: a card asks the user about its
+ * agent's scheduled-task change, which the scheduler holds, not the thread.
+ */
+const ThreadGoalWaitSyncCommand = Schema.Struct({
+  type: Schema.Literal("thread.goal.wait.sync"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  scheduleAnswerWaiting: Schema.Boolean,
+  /** The user acted on the goal (pause, resume, edit, clear, Stop) since the last look. */
+  userActed: Schema.optional(Schema.Boolean),
+  /** Send a resume not yet confirmed again (after a restart). */
+  retryResume: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -3824,6 +4720,7 @@ const ThreadCommandRequestDismissCommand = Schema.Struct({
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
+  ProjectLeadSetCommand,
   ProjectDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
@@ -3877,6 +4774,7 @@ export type DispatchableClientOrchestrationCommand =
 export const ClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
+  ProjectLeadSetCommand,
   ProjectDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
@@ -3938,6 +4836,15 @@ const ThreadSessionSetCommand = Schema.Struct({
    * usage limit with a known reset arms "Continue at reset" when it is on.
    */
   continueAfterUsageLimits: Schema.optional(Schema.Boolean),
+  /** See TurnStartedBy. */
+  turnStartedBy: Schema.optional(TurnStartedBy),
+  /**
+   * When true, this update is a runtime observation for a session that must
+   * still hold the thread's slot (same participant and provider instance, and
+   * not launching a different provider instance). If the slot has already moved
+   * on, the decider rejects the stale update instead of clobbering it.
+   */
+  requireCurrentSession: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -3974,6 +4881,12 @@ const ThreadRestartContinueCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
+  /**
+   * The message the cut turn was started with, from its turn record: null for
+   * a turn the provider started (a check-back), which is never continued.
+   * Absent: not known, and the newest message that starts a turn stands in.
+   */
+  turnMessageId: Schema.optional(Schema.NullOr(MessageId)),
   participantId: Schema.NullOr(ThreadParticipantId),
   waitingOnUser: Schema.Boolean,
   continueAfterRestart: Schema.Boolean,
@@ -4158,6 +5071,71 @@ const ThreadSettingsChangeNotesDeliverCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   requestIds: Schema.Array(SettingsChangeRequestId),
+  createdAt: IsoDateTime,
+});
+
+/** Server only: an agent asked the user for a key (`secret_request`); a card shows it. */
+const ThreadSecretRequestCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.request"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  participantId: Schema.NullOr(ThreadParticipantId),
+  turnId: TurnId,
+  name: TrimmedNonEmptyString,
+  reason: TrimmedNonEmptyString,
+  use: SecretRequestUse,
+  replaces: Schema.Boolean,
+  folder: Schema.optional(TrimmedNonEmptyString),
+  parent: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
+/** Server only: an app pressed Save; only this claim writes the value. */
+const ThreadSecretRequestClaimCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.claim"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  claim: SecretRequestClaim,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Server only: how a card ended. `declined` from waiting, with the claim of
+ * the app that said Not now; `saved`, `failed` and `uncertain` from claimed,
+ * by the claim that holds it. `message` wakes the asking agent with the
+ * outcome in the same decision, and marks the request noted.
+ */
+const ThreadSecretRequestSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.settle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  ending: Schema.Literals(["saved", "failed", "uncertain", "declined"]),
+  claim: SecretRequestClaim,
+  detail: Schema.optional(TrimmedNonEmptyString),
+  savedAt: Schema.optional(IsoDateTime),
+  expiresAt: Schema.optional(IsoDateTime),
+  message: Schema.optional(Schema.Struct({ messageId: MessageId, text: TrimmedNonEmptyString })),
+  createdAt: IsoDateTime,
+});
+
+/** Server only: a saved `commands` key's file was removed. */
+const ThreadSecretRequestRemoveCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.remove"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  createdAt: IsoDateTime,
+});
+
+/** Server only: the asking agents have been told how these ended. */
+const ThreadSecretRequestNotesDeliverCommand = Schema.Struct({
+  type: Schema.Literal("thread.secret-request.deliver-notes"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestIds: Schema.Array(SecretRequestId),
   createdAt: IsoDateTime,
 });
 
@@ -4461,6 +5439,8 @@ const ThreadAgentRequestSubmitCommand = Schema.Struct({
   }),
   /** Asks, reviews and invites: the side turn that answers. */
   sideTurnId: Schema.optional(SideTurnId),
+  /** Reviews: the batch, when one call asked several agents (counts once). */
+  batchId: Schema.optional(RoomAgentBatchId),
   /** Reviews and invites: what the reviewer gets besides the request. */
   reviewInput: Schema.optional(RoomReviewInput),
   /**
@@ -4573,6 +5553,51 @@ const ThreadChildSendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * The project's lead chat passes a message into a thread it did not start
+ * (docs/design/lead-chat.md, "A pass"). Server only, from `thread_send`.
+ * One-way: the message lands in `targetThreadId` as the lead's, and nothing
+ * is recorded on the lead but its send count. `requestId` names the pass
+ * (`fromThread.requestId` on the message); `ceiling` is the lead's access.
+ */
+const ThreadLeadPassCommand = Schema.Struct({
+  type: Schema.Literal("thread.lead.pass"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  from: RoomAgentRef,
+  callerTurnId: TurnId,
+  targetThreadId: ThreadId,
+  requestId: ChildRequestId,
+  messageId: MessageId,
+  text: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A message another agent sent never went to this thread's agent after the
+ * queue let it go, so it is `notSent` (OrchestrationMessage.notSent) and no
+ * history an agent is given carries it. Two kinds of message have no way to
+ * be sent again and so are marked: a lead chat's pass (its ceiling was
+ * exceeded, or Stop landed, while its turn was prepared; the pass's lead
+ * hears, docs/design/lead-chat.md, "Access") and an outside agent's message
+ * (refused at its ceiling, or its turn could not start or was stopped,
+ * docs/design/outside-agents.md). Anything else is left alone. Server only,
+ * from the provider reactor.
+ */
+const ThreadMessageNotRunCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.not-run"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  /**
+   * `ceiling`: the thread's access went above what the message may use.
+   * `stopped`: Stop landed while its turn was prepared. `failed`: its turn
+   * could not start for another reason.
+   */
+  reason: Schema.Literals(["ceiling", "stopped", "failed"]),
+  createdAt: IsoDateTime,
+});
+
 /** Child threads: a request moved on (set up, its turn started, background wait). */
 const ThreadChildRequestUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.child-request.update"),
@@ -4622,6 +5647,12 @@ const ThreadRemoteRequestQueueCommand = Schema.Struct({
   messageId: MessageId,
   text: TrimmedNonEmptyString,
   fromThread: ThreadMessageOrigin,
+  /**
+   * The asking computer's ceiling (PeerSendInput's `ceiling`), or, from an
+   * older sender that sends none, the one this computer gives the request.
+   * See MessageAccessFields.
+   */
+  ...MessageAccessFields,
   createdAt: IsoDateTime,
 });
 
@@ -4637,6 +5668,8 @@ const ThreadRemoteHandedBackRecordCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnId: TurnId,
+  /** See ThreadSessionStopCommand.byLink. */
+  byLink: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -4667,6 +5700,42 @@ const ThreadChildRequestSettleCommand = Schema.Struct({
    * recorded in the same decision that settles the request.
    */
   remoteChild: Schema.optional(RemoteChildThread),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Child threads, server only: a child's report whose turn start died before
+ * the provider took it (a restart, a failed start) goes back to the front of
+ * the queue, or, when it can no longer be delivered, is marked not run
+ * (docs/design/agent-autonomy-no-limits.md, "Restart and turn binding",
+ * rule A). Never a turn start, and never the user writing.
+ */
+const ThreadTurnStartTakeBackCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn-start.take-back"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Child threads, server only: a turn a child owes its parent a report for is
+ * over (docs/design/agent-autonomy-no-limits.md, "Delivery rules", rules 5
+ * to 8). With `text`, the report is written into the parent and queued for
+ * the agent that started the child, unless its delivery was cancelled
+ * meanwhile; without, or when cancelled, it is dropped. Either way the owed
+ * entry goes, so a turn is reported once.
+ */
+const ThreadChildReportSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.child-report.settle"),
+  commandId: CommandId,
+  /** The child that owes the report. */
+  threadId: ThreadId,
+  owed: OwedReportKey,
+  /** The child's turn it reports on. Null: a turn that never started. */
+  turnId: Schema.NullOr(TurnId),
+  /** What goes up. Absent: nothing to say (stopped on purpose, no reply, taken back). */
+  text: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -4704,6 +5773,110 @@ const ThreadMoveStartCommand = Schema.Struct({
   transferId: ThreadMoveId,
   target: ThreadMoveTarget,
   agent: ModelSelection,
+  /**
+   * The thread's queued move this starts (the move queue's). It must be the
+   * thread's current one; the queued move ends in the same decision.
+   */
+  queuedRequestId: Schema.optional(ThreadMoveRequestId),
+  /** What the other computer just said it takes (ThreadMoveTakes). Absent: nothing beyond v1. */
+  targetTakes: Schema.optional(ThreadMoveTakes),
+  /** A room: the agent each of its agents moves as, all of them. */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A move that waits for the thread to be free (docs/design/fleet.md, Part
+ * 3b), on the computer it leaves. Only the move queue dispatches these, after
+ * it checked the link (`moves.queue`, or the agent's `thread_move`).
+ */
+const ThreadMoveQueueCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.queue"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  target: ThreadMoveTarget,
+  /** Absent: the target's suggested agent, picked when the move starts. */
+  agent: Schema.optional(ModelSelection),
+  mode: ThreadPendingMoveMode,
+  requestedBy: ThreadMoveRequester,
+  /** Queued with other threads (`moves.queueMany`). */
+  batchId: Schema.optional(ThreadMoveBatchId),
+  /**
+   * What the other computer takes (ThreadMoveTakes), as it said when the move
+   * was checked; all of it when it couldn't be reached. Absent: nothing beyond v1.
+   */
+  targetTakes: Schema.optional(ThreadMoveTakes),
+  /** A room: the agent each of its agents moves as; one not listed takes the suggestion. */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  /**
+   * The family it moves with (ThreadMoveFamily). A child's is refused unless
+   * its parent holds a move of the same family.
+   */
+  family: Schema.optional(ThreadMoveFamily),
+  /**
+   * A parent's children that move with it, queued in the same decision as it
+   * (each with the target's suggested agent, and the parent's mode and
+   * target), so the family's members are all known before any of them packs.
+   * One a child's own checks refuse is left out and stays here. Needs `family`.
+   */
+  children: Schema.optional(
+    Schema.Array(Schema.Struct({ threadId: ThreadId, requestId: ThreadMoveRequestId })),
+  ),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * "Stop the agents and move now" for a move already waiting: the queued move
+ * `requestId` switches to `stop-now` and its thread's sessions end. One that
+ * already started, or was replaced, is left alone.
+ */
+const ThreadMoveSetModeCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.set-mode"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  mode: Schema.Literal("stop-now"),
+  createdAt: IsoDateTime,
+});
+
+/** Cancel: ends the queued move `requestId`, and never a newer one. */
+const ThreadMoveUnqueueCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.unqueue"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  createdAt: IsoDateTime,
+});
+
+/** The thread is free: its sessions end, and none may start until the move starts or ends. */
+const ThreadMoveQuiesceCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.quiesce"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  createdAt: IsoDateTime,
+});
+
+/** What the queued move waits for now, and what holds it once it is ready. */
+const ThreadMoveQueueStatusCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.queue-status"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  waitsFor: Schema.Array(ThreadMoveWait),
+  hold: Schema.NullOr(ThreadMoveHold),
+  createdAt: IsoDateTime,
+});
+
+/** The queued move can't go (`blocked`, with why), or its thread is archived or deleted (`gone`). */
+const ThreadMoveQueueEndCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.queue-end"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  reason: Schema.Literals(["blocked", "gone"]),
+  words: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
 });
 
@@ -4715,6 +5888,13 @@ const ThreadMoveProgressCommand = Schema.Struct({
   phase: ThreadMovePhase,
   sentBytes: Schema.optional(NonNegativeInt),
   totalBytes: Schema.optional(NonNegativeInt),
+  /**
+   * With `awaiting_approval`: the other computer has every byte, and only its
+   * user's Allow is left. The thread's last outcome reads `awaiting_approval`.
+   */
+  staged: Schema.optional(Schema.Boolean),
+  /** The other computer is busy with other moves: see OrchestrationThreadMove.waitingForTarget. */
+  waitingForTarget: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -4733,6 +5913,7 @@ const ThreadMoveAbortCommand = Schema.Struct({
   threadId: ThreadId,
   transferId: ThreadMoveId,
   reason: TrimmedNonEmptyString,
+  code: Schema.optional(ThreadMoveAbortCode),
   createdAt: IsoDateTime,
 });
 
@@ -4743,6 +5924,47 @@ const ThreadMoveCompleteCommand = Schema.Struct({
   threadId: ThreadId,
   transferId: ThreadMoveId,
   movedThreadId: ThreadId,
+  /**
+   * A child that moved without its parent landed there as its parent's child
+   * across the link (PeerMoveState.keptParent): the parent here keeps it as a
+   * child on that computer. Absent: it is a thread of its own there.
+   */
+  keptParent: Schema.optional(Schema.Literal(true)),
+  /**
+   * Threads its agent started on that computer that became its children
+   * there (PeerMoveState.adopted, docs/design/fleet.md, Part 3f, (g)): the
+   * copy here stops keeping them as children on that computer. Absent: none.
+   */
+  adopted: Schema.optional(Schema.Array(ThreadId)),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Server only: put back what a move that didn't happen took
+ * (OrchestrationThread.moveRestoreOwed, docs/design/fleet.md, Part 3e): a
+ * goal that was working is on again, the agent is told (`message`, queued
+ * ahead of the user's), and the queued messages that waited are sent. One
+ * decision, which clears what is owed.
+ */
+const ThreadMoveRestoreCommand = Schema.Struct({
+  type: Schema.Literal("thread.move.restore"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  /** The record it pays: one paid since, or replaced, makes this no news. */
+  at: IsoDateTime,
+  /** What the agent is told; absent when there is nothing to tell it. */
+  message: Schema.optional(Schema.Struct({ messageId: MessageId, text: TrimmedNonEmptyString })),
+  /**
+   * The queued message to send now, in the same decision (an idle thread
+   * with nothing to tell its agent): the queue's head. Absent: a message
+   * told, or a turn running, sends the queue on its own.
+   */
+  sendQueued: Schema.optional(MessageId),
+  /**
+   * The rest of a paid record is done (ThreadMoveRestore.told and goalOwed):
+   * the message was sent, the queue through, the provider holds the goal.
+   */
+  finished: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 
@@ -4767,6 +5989,30 @@ export const ThreadImportMessage = Schema.Struct({
   trigger: Schema.optional(MessageTrigger),
   /** It never reached the agent there (OrchestrationMessage.notSent). */
   notSent: Schema.optional(Schema.Literal(true)),
+  /**
+   * A room's (docs/design/fleet.md, Part 3f, (i)), with the receiving
+   * computer's agent ids: the agent it was to or from, the agent that sent
+   * it to another, and the request it made or answered and how that ended.
+   * Only to a computer that takes rooms.
+   */
+  participantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
+  fromAgent: Schema.optional(RoomAgentRef),
+  requestId: Schema.optional(RoomAgentRequestId),
+  requestKind: Schema.optional(RoomAgentMessageKind),
+  requestOutcome: Schema.optional(RoomAgentRequestOutcome),
+  requestError: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * A family's (docs/design/fleet.md, Part 3f, (g)): a request or report
+   * between threads that move together, with the receiving computer's ids.
+   * One naming a thread outside the family arrives as a plain message.
+   */
+  fromThread: Schema.optional(
+    Schema.Struct({
+      threadId: ThreadId,
+      requestId: ChildRequestId,
+      kind: Schema.Literals(["request", "report"]),
+    }),
+  ),
   createdAt: IsoDateTime,
 });
 export type ThreadImportMessage = typeof ThreadImportMessage.Type;
@@ -4791,6 +6037,122 @@ const ThreadImportCommand = Schema.Struct({
   movedFrom: ThreadMovedFrom,
   messages: Schema.Array(ThreadImportMessage),
   activities: Schema.Array(OrchestrationThreadActivity),
+  /** The move carried its agent's session, and this computer's binding holds it. */
+  nativeSession: Schema.optional(Schema.Literal("carried")),
+  /**
+   * What the thread had going, as it lands here (docs/design/fleet.md, Part
+   * 3e), all with this computer's ids. `goal` is written as it arrives
+   * (working, paused or finished); the queue is written behind the arrival
+   * message and isn't sent by its events (the move's own kick sends it).
+   * `pullRequests` links them; their switches are written off whatever they
+   * say here (see ThreadMovedFrom.pullRequestSwitches).
+   */
+  goal: Schema.optional(OrchestrationThreadGoal),
+  pullRequests: Schema.optional(
+    Schema.Struct({
+      autoFix: Schema.Boolean,
+      autoMerge: Schema.NullOr(PullRequestMergeMethod),
+      linked: Schema.Array(OrchestrationThreadLinkedPullRequest),
+    }),
+  ),
+  queuedFollowUps: Schema.optional(Schema.Array(OrchestrationQueuedFollowUp)),
+  proposedPlans: Schema.optional(Schema.Array(OrchestrationProposedPlan)),
+  /**
+   * A room (docs/design/fleet.md, Part 3f, (i)): its agents with this
+   * computer's ids and agents, those that didn't come and guests already
+   * marked as having left, and the user's name for the thread's own agent.
+   */
+  participants: Schema.optional(Schema.Array(OrchestrationThreadParticipant)),
+  agentRole: Schema.optional(RoomAgentRole),
+  /**
+   * The agents outside work still limits (OrchestrationOutsideWork), with
+   * this computer's agent ids: they stay limited here until they start fresh.
+   */
+  outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
+  /**
+   * A child that moved with its parent (docs/design/fleet.md, Part 3f, (g)):
+   * it lands as that parent's child here. The parent must be here already,
+   * a thread that moved in the same family (`movedFrom.familyKey`), in the
+   * same project, and not a child itself; so a linked computer can never put
+   * a thread under one of this computer's own.
+   */
+  lineage: Schema.optional(
+    Schema.Struct({
+      parentThreadId: ThreadId,
+      parentTurnId: Schema.NullOr(TurnId),
+    }),
+  ),
+  /**
+   * It works in another family member's folder here (ThreadWorktreeOrigin
+   * `thread`), so it never restores the whole folder; derived here from the
+   * family, never from a path the other computer named.
+   */
+  worktreeOrigin: Schema.optional(ThreadWorktreeOrigin),
+  /**
+   * A child that moved without its parent (docs/design/fleet.md, Part 3f,
+   * (h)): it lands as that parent's child across the link, fenced for good,
+   * as a thread that link started here is. Built by the link's move handler
+   * from the link the move came over (never from the manifest), only for a
+   * link whose computer is pinned, and for the computer it came from.
+   */
+  remoteOrigin: Schema.optional(ThreadRemoteOrigin),
+  /**
+   * A thread this computer's agent started on another computer, coming home
+   * (docs/design/fleet.md, Part 3f, (h)): it lands as `parentThreadId`'s
+   * child here, and that parent stops keeping it as a child on the computer
+   * it came from. Only when the parent here already holds exactly this
+   * thread there (`movedFrom`) as its child, or (`completesMoveOf`) when the
+   * thread it moved over from is the parent's child here whose own move to
+   * that computer still waits for that computer's answer, and it is the
+   * very copy that move made there: its id is the one that move's transfer
+   * gives it there, from this computer's device on that computer
+   * (`deviceId`, linkMoveCopyThreadId). It came back before this computer
+   * heard its move had landed, so that move completes in the same decision.
+   */
+  adopt: Schema.optional(
+    Schema.Struct({
+      parentThreadId: ThreadId,
+      completesMoveOf: Schema.optional(
+        Schema.Struct({ threadId: ThreadId, deviceId: TrimmedNonEmptyString }),
+      ),
+    }),
+  ),
+  /**
+   * Threads here that the moving thread's agent started over this link while
+   * it was on the computer it came from (docs/design/fleet.md, Part 3f, (g),
+   * "Also when the child's computer is the target"), each with the user's
+   * Wrap up or Reopen given there that this computer may not have yet. Each
+   * that still qualifies becomes the arriving thread's child, fenced until
+   * the user here sends it a message; one that doesn't stays as it is, and
+   * the "Moved here" line says why. `linkDeviceId` is the link the move came
+   * over, from the transfer's own record; only a top-level import has it.
+   */
+  adoptsChildren: Schema.optional(
+    Schema.Struct({
+      linkDeviceId: TrimmedNonEmptyString,
+      children: Schema.Array(
+        Schema.Struct({
+          threadId: ThreadId,
+          override: Schema.optional(OrchestrationThreadDoneOverride),
+        }),
+      ),
+    }),
+  ),
+  /**
+   * What the "Moved here" line says came along (`brought`) and didn't
+   * (`left`), in plain words, and the message Threadlines writes for the
+   * agent when it has to be told something (a goal to carry on with,
+   * check-backs to set again): queued ahead of the user's.
+   */
+  arrival: Schema.optional(
+    Schema.Struct({
+      message: Schema.optional(
+        Schema.Struct({ messageId: MessageId, text: TrimmedNonEmptyString }),
+      ),
+      brought: Schema.Array(TrimmedNonEmptyString),
+      left: Schema.Array(TrimmedNonEmptyString),
+    }),
+  ),
   createdAt: IsoDateTime,
 });
 
@@ -4831,6 +6193,32 @@ const ThreadHistorySeedDeliveredCommand = Schema.Struct({
   threadId: ThreadId,
   /** The message whose send carried the conversation. */
   messageId: MessageId,
+  /**
+   * A carried session's turn succeeded (OrchestrationThread.nativeSession):
+   * the session itself held the conversation, so nothing more is owed.
+   */
+  nativeSession: Schema.optional(Schema.Literal("resumed")),
+  /** A room agent's carried session (OrchestrationThreadParticipant.nativeSession), only with `resumed`. */
+  participantId: Schema.optional(ThreadParticipantId),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * A moved thread's carried agent session can't be used here
+ * (docs/design/fleet.md, Part 3d): it is recorded as `fell_back`, and its
+ * conversation stays owed, paid by the next send's summary. Only while it is
+ * `carried`, so it happens once. With `resendMessageId`, the reactor drops
+ * the carried session and sends that message again on a seeded one.
+ */
+const ThreadNativeSessionFallBackCommand = Schema.Struct({
+  type: Schema.Literal("thread.native-session.fall-back"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  reason: ThreadNativeSessionFellBackReason,
+  resendMessageId: Schema.optional(MessageId),
+  chainEpoch: Schema.optional(NonNegativeInt),
+  /** A room agent's carried session. Absent: the thread's own agent's. */
+  participantId: Schema.optional(ThreadParticipantId),
   createdAt: IsoDateTime,
 });
 
@@ -4853,17 +6241,29 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnResendCommand,
   ProjectGeneralChatsRelocateCommand,
   ThreadMoveStartCommand,
+  ThreadMoveQueueCommand,
+  ThreadMoveSetModeCommand,
+  ThreadMoveUnqueueCommand,
+  ThreadMoveQuiesceCommand,
+  ThreadMoveQueueStatusCommand,
+  ThreadMoveQueueEndCommand,
   ThreadMoveProgressCommand,
   ThreadMoveCancelCommand,
   ThreadMoveAbortCommand,
   ThreadMoveCompleteCommand,
+  ThreadMoveRestoreCommand,
   ThreadImportCommand,
   ThreadStartCommand,
   ThreadHistorySeedDeliveredCommand,
+  ThreadNativeSessionFallBackCommand,
   ThreadChildStartCommand,
   ThreadChildSendCommand,
+  ThreadLeadPassCommand,
+  ThreadMessageNotRunCommand,
   ThreadChildRequestUpdateCommand,
   ThreadChildRequestSettleCommand,
+  ThreadChildReportSettleCommand,
+  ThreadTurnStartTakeBackCommand,
   ThreadChildNotesDeliveredCommand,
   ThreadRemoteChildUpdateCommand,
   ThreadRemoteCancelsDeliveredCommand,
@@ -4880,6 +6280,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
   ThreadGoalStateSetCommand,
+  ThreadGoalWaitSyncCommand,
   ThreadMessageUserRecordCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
@@ -4891,6 +6292,11 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadSettingsChangeSettleCommand,
   ThreadSettingsChangeReportDeviceCommand,
   ThreadSettingsChangeNotesDeliverCommand,
+  ThreadSecretRequestCommand,
+  ThreadSecretRequestClaimCommand,
+  ThreadSecretRequestSettleCommand,
+  ThreadSecretRequestRemoveCommand,
+  ThreadSecretRequestNotesDeliverCommand,
   ThreadCommandRunStartCommand,
   ThreadCommandRunUpdateCommand,
   ThreadCommandRunDeliverOutputCommand,
@@ -4957,14 +6363,22 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.child-notes-delivered",
   "thread.child-deliveries-cancelled",
   "thread.child-requests-reset",
+  "thread.child-report-dropped",
+  "thread.lead-pass-recorded",
   "thread.remote-child-updated",
   "thread.remote-cancel-queued",
   "thread.remote-cancels-delivered",
   "thread.move-started",
+  "thread.move-queued",
+  "thread.move-mode-set",
+  "thread.move-quiescing",
+  "thread.move-queue-status-set",
+  "thread.move-queue-ended",
   "thread.move-progressed",
   "thread.move-cancel-requested",
   "thread.move-aborted",
   "thread.moved-away",
+  "thread.move-restore-set",
   "thread.history-seed-delivered",
   "thread.handed-back",
   "thread.parent-attachment-set",
@@ -5007,6 +6421,11 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.settings-change-settled",
   "thread.settings-change-device-reported",
   "thread.settings-change-notes-delivered",
+  "thread.secret-request-created",
+  "thread.secret-request-claimed",
+  "thread.secret-request-settled",
+  "thread.secret-request-removed",
+  "thread.secret-request-notes-delivered",
   "thread.command-run-started",
   "thread.command-run-updated",
   "thread.command-run-output-recorded",
@@ -5044,6 +6463,8 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   phoneAlertsMuted: Schema.optional(Schema.Boolean),
+  /** Set by `project.lead.set` and by the cascades that end a lead. */
+  leadThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   updatedAt: IsoDateTime,
 });
 
@@ -5067,6 +6488,10 @@ export const ThreadCreatedPayload = Schema.Struct({
   parentThreadId: Schema.optional(ThreadId),
   parentTurnId: Schema.optional(TurnId),
   attachedToParent: Schema.optional(Schema.Boolean),
+  /** See OrchestrationThreadShell.stopsWithParent. */
+  stopsWithParent: Schema.optional(Schema.Literal(true)),
+  /** See OrchestrationChildRequestState.reportsTo. */
+  reportsTo: Schema.optional(RoomAgentRef),
   /** See OrchestrationThreadShell.remoteOrigin. */
   remoteOrigin: Schema.optional(ThreadRemoteOrigin),
   /** See OrchestrationThreadShell.scheduledRun. */
@@ -5078,6 +6503,10 @@ export const ThreadCreatedPayload = Schema.Struct({
   /** Imported by a move: see ThreadMovedFrom and OrchestrationThread.historySeedOwed. */
   movedFrom: Schema.optional(ThreadMovedFrom),
   historySeedOwed: Schema.optional(Schema.Boolean),
+  /** Imported with its agent's own session: see OrchestrationThread.nativeSession. */
+  nativeSession: Schema.optional(Schema.Literal("carried")),
+  /** Imported with agents outside work still limits: see OrchestrationThread.outsideWork. */
+  outsideWork: Schema.optional(Schema.Array(OrchestrationOutsideWork)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -5118,6 +6547,12 @@ export const ThreadPullRequestAutomationChangedPayload = Schema.Struct({
   pullRequestNumber: Schema.optional(PositiveInt),
   autoFix: Schema.optional(Schema.Boolean),
   autoMerge: Schema.optional(Schema.NullOr(PullRequestMergeMethod)),
+  /**
+   * The user set a switch on a thread that moved here with switches on
+   * there: what was on there (ThreadMovedFrom.pullRequestSwitches) is no
+   * longer offered.
+   */
+  clearsMovedSwitches: Schema.optional(Schema.Literal(true)),
   updatedAt: IsoDateTime,
 });
 
@@ -5166,6 +6601,8 @@ export const ThreadParticipantUpdatedPayload = Schema.Struct({
   handle: Schema.optional(TrimmedNonEmptyString),
   /** A guest the user added to the thread: it becomes a member. */
   joined: Schema.optional(Schema.Literal(true)),
+  /** A moved-in agent's carried session proved itself or fell back (OrchestrationThreadParticipant.nativeSession). */
+  nativeSession: Schema.optional(ThreadNativeSession),
   updatedAt: IsoDateTime,
 });
 
@@ -5239,10 +6676,15 @@ export const ThreadAgentRequestSettledPayload = Schema.Struct({
   settledAt: IsoDateTime,
 });
 
-/** Stop in a room: the hold goes on and the chain epoch moves to `chainEpoch`. */
+/**
+ * Stop in a room or family: the chain epoch moves to `chainEpoch` and the hold
+ * goes on. `keepHold`: the thread was stopped with its family or as cleanup,
+ * so the epoch moves without adding a new hold (any existing hold stays).
+ */
 export const ThreadAgentRequestsHeldPayload = Schema.Struct({
   threadId: ThreadId,
   chainEpoch: NonNegativeInt,
+  keepHold: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 
@@ -5266,6 +6708,14 @@ export const ThreadChildRequestUpdatedPayload = Schema.Struct({
   candidateTurnId: Schema.optional(TurnId),
   /** See OrchestrationChildRequest.remote; replaces it when present. */
   remote: Schema.optional(RemoteChildRequest),
+  /**
+   * The message whose turn now answers the request: a held request rebound
+   * to the continue Threadlines sent after a usage limit reset
+   * (docs/design/lead-chat.md, "Usage limits"). Absent: unchanged.
+   */
+  childMessageId: Schema.optional(MessageId),
+  /** See OrchestrationChildRequest.answeringTurnId. Absent: unchanged. */
+  answeringTurnId: Schema.optional(TurnId),
   updatedAt: IsoDateTime,
 });
 
@@ -5291,6 +6741,12 @@ export const ThreadRemoteCancelQueuedPayload = Schema.Struct({
 export const ThreadRemoteChildUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   child: RemoteChildThread,
+  /**
+   * The child left that computer for this one and is a child here again
+   * (docs/design/fleet.md, Part 3f, (h), "Moving back home"): its record goes.
+   * Absent: the record is written as `child` says.
+   */
+  removed: Schema.optional(Schema.Literal(true)),
   updatedAt: IsoDateTime,
 });
 
@@ -5301,6 +6757,57 @@ export const ThreadMoveStartedPayload = Schema.Struct({
   target: ThreadMoveTarget,
   agent: ModelSelection,
   startedAt: IsoDateTime,
+  /** See OrchestrationThreadMove.queuedRequestId. */
+  queuedRequestId: Schema.optional(ThreadMoveRequestId),
+  /** See OrchestrationThreadMove.batchId. */
+  batchId: Schema.optional(ThreadMoveBatchId),
+  /** See OrchestrationThreadMove.interrupted. */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  /** See OrchestrationThreadMove.targetTakes. */
+  targetTakes: Schema.optional(ThreadMoveTakes),
+  /** See OrchestrationThreadMove.roomAgents. */
+  roomAgents: Schema.optional(Schema.Array(ThreadMoveRoomAgentChoice)),
+  /** See OrchestrationThreadMove.family. */
+  family: Schema.optional(ThreadMoveFamily),
+});
+
+export const ThreadMoveQueuedPayload = Schema.Struct({
+  threadId: ThreadId,
+  pendingMove: ThreadPendingMove,
+});
+
+export const ThreadMoveModeSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  mode: ThreadPendingMoveMode,
+  /** What the stop it plans takes, with what earlier stops took (ThreadPendingMove.interrupted). */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMoveQuiescingPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  /** What the stop it plans takes, with what earlier stops took (ThreadPendingMove.interrupted). */
+  interrupted: Schema.optional(ThreadMoveInterrupted),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMoveQueueStatusSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  waitsFor: Schema.Array(ThreadMoveWait),
+  hold: Schema.NullOr(ThreadMoveHold),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMoveQueueEndedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ThreadMoveRequestId,
+  reason: ThreadPendingMoveEndReason,
+  /** Why, for `blocked` and `gone`. */
+  words: Schema.optional(TrimmedNonEmptyString),
+  endedAt: IsoDateTime,
 });
 
 export const ThreadMoveProgressedPayload = Schema.Struct({
@@ -5309,6 +6816,10 @@ export const ThreadMoveProgressedPayload = Schema.Struct({
   phase: ThreadMovePhase,
   sentBytes: Schema.optional(NonNegativeInt),
   totalBytes: Schema.optional(NonNegativeInt),
+  /** See the `thread.move.progress` command's `staged`. */
+  staged: Schema.optional(Schema.Boolean),
+  /** See OrchestrationThreadMove.waitingForTarget. */
+  waitingForTarget: Schema.optional(Schema.Boolean),
   updatedAt: IsoDateTime,
 });
 
@@ -5322,6 +6833,8 @@ export const ThreadMoveAbortedPayload = Schema.Struct({
   threadId: ThreadId,
   transferId: ThreadMoveId,
   reason: TrimmedNonEmptyString,
+  /** See ThreadMoveAbortCode. Absent: recorded before the codes. */
+  code: Schema.optional(ThreadMoveAbortCode),
   updatedAt: IsoDateTime,
 });
 
@@ -5332,10 +6845,24 @@ export const ThreadMovedAwayPayload = Schema.Struct({
   movedAt: IsoDateTime,
 });
 
+/** What a move that didn't happen owes the thread (OrchestrationThread.moveRestoreOwed); null: paid. */
+export const ThreadMoveRestoreSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  moveRestoreOwed: Schema.NullOr(ThreadMoveRestore),
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadHistorySeedDeliveredPayload = Schema.Struct({
   threadId: ThreadId,
   /** The message whose send carried the conversation; absent on events from before it was recorded. */
   messageId: Schema.optional(MessageId),
+  /** A carried session's turn succeeded: OrchestrationThread.nativeSession becomes `resumed`. */
+  nativeSession: Schema.optional(Schema.Literal("resumed")),
+  /**
+   * A room agent's carried session proved itself: its own nativeSession
+   * becomes `resumed`, and the thread's debt is left as it is.
+   */
+  participantId: Schema.optional(ThreadParticipantId),
   updatedAt: IsoDateTime,
 });
 
@@ -5355,15 +6882,62 @@ export const ThreadChildNotesDeliveredPayload = Schema.Struct({
  * Stop, or the thread was wrapped: its delivery epoch moves to
  * `deliveryEpoch`, so no answer asked for before comes back.
  */
+/**
+ * On a child, server only: a report it owed its parent was dropped, so the
+ * owed entry goes (docs/design/agent-autonomy-no-limits.md, rule 7). Never
+ * sent on the thread stream: a client built before it would fail to decode
+ * the batch. A delivered report removes its entry with `thread.handed-back`.
+ */
+export const ThreadChildReportDroppedPayload = Schema.Struct({
+  threadId: ThreadId,
+  owed: OwedReportKey,
+  turnId: Schema.NullOr(TurnId),
+  createdAt: IsoDateTime,
+});
+
 export const ThreadChildDeliveriesCancelledPayload = Schema.Struct({
   threadId: ThreadId,
   deliveryEpoch: NonNegativeInt,
   createdAt: IsoDateTime,
 });
 
-/** The user wrote: the per-message child thread counts start over. */
+/** The user wrote: a lead chat's pass no longer blocks starting threads. */
 export const ThreadChildRequestsResetPayload = Schema.Struct({
   threadId: ThreadId,
+  /**
+   * Only on events written while agents had per-message counts: a turn
+   * Threadlines started for the user (a continue at the reset, after a
+   * restart or an account switch) reset the counts but kept a pass's block.
+   * Such an event now changes nothing. New events never carry it.
+   */
+  keepsPassBlock: Schema.optional(Schema.Literal(true)),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * The lead chat's passes (docs/design/lead-chat.md, "A pass"). On the lead:
+ * `sent` records that one went (it once counted toward a per-message limit,
+ * which is gone); `refused` (the
+ * passed message could not run, its ceiling was over) leaves `note` for the
+ * lead's next turn. On the thread passed to: `started` (the pass started its
+ * turn there) blocks its agents from starting threads until the user writes.
+ */
+export const ThreadLeadPassRecordedPayload = Schema.Struct({
+  threadId: ThreadId,
+  /**
+   * `sent`, `refused` (with the lead's `note`): on the lead. `started`: the
+   * pass started its turn in the target. `not-run`: on the target, the pass
+   * was refused right before it went to the agent, so its message is
+   * `notSent`. (One taken off the queue is marked by that, see
+   * withUnqueuedAgentMessage.)
+   */
+  kind: Schema.Literals(["sent", "refused", "started", "not-run"]),
+  /** The pass's message, in the thread it was passed to. */
+  messageId: MessageId,
+  targetThreadId: ThreadId,
+  note: Schema.optional(ChildRequestNote),
+  /** `started`: the pass's ceiling, which now holds the target (`passCeiling`). */
+  ceiling: Schema.optional(LeadPassCeiling),
   createdAt: IsoDateTime,
 });
 
@@ -5372,6 +6946,8 @@ export const ThreadHandedBackPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
   handedBackAt: IsoDateTime,
+  /** A report the child owed went up: its entry on `childRequests.owedReports` goes. */
+  owedReport: Schema.optional(OwedReportKey),
 });
 
 /** On a child: separated from or put back into its parent's family. No `updatedAt`. */
@@ -5380,6 +6956,19 @@ export const ThreadParentAttachmentSetPayload = Schema.Struct({
   attached: Schema.Boolean,
   attachmentEpoch: NonNegativeInt,
   at: IsoDateTime,
+  /**
+   * A thread another computer's agent started here becomes the child of
+   * that agent's thread, which moved here (ThreadAdoptedFromLink): its
+   * parent is `parentThreadId` (no parent turn), it is no longer that
+   * computer's (`remoteOrigin` goes), and it works fenced until the user
+   * here sends it a message. Absent: only the attachment changes.
+   */
+  adoptedBy: Schema.optional(
+    Schema.Struct({
+      parentThreadId: ThreadId,
+      fromLink: ThreadAdoptedFromLink,
+    }),
+  ),
 });
 
 export const ThreadRoomContextRecordedPayload = Schema.Struct({
@@ -5407,6 +6996,11 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
    * null: its own again, or none. Absent: unchanged.
    */
   worktreeOrigin: Schema.optional(Schema.NullOr(ThreadWorktreeOrigin)),
+  /**
+   * A moved thread's carried session couldn't be used here
+   * (OrchestrationThread.nativeSession). Absent: unchanged.
+   */
+  nativeSession: Schema.optional(Schema.Literal("fell_back")),
   updatedAt: IsoDateTime,
 });
 
@@ -5443,6 +7037,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   invite: Schema.optional(RoomAgentInvite),
   /** See OrchestrationMessage.fromThread. */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageAccessFields. */
+  ...MessageAccessFields,
   /** See OrchestrationMessage.fromOutside. */
   fromOutside: Schema.optional(OutsideAgentRef),
   /** See OrchestrationMessage.composer. */
@@ -5457,6 +7053,16 @@ export const ThreadMessageSentPayload = Schema.Struct({
   streaming: Schema.Boolean,
   /** See OrchestrationMessage.imported. */
   imported: Schema.optional(Schema.Literal(true)),
+  /** See OrchestrationMessage.notSent: an imported message that never reached the agent there. */
+  notSent: Schema.optional(Schema.Literal(true)),
+  /**
+   * An imported room request's end, as it ended where it was made (see
+   * OrchestrationMessage.requestOutcome); written only by a move's import.
+   */
+  requestOutcome: Schema.optional(RoomAgentRequestOutcome),
+  requestError: Schema.optional(TrimmedNonEmptyString),
+  /** See OrchestrationMessage.afterMove. */
+  afterMove: Schema.optional(Schema.Literal(true)),
   /** Missing means legacy behavior for events written before assistant
    * segments carried an explicit turn-settlement decision. */
   completesTurn: Schema.optional(Schema.Boolean),
@@ -5498,6 +7104,8 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    * not sent.
    */
   fromThread: Schema.optional(ThreadMessageOrigin),
+  /** See MessageAccessFields. */
+  ...MessageAccessFields,
   /**
    * An outside agent's turn: who, and its ceiling. The provider starts at the
    * mode this event carries, which the decider checked against the ceiling.
@@ -5509,7 +7117,19 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
    * the message does not carry it.
    */
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  /**
+   * A person's own message, sent from the app (its `sentFrom`), starts this
+   * turn in a thread that moved here fenced (ThreadMovedFrom.fenced): the
+   * fence lifts.
+   */
+  liftsMoveFence: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
+  /**
+   * The turn owes the thread's parent a report: recorded on
+   * `childRequests.owedReports`, keyed by `messageId`, with these stamps.
+   * See OwedChildReport.
+   */
+  owesReport: Schema.optional(OwedReportStamps),
 });
 
 export const ThreadFollowUpSubmittedPayload = Schema.Struct({
@@ -5544,6 +7164,11 @@ export const ThreadFollowUpAcceptedPayload = ThreadFollowUpSubmittedPayload;
 export const ThreadFollowUpQueuedPayload = Schema.Struct({
   threadId: ThreadId,
   followUp: OrchestrationQueuedFollowUp,
+  /**
+   * Written by a moved thread's import (docs/design/fleet.md, Part 3e): the
+   * queue isn't sent on this event; the import's own kick sends its head.
+   */
+  imported: Schema.optional(Schema.Literal(true)),
 });
 
 /** `sent` when its turn started, `cancelled` when the user took it back. */
@@ -5557,6 +7182,8 @@ export const ThreadFollowUpUnqueuedPayload = Schema.Struct({
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
+  /** The turn this Stop is for, kept as the session's `stopRequestedTurnId`. */
+  stopsTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 
@@ -5625,6 +7252,8 @@ export const ThreadRevertedPayload = Schema.Struct({
 
 export const ThreadSessionStopRequestedPayload = Schema.Struct({
   threadId: ThreadId,
+  /** The turn this Stop is for, kept as the session's `stopRequestedTurnId`. */
+  stopsTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 
@@ -5638,6 +7267,20 @@ export const ThreadWorkflowRunRecordedPayload = Schema.Struct({
 export const ThreadSessionSetPayload = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
+  /**
+   * The report the provider-started turn now running owes the thread's
+   * parent: added to `childRequests.owedReports`.
+   */
+  owedReport: Schema.optional(OwedChildReport),
+  /** See TurnStartedBy. */
+  turnStartedBy: Schema.optional(TurnStartedBy),
+  /**
+   * The message a turn took owed the parent a report: its entry, keyed by
+   * the message until now, is keyed by that turn from here on
+   * (docs/design/agent-autonomy-no-limits.md, "Restart and turn binding",
+   * rule B).
+   */
+  owedReportBinds: Schema.optional(Schema.Struct({ messageId: MessageId, turnId: TurnId })),
 });
 
 /** The user closed this error's notice; see `OrchestrationSession.lastErrorDismissedAt`. */
@@ -5649,7 +7292,13 @@ export const ThreadErrorDismissedPayload = Schema.Struct({
 });
 
 /** "Continue at reset" turned on, moved later, or off (null) for the failure `lastErrorAt` names. */
-/** A "Continue where you left off." message the user's own message overtook; see OrchestrationMessage.notSent. */
+/**
+ * A message that never reached the agent is now `notSent` (see
+ * OrchestrationMessage.notSent): a "Continue where you left off." the user's
+ * own message overtook, or an outside agent's message whose turn never ran
+ * (`thread.message.not-run`). The name is the first case's; the event only
+ * marks the message, and every client already reads it.
+ */
 export const ThreadContinueAtResetSkippedPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
@@ -5677,6 +7326,8 @@ export const ThreadGoalSetRequestedPayload = Schema.Struct({
   objective: Schema.optional(TrimmedNonEmptyString),
   status: Schema.optional(ThreadGoalStatus),
   tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  /** Threadlines paused or resumed it for a wait, not the user (`thread.goal.wait.sync`). */
+  origin: Schema.optional(Schema.Literal("automatic")),
   createdAt: IsoDateTime,
 });
 
@@ -5762,6 +7413,47 @@ export const ThreadSettingsChangeDeviceReportedPayload = Schema.Struct({
 export const ThreadSettingsChangeNotesDeliveredPayload = Schema.Struct({
   threadId: ThreadId,
   requestIds: Schema.Array(SettingsChangeRequestId),
+  deliveredAt: IsoDateTime,
+});
+
+/** The new request is waiting; the waiting one with the same name and use is replaced. */
+export const ThreadSecretRequestCreatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  request: OrchestrationSecretRequest,
+  /** The waiting requests it replaced. Absent: none. */
+  replaces: Schema.optional(Schema.Array(SecretRequestId)),
+});
+
+export const ThreadSecretRequestClaimedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  claim: SecretRequestClaim,
+  claimedAt: IsoDateTime,
+});
+
+export const ThreadSecretRequestSettledPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  ending: SecretRequestEnding,
+  /** Not now records the app that said it, so its retry gets the same answer. */
+  claim: Schema.optional(SecretRequestClaim),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  savedAt: Schema.optional(IsoDateTime),
+  expiresAt: Schema.optional(IsoDateTime),
+  /** The asking agent was told in this decision, or nobody is left to tell. */
+  noted: Schema.optional(Schema.Boolean),
+  settledAt: IsoDateTime,
+});
+
+export const ThreadSecretRequestRemovedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: SecretRequestId,
+  removedAt: IsoDateTime,
+});
+
+export const ThreadSecretRequestNotesDeliveredPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestIds: Schema.Array(SecretRequestId),
   deliveredAt: IsoDateTime,
 });
 
@@ -6026,6 +7718,16 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.child-report-dropped"),
+    payload: ThreadChildReportDroppedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.lead-pass-recorded"),
+    payload: ThreadLeadPassRecordedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.remote-child-updated"),
     payload: ThreadRemoteChildUpdatedPayload,
   }),
@@ -6038,6 +7740,31 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.move-started"),
     payload: ThreadMoveStartedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-queued"),
+    payload: ThreadMoveQueuedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-mode-set"),
+    payload: ThreadMoveModeSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-quiescing"),
+    payload: ThreadMoveQuiescingPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-queue-status-set"),
+    payload: ThreadMoveQueueStatusSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-queue-ended"),
+    payload: ThreadMoveQueueEndedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -6058,6 +7785,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.moved-away"),
     payload: ThreadMovedAwayPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.move-restore-set"),
+    payload: ThreadMoveRestoreSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -6273,6 +8005,31 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.settings-change-notes-delivered"),
     payload: ThreadSettingsChangeNotesDeliveredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-created"),
+    payload: ThreadSecretRequestCreatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-claimed"),
+    payload: ThreadSecretRequestClaimedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-settled"),
+    payload: ThreadSecretRequestSettledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-removed"),
+    payload: ThreadSecretRequestRemovedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.secret-request-notes-delivered"),
+    payload: ThreadSecretRequestNotesDeliveredPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

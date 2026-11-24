@@ -6,6 +6,7 @@ import {
   Clock3Icon,
   CloudIcon,
   CornerDownRightIcon,
+  CrownIcon,
   LinkIcon,
   MonitorUpIcon,
   GitForkIcon,
@@ -75,9 +76,14 @@ import {
   type ThreadStatusPill,
 } from "../Sidebar.logic";
 import { Button } from "../ui/button";
-import { useLinkRequestAnswer } from "./linkedComputers";
+import { type PendingMoveGroup, useLinkRequestAnswer, useMoveGroupAnswer } from "./linkedComputers";
 import { runtimeModeConfig } from "../../runtimeModeOptions";
-import { formatThreadMoveAccess, formatThreadMoveChanges } from "../../threadMove";
+import {
+  formatThreadMoveAccess,
+  formatThreadMoveArrival,
+  formatThreadMoveChanges,
+  threadMoveStatusWord,
+} from "../../threadMove";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   ThreadHoverCard,
@@ -133,7 +139,7 @@ const ROW_ACTIONS_CLASS_NAME =
  * Every pull request a thread has, its own first, each once: a linked one can
  * be the thread's own after the thread moves onto its branch.
  */
-function threadPullRequestList(
+export function threadPullRequestList(
   own: ThreadPullRequest | null,
   linked: readonly ThreadPullRequest[],
 ): readonly ThreadPullRequest[] {
@@ -147,7 +153,7 @@ function threadPullRequestList(
  * so a merged branch reads the same violet wherever the thread ends up.
  * Renders nothing without a pull request.
  */
-function ThreadPullRequestBadge({
+export function ThreadPullRequestBadge({
   pullRequests,
   provider,
   threadRef,
@@ -450,14 +456,22 @@ export function ThreadProviderGlyph({ thread }: { thread: SidebarThreadSummary }
  * rows read it the same way, so a thread says the same thing wherever it sits.
  */
 function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatusPill | null) {
-  // Moving to a linked computer, or moved there: frozen here either way, so
-  // the one quiet word wins the slot over whatever it last did.
-  const moveWord = thread.moveStatus ?? null;
-  const statusWord = moveWord ?? inboxStatusWord(status);
   const isInFlight = status?.label === "Working" || status?.label === "Starting";
   // In a room, an agent answering on the side while the others are idle: its
   // own name, and a clock from when it was asked.
   const isAnswering = status?.label === "Answering";
+  const pillWord = inboxStatusWord(status);
+  // Moving to a linked computer, or moved there: frozen here either way, so
+  // the one quiet word wins the slot over whatever it last did. A move that
+  // still waits is quieter: what the thread is doing, or needs, comes first,
+  // and "move queued" shows once it is only waiting to go.
+  const moveWord =
+    thread.moveStatus === undefined ||
+    (thread.moveStatus === "queued" &&
+      (pillWord !== null || isInFlight || isAnswering || status?.label === "Waiting"))
+      ? null
+      : threadMoveStatusWord(thread.moveStatus);
+  const statusWord = moveWord ?? pillWord;
   // A follow-up starts its session before the new turn's row lands in the
   // projection, so for a beat `latestTurn` is still the previous, finished
   // turn -- its clock must not run under the new label, which is "Working"
@@ -491,7 +505,7 @@ function resolveRowStatusParts(thread: SidebarThreadSummary, status: ThreadStatu
     : isWaiting
       ? (thread.latestTurn?.completedAt ?? null)
       : isAnswering
-        ? (thread.sideTurn?.startedAt ?? null)
+        ? (thread.sideTurns?.[0]?.startedAt ?? null)
         : null;
   const isLive = isInFlight || isWaiting || isAnswering;
   // An agent will come back: a countdown to when.
@@ -712,6 +726,8 @@ export interface InboxThreadRowProps {
    * header, which already names the project. Default on.
    */
   showProjectMark?: boolean | undefined;
+  /** Its project's lead chat (docs/design/lead-chat.md): a mark before the title. */
+  isLead?: boolean | undefined;
   isActive: boolean;
   jumpLabel: string | null;
   /** False while the thread is moving, blocked, or pinned: live work can't be
@@ -801,6 +817,7 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
     status,
     projectLabel,
     showProjectMark = true,
+    isLead = false,
     isActive,
     jumpLabel,
     canMarkDone,
@@ -1120,6 +1137,15 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
                     <PinIcon className="size-2.5" />
                   </span>
                 ) : null}
+                {isLead ? (
+                  <span
+                    aria-label="Lead chat"
+                    data-testid={`thread-lead-mark-${thread.id}`}
+                    className="inline-flex shrink-0 items-center justify-center text-muted-foreground/50"
+                  >
+                    <CrownIcon className="size-2.5" />
+                  </span>
+                ) : null}
                 {threadProject && showProjectMark ? (
                   <ProjectFavicon
                     cwd={threadProject.cwd}
@@ -1341,6 +1367,8 @@ export const InboxThreadRow = memo(function InboxThreadRow(props: InboxThreadRow
 
 export interface InboxChildRowProps {
   thread: SidebarThreadSummary;
+  /** Its title without the topic its siblings share (`childShortTitles`); absent: the title. */
+  shortTitle?: string | undefined;
   status: ThreadStatusPill | null;
   /** Filed under Wrapped: a grey check, the time it was wrapped, and reopen on hover. */
   isDone: boolean;
@@ -1385,9 +1413,31 @@ export interface InboxChildRowProps {
  * thread from another computer shows, or with a computer glyph when it runs
  * here and its parent is the one elsewhere.
  */
+/**
+ * A started thread's title under its parent: the short one on screen when
+ * its siblings share a topic (`childShortTitles`), the full one for screen
+ * readers.
+ */
+function FamilyChildTitle({
+  title,
+  shortTitle,
+}: {
+  title: string;
+  shortTitle: string | undefined;
+}) {
+  if (shortTitle === undefined) return title;
+  return (
+    <>
+      <span aria-hidden="true">{shortTitle}</span>
+      <span className="sr-only">{title}</span>
+    </>
+  );
+}
+
 export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowProps) {
   const {
     thread,
+    shortTitle,
     status,
     isDone,
     doneAt,
@@ -1588,7 +1638,7 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
                 )}
                 data-testid={`child-title-${thread.id}`}
               >
-                {thread.title}
+                <FamilyChildTitle title={thread.title} shortTitle={shortTitle} />
               </span>
             )}
             <span className={ROW_META_SLOT_CLASS_NAME}>
@@ -1672,28 +1722,46 @@ export const InboxChildRow = memo(function InboxChildRow(props: InboxChildRowPro
  * and title as a child row has them, then under the title the cloud (it
  * isn't on this device) with where it stands ("Mac mini · working", "Waiting for Mac mini to allow
  * it"): a second line, so a narrow list keeps both the title and the
- * computer. The app has no thread to open, so the status line explains
- * itself on hover. One that nothing holds in front of the user can be
- * wrapped up (or reopened) from here, like a child here.
+ * computer. The app has no thread there: where the parent's computer reads
+ * it through the link, a click opens it that way (`onOpen`, LinkedThreadView),
+ * else the status line explains itself on hover. One that nothing holds in
+ * front of the user can be wrapped up (or reopened) from here, like a child here.
  */
 export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
   child,
+  shortTitle,
   onSetDone,
+  onOpen,
+  isActive = false,
 }: {
   child: InboxRemoteChild;
+  /** See InboxChildRowProps.shortTitle. */
+  shortTitle?: string | undefined;
   /** Wraps it up or reopens it; absent: the row has no button. */
   onSetDone?: RemoteChildSetDone | undefined;
+  /** Opens it read through the link; absent: it can't be opened from here. */
+  onOpen?: RemoteChildOpen | undefined;
+  /** It is open in the chat. */
+  isActive?: boolean | undefined;
 }) {
   const statusText = remoteChildStatusText(child);
   const isStart = child.threadId === null;
   const tone = child.isDone ? undefined : child.status?.colorClass;
   const showAction = onSetDone !== undefined && child.canWrap === true;
+  const open = useRemoteChildOpen(child, onOpen);
   return (
     <li className={ROW_ITEM_CLASS_NAME} data-inbox-child-row="remote">
       <div
         data-testid={`remote-child-row-${child.threadKey}`}
         data-wrapped={child.isDone ? "true" : undefined}
-        className="cursor-default px-3 py-[5px] select-none pointer-coarse:py-2"
+        data-active={isActive ? "true" : undefined}
+        {...open}
+        className={cn(
+          "px-3 py-[5px] select-none pointer-coarse:py-2",
+          open.role === undefined
+            ? "cursor-default"
+            : cn(ROW_SURFACE_CLASS_NAME, resolveRowSurfaceTone({ isActive, isSelected: false })),
+        )}
       >
         <span className="flex min-w-0 items-center gap-1.5">
           {child.isDone ? (
@@ -1715,8 +1783,10 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
               "min-w-0 flex-1 truncate text-xs leading-4",
               child.isDone ? "text-muted-foreground/80" : "text-foreground/85",
             )}
+            // No hover card here: the full title shows on hover this way.
+            title={child.title}
           >
-            {child.title}
+            <FamilyChildTitle title={child.title} shortTitle={shortTitle} />
           </span>
           {showAction ? (
             <span className={ROW_META_SLOT_CLASS_NAME}>
@@ -1753,7 +1823,9 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
               ? "Its worktree is being made. It opens here once it starts."
               : isStart
                 ? statusText
-                : `How it stands on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
+                : open.role !== undefined
+                  ? `How it stands on ${child.computerLabel}. Click to read it through the link.`
+                  : `How it stands on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
           </TooltipPopup>
         </Tooltip>
       </div>
@@ -1763,6 +1835,38 @@ export const InboxRemoteChildRow = memo(function InboxRemoteChildRow({
 
 /** Wraps up (`done`) or reopens (`active`) a child on a computer this app can't see. */
 export type RemoteChildSetDone = (child: InboxRemoteChild, state: "done" | "active") => void;
+
+/** Opens a child on a computer this app can't see, read through the link. */
+export type RemoteChildOpen = (child: InboxRemoteChild) => void;
+
+/** A remote row's props as a button that opens it; none when `onOpen` is absent. */
+function useRemoteChildOpen(
+  child: InboxRemoteChild,
+  onOpen: RemoteChildOpen | undefined,
+): {
+  role?: "button";
+  tabIndex?: number;
+  onClick?: () => void;
+  onKeyDown?: (event: React.KeyboardEvent) => void;
+} {
+  return useMemo(
+    () =>
+      onOpen === undefined
+        ? {}
+        : {
+            role: "button",
+            tabIndex: 0,
+            onClick: () => onOpen(child),
+            onKeyDown: (event: React.KeyboardEvent) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              onOpen(child);
+            },
+          },
+    [child, onOpen],
+  );
+}
 
 /** The Wrap up or Reopen button of a child on a computer this app can't see. */
 function RemoteChildWrapButton({
@@ -1811,26 +1915,37 @@ function RemoteChildWrapButton({
  * A child on a computer this app can't see that left its parent's family for
  * Wrapped (`InboxDoneRemoteRow`): one line like a wrapped thread, the arrow
  * naming the thread that started it, the cloud naming its computer, then
- * when it wrapped. There is no thread here to open; Reopen puts it back
+ * when it wrapped. There is no thread here: a click opens it read through
+ * the link where the parent's computer can (`onOpen`). Reopen puts it back
  * under its parent, on both computers.
  */
 export const InboxRemoteDoneRow = memo(function InboxRemoteDoneRow({
   child,
   startedByTitle,
   onSetDone,
+  onOpen,
+  isActive = false,
 }: {
   child: InboxRemoteChild;
   startedByTitle: string;
   onSetDone?: RemoteChildSetDone | undefined;
+  /** Opens it read through the link; absent: it can't be opened from here. */
+  onOpen?: RemoteChildOpen | undefined;
+  /** It is open in the chat. */
+  isActive?: boolean | undefined;
 }) {
+  const open = useRemoteChildOpen(child, onOpen);
   return (
     <li className={ROW_ITEM_CLASS_NAME} data-inbox-done-row="remote">
       <div
         data-testid={`remote-done-row-${child.threadKey}`}
+        data-active={isActive ? "true" : undefined}
+        {...open}
         className={cn(
           ROW_SURFACE_CLASS_NAME,
-          "flex cursor-default items-center gap-2 px-3 py-1.5",
-          resolveRowSurfaceTone({ isActive: false, isSelected: false }),
+          "flex items-center gap-2 px-3 py-1.5",
+          open.role === undefined && "cursor-default",
+          resolveRowSurfaceTone({ isActive, isSelected: false }),
         )}
       >
         <Tooltip>
@@ -1847,7 +1962,9 @@ export const InboxRemoteDoneRow = memo(function InboxRemoteDoneRow({
             </span>
           </TooltipTrigger>
           <TooltipPopup side="top">
-            {`Started by ${startedByTitle}, on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
+            {open.role !== undefined
+              ? `Started by ${startedByTitle}, on ${child.computerLabel}. Click to read it through the link.`
+              : `Started by ${startedByTitle}, on ${child.computerLabel}. Connect to ${child.computerLabel} to open it.`}
           </TooltipPopup>
         </Tooltip>
         <span className={ROW_META_SLOT_CLASS_NAME}>
@@ -1911,6 +2028,7 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
     void respond(allow);
   };
   const isMove = request.kind === "move";
+  const moveArrival = request.move ? formatThreadMoveArrival(request.move) : null;
   return (
     <li
       role="button"
@@ -1978,7 +2096,10 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
           data-testid={`link-request-move-${request.requestId}`}
         >
           {request.move ? (
-            <p className="truncate">{formatThreadMoveChanges(request.move)}</p>
+            <p className="truncate">
+              {formatThreadMoveChanges(request.move)}
+              {moveArrival !== null ? ` · ${moveArrival}` : null}
+            </p>
           ) : null}
           <p className="truncate">
             Lands in {request.projectName} with up to{" "}
@@ -2013,6 +2134,120 @@ export const InboxLinkRequestRow = memo(function InboxLinkRequestRow({
           onClick={answer(true)}
         >
           Allow
+        </Button>
+      </div>
+    </li>
+  );
+});
+
+/** Titles a grouped row names before "and N more". */
+const MOVE_GROUP_TITLES_SHOWN = 3;
+
+export interface InboxMoveGroupRowProps {
+  /** The computer the threads would land on, whose Allow they wait for. */
+  readonly computerLabel: string;
+  /** The asking computer's name. */
+  readonly askerLabel: string;
+  readonly group: PendingMoveGroup;
+  /** Opens the Fleet page of the computer they'd land on, where each can be answered alone. */
+  readonly onOpen: () => void;
+}
+
+/**
+ * Several moves from one computer waiting for the user (docs/design/fleet.md,
+ * Part 3c): one row, "Mac wants to move 3 threads to Windows PC", the
+ * threads' titles with how much of each is here already, and Don't allow and
+ * Allow all. Clicking it opens Fleet, where each move has its own Allow.
+ */
+export const InboxMoveGroupRow = memo(function InboxMoveGroupRow({
+  computerLabel,
+  askerLabel,
+  group,
+  onOpen,
+}: InboxMoveGroupRowProps) {
+  const { answering, respond } = useMoveGroupAnswer(group, computerLabel);
+  const answer = (allow: boolean) => (event: React.MouseEvent) => {
+    event.stopPropagation();
+    void respond(allow);
+  };
+  const count = group.requests.length;
+  const shown = group.requests.slice(0, MOVE_GROUP_TITLES_SHOWN);
+  const heading = `${askerLabel} wants to move ${count} threads to ${computerLabel}`;
+  const testId = `link-request-group-${group.deviceId}`;
+  return (
+    <li
+      role="button"
+      tabIndex={0}
+      className={cn(
+        ROW_ITEM_CLASS_NAME,
+        "cursor-pointer px-3 pt-1.5 pb-1 hover:bg-sidebar-accent/60 focus-ring",
+      )}
+      data-testid={testId}
+      aria-label={`${heading}. Open it.`}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <div className="flex min-w-0 items-start gap-1.5">
+        <span
+          aria-label="Needs you"
+          className={cn(
+            "mt-[5px] size-[7px] shrink-0 rounded-full",
+            THREAD_STATUS_DOT_CLASSES.amber,
+          )}
+        />
+        <span className="line-clamp-2 min-w-0 flex-1 text-xs leading-4 font-medium text-foreground">
+          {heading}
+        </span>
+        <span className="mt-0.5 shrink-0 font-mono text-[11px] leading-none text-amber-600 dark:text-amber-300/90">
+          request
+        </span>
+      </div>
+      <ul
+        className="mt-0.5 ps-[13px] text-[11px] text-muted-foreground"
+        data-testid={`${testId}-threads`}
+      >
+        {shown.map((request) => {
+          const arrival = request.move ? formatThreadMoveArrival(request.move) : null;
+          return (
+            <li key={request.requestId} className="flex min-w-0 items-center gap-1">
+              <MonitorUpIcon aria-hidden className="size-2.5 shrink-0" />
+              <span className="min-w-0 truncate">
+                {request.title}
+                {arrival !== null ? ` · ${arrival}` : null}
+              </span>
+            </li>
+          );
+        })}
+        {count > shown.length ? <li>and {count - shown.length} more</li> : null}
+      </ul>
+      <div className="flex min-w-0 items-center justify-end gap-1 ps-[13px]">
+        <Button
+          variant="ghost"
+          size="xs"
+          data-thread-selection-safe
+          data-testid={`${testId}-deny`}
+          className="text-muted-foreground"
+          disabled={answering !== null}
+          onClick={answer(false)}
+        >
+          Don't allow
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          data-thread-selection-safe
+          data-testid={`${testId}-allow`}
+          className="text-primary-readable"
+          disabled={answering !== null}
+          onClick={answer(true)}
+        >
+          Allow all
         </Button>
       </div>
     </li>
@@ -2345,7 +2580,7 @@ export const InboxDoneRow = memo(function InboxDoneRow(props: InboxDoneRowProps)
                       : "text-muted-foreground/45",
                 )}
               >
-                {thread.moveStatus ??
+                {(thread.moveStatus && threadMoveStatusWord(thread.moveStatus)) ??
                   (checkBackAt !== null ? (
                     <RowCheckBackStatus at={checkBackAt} />
                   ) : doneAt ? (

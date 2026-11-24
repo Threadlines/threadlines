@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 
 import { afterEach, assert, describe, it } from "@effect/vitest";
 
@@ -73,7 +73,8 @@ describe("linux-library-floor", () => {
       checkLinuxAppLibraryFloor(
         packagedApp({ threadlines: builtOnUbuntu2404, [terminalModule]: builtOnUbuntu2604 }),
       ) ?? "";
-    assert.include(problem, `${terminalModule} needs GLIBC_2.42\n`);
+    // The report names files with this machine's separators.
+    assert.include(problem, `${normalize(terminalModule)} needs GLIBC_2.42\n`);
     assert.notInclude(problem, "threadlines needs");
   });
 

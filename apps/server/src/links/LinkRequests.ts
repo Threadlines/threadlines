@@ -59,7 +59,8 @@ import {
   type ThreadRemoteOrigin,
   TurnId,
 } from "@threadlines/contracts";
-import { sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
+import { hasLiveCheckBack } from "@threadlines/shared/checkBacks";
+import { requestCeilingRefusal, sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
 import { remoteThreadFilingOf } from "@threadlines/shared/threadFiling";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -81,7 +82,9 @@ import {
   childAgentRefusal,
   childReasoningRefusal,
 } from "../orchestration/childThreadAgents.ts";
-import { clampLaunchToCeiling } from "../orchestration/childThreadDecisions.ts";
+import { clampLaunchToCeiling, movingChildRefusal } from "../orchestration/childThreadDecisions.ts";
+import { turnBeingStopped } from "../orchestration/decider.ts";
+import { NOT_THE_LINKS_THREAD } from "../orchestration/linkFence.ts";
 import {
   type ChildDelivery,
   type ChildDeliveryRequest,
@@ -248,6 +251,19 @@ export interface LinkRequestsShape {
     }>,
     ComputerLinkError
   >;
+  /**
+   * A thread this link started is about to stop being its (docs/design/
+   * fleet.md, Part 3f, (g)): the thread that asked moved here over the link
+   * and takes it back as its own child. Each of the link's requests still
+   * open for it ends cancelled under its own lock, its message still waiting
+   * there is taken back, and the thread is stopped only while the turn
+   * running is that request's; then nothing about it is owed the link any
+   * more (LinkRequestRepository.closeForThread). Safe to call again.
+   */
+  readonly releaseThread: (
+    deviceId: string,
+    threadId: ThreadId,
+  ) => Effect.Effect<void, PeerRpcError>;
   readonly onTurnEnd: RemoteRequestTurnEndsShape["onTurnEnd"];
   /** See RemoteRequestGate. */
   readonly messageVerdict: RemoteRequestGateShape["messageVerdict"];
@@ -565,6 +581,16 @@ const make = Effect.gen(function* () {
             );
       }),
     );
+
+  /** Whether `error` is the engine refusing a command for `detail` (now, or this command id before). */
+  const refusedFor = (error: unknown, detail: string) => {
+    const tagged = error as { readonly _tag?: string; readonly detail?: string };
+    return (
+      (tagged._tag === "OrchestrationCommandInvariantError" ||
+        tagged._tag === "OrchestrationCommandPreviouslyRejectedError") &&
+      (tagged.detail ?? "").includes(detail)
+    );
+  };
 
   /** A dispatch the asking computer must hear failed, so it tries again. */
   const mustDispatch = (command: OrchestrationCommand, what: string) =>
@@ -902,6 +928,10 @@ const make = Effect.gen(function* () {
             environmentLabel: input.parent.environmentLabel,
             threadId: input.parent.threadId,
             threadTitle: input.parent.threadTitle,
+            launchedAccess: {
+              runtimeMode: launch.runtimeMode,
+              interactionMode: launch.interactionMode,
+            },
           };
           // Still open, and the link still lets it go on; a link that no
           // longer does ends it here, with the reason.
@@ -930,6 +960,10 @@ const make = Effect.gen(function* () {
                 requestId,
                 kind: "request",
                 environmentId: input.parent.environmentId,
+              },
+              requestCeiling: {
+                runtimeMode: launch.runtimeMode,
+                interactionMode: launch.interactionMode,
               },
               createdAt: row.createdAt,
               checkpoint: () => mayGoOn,
@@ -1036,16 +1070,25 @@ const make = Effect.gen(function* () {
   // ---------------------------------------------------------------------------
 
   /** A thread this link started, or undefined; fails when it can't be read. */
-  const linkThread = (link: PeerLink, threadId: ThreadId) =>
+  /**
+   * The thread, while it is one this link started (`remoteOrigin`) and isn't
+   * deleted; undefined otherwise. Everything a link's request, cancel, stop
+   * or ack does to a thread asks this first: a thread its asker took back as
+   * a child here (Part 3f, (g)) is this computer's own from then on, so a
+   * late cancel or a replayed clean-up never touches its new work.
+   */
+  const ownedThread = (deviceId: string, threadId: ThreadId) =>
     readThreadOrFail(threadId).pipe(
       Effect.map((thread) =>
         thread !== undefined &&
         thread.deletedAt === null &&
-        thread.remoteOrigin?.linkDeviceId === link.deviceId
+        thread.remoteOrigin?.linkDeviceId === deviceId
           ? thread
           : undefined,
       ),
     );
+
+  const linkThread = (link: PeerLink, threadId: ThreadId) => ownedThread(link.deviceId, threadId);
 
   const sendAnswer = (row: LinkRequestRow): PeerSendResult =>
     row.status === "cancelled"
@@ -1069,12 +1112,18 @@ const make = Effect.gen(function* () {
       const row = found.value;
       if (row.status !== "received" || row.payload?.kind !== "send") return sendAnswer(row);
       const input = row.payload.input;
-      const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
+      const thread = row.threadId === null ? undefined : yield* ownedThread(deviceId, row.threadId);
       const origin = thread?.remoteOrigin ?? null;
       if (thread === undefined || origin === null || row.messageId === null) {
         const reason = `That thread is gone from ${ownLabel()}.`;
         yield* settleOrFail(row, "failed", reason, { error: reason });
         return { status: "refused", reason } as const;
+      }
+      // Moving, or stopped for its move: it would never answer (decideRemoteRequestQueue).
+      const moving = movingChildRefusal(thread);
+      if (moving !== null) {
+        yield* settleOrFail(row, "failed", moving, { error: moving });
+        return { status: "refused", reason: moving } as const;
       }
       const sent = yield* dispatch(
         {
@@ -1089,6 +1138,7 @@ const make = Effect.gen(function* () {
             kind: "request",
             environmentId: origin.environmentId,
           },
+          ...(input.ceiling !== undefined ? { requestCeiling: input.ceiling } : {}),
           createdAt: row.createdAt,
         },
         "queue a linked computer's message",
@@ -1177,7 +1227,6 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  /** Whether a thread still has anything going: a turn, a session at work, queued messages. */
   /**
    * Whether a thread's agent is at work: a turn, a session at work, a
    * background task. (Unlike isWorking, messages queued for later don't
@@ -1195,6 +1244,8 @@ const make = Effect.gen(function* () {
     );
   };
 
+  /** Whether a thread still has anything going: a turn, a session at work, a
+   *  check-back that would wake it later, queued messages. */
   const isWorking = (thread: OrchestrationThread) => {
     const session = thread.session;
     return (
@@ -1204,6 +1255,7 @@ const make = Effect.gen(function* () {
           session.status === "running" ||
           session.status === "starting" ||
           (session.pendingBackgroundTaskCount ?? 0) > 0)) ||
+      hasLiveCheckBack(thread) ||
       (thread.queuedFollowUps ?? []).length > 0
     );
   };
@@ -1214,25 +1266,106 @@ const make = Effect.gen(function* () {
   /**
    * Stops a link's thread if it is still working; fails if the stop wasn't
    * recorded. `retry` makes it a new stop (the first one, already recorded,
-   * didn't take), not a replay of the first.
+   * didn't take), not a replay of the first. The stop names the link
+   * (`byLink`), so the decider refuses it when the thread stopped being the
+   * link's after it was read here (its asker took it back, Part 3f, (g)):
+   * that refusal is an answer (`not_yours`). Any other refusal fails, as any
+   * failed stop does, so the asker keeps the stop and tries again.
    */
   const stopIfWorking = (deviceId: string, thread: OrchestrationThread, retry?: string) =>
     Effect.gen(function* () {
       if (!isWorking(thread)) return "not_running" as const;
-      yield* mustDispatch(
-        {
+      const stopped = yield* engine
+        .dispatch({
           type: "thread.session.stop",
+          // A link's stop leaves no Stop hold here.
+          cause: "cleanup",
           commandId: CommandId.make(
             `server:link-stop:${deviceId}:${thread.id}:${turnKeyOf(thread)}${
               retry === undefined ? "" : `:retry:${retry}`
             }`,
           ),
           threadId: thread.id,
+          byLink: deviceId,
           createdAt: yield* nowIso,
-        },
-        "stop that thread",
-      );
-      return "stopped" as const;
+        })
+        .pipe(
+          Effect.as("stopped" as const),
+          Effect.catch((error) =>
+            refusedFor(error, NOT_THE_LINKS_THREAD)
+              ? Effect.succeed("not_yours" as const)
+              : Effect.logInfo("link requests could not stop that thread", {
+                  detail: String(error),
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(peerError(`${ownLabel()} couldn't stop that thread.`)),
+                  ),
+                ),
+          ),
+        );
+      // The asking computer's agent ended the turn it cut off, so nothing
+      // from it is owed back: recorded as handed back, as a local stop does
+      // (stoppedTurnHandedBack), so the thread files itself there and here.
+      const turn = thread.latestTurn;
+      if (stopped === "stopped" && turn !== null && turn.state === "running") {
+        yield* dispatchUnlessRefused(
+          {
+            type: "thread.remote-handed-back.record",
+            commandId: CommandId.make(
+              `server:link-stop-handed-back:${deviceId}:${thread.id}:${turn.turnId}`,
+            ),
+            threadId: thread.id,
+            turnId: turn.turnId,
+            byLink: deviceId,
+            createdAt: yield* nowIso,
+          },
+          "record the stopped turn as handed back",
+        ).pipe(Effect.ignore);
+      }
+      return stopped;
+    });
+
+  /**
+   * Stops the turn `row`'s own message started in `threadId`, if that turn
+   * is still running and still the newest started there (read from the
+   * thread's turn starts: the ledger has no turn id while it runs). The stop
+   * names that turn (`expectedTurnId`), so should the turn end and another
+   * (the user's) begin before it lands, the decider refuses it, and this
+   * looks again. Fails when it can't tell or the stop isn't recorded.
+   */
+  const stopRequestTurn = (deviceId: string, threadId: ThreadId, row: LinkRequestRow) =>
+    Effect.gen(function* () {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const current = yield* readThreadOrFail(threadId);
+        if (current === undefined || !isRunning(current)) return;
+        const starts = yield* readTurnStarts(threadId);
+        const newest = [...starts].reduce<readonly [string, number] | null>(
+          (last, entry) => (last === null || entry[1] > last[1] ? entry : last),
+          null,
+        );
+        const ownTurn =
+          (row.turnId !== null && current.latestTurn?.turnId === row.turnId) ||
+          (row.messageId !== null && newest?.[0] === row.messageId);
+        if (!ownTurn) return;
+        const expectedTurnId = turnBeingStopped(current) ?? null;
+        const stopped = yield* dispatchUnlessRefused(
+          {
+            type: "thread.session.stop",
+            cause: "cleanup",
+            commandId: linkCommandId(
+              deviceId,
+              row.requestId,
+              `release-stop:${expectedTurnId ?? "none"}:${attempt}`,
+            ),
+            threadId,
+            expectedTurnId,
+            createdAt: yield* nowIso,
+          },
+          "stop the turn the request started",
+        );
+        if (stopped === "ok") return;
+      }
+      return yield* peerError(`${ownLabel()} couldn't stop the turn the request started.`);
     });
 
   /**
@@ -1249,6 +1382,8 @@ const make = Effect.gen(function* () {
       if (Option.isNone(found) || found.value.cleanup === null) return;
       const row = found.value;
       const cleanup = found.value.cleanup;
+      // The link's own message is taken back wherever it waits; a thread no
+      // longer the link's is never stopped for it, and the clean-up ends.
       const thread = row.threadId === null ? undefined : yield* readThreadOrFail(row.threadId);
       const messageId = row.messageId;
       if (
@@ -1269,7 +1404,7 @@ const make = Effect.gen(function* () {
         );
       }
       if (thread !== undefined && cleanup === "stop") {
-        const current = yield* readThreadOrFail(thread.id);
+        const current = yield* ownedThread(deviceId, thread.id);
         if (current !== undefined) yield* stopIfWorking(deviceId, current);
       }
       yield* ledger
@@ -1298,6 +1433,66 @@ const make = Effect.gen(function* () {
       return {
         status: result.row.status === "cancelled" ? "cancelled" : "already_settled",
       } as const;
+    });
+
+  const releaseThread: LinkRequestsShape["releaseThread"] = (deviceId, threadId) =>
+    Effect.gen(function* () {
+      const rows = yield* ledger
+        .listByThread(threadId)
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't read the requests.`)));
+      for (const listed of rows) {
+        if (listed.linkDeviceId !== deviceId || isTerminalLinkRequest(listed)) continue;
+        yield* withRequestLock(
+          deviceId,
+          listed.requestId,
+        )(
+          Effect.gen(function* () {
+            const found = yield* readRequest(deviceId, listed.requestId);
+            if (Option.isNone(found) || isTerminalLinkRequest(found.value)) return;
+            const row = found.value;
+            // Its own turn is stopped while the request is still open, so a
+            // retry after anything that fails here decides it again.
+            yield* stopRequestTurn(deviceId, threadId, row);
+            // Ended, not published: the asker's copy of its thread moved away,
+            // and closeForThread below marks the report delivered.
+            yield* ledger
+              .cancel({
+                linkDeviceId: deviceId,
+                requestId: row.requestId,
+                text: "The thread that asked moved here.",
+                stopThread: false,
+                now: yield* nowIso,
+              })
+              .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record the cancel.`)));
+            const thread = yield* readThreadOrFail(threadId);
+            if (thread === undefined) return;
+            const messageId = row.messageId;
+            if (
+              messageId !== null &&
+              (thread.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId)
+            ) {
+              yield* mustDispatch(
+                {
+                  type: "thread.follow-up.unqueue",
+                  commandId: linkCommandId(deviceId, row.requestId, "release-unqueue"),
+                  threadId,
+                  messageId,
+                  createdAt: yield* nowIso,
+                },
+                "take back the message of the thread that moved here",
+              );
+            }
+          }),
+        );
+      }
+      yield* closeThread(deviceId, threadId);
+    });
+
+  const closeThread = (deviceId: string, threadId: ThreadId) =>
+    Effect.gen(function* () {
+      yield* ledger
+        .closeForThread({ linkDeviceId: deviceId, threadId, now: yield* nowIso })
+        .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't record the requests.`)));
     });
 
   const cancel: LinkRequestsShape["cancel"] = (link, requestId, options) =>
@@ -1412,8 +1607,14 @@ const make = Effect.gen(function* () {
         const row = yield* ledger
           .getByReport(link.deviceId, input.reportId)
           .pipe(Effect.mapError(failed));
+        // A thread the link no longer has (its asker took it back here) records nothing.
+        const owned =
+          Option.isSome(row) && row.value.threadId !== null
+            ? yield* ownedThread(link.deviceId, row.value.threadId)
+            : undefined;
         if (
           Option.isSome(row) &&
+          owned !== undefined &&
           row.value.deliveredAt === null &&
           row.value.threadId !== null &&
           row.value.reportTurnId !== null
@@ -1427,6 +1628,7 @@ const make = Effect.gen(function* () {
               ),
               threadId: row.value.threadId,
               turnId: TurnId.make(row.value.reportTurnId),
+              byLink: link.deviceId,
               createdAt: yield* nowIso,
             },
             "record that its answer reached the thread that asked",
@@ -1463,6 +1665,7 @@ const make = Effect.gen(function* () {
           state: input.override.state,
           at: input.override.at,
           fromLinkedComputer: true,
+          byLink: link.deviceId,
         },
         input.override.state === "done" ? "wrap up that thread" : "reopen that thread",
       );
@@ -1589,7 +1792,8 @@ const make = Effect.gen(function* () {
             const thread = yield* readThreadOrFail(threadId);
             if (thread === undefined || thread.deletedAt !== null) return;
             if (thread.remoteOrigin?.linkDeviceId !== deviceId) return;
-            if (!isRunning(thread)) return;
+            // A check-back would wake it later with nobody there to hear back.
+            if (!isRunning(thread) && !hasLiveCheckBack(thread)) return;
             // A turn asked for once the link was off is this computer's user's.
             const turnsBefore = options?.turnsBefore;
             const requestedAt = thread.latestTurn?.requestedAt;
@@ -1674,13 +1878,8 @@ const make = Effect.gen(function* () {
     const attempt = yield* nowIso;
     for (const owed of stops.value) {
       yield* Effect.gen(function* () {
-        const thread = yield* readThreadOrFail(owed.threadId);
-        if (
-          thread === undefined ||
-          thread.deletedAt !== null ||
-          !isRunning(thread) ||
-          turnKeyOf(thread) !== owed.turnKey
-        ) {
+        const thread = yield* ownedThread(owed.linkDeviceId, owed.threadId);
+        if (thread === undefined || !isRunning(thread) || turnKeyOf(thread) !== owed.turnKey) {
           yield* ledger.clearThreadStopOwed(owed);
           yield* Effect.logInfo("link requests saw an unlinked link's thread stop", {
             threadId: owed.threadId,
@@ -1730,6 +1929,7 @@ const make = Effect.gen(function* () {
         end: input.end,
         pendingMessageId: input.pendingMessageId,
         awaitedBackgroundTaskCount: input.child.session?.awaitedBackgroundTaskCount ?? 0,
+        continuesWaitingAnswer: true,
       });
       if (delivery === null) return;
       const row = rows.find((entry) => entry.requestId === delivery.requestId);
@@ -1935,13 +2135,26 @@ const make = Effect.gen(function* () {
           const deviceId = thread?.remoteOrigin?.linkDeviceId;
           if (thread === undefined || deviceId === undefined) return;
           const rows = yield* openRowsForThread(thread);
+          const storedMessage = thread.messages.find(
+            (entry) => entry.id === event.payload.messageId,
+          );
+          const ceilingRefusal = !thread.agentRequests.hold
+            ? requestCeilingRefusal(
+                storedMessage?.requestCeiling ?? thread.remoteOrigin?.launchedAccess,
+                thread,
+              )
+            : null;
           for (const row of rows) {
             if (row.messageId !== event.payload.messageId) continue;
-            yield* settle(
-              row,
-              "cancelled",
-              `Your message to '${thread.title}' on ${ownLabel()} was taken back before it ran.`,
-            );
+            if (ceilingRefusal !== null) {
+              yield* settle(row, "failed", ceilingRefusal);
+            } else {
+              yield* settle(
+                row,
+                "cancelled",
+                `Your message to '${thread.title}' on ${ownLabel()} was taken back before it ran.`,
+              );
+            }
           }
           return;
         }
@@ -1959,6 +2172,26 @@ const make = Effect.gen(function* () {
             );
           }
           yield* publishThreadStatus(event.payload.threadId);
+          return;
+        }
+        // A thread this link started moved on (back to the computer that
+        // started it, docs/design/fleet.md, Part 3f, (h)): what it was asked
+        // here ends, as an archive ends it.
+        case "thread.moved-away": {
+          const rows = yield* ledger
+            .listByThread(event.payload.threadId)
+            .pipe(Effect.orElseSucceed(() => []));
+          if (rows.every(isTerminalLinkRequest)) return;
+          const thread = yield* readThread(event.payload.threadId);
+          const label = thread?.move?.target.label ?? "another computer";
+          for (const row of rows) {
+            if (isTerminalLinkRequest(row)) continue;
+            yield* settle(
+              row,
+              "failed",
+              `'${thread?.title ?? "That thread"}' moved to ${label} before it finished.`,
+            );
+          }
           return;
         }
         default:
@@ -2099,11 +2332,17 @@ const make = Effect.gen(function* () {
       const childTurns = yield* turns
         .listByThreadId({ threadId: thread.id })
         .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't read the thread's turns.`)));
-      const finishedTurnId = finishedTurnAfterRestart(childTurns, {
-        ...request,
-        status: row.status === "awaiting_background" ? "awaiting_background" : "running",
+      const finishedTurnId = finishedTurnAfterRestart(
+        childTurns,
+        {
+          ...request,
+          status: row.status === "awaiting_background" ? "awaiting_background" : "running",
+        },
+        { continuesWaitingAnswer: true },
+      );
+      const delivery = childDeliveryAfterRestart(thread, request, finishedTurnId, {
+        continuesWaitingAnswer: true,
       });
-      const delivery = childDeliveryAfterRestart(thread, request, finishedTurnId);
       yield* settleOrFail(
         row,
         toOutcome(delivery.type === "thread.child-request.settle" ? delivery.outcome : "failed"),
@@ -2324,6 +2563,7 @@ const make = Effect.gen(function* () {
     oweDrain,
     drainDone,
     drainsOwed,
+    releaseThread,
     onTurnEnd,
     messageVerdict,
     startReactor,

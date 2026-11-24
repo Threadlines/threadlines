@@ -5,6 +5,7 @@ import type {
   ThreadId,
 } from "@threadlines/contracts";
 import { OrchestrationCommand } from "@threadlines/contracts";
+import { performance, type EventLoopUtilization } from "node:perf_hooks";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -53,7 +54,37 @@ interface CommandEnvelope {
   command: OrchestrationCommand;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
+  /** The engine's counters when the command joined the line. */
+  joined: CommandLineMark;
 }
+
+/**
+ * Every command runs in one line, one at a time. These counters, read when a
+ * command joins the line and again when its turn comes, say what its wait
+ * went to: the commands ahead of it, or a main loop held by other work.
+ * Times are on the monotonic clock, so a clock change can't skew them.
+ */
+interface CommandLineMark {
+  readonly atMs: number;
+  readonly commandsDone: number;
+  /** Includes what the running command had done by then. */
+  readonly commandWorkMs: number;
+  readonly loop: EventLoopUtilization;
+}
+
+interface CommandWait {
+  readonly waitMs: number;
+  readonly commandsAhead: number;
+  /** Time the line spent on other commands while this one waited. */
+  readonly aheadWorkMs: number;
+  /** The share of the wait the main loop was busy, with that work or any other. */
+  readonly loopBusyShare: number;
+}
+
+/** A wait this long is written to the log, which outlives the trace files. */
+const SLOW_COMMAND_WAIT_MS = 1_000;
+/** At most one such warning this often; a backed-up line would write hundreds. */
+const SLOW_COMMAND_WAIT_LOG_INTERVAL_MS = 5_000;
 
 function commandToAggregateRef(command: OrchestrationCommand): {
   readonly aggregateKind: "project" | "thread";
@@ -62,6 +93,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
   switch (command.type) {
     case "project.create":
     case "project.meta.update":
+    case "project.lead.set":
     case "project.general-chats.relocate":
     case "project.delete":
       return {
@@ -87,6 +119,45 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   let commandReadModel = createEmptyReadModel(yield* nowIso);
 
   const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
+  let commandsDone = 0;
+  let commandWorkMs = 0;
+  /** When the command now running was picked up; null between commands. */
+  let commandRunningSinceMs: number | null = null;
+  let slowWaitLoggedAtMs = Number.NEGATIVE_INFINITY;
+  let slowWaitsSinceLog = 0;
+  const markCommandLine = (): CommandLineMark => {
+    const atMs = performance.now();
+    return {
+      atMs,
+      commandsDone,
+      commandWorkMs:
+        commandWorkMs + (commandRunningSinceMs === null ? 0 : atMs - commandRunningSinceMs),
+      loop: performance.eventLoopUtilization(),
+    };
+  };
+  const readCommandWait = (joined: CommandLineMark, pickedUpAtMs: number): CommandWait => ({
+    waitMs: Math.round(Math.max(0, pickedUpAtMs - joined.atMs)),
+    commandsAhead: commandsDone - joined.commandsDone,
+    aheadWorkMs: Math.round(Math.max(0, commandWorkMs - joined.commandWorkMs)),
+    loopBusyShare:
+      Math.round(performance.eventLoopUtilization(joined.loop).utilization * 100) / 100,
+  });
+  // Written once the command's turn is over, so the log can never hold it up.
+  const logSlowWait = (command: OrchestrationCommand, wait: CommandWait, nowMs: number) => {
+    if (wait.waitMs < SLOW_COMMAND_WAIT_MS) return Effect.void;
+    slowWaitsSinceLog += 1;
+    if (nowMs - slowWaitLoggedAtMs < SLOW_COMMAND_WAIT_LOG_INTERVAL_MS) return Effect.void;
+    slowWaitLoggedAtMs = nowMs;
+    const slowWaitsSinceLastWarning = slowWaitsSinceLog;
+    slowWaitsSinceLog = 0;
+    return Effect.logWarning("orchestration command waited in line", {
+      commandType: command.type,
+      commandId: command.commandId,
+      ...wait,
+      // This one included.
+      slowWaitsSinceLastWarning,
+    }).pipe(Effect.catchCause(() => Effect.void));
+  };
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
 
   const projectEventsOntoReadModel = (
@@ -104,6 +175,17 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
     const dispatchStartSequence = commandReadModel.snapshotSequence;
     let processingStartedAtMs = 0;
+    let pickedUpAtMs = 0;
+    let wait: CommandWait | null = null;
+    // The command's whole turn in the line, failure handling included.
+    const endTurn = Effect.suspend(() => {
+      if (wait === null) return Effect.void;
+      const endedAtMs = performance.now();
+      commandsDone += 1;
+      commandWorkMs += endedAtMs - pickedUpAtMs;
+      commandRunningSinceMs = null;
+      return logSlowWait(envelope.command, wait, endedAtMs);
+    });
     const aggregateRef = commandToAggregateRef(envelope.command);
     const baseMetricAttributes = {
       commandType: envelope.command.type,
@@ -127,11 +209,19 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     return Effect.exit(
       Effect.gen(function* () {
         processingStartedAtMs = yield* Clock.currentTimeMillis;
+        pickedUpAtMs = performance.now();
+        commandRunningSinceMs = pickedUpAtMs;
+        const currentWait = readCommandWait(envelope.joined, pickedUpAtMs);
+        wait = currentWait;
         yield* Effect.annotateCurrentSpan({
           "orchestration.command_id": envelope.command.commandId,
           "orchestration.command_type": envelope.command.type,
           "orchestration.aggregate_kind": aggregateRef.aggregateKind,
           "orchestration.aggregate_id": aggregateRef.aggregateId,
+          "orchestration.queue_wait_ms": currentWait.waitMs,
+          "orchestration.queue_commands_ahead": currentWait.commandsAhead,
+          "orchestration.queue_ahead_work_ms": currentWait.aheadWorkMs,
+          "orchestration.queue_loop_busy_share": currentWait.loopBusyShare,
         });
 
         const existingReceipt = yield* commandReceiptRepository.getByCommandId({
@@ -221,6 +311,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     ).pipe(
       Effect.flatMap((exit) =>
         Effect.gen(function* () {
+          const processingMs = Math.max(
+            0,
+            (yield* Clock.currentTimeMillis) - processingStartedAtMs,
+          );
           const outcome = Exit.isSuccess(exit)
             ? "success"
             : Cause.hasInterruptsOnly(exit.cause)
@@ -231,7 +325,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               orchestrationCommandDuration,
               metricAttributes(baseMetricAttributes),
             ),
-            Duration.millis(Math.max(0, (yield* Clock.currentTimeMillis) - processingStartedAtMs)),
+            Duration.millis(processingMs),
           );
           yield* Metric.update(
             Metric.withAttributes(
@@ -282,6 +376,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           yield* Deferred.fail(envelope.result, error);
         }),
       ),
+      Effect.ensuring(endTurn),
     );
   };
 
@@ -307,6 +402,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         command,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
+        joined: markCommandLine(),
       });
       return yield* Deferred.await(result);
     });

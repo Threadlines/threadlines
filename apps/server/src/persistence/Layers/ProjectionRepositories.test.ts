@@ -47,6 +47,33 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
     }),
   );
 
+  it.effect("keeps a project's lead chat across a restart, and clears it", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectionProjectRepository;
+      const project = {
+        projectId: ProjectId.make("project-lead"),
+        kind: "workspace" as const,
+        title: "Lead",
+        workspaceRoot: "/tmp/project-lead",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: "2026-11-16T00:00:00.000Z",
+        updatedAt: "2026-11-16T00:00:00.000Z",
+        deletedAt: null,
+      };
+      const read = projects
+        .getById({ projectId: project.projectId })
+        .pipe(Effect.map((row) => Option.getOrThrow(row).leadThreadId ?? null));
+
+      yield* projects.upsert(project);
+      assert.strictEqual(yield* read, null);
+      yield* projects.upsert({ ...project, leadThreadId: ThreadId.make("thread-lead") });
+      assert.strictEqual(yield* read, "thread-lead");
+      yield* projects.upsert({ ...project, leadThreadId: null });
+      assert.strictEqual(yield* read, null);
+    }),
+  );
+
   it.effect("stores SQL NULL for missing project model options", () =>
     Effect.gen(function* () {
       const projects = yield* ProjectionProjectRepository;

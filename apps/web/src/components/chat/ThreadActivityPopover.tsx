@@ -110,10 +110,12 @@ const ACTIVITY_POPOVER_COLLISION_AVOIDANCE = { align: "shift" } as const;
  * 30rem). The width then changes in the same layout the positioner reads, so
  * the open panel stays put against its button while the window resizes,
  * with no remount (which would replay its entrance and close any steps the
- * reader unfolded).
+ * reader unfolded). The screen's side strips (an iPhone Duo's status dock,
+ * sideStrips.ts) come out of the space it spans, the way they come out of its
+ * collision padding, so its Stop buttons never sit under the dock.
  */
 const ACTIVITY_POPOVER_WIDTH_CLASS_NAME =
-  "w-[clamp(20rem,36vw,30rem)] max-w-[calc(100vw-1.5rem)] max-sm:w-[calc(100vw-1.5rem)]";
+  "w-[clamp(20rem,36vw,30rem)] max-w-[calc(100vw-1.5rem-var(--safe-area-left)-var(--safe-area-right))] max-sm:w-[calc(100vw-1.5rem-var(--safe-area-left)-var(--safe-area-right))]";
 
 /** Plans up to this long draw one block per step on the top-bar button;
  *  longer ones draw a single bar. */

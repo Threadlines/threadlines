@@ -28,7 +28,7 @@ import { create } from "zustand";
 
 import { newProjectSetupId } from "../../lib/utils";
 import type { WsRpcClient } from "../../rpc/wsRpcClient";
-import { selectProjectByRef, useStore } from "../../store";
+import { selectProjectByRef, waitForAppState } from "../../store";
 import { describeComputerLinkFailure } from "../links/computerLinks";
 import {
   readPrimaryEnvironmentDescriptor,
@@ -430,6 +430,10 @@ export async function startProjectSetup(
     ...(plan.sourceInfo.sizeBytes !== undefined
       ? { expectedBytes: plan.sourceInfo.sizeBytes }
       : {}),
+    // The project's brief goes with it; the new copy keeps it once it is added.
+    ...(plan.sourceInfo.brief !== undefined && plan.sourceInfo.brief.length > 0
+      ? { brief: plan.sourceInfo.brief }
+      : {}),
   });
   upsertJob(plan.target.environmentId, job);
   return job;
@@ -524,17 +528,8 @@ const PROJECT_ARRIVAL_TIMEOUT_MS = 15_000;
  * there; false if it hasn't come in time.
  */
 export function waitForSetUpProject(ref: ScopedProjectRef): Promise<boolean> {
-  if (selectProjectByRef(useStore.getState(), ref) !== undefined) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      unsubscribe();
-      resolve(false);
-    }, PROJECT_ARRIVAL_TIMEOUT_MS);
-    const unsubscribe = useStore.subscribe((state) => {
-      if (selectProjectByRef(state, ref) === undefined) return;
-      clearTimeout(timer);
-      unsubscribe();
-      resolve(true);
-    });
-  });
+  return waitForAppState(
+    (state) => selectProjectByRef(state, ref) !== undefined,
+    PROJECT_ARRIVAL_TIMEOUT_MS,
+  );
 }

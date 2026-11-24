@@ -84,9 +84,12 @@ function makeSnapshotQuery(
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
     listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
     listClaimedSettingsChanges: () => Effect.succeed([]),
+    listSecretRequests: () => Effect.succeed([]),
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: () => Effect.succeed(Option.none()),
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };
 }

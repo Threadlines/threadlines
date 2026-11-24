@@ -24,6 +24,7 @@ import {
   OutsideAgentsSnapshot,
   OutsideAgentUpdateInput,
 } from "./outsideAgents.ts";
+import { AgentThreadReadResult } from "./peerRpc.ts";
 import { RelayAssistantCodeResult } from "./relayAssistants.ts";
 import {
   ComputerLinkError,
@@ -34,6 +35,7 @@ import {
   LinksCreateInviteInput,
   LinksRemoveInput,
   LinksRemoveResult,
+  LinksReadThreadInput,
   LinksRespondRequestInput,
   LinksSetAccessInput,
   OutboundComputerLink,
@@ -64,6 +66,17 @@ import {
   ScheduledTaskTestWebhookInput,
   ScheduledTaskUpdateInput,
 } from "./scheduledTasks.ts";
+import {
+  ProjectBriefSetInput,
+  ProjectBriefSetResult,
+  ProjectContextError,
+  ProjectContextSnapshot,
+  ProjectContextSubscribeInput,
+  ProjectNote,
+  ProjectNoteChange,
+  ProjectNoteChangeResult,
+  ProjectNoteReadInput,
+} from "./projectContext.ts";
 import {
   ThemeContent,
   ThemeEntryIdInput,
@@ -109,12 +122,31 @@ import {
   SettingsChangeRespondInput,
 } from "./settingsChanges.ts";
 import {
+  SecretRequestAnswer,
+  SecretRequestError,
+  SecretRequestRemoveInput,
+  SecretRequestRespondInput,
+} from "./secretRequests.ts";
+import {
+  ThreadMoveBatchStatus,
+  ThreadMoveBatchStatusInput,
   ThreadMoveCancelInput,
   ThreadMoveError,
   ThreadMovePreview,
   ThreadMovePreviewInput,
+  ThreadMovePreviewMany,
+  ThreadMovePreviewManyInput,
+  ThreadMoveQueueInput,
+  ThreadMoveQueueManyInput,
+  ThreadMoveQueueManyResult,
+  ThreadMoveQueueResult,
+  ThreadMoveRespondManyInput,
+  ThreadMoveRespondManyResult,
+  ThreadMoveRetryInput,
+  ThreadMoveSetModeInput,
   ThreadMoveStartInput,
   ThreadMoveStartResult,
+  ThreadMoveUnqueueInput,
 } from "./moves.ts";
 import {
   ProjectSetupDestination,
@@ -165,6 +197,24 @@ import {
   PreviewTunnelOpenSchema,
   PreviewTunnelWriteSchema,
 } from "./previewTunnel.ts";
+import {
+  DeviceActionInput,
+  DeviceChannelCredit,
+  DeviceChannelError,
+  DeviceChannelEvent,
+  DeviceChannelOpen,
+  DeviceChannelSend,
+  DeviceCloseInput,
+  DeviceDetail,
+  DeviceDetailInput,
+  DeviceError,
+  DeviceListInput,
+  DeviceOpenInput,
+  DeviceServiceState,
+  DeviceSession,
+  DeviceShutdownInput,
+  DeviceUpdateToolInput,
+} from "./device.ts";
 import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
@@ -464,6 +514,7 @@ import {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
   ServerProcessResourceHistoryResult,
+  ServerThreadCpuUsageResult,
   ServerSignalProcessInput,
   ServerSignalProcessResult,
   ServerResolveBackgroundRunsInput,
@@ -655,6 +706,7 @@ export const WS_METHODS = {
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
+  serverGetThreadCpuUsage: "server.getThreadCpuUsage",
   serverSignalProcess: "server.signalProcess",
   serverResolveBackgroundRuns: "server.resolveBackgroundRuns",
   serverStopBackgroundRun: "server.stopBackgroundRun",
@@ -708,6 +760,17 @@ export const WS_METHODS = {
   previewTunnelWrite: "previewTunnelWrite",
   previewTunnelCredit: "previewTunnelCredit",
   previewLocalServers: "previewLocalServers",
+  deviceList: "device.list",
+  deviceUpdateTool: "device.updateTool",
+  deviceOpen: "device.open",
+  deviceClose: "device.close",
+  deviceShutdown: "device.shutdown",
+  deviceDetail: "device.detail",
+  deviceAction: "device.action",
+  subscribeDeviceState: "subscribeDeviceState",
+  deviceChannelOpen: "device.channelOpen",
+  deviceChannelSend: "device.channelSend",
+  deviceChannelCredit: "device.channelCredit",
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeServerConfig: "subscribeServerConfig",
@@ -740,8 +803,13 @@ export const WS_METHODS = {
   linksSetAccess: "links.setAccess",
   linksRemove: "links.remove",
   linksRespondRequest: "links.respondRequest",
+  linksReadThread: "links.readThread",
 
   // Scheduled tasks (docs/design/fleet.md, Part 6). Owner and client sessions alike.
+  projectContextSubscribe: "projectContext.subscribe",
+  projectContextSetBrief: "projectContext.setBrief",
+  projectContextReadNote: "projectContext.readNote",
+  projectContextChangeNote: "projectContext.changeNote",
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksListRuns: "scheduledTasks.listRuns",
   scheduledTasksCreate: "scheduledTasks.create",
@@ -751,6 +819,8 @@ export const WS_METHODS = {
   scheduledTasksRespondRequest: "scheduledTasks.respondRequest",
   settingsChangeRespond: "settingsChange.respond",
   settingsChangeReportDevice: "settingsChange.reportDevice",
+  secretRequestRespond: "secretRequest.respond",
+  secretRequestRemove: "secretRequest.remove",
   scheduledTasksWebhookAddress: "scheduledTasks.webhookAddress",
   scheduledTasksRotateWebhookAddress: "scheduledTasks.rotateWebhookAddress",
   scheduledTasksSetWebhookSigningSecret: "scheduledTasks.setWebhookSigningSecret",
@@ -788,6 +858,15 @@ export const WS_METHODS = {
   movesPreview: "moves.preview",
   movesStart: "moves.start",
   movesCancel: "moves.cancel",
+  movesQueue: "moves.queue",
+  movesUnqueue: "moves.unqueue",
+  movesRetry: "moves.retry",
+  // Several threads at once (docs/design/fleet.md, Part 3c).
+  movesPreviewMany: "moves.previewMany",
+  movesQueueMany: "moves.queueMany",
+  movesSetMode: "moves.setMode",
+  movesBatchStatus: "moves.batchStatus",
+  movesRespondMany: "moves.respondMany",
 
   // Setting up a project on another computer (docs/design/fleet.md, Part 8)
   projectSetupsSource: "projectSetups.source",
@@ -1019,6 +1098,11 @@ export const WsServerGetProcessResourceHistoryRpc = Rpc.make(
     success: ServerProcessResourceHistoryResult,
   },
 );
+
+export const WsServerGetThreadCpuUsageRpc = Rpc.make(WS_METHODS.serverGetThreadCpuUsage, {
+  payload: Schema.Struct({}),
+  success: ServerThreadCpuUsageResult,
+});
 
 export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
   payload: ServerSignalProcessInput,
@@ -2138,6 +2222,35 @@ export const WsLinksRespondRequestRpc = Rpc.make(WS_METHODS.linksRespondRequest,
   error: ComputerLinkError,
 });
 
+/** Every project's brief on this computer, again whenever one changes. */
+export const WsProjectContextSubscribeRpc = Rpc.make(WS_METHODS.projectContextSubscribe, {
+  payload: ProjectContextSubscribeInput,
+  success: ProjectContextSnapshot,
+  error: ProjectContextError,
+  stream: true,
+});
+
+/** Save a project's brief, refused as `stale` when another device saved since. */
+export const WsProjectContextSetBriefRpc = Rpc.make(WS_METHODS.projectContextSetBrief, {
+  payload: ProjectBriefSetInput,
+  success: ProjectBriefSetResult,
+  error: ProjectContextError,
+});
+
+/** A kept note with its text, for the page. */
+export const WsProjectContextReadNoteRpc = Rpc.make(WS_METHODS.projectContextReadNote, {
+  payload: ProjectNoteReadInput,
+  success: ProjectNote,
+  error: ProjectContextError,
+});
+
+/** The app's changes to notes and suggestions (ProjectNoteChange). */
+export const WsProjectContextChangeNoteRpc = Rpc.make(WS_METHODS.projectContextChangeNote, {
+  payload: ProjectNoteChange,
+  success: ProjectNoteChangeResult,
+  error: ProjectContextError,
+});
+
 /** This computer's scheduled tasks, each with its last run; again on every change. */
 export const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTasksSubscribeInput,
@@ -2193,6 +2306,19 @@ export const WsSettingsChangeRespondRpc = Rpc.make(WS_METHODS.settingsChangeResp
 export const WsSettingsChangeReportDeviceRpc = Rpc.make(WS_METHODS.settingsChangeReportDevice, {
   payload: SettingsChangeReportDeviceInput,
   error: SettingsChangeError,
+});
+
+/** Answers an agent's request for a key on its card (docs/design/secret-requests.md). */
+export const WsSecretRequestRespondRpc = Rpc.make(WS_METHODS.secretRequestRespond, {
+  payload: SecretRequestRespondInput,
+  success: SecretRequestAnswer,
+  error: SecretRequestError,
+});
+
+/** Remove now: a saved `commands` key's file goes before its 24 hours are up. */
+export const WsSecretRequestRemoveRpc = Rpc.make(WS_METHODS.secretRequestRemove, {
+  payload: SecretRequestRemoveInput,
+  error: SecretRequestError,
 });
 
 /** An event task's addresses (docs/design/event-tasks.md). */
@@ -2319,6 +2445,96 @@ export const WsMovesCancelRpc = Rpc.make(WS_METHODS.movesCancel, {
   payload: ThreadMoveCancelInput,
   error: ThreadMoveError,
 });
+
+/** Queue a move that starts once the thread is free, or once its agent is stopped. */
+export const WsMovesQueueRpc = Rpc.make(WS_METHODS.movesQueue, {
+  payload: ThreadMoveQueueInput,
+  success: ThreadMoveQueueResult,
+  error: ThreadMoveError,
+});
+
+/** Cancel a queued move, or the transfer it already started. */
+export const WsMovesUnqueueRpc = Rpc.make(WS_METHODS.movesUnqueue, {
+  payload: ThreadMoveUnqueueInput,
+  error: ThreadMoveError,
+});
+
+/** Try a held queued move again now. */
+export const WsMovesRetryRpc = Rpc.make(WS_METHODS.movesRetry, {
+  payload: ThreadMoveRetryInput,
+  error: ThreadMoveError,
+});
+
+/** Where each of these threads could move, reading each linked computer once. */
+export const WsMovesPreviewManyRpc = Rpc.make(WS_METHODS.movesPreviewMany, {
+  payload: ThreadMovePreviewManyInput,
+  success: ThreadMovePreviewMany,
+  error: ThreadMoveError,
+});
+
+/** Queue a move for each thread to one computer, each decided on its own, as one batch. */
+export const WsMovesQueueManyRpc = Rpc.make(WS_METHODS.movesQueueMany, {
+  payload: ThreadMoveQueueManyInput,
+  success: ThreadMoveQueueManyResult,
+  error: ThreadMoveError,
+});
+
+/** Stop a waiting move's agent and move it now. */
+export const WsMovesSetModeRpc = Rpc.make(WS_METHODS.movesSetMode, {
+  payload: ThreadMoveSetModeInput,
+  error: ThreadMoveError,
+});
+
+/** Where every thread of a batch stands, and whether each has its final answer. */
+export const WsMovesBatchStatusRpc = Rpc.make(WS_METHODS.movesBatchStatus, {
+  payload: ThreadMoveBatchStatusInput,
+  success: ThreadMoveBatchStatus,
+  error: ThreadMoveError,
+});
+
+/** On the computer moves arrive at: Allow all, or Don't allow, for one linked computer's moves. */
+export const WsMovesRespondManyRpc = Rpc.make(WS_METHODS.movesRespondMany, {
+  payload: ThreadMoveRespondManyInput,
+  success: ThreadMoveRespondManyResult,
+  error: ThreadMoveError,
+});
+
+/**
+ * Moving threads to linked computers. A group of its own, merged into
+ * WsRpcGroup, for the same reason as the outside agents' group: the main
+ * group sits near TypeScript's cap on type work per statement.
+ */
+export const WsMovesRpcGroup = RpcGroup.make(
+  WsMovesPreviewRpc,
+  WsMovesStartRpc,
+  WsMovesCancelRpc,
+  WsMovesQueueRpc,
+  WsMovesUnqueueRpc,
+  WsMovesRetryRpc,
+  WsMovesPreviewManyRpc,
+  WsMovesQueueManyRpc,
+  WsMovesSetModeRpc,
+  WsMovesBatchStatusRpc,
+  WsMovesRespondManyRpc,
+);
+
+/**
+ * A page of a thread a parent here started on a linked computer, read through
+ * the link for a client that can't see that computer (LinksReadThreadInput).
+ * Fails with the reason when that computer can't be reached.
+ */
+export const WsLinksReadThreadRpc = Rpc.make(WS_METHODS.linksReadThread, {
+  payload: LinksReadThreadInput,
+  success: AgentThreadReadResult,
+  error: ComputerLinkError,
+});
+
+/**
+ * Reading threads on linked computers. A group of its own, merged into
+ * WsRpcGroup, for the same reason as the outside agents' group: the main
+ * group sits near TypeScript's cap on type work per statement.
+ */
+export const WsLinkedThreadsRpcGroup = RpcGroup.make(WsLinksReadThreadRpc);
 
 /** On the source computer: what another computer needs to copy this project. */
 export const WsProjectSetupsSourceRpc = Rpc.make(WS_METHODS.projectSetupsSource, {
@@ -2721,7 +2937,7 @@ export const WsThemeVsCodeReadRpc = Rpc.make(WS_METHODS.themeVsCodeRead, {
 /** VS Code themes from the Open VSX store, a group of their own like the Showcase's. */
 export const WsThemeVsCodeRpcGroup = RpcGroup.make(WsThemeVsCodeSearchRpc, WsThemeVsCodeReadRpc);
 
-/** Everything else the WebSocket serves; with the outside agents', themes', Showcase's and VS Code themes' groups, WsRpcGroup. */
+/** Everything else the WebSocket serves; with the outside agents', themes', Showcase's, VS Code themes' and moves' groups, WsRpcGroup. */
 export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2753,6 +2969,7 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
+  WsServerGetThreadCpuUsageRpc,
   WsServerSignalProcessRpc,
   WsServerResolveBackgroundRunsRpc,
   WsServerStopBackgroundRunRpc,
@@ -2906,6 +3123,10 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsLinksSetAccessRpc,
   WsLinksRemoveRpc,
   WsLinksRespondRequestRpc,
+  WsProjectContextSubscribeRpc,
+  WsProjectContextSetBriefRpc,
+  WsProjectContextReadNoteRpc,
+  WsProjectContextChangeNoteRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksListRunsRpc,
   WsScheduledTasksCreateRpc,
@@ -2915,6 +3136,8 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsScheduledTasksRespondRequestRpc,
   WsSettingsChangeRespondRpc,
   WsSettingsChangeReportDeviceRpc,
+  WsSecretRequestRespondRpc,
+  WsSecretRequestRemoveRpc,
   WsScheduledTasksWebhookAddressRpc,
   WsScheduledTasksRotateWebhookAddressRpc,
   WsScheduledTasksSetWebhookSigningSecretRpc,
@@ -2927,9 +3150,6 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsScheduledTasksTestWebhookRpc,
   WsScheduledTasksRunWithWebhookEventRpc,
   WsScheduledTasksDismissWebhookAddressChangeRpc,
-  WsMovesPreviewRpc,
-  WsMovesStartRpc,
-  WsMovesCancelRpc,
   WsProjectSetupsSourceRpc,
   WsProjectSetupsReadFilesRpc,
   WsProjectSetupsInspectDestinationRpc,
@@ -2953,9 +3173,109 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsOrchestrationSubscribeThreadRpc,
 );
 
+/** The devices on this server's machine, and a refreshed listing. Starts the hub when asked to refresh. */
+export const WsDeviceListRpc = Rpc.make(WS_METHODS.deviceList, {
+  payload: DeviceListInput,
+  success: DeviceServiceState,
+  error: DeviceError,
+});
+
+/** Install the pinned version of a device tool and restart it. */
+export const WsDeviceUpdateToolRpc = Rpc.make(WS_METHODS.deviceUpdateTool, {
+  payload: DeviceUpdateToolInput,
+  success: DeviceServiceState,
+  error: DeviceError,
+});
+
+/** A thread starts watching a device, booting it unless `boot` is false. */
+export const WsDeviceOpenRpc = Rpc.make(WS_METHODS.deviceOpen, {
+  payload: DeviceOpenInput,
+  success: DeviceSession,
+  error: DeviceError,
+});
+
+/** A thread stops holding a device (or all of them), optionally shutting it down. */
+export const WsDeviceCloseRpc = Rpc.make(WS_METHODS.deviceClose, {
+  payload: DeviceCloseInput,
+  error: DeviceError,
+});
+
+/** Power a device off, whoever holds it. */
+export const WsDeviceShutdownRpc = Rpc.make(WS_METHODS.deviceShutdown, {
+  payload: DeviceShutdownInput,
+  error: DeviceError,
+});
+
+/** The Tools drawer's values, read from the device. */
+export const WsDeviceDetailRpc = Rpc.make(WS_METHODS.deviceDetail, {
+  payload: DeviceDetailInput,
+  success: DeviceDetail,
+  error: DeviceError,
+});
+
+/** One Tools drawer control; answers with the values read back after it. */
+export const WsDeviceActionRpc = Rpc.make(WS_METHODS.deviceAction, {
+  payload: DeviceActionInput,
+  success: DeviceDetail,
+  error: DeviceError,
+});
+
+/** The device state now and after every change. */
+export const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
+  payload: Schema.Struct({}),
+  success: DeviceServiceState,
+  stream: true,
+});
+
+/**
+ * One request or socket to the device hub, for the Device tab's stream and
+ * input. Open while subscribed; never resubscribed (see device.ts).
+ */
+export const WsDeviceChannelOpenRpc = Rpc.make(WS_METHODS.deviceChannelOpen, {
+  payload: DeviceChannelOpen,
+  success: DeviceChannelEvent,
+  error: DeviceChannelError,
+  stream: true,
+});
+
+/** One ws message for an open channel, answered once written. */
+export const WsDeviceChannelSendRpc = Rpc.make(WS_METHODS.deviceChannelSend, {
+  payload: DeviceChannelSend,
+  success: Schema.Void,
+  error: DeviceChannelError,
+});
+
+/** The client took more of a channel's data. Fire and forget. */
+export const WsDeviceChannelCreditRpc = Rpc.make(WS_METHODS.deviceChannelCredit, {
+  payload: DeviceChannelCredit,
+  success: Schema.Void,
+});
+
+/**
+ * Devices (docs/design/devices.md). A group of its own, merged into
+ * WsRpcGroup, because the main group sits near TypeScript's cap on type work
+ * per statement.
+ */
+export const WsDeviceRpcGroup = RpcGroup.make(
+  WsDeviceListRpc,
+  WsDeviceUpdateToolRpc,
+  WsDeviceOpenRpc,
+  WsDeviceCloseRpc,
+  WsDeviceShutdownRpc,
+  WsDeviceDetailRpc,
+  WsDeviceActionRpc,
+  WsSubscribeDeviceStateRpc,
+  WsDeviceChannelOpenRpc,
+  WsDeviceChannelSendRpc,
+  WsDeviceChannelCreditRpc,
+);
+
 export const WsRpcGroup = WsCoreRpcGroup.merge(
   WsOutsideAgentsRpcGroup,
   WsThemesRpcGroup,
   WsThemeShowcaseRpcGroup,
+  WsMovesRpcGroup,
   WsThemeVsCodeRpcGroup,
+  WsDeviceRpcGroup,
+  WsLinkedThreadsRpcGroup,
 );

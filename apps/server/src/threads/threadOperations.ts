@@ -13,6 +13,7 @@
  * - Starting and sending: `requestedAgent` (an agent named in a call) and
  *   `dispatchOutcome` (a refused or failed dispatch, as a tool outcome).
  */
+import { hasLiveSideTurn } from "@threadlines/shared/sideTurns";
 import type {
   AgentThreadAgent,
   OutsideAgentConnectionId,
@@ -135,6 +136,7 @@ export function threadStatus(
     thread.hasPendingApprovals ||
     thread.pendingChildApproval ||
     thread.pendingSettingsChange ||
+    thread.pendingSecretRequest ||
     scheduleAnswerWaiting
   ) {
     return needsTheUser("approval");
@@ -155,7 +157,7 @@ export function threadStatus(
     return statusOf("working");
   }
   // Like the sidebar, an agent answering on the side is still work going on.
-  if (thread.hasPendingUserInput && (thread.sideTurn ?? null) === null) {
+  if (thread.hasPendingUserInput && !hasLiveSideTurn(thread)) {
     return needsTheUser("question");
   }
   const awaitedTasks = session?.awaitedBackgroundTaskCount ?? session?.pendingBackgroundTaskCount;
@@ -276,6 +278,10 @@ export const summarizeThread = (
     readonly titleOf: (threadId: ThreadId) => string | undefined;
     /** Threads a scheduled-task card waits in (ScheduledTasks.waitingThreadIds). */
     readonly scheduleAnswerWaiting?: ReadonlySet<ThreadId>;
+    /** The project's lead chat, when it has one (docs/design/lead-chat.md). */
+    readonly leadThreadId?: ThreadId | null;
+    /** Its pull requests as already known; see AgentThreadSummary.pullRequests. */
+    readonly pullRequests?: ThreadSummary["pullRequests"];
   },
 ): ThreadSummary => {
   const remoteOrigin = thread.remoteOrigin ?? null;
@@ -300,6 +306,12 @@ export const summarizeThread = (
               ? "you"
               : (input.titleOf(thread.parentThreadId) ?? thread.parentThreadId),
     ...(input.caller !== undefined && thread.id === input.caller.id ? { you: true } : {}),
+    ...((input.leadThreadId ?? null) === thread.id ? { lead: true } : {}),
+    lastActivityAt:
+      thread.latestTurn?.completedAt ?? thread.latestTurn?.startedAt ?? thread.updatedAt,
+    ...(input.pullRequests !== undefined && input.pullRequests.length > 0
+      ? { pullRequests: input.pullRequests }
+      : {}),
   };
 };
 
@@ -463,6 +475,7 @@ export function readThreadPage(
       origin,
       ...text,
       ...(message.streaming ? { streaming: true } : {}),
+      ...(message.notSent === true ? { notSent: true } : {}),
     };
   };
   const wanted = input.messageId?.trim();

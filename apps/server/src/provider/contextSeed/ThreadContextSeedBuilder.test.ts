@@ -58,9 +58,12 @@ function fakeSnapshotQuery(thread: OrchestrationThread | null): ProjectionSnapsh
     listThreadTurnOverlapsSince: unusedProjectionQueryMethod,
     listThreadIdsWithOpenAgentRequests: unusedProjectionQueryMethod,
     listClaimedSettingsChanges: unusedProjectionQueryMethod,
+    listSecretRequests: unusedProjectionQueryMethod,
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: unusedProjectionQueryMethod,
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () =>
       Effect.succeed(thread === null ? Option.none() : Option.some(thread)),
   };
@@ -87,9 +90,12 @@ function failingSnapshotQuery(): ProjectionSnapshotQueryShape {
     listThreadTurnOverlapsSince: unusedProjectionQueryMethod,
     listThreadIdsWithOpenAgentRequests: unusedProjectionQueryMethod,
     listClaimedSettingsChanges: unusedProjectionQueryMethod,
+    listSecretRequests: unusedProjectionQueryMethod,
     listThreadShells: () => Effect.succeed([]),
     getThreadShellById: unusedProjectionQueryMethod,
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () =>
       Effect.fail(
         new PersistenceSqlError({
@@ -190,6 +196,49 @@ describe("ThreadContextSeedBuilder", () => {
     const seed = await build({ thread, excludeMessageId: "current-message" });
     const value = Option.getOrThrow(seed);
     expect(value.entries.map((entry) => entry.text)).toEqual(["previous context"]);
+  });
+
+  it("holds only messages an agent was given: never a queued or not-sent message", async () => {
+    const thread = {
+      ...fakeThread(
+        [
+          { id: "ran", role: "user", text: "passed on, ran", createdAt: "2026-01-01T00:00:00Z" },
+          // A room hand-off that ran, later cancelled with its agent: it was given.
+          {
+            id: "hand-off",
+            role: "user",
+            text: "hand-off that ran",
+            requestOutcome: "cancelled",
+            createdAt: "2026-01-01T00:00:01Z",
+          } as FakeMessage,
+          { id: "queued", role: "user", text: "still waiting", createdAt: "2026-01-01T00:00:02Z" },
+          {
+            id: "refused",
+            role: "user",
+            text: "refused at its ceiling",
+            notSent: true,
+            createdAt: "2026-01-01T00:00:03Z",
+          } as FakeMessage,
+          // An outside agent's message whose turn never ran.
+          {
+            id: "outside-refused",
+            role: "user",
+            text: "outside, never ran",
+            fromOutside: { connectionId: "connection-1", name: "Claude Code" },
+            notSent: true,
+            createdAt: "2026-01-01T00:00:03.5Z",
+          } as FakeMessage,
+          { id: "current", role: "user", text: "switch now", createdAt: "2026-01-01T00:00:04Z" },
+        ],
+        [],
+      ),
+      queuedFollowUps: [{ messageId: "queued" }],
+    } as unknown as OrchestrationThread;
+    const seed = await build({ thread, excludeMessageId: "current" });
+    expect(Option.getOrThrow(seed).entries.map((entry) => entry.text)).toEqual([
+      "passed on, ran",
+      "hand-off that ran",
+    ]);
   });
 
   it("returns a workspace-only seed when the thread detail read fails", async () => {

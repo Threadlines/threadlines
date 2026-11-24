@@ -8,6 +8,7 @@ import type {
   ServerProviderUsageLimit,
   ServerProviderUsageWindow,
 } from "@threadlines/contracts";
+import { type UsageScope, usageScopeHoldsModel } from "@threadlines/shared/usageLimits";
 
 /**
  * `warning` is the single "render attention affordances" signal for usage
@@ -27,6 +28,27 @@ export interface ProviderAccountUsageWindowPresentation {
   readonly remainingPercent: number;
   readonly reachedLimit: boolean;
   readonly warning: boolean;
+  /**
+   * How much of the window has passed (0-100), where a usage bar draws its
+   * pace mark: usage left of the mark is on track to last until the reset.
+   * Set only for weekly (and longer) windows whose length and reset time are
+   * known; short session windows such as 5h have no pace mark.
+   */
+  readonly elapsedPercent?: number;
+  /**
+   * The pace mark's hover text, "44% of the week has passed". Set exactly
+   * when `elapsedPercent` is.
+   */
+  readonly paceDetail?: string;
+  /**
+   * Set on a window that caps one model, not the whole account (Claude's
+   * per-model weekly limits): the name the provider gives it ("Fable"), its
+   * period ("Weekly"), and when it resets ("resets in 3d 16h").
+   */
+  readonly scope?: UsageScope & {
+    readonly period: string | null;
+    readonly resetDetail: string | null;
+  };
 }
 
 export interface ProviderAccountUsageSpendControlPresentation {
@@ -215,6 +237,81 @@ function formatReadingAgeDetail(checkedAt: string | undefined, nowMs: number): s
     : `as of ${Math.floor(elapsedHours / 24)}d ago`;
 }
 
+/**
+ * How much of a usage window has passed, from its length and its reset time.
+ * Unset for a reading that can't be placed in its window: no length, no reset
+ * time, a reset already past, or one further off than the window is long.
+ */
+export function usageWindowElapsedPercent(
+  window: Pick<ServerProviderUsageWindow, "resetsAt" | "windowDurationMins">,
+  nowMs: number,
+): number | undefined {
+  const resetMs = normalizeResetTimestampMs(window.resetsAt);
+  const minutes = window.windowDurationMins;
+  if (resetMs === null || minutes === undefined || minutes <= 0) return undefined;
+  const durationMs = minutes * 60_000;
+  const remainingMs = resetMs - nowMs;
+  if (remainingMs <= 0 || remainingMs > durationMs) return undefined;
+  return Math.round((1 - remainingMs / durationMs) * 1000) / 10;
+}
+
+/**
+ * Short session windows (such as 5h) are used in bursts, so pace marks and
+ * "ahead of pace" apply only to weekly (and longer) windows.
+ */
+const MIN_PACE_WINDOW_MINS = 7 * 24 * 60;
+
+function usageWindowPaceElapsedPercent(
+  window: Pick<ServerProviderUsageWindow, "resetsAt" | "windowDurationMins">,
+  nowMs: number,
+): number | undefined {
+  if (window.windowDurationMins === undefined || window.windowDurationMins < MIN_PACE_WINDOW_MINS) {
+    return undefined;
+  }
+  return usageWindowElapsedPercent(window, nowMs);
+}
+
+/** "the week", "the day", "the 5-hour window": the span a pace mark measures. */
+function formatUsageWindowSpan(minutes: number): string {
+  if (minutes === 10_080) return "the week";
+  if (minutes === 1_440) return "the day";
+  if (minutes % 1_440 === 0) return `the ${minutes / 1_440}-day window`;
+  if (minutes % 60 === 0) return `the ${minutes / 60}-hour window`;
+  return `the ${minutes}-minute window`;
+}
+
+/** "44% of the week has passed", for the pace mark's hover text. */
+function formatUsagePaceDetail(
+  window: Pick<ServerProviderUsageWindow, "windowDurationMins">,
+  elapsedPercent: number | undefined,
+): string | null {
+  const minutes = window.windowDurationMins;
+  if (elapsedPercent === undefined || minutes === undefined) return null;
+  return `${Math.round(elapsedPercent)}% of ${formatUsageWindowSpan(minutes)} has passed`;
+}
+
+/** The pace fields of a window presentation: both or neither. */
+function usagePaceFields(
+  window: Pick<ServerProviderUsageWindow, "windowDurationMins">,
+  elapsedPercent: number | undefined,
+): Pick<ProviderAccountUsageWindowPresentation, "elapsedPercent" | "paceDetail"> {
+  const paceDetail = formatUsagePaceDetail(window, elapsedPercent);
+  return elapsedPercent !== undefined && paceDetail !== null ? { elapsedPercent, paceDetail } : {};
+}
+
+/**
+ * How far usage may run past the pace mark before the detail says so, in
+ * percentage points. Keeps a bar sitting on its mark, or one early in its
+ * window, from flagging every small burst.
+ */
+const AHEAD_OF_PACE_MARGIN_PERCENT = 5;
+
+/** "ahead of pace" when usage is on track to run out before the reset. */
+function formatPaceDetail(usedPercent: number, elapsedPercent: number | undefined): string | null {
+  if (elapsedPercent === undefined) return null;
+  return usedPercent - elapsedPercent >= AHEAD_OF_PACE_MARGIN_PERCENT ? "ahead of pace" : null;
+}
+
 function formatResetDetail(resetsAt: number | undefined, nowMs: number): string | null {
   const resetMs = normalizeResetTimestampMs(resetsAt);
   if (resetMs === null) return null;
@@ -281,6 +378,13 @@ export function compactUsageMeters(
   usage: Pick<ProviderAccountUsagePresentation, "spendControl" | "windows">,
   limit: number = COMPACT_USAGE_METER_LIMIT,
 ): ReadonlyArray<ProviderUsageMeterLine> {
+  // A short label two windows share ("Gemini" for its 5h and weekly limits)
+  // keeps its period, so the lines stay apart.
+  const shortLabelCounts = new Map<string, number>();
+  for (const window of usage.windows) {
+    if (window.shortLabel === undefined) continue;
+    shortLabelCounts.set(window.shortLabel, (shortLabelCounts.get(window.shortLabel) ?? 0) + 1);
+  }
   const lines: ReadonlyArray<ProviderUsageMeterLine> = [
     ...(usage.spendControl
       ? [
@@ -296,7 +400,10 @@ export function compactUsageMeters(
       : []),
     ...usage.windows.map((window) => ({
       key: window.key,
-      label: window.shortLabel ?? window.label,
+      label:
+        window.shortLabel !== undefined && shortLabelCounts.get(window.shortLabel) === 1
+          ? window.shortLabel
+          : window.label,
       detail: window.detail,
       usedPercent: window.usedPercent,
       warning: window.warning,
@@ -385,8 +492,13 @@ function formatUsageWindowPresentation(
   const blockedByLimitDetail = windowReachedLimit
     ? null
     : formatBlockedByLimitDetail(blockingLimitLabels);
+  const elapsedPercent = usageWindowPaceElapsedPercent(window, nowMs);
   const detailParts = [
     windowReachedLimit ? "limit reached" : `${usedPercent}% used`,
+    // Pace stops mattering once this limit or another one is the blocker.
+    windowReachedLimit || blockedByLimitDetail
+      ? null
+      : formatPaceDetail(usedPercent, elapsedPercent),
     blockedByLimitDetail,
     resetDetail,
     formatReadingAgeDetail(window.checkedAt, nowMs),
@@ -400,6 +512,7 @@ function formatUsageWindowPresentation(
     remainingPercent,
     reachedLimit: windowReachedLimit,
     warning: windowReachedLimit || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
+    ...usagePaceFields(window, elapsedPercent),
   };
 }
 
@@ -420,8 +533,10 @@ function formatScopedUsageWindowPresentation(
   const severityWarning = window.severity !== undefined && window.severity !== "normal";
   const resetDetail = formatResetDetail(window.resetsAt, nowMs);
   const durationLabel = formatUsageWindowDurationLabel(window, "");
+  const elapsedPercent = usageWindowPaceElapsedPercent(window, nowMs);
   const detailParts = [
     reachedLimit ? "limit reached" : `${usedPercent}% used`,
+    reachedLimit ? null : formatPaceDetail(usedPercent, elapsedPercent),
     resetDetail,
     formatReadingAgeDetail(window.checkedAt, nowMs),
   ].filter((part): part is string => Boolean(part));
@@ -437,6 +552,14 @@ function formatScopedUsageWindowPresentation(
     remainingPercent,
     reachedLimit,
     warning: reachedLimit || severityWarning || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
+    ...usagePaceFields(window, elapsedPercent),
+    scope: {
+      name: window.scopeLabel,
+      ...(window.scopeModels ? { models: window.scopeModels } : {}),
+      ...(window.scopeExcludes ? { excludes: window.scopeExcludes } : {}),
+      period: durationLabel || null,
+      resetDetail,
+    },
   };
 }
 
@@ -500,8 +623,27 @@ function formatResetCreditsPresentation(
   };
 }
 
-export function formatProviderTokenCount(value: number | undefined): string | null {
-  if (value === undefined || !Number.isFinite(value) || value < 0) return null;
+/** The smallest change each size of token count shows, matching the format below. */
+function tokenCountDisplayStep(value: number): number {
+  if (value < 1_000) return 1;
+  if (value < 10_000) return 100;
+  if (value < 1_000_000) return 1_000;
+  if (value < 1_000_000_000) return 100_000;
+  return value < 10_000_000_000 ? 10_000_000 : 100_000_000;
+}
+
+/**
+ * A token count for display. `roundDown` is for a floor ("at least"): the
+ * shown number must not exceed what was counted.
+ */
+export function formatProviderTokenCount(
+  rawValue: number | undefined,
+  options?: { readonly roundDown?: boolean },
+): string | null {
+  if (rawValue === undefined || !Number.isFinite(rawValue) || rawValue < 0) return null;
+  const value = options?.roundDown
+    ? Math.floor(rawValue / tokenCountDisplayStep(rawValue)) * tokenCountDisplayStep(rawValue)
+    : rawValue;
   if (value < 1_000) return `${Math.round(value)}`;
   if (value < 10_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
   if (value < 1_000_000) return `${Math.round(value / 1_000)}k`;
@@ -762,9 +904,41 @@ function deriveClaudeUsageNotice(
 }
 
 /**
+ * What another provider's server says about its own usage check, in its own
+ * words (Antigravity: "start a chat to refresh"). A failed read stays quiet
+ * while the kept numbers are recent; anything else is said either way.
+ */
+function deriveReportedUsageNotice(
+  provider: ProviderAccountUsagePresentationProvider,
+  hasNumbers: boolean,
+  hasStaleReading: boolean,
+): ProviderAccountUsageNotice | undefined {
+  if (provider.driver === "claudeAgent" || provider.auth.status !== "authenticated") {
+    return undefined;
+  }
+  const usage = provider.auth.capabilities?.usage;
+  if (usage?.status !== "unavailable" || usage.detail === undefined) return undefined;
+  if (usage.reason === "unreachable" && hasNumbers && !hasStaleReading) return undefined;
+  return { signIn: false, text: usage.detail };
+}
+
+/** What a usage surface is titled when the provider has a notice and no reading. */
+function providerUsageLabel(provider: ProviderAccountUsagePresentationProvider): string {
+  switch (provider.driver) {
+    case "claudeAgent":
+      return PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"];
+    case "antigravity":
+      return "Antigravity usage";
+    default:
+      return "Plan usage";
+  }
+}
+
+/**
  * The usage presentation for a provider as a whole, not just its usage
- * payload: a Claude subscription whose usage check produced no numbers comes
- * back with a `notice` (keeping the numbers it has, and any local token
+ * payload: a Claude subscription whose usage check produced no numbers, or a
+ * provider whose server explains its own (Antigravity), comes back with a
+ * `notice` (keeping the numbers it has, and any local token
  * history) instead of as nothing, so its surfaces can say what is wrong. A
  * notice with no windows means there is nothing to draw: an empty meter
  * would read as "0% used".
@@ -778,16 +952,15 @@ export function deriveProviderAccountUsagePresentationForProvider(
   const hasNumbers =
     presentation !== null &&
     (presentation.windows.length > 0 || presentation.spendControl !== undefined);
-  const notice = deriveClaudeUsageNotice(
-    provider,
-    hasNumbers,
-    hasStaleUsageReading(provider.accountUsage, nowMs),
-  );
+  const hasStaleReading = hasStaleUsageReading(provider.accountUsage, nowMs);
+  const notice =
+    deriveClaudeUsageNotice(provider, hasNumbers, hasStaleReading) ??
+    deriveReportedUsageNotice(provider, hasNumbers, hasStaleReading);
   if (!notice) return presentation;
   return presentation
     ? { ...presentation, notice }
     : {
-        label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
+        label: providerUsageLabel(provider),
         windows: [],
         reachedLimit: false,
         notice,
@@ -801,11 +974,29 @@ export function deriveProviderAccountUsagePresentationForProvider(
  */
 export function isProviderUsageNearLimit(
   presentation: ProviderAccountUsagePresentation | null,
+  options: {
+    /**
+     * False: only limits on the whole account count, never one model's own
+     * cap. The model picker's dot on a provider uses this; the model's own
+     * limit shows on its row (modelOwnUsageLimit).
+     */
+    readonly modelLimits?: boolean;
+  } = {},
 ): boolean {
   if (!presentation) return false;
-  if (presentation.reachedLimit) return true;
   if (presentation.spendControl?.warning) return true;
-  return presentation.windows.some((window) => window.warning);
+  // `reachedLimit` also counts a model's own limit, so it decides only when
+  // those count too; a window reached is a window in warning either way.
+  if (options.modelLimits !== false) {
+    return presentation.reachedLimit || presentation.windows.some((window) => window.warning);
+  }
+  // Reached with no model's own limit reached: the account itself is out
+  // (Codex can say so with no windows at all).
+  const modelLimitReached = presentation.windows.some(
+    (window) => window.scope !== undefined && window.reachedLimit,
+  );
+  if (presentation.reachedLimit && !modelLimitReached) return true;
+  return presentation.windows.some((window) => window.scope === undefined && window.warning);
 }
 
 /**
@@ -825,4 +1016,55 @@ export function providerUsageNearLimitColor(
     .filter((meter) => meter.warning)
     .reduce((max, meter) => Math.max(max, meter.usedPercent), 0);
   return usageMeterColor(hottestPercent, true);
+}
+
+/**
+ * The limit a model has of its own, if the account reports one: a window
+ * whose scope holds the model's name (`usageScopeHoldsModel`). The fullest
+ * applies when several do.
+ */
+export function modelOwnUsageLimit(
+  usage: Pick<ProviderAccountUsagePresentation, "windows"> | null | undefined,
+  modelName: string,
+): ProviderAccountUsageWindowPresentation | null {
+  if (!usage) return null;
+  return usage.windows.reduce<ProviderAccountUsageWindowPresentation | null>((fullest, window) => {
+    if (window.scope === undefined || !usageScopeHoldsModel(window.scope, modelName)) {
+      return fullest;
+    }
+    return fullest === null || window.usedPercent > fullest.usedPercent ? window : fullest;
+  }, null);
+}
+
+/** "Weekly" → "week", for "64% of week". Periods with no such word stay as they are. */
+const PERIOD_NOUNS: Readonly<Record<string, string>> = {
+  Weekly: "week",
+  Daily: "day",
+  Monthly: "month",
+};
+
+/**
+ * What a model's row says about its own limit: "40% of week", in the row's
+ * grey until the warning threshold, then amber; "Limit · resets in 3d 16h",
+ * in red, once it is reached. The hover has the whole reading.
+ */
+export function modelUsageLimitLabel(window: ProviderAccountUsageWindowPresentation): {
+  readonly text: string;
+  readonly tone: "normal" | "warning" | "reached";
+  readonly title: string;
+} {
+  const percent = Math.round(window.usedPercent);
+  const period = window.scope?.period ?? null;
+  const reset = window.scope?.resetDetail ?? null;
+  return {
+    text: window.reachedLimit
+      ? reset
+        ? `Limit · ${reset}`
+        : "Limit reached"
+      : period
+        ? `${percent}% of ${PERIOD_NOUNS[period] ?? period}`
+        : `${percent}% used`,
+    tone: window.reachedLimit ? "reached" : window.warning ? "warning" : "normal",
+    title: `${window.label} · ${window.detail}`,
+  };
 }

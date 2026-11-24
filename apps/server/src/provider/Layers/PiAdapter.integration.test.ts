@@ -25,6 +25,7 @@ import * as Stream from "effect/Stream";
 import { describe, expect } from "vite-plus/test";
 
 import { ServerConfig } from "../../config.ts";
+import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import { parsePiResumeCursor } from "../pi/PiCursor.ts";
 import {
   makeTestPiHome,
@@ -41,7 +42,12 @@ const testLayer = ServerConfig.layerTest(process.cwd(), { prefix: "pi-adapter-" 
   Layer.provideMerge(NodeServices.layer),
 );
 
-const folder = () => realpathSync(mkdtempSync(join(tmpdir(), "threadlines-pi-project-")));
+/**
+ * A project folder, named as the adapter names it. The adapter resolves a
+ * session's folder with the native realpath, which on Windows also expands
+ * short names in the temp path (`PROGRA~1` is `Program Files`).
+ */
+const folder = () => realpathSync.native(mkdtempSync(join(tmpdir(), "threadlines-pi-project-")));
 
 /** `withoutEnv`: variables the test Pi must not see, such as a provider's key. */
 const setupWith = (withoutEnv: ReadonlyArray<string>) =>
@@ -85,6 +91,7 @@ const setupWith = (withoutEnv: ReadonlyArray<string>) =>
         readonly cwd?: string;
         readonly resumeCursor?: unknown;
         readonly forkFrom?: { readonly providerThreadId: string; readonly lastTurnId?: string };
+        readonly projectInstructions?: string;
       } = {},
     ) =>
       adapter.startSession({
@@ -93,6 +100,9 @@ const setupWith = (withoutEnv: ReadonlyArray<string>) =>
         runtimeMode: input.runtimeMode ?? "full-access",
         ...(input.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         ...(input.forkFrom ? { forkFrom: input.forkFrom } : {}),
+        ...(input.projectInstructions !== undefined
+          ? { projectInstructions: input.projectInstructions }
+          : {}),
       });
     const send = (threadId: ThreadId, text: string, interactionMode?: "plan") =>
       adapter.sendTurn({
@@ -196,6 +206,36 @@ describe.skipIf(!piCli)("PiAdapter with a real Pi", () => {
         }),
       ),
     90_000,
+  );
+
+  it.live(
+    "ends Threadlines' instructions to Pi with the project's brief",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const { model, turnEnd, start, send } = yield* setup;
+          const threadId = ThreadId.make("pi-brief");
+          const brief = "Use pnpm here. Never touch the generated folder.";
+          yield* start(threadId, { projectInstructions: brief });
+          yield* send(threadId, "hello there");
+          yield* turnEnd(threadId);
+          const messages = (model.requests.at(-1)?.messages ?? []) as Array<{
+            role: string;
+            content: unknown;
+          }>;
+          const system = messages
+            .filter((message) => message.role === "system" || message.role === "developer")
+            .map((message) =>
+              typeof message.content === "string"
+                ? message.content
+                : JSON.stringify(message.content),
+            )
+            .join("\n");
+          // The last of Threadlines' instructions, then the brief.
+          expect(system).toContain(`${FILE_LINK_INSTRUCTIONS}\n\n${brief}`);
+        }),
+      ),
+    60_000,
   );
 
   it.live(

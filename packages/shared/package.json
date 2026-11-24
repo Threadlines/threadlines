@@ -79,6 +79,10 @@
       "types": "./src/themes/fit.ts",
       "import": "./src/themes/fit.ts"
     },
+    "./threadMoveProjection": {
+      "types": "./src/threadMoveProjection.ts",
+      "import": "./src/threadMoveProjection.ts"
+    },
     "./themeVsCode": {
       "types": "./src/themes/vscode.ts",
       "import": "./src/themes/vscode.ts"
@@ -231,6 +235,14 @@
       "types": "./src/releaseNotes.ts",
       "import": "./src/releaseNotes.ts"
     },
+    "./queuedFollowUps": {
+      "types": "./src/queuedFollowUps.ts",
+      "import": "./src/queuedFollowUps.ts"
+    },
+    "./slashCommands": {
+      "types": "./src/slashCommands.ts",
+      "import": "./src/slashCommands.ts"
+    },
     "./checkBacks": {
       "types": "./src/checkBacks.ts",
       "import": "./src/checkBacks.ts"
@@ -278,6 +290,10 @@
     "./diffStats": {
       "types": "./src/diffStats.ts",
       "import": "./src/diffStats.ts"
+    },
+    "./textReplacementStats": {
+      "types": "./src/textReplacementStats.ts",
+      "import": "./src/textReplacementStats.ts"
     },
     "./contextSeed": {
       "types": "./src/contextSeed.ts",
@@ -423,13 +439,29 @@
       "types": "./src/childThreads.ts",
       "import": "./src/childThreads.ts"
     },
+    "./goalWaitPause": {
+      "types": "./src/goalWaitPause.ts",
+      "import": "./src/goalWaitPause.ts"
+    },
+    "./projectLead": {
+      "types": "./src/projectLead.ts",
+      "import": "./src/projectLead.ts"
+    },
     "./threadFiling": {
       "types": "./src/threadFiling.ts",
       "import": "./src/threadFiling.ts"
     },
+    "./appCommands": {
+      "types": "./src/appCommands.ts",
+      "import": "./src/appCommands.ts"
+    },
     "./appPlaces": {
       "types": "./src/appPlaces.ts",
       "import": "./src/appPlaces.ts"
+    },
+    "./placeHref": {
+      "types": "./src/placeHref.ts",
+      "import": "./src/placeHref.ts"
     },
     "./placeSearch": {
       "types": "./src/placeSearch.ts",
@@ -451,6 +483,14 @@
       "types": "./src/settingsChangeState.ts",
       "import": "./src/settingsChangeState.ts"
     },
+    "./secretRequestState": {
+      "types": "./src/secretRequestState.ts",
+      "import": "./src/secretRequestState.ts"
+    },
+    "./secretRequests": {
+      "types": "./src/secretRequests.ts",
+      "import": "./src/secretRequests.ts"
+    },
     "./messageAuthor": {
       "types": "./src/messageAuthor.ts",
       "import": "./src/messageAuthor.ts"
@@ -458,6 +498,10 @@
     "./threadParticipants": {
       "types": "./src/threadParticipants.ts",
       "import": "./src/threadParticipants.ts"
+    },
+    "./sideTurns": {
+      "types": "./src/sideTurns.ts",
+      "import": "./src/sideTurns.ts"
     },
     "./telemetryConsent": {
       "types": "./src/telemetryConsent.ts",

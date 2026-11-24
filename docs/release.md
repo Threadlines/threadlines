@@ -203,6 +203,15 @@ The stable release workflow refuses to publish when the matching reviewed entry
 is missing. Its GitHub release body places those highlights first and keeps the
 complete compact technical change list in a collapsed details section.
 
+Merging the content PR doesn't put the notes on threadlines.dev yet. Production
+builds of the marketing site hide changelog entries newer than the latest
+published GitHub release (`apps/marketing/src/lib/publishedChangelog.ts`), so the
+notes for a release that is still building, or whose build failed, stay off the
+site. If GitHub can't say which release is out, the production build fails and
+the live site stays as it was. Vercel previews show every entry. Once the
+release publishes, the **Stable release follow-ups** job rebuilds the live
+marketing site, and the new notes and the homepage's "New in" badge appear.
+
 The release assets should include:
 
 - `Threadlines-<version>-win-x64.exe`
@@ -269,6 +278,17 @@ After the first package exists, configure npm Trusted Publishing for
 dry-run or publish future versions. Stable builds should use the `latest`
 dist-tag; nightly builds should use the `nightly` dist-tag.
 
+## When a release fails
+
+The installers, the hosted app and the marketing notes wait for the GitHub
+release to publish, which needs every platform build to pass. If one fails, the
+**Cleanup failed draft release** job deletes the draft (and, for a run started
+from the Actions tab, the tag it made). It only ever deletes a draft: once a
+release is public, a later failure leaves it in place. The stable follow-ups
+(npm, WinGet, the marketing rebuild) run in their own job after publishing, so
+one of them failing shows red without undoing the release or skipping the
+hosted app deploy. Re-run that job, or the one workflow, by hand.
+
 ## Docker Image
 
 The self-host image `ghcr.io/threadlines/threadlines` wraps the published npm
@@ -299,13 +319,24 @@ version shows up in winget once a moderator merges it. The listing text
 Setup, once:
 
 - Add a `WINGET_TOKEN` repository secret: a classic GitHub token with the
-  `public_repo` scope. Pull requests open from that account's fork of
-  winget-pkgs, which the first run creates.
+  `public_repo` and `workflow` scopes. Pull requests open from that account's
+  fork of winget-pkgs, which the first run creates. Without `workflow`, a run
+  fails with "does not have the correct permissions to execute CreateRef"
+  whenever winget-pkgs has changed its own workflow files since the fork's
+  last push.
 - On that account's first winget-pkgs pull request, agree to Microsoft's CLA
   with the comment the CLA bot asks for.
 
 To retry a version, or to check the manifests without opening a pull request,
 run **WinGet** by hand with that version (tick "dry run" for the check).
+
+Until a moderator approves our first pull request, Threadlines isn't in
+winget-pkgs, and every version sent is another "New package" request in a
+queue that takes weeks (about eight in November 2026). So while one is open,
+the workflow skips with a notice instead of opening more, and the oldest
+request keeps our place in line. Updates to a listed package merge within
+hours. The day the first one is approved, run **WinGet** by hand with the
+newest stable version.
 
 ## Windows Publisher Name
 

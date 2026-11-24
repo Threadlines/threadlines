@@ -249,14 +249,24 @@ describe("GitVcsDriver git launch", () => {
       Layer.provideMerge(NodeServices.layer),
     );
 
+    // The probe skips the real git.exe for a server started from Git Bash
+    // (MSYSTEM) or with its own GIT_EXEC_PATH. Both are cleared, so the shell
+    // that runs this test does not decide the outcome.
+    const env: NodeJS.ProcessEnv = { MSYSTEM: undefined, GIT_EXEC_PATH: undefined };
     return Effect.gen(function* () {
       const driver = yield* GitVcsDriver.GitVcsDriver;
       yield* driver.execute({
         operation: "test.read",
         cwd: process.cwd(),
         args: ["rev-parse", "HEAD"],
+        env,
       });
-      yield* driver.execute({ operation: "test.status", cwd: process.cwd(), args: ["status"] });
+      yield* driver.execute({
+        operation: "test.status",
+        cwd: process.cwd(),
+        args: ["status"],
+        env,
+      });
 
       const [read, status] = spawned;
       assert.equal(read?.command, realGit);
@@ -323,12 +333,17 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           [undefined, undefined, "initializing"],
         );
         // Git reports checkouts by their real path, which on macOS resolves
-        // the temp directory's symlink.
+        // the temp directory's symlink. On Windows git writes it with forward
+        // slashes, and the listing passes it on as git wrote it.
         const liveRealPath = yield* fileSystem.realPath(livePath);
-        assert.equal(worktrees[1]?.path, liveRealPath);
+        assert.equal(
+          worktrees[1]?.path,
+          process.platform === "win32" ? liveRealPath.replaceAll("\\", "/") : liveRealPath,
+        );
         assert.isUndefined(worktrees.find((worktree) => worktree.branch === "deleted-branch"));
 
-        // The same enumeration backs listRefs' branch-to-checkout mapping.
+        // The same enumeration backs listRefs' branch-to-checkout mapping,
+        // which gives the path in this system's own form.
         const refs = yield* driver.listRefs({ cwd });
         assert.equal(
           refs.refs.find((ref) => ref.name === "live-branch")?.worktreePath,
@@ -1247,6 +1262,49 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           assert.equal(remoteRef?.isRemote, true);
           assert.equal(remoteRef?.remoteName, "origin");
         }),
+    );
+
+    it.effect("shows branches a background fetch brought in to the next fresh listing", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* pushRemoteBranchFromPeer({
+          remote,
+          baseBranch: initialBranch,
+          branch: "fetched-later",
+          subject: "remote branch",
+          fileName: "later.txt",
+        });
+
+        // A fresh listing starts the background fetch and is shared for a few
+        // seconds with the next fresh one. (It may already include the branch
+        // if the fetch beat its read.)
+        yield* driver.listRefs({ cwd, query: "fetched-later", refresh: true });
+        yield* waitForGitOutput(
+          cwd,
+          ["branch", "--remotes", "--list", "origin/fetched-later"],
+          (output) => output.trim().length > 0,
+        );
+
+        // The fetch has landed (the server notes it a moment after git does):
+        // the shared listing from before it isn't handed out again, which
+        // would otherwise last until its few seconds ran out.
+        const startedAtMs = Date.now();
+        let after = yield* driver.listRefs({ cwd, query: "fetched-later", refresh: true });
+        while (after.refs.length === 0 && Date.now() - startedAtMs < 5_000) {
+          yield* Effect.promise(() => sleepRealTime(50));
+          after = yield* driver.listRefs({ cwd, query: "fetched-later", refresh: true });
+        }
+        assert.deepStrictEqual(
+          after.refs.map((ref) => ref.name),
+          ["origin/fetched-later"],
+        );
+      }),
     );
 
     it.effect("puts the branch named exactly what was searched for on the first page", () =>

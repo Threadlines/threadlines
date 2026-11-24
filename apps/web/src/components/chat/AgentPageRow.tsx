@@ -36,12 +36,14 @@ import {
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { openExternalUrl } from "../../lib/externalLinks";
+import type { TranscriptHighlightContextSelection } from "../../lib/transcriptHighlightContext";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThemeOfferRow } from "../theme/ui/ThemeOfferRow";
 import { AgentPageFrame } from "./AgentPageFrame";
+import { TranscriptSelectionLayer } from "./TranscriptSelectionPopover";
 
 // Which pages the reader minimized, for this app session. Held outside the
 // row: the timeline unmounts rows that scroll away, and a page must stay as
@@ -87,6 +89,11 @@ export function AgentPageRow(props: {
   readonly page: OrchestrationAgentPage;
   /** A later turn's version of a page an earlier turn showed. */
   readonly updated: boolean;
+  /**
+   * Adds a note on text selected in the page to the composer. The chat's own
+   * selection layer covers the inline page; the full-size view has its own.
+   */
+  readonly onAddHighlight?: ((selection: TranscriptHighlightContextSelection) => void) | undefined;
 }) {
   // A theme an agent offered is a page too, shown as a theme row.
   return props.page.kind === "theme" ? <ThemeOfferRow {...props} /> : <FramedPageRow {...props} />;
@@ -198,6 +205,7 @@ function FramedPageRow(props: Parameters<typeof AgentPageRow>[0]) {
           version={version}
           page={page}
           share={share}
+          onAddHighlight={props.onAddHighlight}
           onClose={() => setFullSize(false)}
         />
       ) : null}
@@ -265,9 +273,11 @@ function FullSizePage(props: {
   readonly version: Parameters<typeof AgentPageFrame>[0]["version"];
   readonly page: OrchestrationAgentPage;
   readonly share: ReturnType<typeof agentPageShareLink>;
+  readonly onAddHighlight: ((selection: TranscriptHighlightContextSelection) => void) | undefined;
   readonly onClose: () => void;
 }) {
-  const { share } = props;
+  const { share, onAddHighlight } = props;
+  const pageBoxRef = useRef<HTMLDivElement>(null);
   const { copyToClipboard, isCopied } = useCopyToClipboard();
   const [loaded, setLoaded] = useState<AgentPageReadResult | null>(null);
   const [showSource, setShowSource] = useState(false);
@@ -378,9 +388,19 @@ function FullSizePage(props: {
           <pre className="min-h-0 flex-1 overflow-auto px-5 pb-5 font-mono text-xs leading-5 whitespace-pre-wrap text-foreground">
             {loaded.content}
           </pre>
-        ) : (
-          // The page has no side padding of its own, so full size gives it a
-          // gutter, painted in the page's own background: its panel's fill.
+        ) : null}
+        {/* Text selected in the page gets the chat's copy and add-note actions
+            here too, placed inside this box. It stays mounted while the source
+            shows, so the page and a note being written keep. */}
+        <div
+          ref={pageBoxRef}
+          className={cn(
+            "relative flex min-h-0 flex-1 flex-col",
+            showSource && loaded !== null && "hidden",
+          )}
+        >
+          {/* The page has no side padding of its own, so full size gives it a
+              gutter, painted in the page's own background: its panel's fill. */}
           <AgentPageFrame
             key={props.version.versionId}
             version={props.version}
@@ -389,7 +409,10 @@ function FullSizePage(props: {
             onLoaded={onLoaded}
             zoom={zoom}
           />
-        )}
+          {onAddHighlight ? (
+            <TranscriptSelectionLayer containerRef={pageBoxRef} onAddHighlight={onAddHighlight} />
+          ) : null}
+        </div>
       </DialogPopup>
     </Dialog>
   );

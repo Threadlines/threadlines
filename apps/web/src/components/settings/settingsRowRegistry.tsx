@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 
 import {
   AlertKindRow,
+  AlertSoundRow,
   AlertsOnThisDeviceRow,
   AlertsQuietAtComputerRow,
 } from "../../pushAlerts/PushAlertsSettings";
@@ -12,8 +13,10 @@ import {
 } from "../theme/ui/ThemeSettingsRows";
 import { ThemeSystemPairRow } from "../theme/ui/ThemeSystemPairRow";
 import { KeepAwakeForScheduledTasksRow, RunInBackgroundRow } from "./DesktopBackgroundRows";
+import { AgentDeviceAccessRow, UseDevicesRow } from "./DevicesSettings";
 import { DownloadedModelsRow, HoldToRecordRow, SpeechModelRow } from "./DictationSettings";
 import type { SettingsRowPlaceId } from "./settingsPlaceAvailability";
+import { ProjectNotesModeRow } from "./ProjectNotesSection";
 import {
   AddProjectStartsInRow,
   AgentBrowserSitesRow,
@@ -25,6 +28,7 @@ import {
   ChangedFilesInChatRow,
   ClearBrowserDataRow,
   DiagnosticsRow,
+  FollowUpDeliveryRow,
   ReportProblemRow,
   HideWhitespaceRow,
   OpenLinksRow,
@@ -46,14 +50,17 @@ import {
   WritingStyleRow,
 } from "./SourceControlSettings";
 import {
+  AntigravitySuggestionsRow,
+  ClaudeSuggestionsRow,
+  CodexSuggestionsRow,
+} from "./ProviderSuggestionsSection";
+import {
   AgentInvitesRow,
   AgentPagesRow,
   AgentThreadsRow,
   AgentThreadsShareWorktreesRow,
   BackupWritingModelRow,
   ClaudeArtifactsRow,
-  ClaudeSuggestionsRow,
-  CodexSuggestionsRow,
   ClaudeWorkflowSizeRow,
   CommandRequestsRow,
   ConfirmArchiveRow,
@@ -61,7 +68,10 @@ import {
   ContinueAfterUsageLimitsRow,
   ContinueAfterRestartRow,
   DefaultThreadEnvModeRow,
+  GeneralChatsPlacementRow,
+  NewThreadAccessRow,
   NewThreadAgentRow,
+  NewThreadModeRow,
   NewThreadRoomRow,
   NewWorktreeBaseRow,
   RoomsRow,
@@ -93,12 +103,14 @@ const LINK: SettingsRowEntry = { kind: "link" };
 
 export const SETTINGS_ROWS = {
   // General
+  "general.alertSound": live(AlertSoundRow),
   "general.alertsOnThisDevice": live(AlertsOnThisDeviceRow),
   "general.alertNeedsYou": live(() => <AlertKindRow kind="needs_you" />),
   "general.alertFinished": live(() => <AlertKindRow kind="finished" />),
   "general.alertFailed": live(() => <AlertKindRow kind="failed" />),
   "general.alertsQuietAtComputer": live(AlertsQuietAtComputerRow),
   "general.streamReplies": live(AssistantStreamingRow),
+  "general.followUpDelivery": live(FollowUpDeliveryRow),
   "general.timeFormat": live(TimeFormatRow),
   "general.changedFilesInChat": live(ChangedFilesInChatRow),
   "general.agentsPanel": live(AgentsPanelRow),
@@ -134,6 +146,8 @@ export const SETTINGS_ROWS = {
   // Threads
   "threads.agent": live(NewThreadAgentRow),
   "threads.room": live(NewThreadRoomRow),
+  "threads.mode": live(NewThreadModeRow),
+  "threads.access": live(NewThreadAccessRow),
   "threads.startIn": live(DefaultThreadEnvModeRow),
   "threads.worktreesFrom": live(NewWorktreeBaseRow),
   "threads.agentThreads": live(AgentThreadsRow),
@@ -141,8 +155,6 @@ export const SETTINGS_ROWS = {
   "threads.agentPages": live(AgentPagesRow),
   "threads.claudeArtifacts": live(ClaudeArtifactsRow),
   "threads.claudeWorkflowSize": live(ClaudeWorkflowSizeRow),
-  "threads.claudeSuggestions": live(ClaudeSuggestionsRow),
-  "threads.codexSuggestions": live(CodexSuggestionsRow),
   "threads.continueAfterUsageLimits": live(ContinueAfterUsageLimitsRow),
   "threads.continueAfterRestart": live(ContinueAfterRestartRow),
   "threads.commandRequests": live(CommandRequestsRow),
@@ -156,6 +168,9 @@ export const SETTINGS_ROWS = {
   "threads.wrapUpChildren": live(WrapUpChildThreadsRow),
   "threads.confirmArchive": live(ConfirmArchiveRow),
   "threads.confirmDelete": live(ConfirmDeleteRow),
+  "threads.generalChats": live(GeneralChatsPlacementRow),
+  // Agent Instructions: one setting for every project on this computer.
+  "instructions.notesMode": live(() => <ProjectNotesModeRow />),
   // Archives: each row reads the page's archived and inactive thread lists.
   "archived.autoArchive": LINK,
   "archived.archiveNow": LINK,
@@ -179,4 +194,11 @@ export const SETTINGS_ROWS = {
   "connections.sameNetwork": LINK,
   "connections.tailscale": LINK,
   "connections.oneTimeLink": LINK,
+  // Devices
+  "devices.enable": live(UseDevicesRow),
+  "devices.agentAccess": live(AgentDeviceAccessRow),
+  // Providers › Suggestions
+  "providers.claudeSuggestions": live(ClaudeSuggestionsRow),
+  "providers.codexSuggestions": live(CodexSuggestionsRow),
+  "providers.antigravitySuggestions": live(AntigravitySuggestionsRow),
 } as const satisfies { readonly [Id in SettingsRowPlaceId]: SettingsRowEntry };

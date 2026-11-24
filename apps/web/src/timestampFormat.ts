@@ -65,6 +65,26 @@ export function formatDateAndTime(isoDate: string, timestampFormat: TimestampFor
 }
 
 /**
+ * A moment soon before or after now, in the user's clock style with its day
+ * in words: "2:14 PM today", "2:14 PM tomorrow". Further off: "Oct 22, 3:14 PM".
+ */
+export function formatTimeWithDay(
+  isoDate: string,
+  nowMs: number,
+  timestampFormat: TimestampFormat,
+): string {
+  const date = new Date(isoDate);
+  const now = new Date(nowMs);
+  const dayIndex = (value: Date) =>
+    Math.round(
+      new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime() / 86_400_000,
+    );
+  const days = dayIndex(date) - dayIndex(now);
+  if (days !== 0 && days !== 1) return formatDateAndTime(isoDate, timestampFormat);
+  return `${formatShortTimestamp(isoDate, timestampFormat)} ${days === 0 ? "today" : "tomorrow"}`;
+}
+
+/**
  * Format a relative time string from an ISO date.
  * Returns `{ value: "20s", suffix: "ago" }` or `{ value: "just now", suffix: null }`
  * so callers can style the numeric portion independently.
@@ -249,4 +269,10 @@ export function uses12HourClock(timestampFormat: TimestampFormat): boolean {
 export function startOfLocalDayMs(nowMs: number, daysBack = 0): number {
   const now = new Date(nowMs);
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack).getTime();
+}
+
+/** UTC midnight of the day `daysBack` days before `nowMs`'s day (negative: after). */
+export function startOfUtcDayMs(nowMs: number, daysBack = 0): number {
+  const now = new Date(nowMs);
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysBack);
 }

@@ -7,9 +7,10 @@
  * that cache has not been generated yet. This reader imports both without
  * coupling the provider card to the all-environment `/usage` projection.
  *
- * The returned buckets are merged into the provider status cache by
- * `ProviderRegistry`, which turns the initial import into a rolling 366-day
- * Threadlines history across restarts.
+ * Claude Code deletes transcripts `cleanupPeriodDays` after they were last
+ * written, so every read is folded into a saved history in the server's state
+ * folder (`providerTokenUsageStore`). Days whose files are gone keep their
+ * totals there, which turns the import into a rolling 366-day history.
  *
  * @module provider/Layers/ClaudeTokenUsageHistory
  */
@@ -32,6 +33,7 @@ import {
   shiftProviderTokenUsageDateKey,
   summarizeProviderTokenUsageBuckets,
 } from "../providerTokenUsageHistory.ts";
+import { makeProviderTokenUsageStore, mergeTokenUsageDays } from "../providerTokenUsageStore.ts";
 import { UsageAggregator } from "../../usage/usageAggregation.ts";
 import { dedupeWithinFile, type ScanCache } from "../../usage/usageScanCache.ts";
 import { listTranscriptFiles, readTranscriptRecords } from "../../usage/usageTranscriptReader.ts";
@@ -78,6 +80,40 @@ const sumTokenFields = (value: unknown): number | undefined => {
   return fields.reduce<number>((sum, field) => sum + (nonNegativeNumber(field) ?? 0), 0);
 };
 
+/**
+ * Claude Code deletes a transcript `cleanupPeriodDays` after it was last
+ * written; 30 when unset. A setting above 30 is not trusted for what is
+ * already gone: it may have been raised after files were deleted under the
+ * default.
+ */
+const CLAUDE_DEFAULT_CLEANUP_PERIOD_DAYS = 30;
+
+/** Read `cleanupPeriodDays` from a Claude settings document, if it holds a usable one. */
+export const claudeCleanupPeriodDays = (document: unknown): number | undefined => {
+  if (!isRecord(document)) return undefined;
+  const value = document["cleanupPeriodDays"];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : undefined;
+};
+
+/**
+ * The first day a transcript scan has seen in full: a day's records sit in
+ * files last written that day or later, and Claude Code keeps every file
+ * written in the last `cleanupPeriodDays`. With 0 it keeps none, so no day is
+ * known in full.
+ */
+export const claudeTranscriptsCompleteFrom = (
+  today: string,
+  cleanupPeriodDays: number | undefined,
+): string | undefined => {
+  const keptDays = Math.min(
+    cleanupPeriodDays ?? CLAUDE_DEFAULT_CLEANUP_PERIOD_DAYS,
+    CLAUDE_DEFAULT_CLEANUP_PERIOD_DAYS,
+  );
+  return keptDays < 1 ? undefined : shiftProviderTokenUsageDateKey(today, -(keptDays - 1));
+};
+
 /** Narrow Claude Code's deliberately undocumented, rebuildable stats cache. */
 export function parseClaudeStatsTokenUsage(document: unknown): ClaudeStatsTokenUsageHistory | null {
   if (!isRecord(document) || !Array.isArray(document["dailyModelTokens"])) return null;
@@ -116,9 +152,6 @@ export function parseClaudeStatsTokenUsage(document: unknown): ClaudeStatsTokenU
   };
 }
 
-const sumBuckets = (buckets: ReadonlyArray<ServerProviderAccountTokenUsageDailyBucket>): number =>
-  buckets.reduce((sum, bucket) => sum + bucket.tokens, 0);
-
 const clampDateKey = (value: string, minimum: string, maximum: string): string =>
   value < minimum ? minimum : value > maximum ? maximum : value;
 
@@ -126,6 +159,10 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
   function* (
     settings: Pick<ClaudeSettings, "homePath" | "accountFolder">,
     environment: NodeJS.ProcessEnv = process.env,
+    options: {
+      /** The server's state folder, where the saved history lives. Without it nothing is saved. */
+      readonly stateDir?: string;
+    } = {},
   ) {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -137,8 +174,16 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
     // A `homePath` that already names a `.claude` folder is read as-is.
     const dataDir = configDirExists ? configDir : resolvedHomePath;
     const statsCachePath = path.join(dataDir, "stats-cache.json");
+    const claudeSettingsPath = path.join(dataDir, "settings.json");
     const transcriptDir = path.join(dataDir, "projects");
     const fileCache: ScanCache = new Map();
+    const store = options.stateDir
+      ? yield* makeProviderTokenUsageStore({
+          stateDir: options.stateDir,
+          provider: "claude",
+          source: dataDir,
+        })
+      : undefined;
 
     const readStatsCache = Effect.gen(function* () {
       const raw = yield* fileSystem
@@ -152,6 +197,17 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
       }
     });
 
+    const readCleanupPeriodDays = fileSystem.readFileString(claudeSettingsPath).pipe(
+      Effect.map((raw) => {
+        try {
+          return claudeCleanupPeriodDays(JSON.parse(raw) as unknown);
+        } catch {
+          return undefined;
+        }
+      }),
+      Effect.catchCause(() => Effect.succeed(undefined)),
+    );
+
     const scanTranscripts = (
       sinceDay: string,
       untilDay: string,
@@ -159,7 +215,15 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
       Effect.promise(async () => {
         const sinceMs = parseProviderTokenUsageDateKey(sinceDay);
         if (sinceMs === null) return { buckets: [], complete: false };
-        const files = await listTranscriptFiles(transcriptDir, sinceMs - MTIME_SLACK_MS);
+        let folderUnreadable = false;
+        const files = await listTranscriptFiles(
+          transcriptDir,
+          sinceMs - MTIME_SLACK_MS,
+          undefined,
+          () => {
+            folderUnreadable = true;
+          },
+        );
         const livePaths = new Set(files.map((file) => file.path));
         const aggregator = new UsageAggregator({
           timeZone: "UTC",
@@ -167,7 +231,7 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
           untilDay,
           rates: new Map(),
         });
-        let complete = true;
+        let complete = !folderUnreadable;
 
         for (const file of files) {
           const cached = fileCache.get(file.path);
@@ -226,10 +290,19 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
       const transcriptDirExists = yield* fileSystem
         .exists(transcriptDir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
-      if (!stats && !transcriptDirExists) return undefined;
+      if (!stats && !transcriptDirExists && !store) return undefined;
 
+      // The scan covers every day Claude Code still keeps transcripts for,
+      // and, when the stats cache is older, the days since its last one.
+      const transcriptsCompleteFrom = claudeTranscriptsCompleteFrom(
+        today,
+        yield* readCleanupPeriodDays,
+      );
+      const statsResumeDate = stats?.lastComputedDate ?? firstRetainedDate;
       const scanStartDate = clampDateKey(
-        stats?.lastComputedDate ?? firstRetainedDate,
+        transcriptsCompleteFrom && transcriptsCompleteFrom < statsResumeDate
+          ? transcriptsCompleteFrom
+          : statsResumeDate,
         firstRetainedDate,
         today,
       );
@@ -238,43 +311,66 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
             Effect.catchCause(() => Effect.succeed({ buckets: [], complete: false })),
           )
         : { buckets: [], complete: false };
-      if (!stats && !scan.complete) return undefined;
 
-      const allBucketsByDay = new Map(
-        (stats?.dailyBuckets ?? []).map((bucket) => [bucket.startDate, bucket] as const),
+      // A day takes the larger of the stats cache and the transcripts. The
+      // cache's last day may have been computed mid-day, and a transcript it
+      // counted may be deleted since; a partial scan is still a lower bound.
+      const statsTokensByDay = new Map(
+        (stats?.dailyBuckets ?? []).map((bucket) => [bucket.startDate, bucket.tokens] as const),
       );
-      if (scan.complete) {
-        for (const date of allBucketsByDay.keys()) {
-          if (date >= scanStartDate) allBucketsByDay.delete(date);
-        }
-        for (const bucket of scan.buckets) allBucketsByDay.set(bucket.startDate, bucket);
-      }
-      const allBuckets = [...allBucketsByDay.values()].toSorted((left, right) =>
-        left.startDate.localeCompare(right.startDate),
-      );
+      const observedBuckets = [
+        ...mergeTokenUsageDays([
+          statsTokensByDay,
+          scan.buckets.map((bucket) => [bucket.startDate, bucket.tokens] as const),
+        ]),
+      ]
+        .map(([startDate, tokens]) => ({ startDate, tokens }))
+        .toSorted((left, right) => left.startDate.localeCompare(right.startDate));
+
+      // The days this reading saw in full: only the kept transcripts, and only
+      // when every one was read. The stats cache is not proof of a quiet day:
+      // Claude Code may have built it after transcripts were already gone.
+      const readingCompleteFrom = scan.complete ? transcriptsCompleteFrom : undefined;
+
+      const remembered = store
+        ? yield* store.remember({
+            reading: observedBuckets,
+            today,
+            ...(readingCompleteFrom ? { completeFrom: readingCompleteFrom } : {}),
+          })
+        : undefined;
+      const allBuckets = remembered?.buckets ?? observedBuckets;
+      const completeRange =
+        remembered?.completeRange ??
+        (!store && readingCompleteFrom ? { from: readingCompleteFrom, through: today } : undefined);
+      // A partial read with no known range has nothing safe to claim; the
+      // last complete reading the registry holds stays on screen.
+      if (!scan.complete && !completeRange) return undefined;
       const retainedBuckets = retainProviderTokenUsageBuckets(allBuckets, today);
 
-      const statsReplacedTokens = sumBuckets(
-        (stats?.dailyBuckets ?? []).filter((bucket) => bucket.startDate >= scanStartDate),
-      );
+      // Claude's own total, plus what the calendar knows beyond its daily
+      // figures. Each day only grows, so the total never goes down when a
+      // transcript is deleted.
       const lifetimeTokens =
-        stats?.lifetimeTokens !== undefined
-          ? Math.max(0, stats.lifetimeTokens - statsReplacedTokens) +
-            (scan.complete ? sumBuckets(scan.buckets) : statsReplacedTokens)
-          : sumBuckets(allBuckets);
-      const coverageStartDate = scan.complete
-        ? firstRetainedDate
-        : stats?.firstSessionDate
-          ? clampDateKey(stats.firstSessionDate, firstRetainedDate, today)
-          : retainedBuckets[0]?.startDate;
-      const coverageEndDate = scan.complete
-        ? today
-        : stats?.lastComputedDate
-          ? clampDateKey(stats.lastComputedDate, firstRetainedDate, today)
-          : undefined;
+        (stats?.lifetimeTokens ?? 0) +
+        allBuckets.reduce(
+          (sum, bucket) =>
+            sum + Math.max(0, bucket.tokens - (statsTokensByDay.get(bucket.startDate) ?? 0)),
+          0,
+        );
+      // Coverage is the run of days whose totals are known, zeros included.
+      // Outside it the calendar shows a quiet day as "unavailable", not zero.
+      const coverageStartDate = completeRange
+        ? clampDateKey(completeRange.from, firstRetainedDate, today)
+        : undefined;
+      const coverageEndDate = completeRange
+        ? clampDateKey(completeRange.through, firstRetainedDate, today)
+        : undefined;
       const completeLifetimeHistory = Boolean(
         stats?.firstSessionDate &&
         stats.firstSessionDate >= firstRetainedDate &&
+        completeRange &&
+        completeRange.from <= stats.firstSessionDate &&
         coverageEndDate === today,
       );
 

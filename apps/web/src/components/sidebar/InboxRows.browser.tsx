@@ -961,6 +961,7 @@ describe("a thread another computer asked to start", () => {
       setAccess: unused,
       remove: unused,
       respondRequest,
+      readThread: unused,
     });
     useComputerLinksStore.getState().put(MAC_MINI, { outbound: [], inbound: [], pending });
   }

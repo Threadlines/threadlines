@@ -37,6 +37,17 @@ export function compareVersions(left: string, right: string): number {
   return 0;
 }
 
+/**
+ * Drops entries for versions newer than the newest published GitHub release, so the notes for a
+ * release still building (or one whose build failed) stay off the site.
+ */
+export function releasedEntries<Entry extends ChangelogEntry>(
+  entries: ReadonlyArray<Entry>,
+  latestReleasedVersion: string,
+): ReadonlyArray<Entry> {
+  return entries.filter((entry) => compareVersions(entry.data.version, latestReleasedVersion) <= 0);
+}
+
 /** The newest stable version with a changelog entry. */
 export function latestStableVersion(entries: ReadonlyArray<ChangelogEntry>): string {
   const versions = entries.map((entry) => entry.data.version).toSorted(compareVersions);

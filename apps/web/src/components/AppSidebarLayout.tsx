@@ -14,8 +14,10 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useAppHistory } from "../appHistory";
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { isKeyboardOwnedByDialog, isPaletteLaunchedDialogOpen } from "../commands/shortcutBlock";
 import { isKnownEnvironment } from "../environments/runtime";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { getClientSettings } from "../hooks/useSettings";
 import { resolveShortcutCommand } from "../keybindings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -26,6 +28,12 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalSta
 import { buildThreadRouteParams } from "../threadRoutes";
 import { selectSidebarListShown, useUiStateStore } from "../uiStateStore";
 import ThreadSidebar from "./Sidebar";
+import {
+  consumeSidebarListReveal,
+  requestGeneralChatsReveal,
+  useGeneralChatsInThreads,
+} from "./chats/generalChatsPlacement";
+import { GeneralChatsRevealer } from "./chats/GeneralChatsRevealer";
 import { AppTitleBar } from "./sidebar/AppTitleBar";
 import { TitleBarSlotContext } from "./sidebar/titleBarSlot";
 import { destinationHasList } from "./sidebar/destinationLists";
@@ -76,7 +84,7 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) return;
-      if (useCommandPaletteStore.getState().open) return;
+      if (isKeyboardOwnedByDialog()) return;
       // Read when the key lands, like the sidebar's own shortcuts: a rule
       // the user scoped to an open terminal must see the terminal as it is.
       const terminalOpen = routeThreadRef
@@ -111,6 +119,11 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
         event.stopPropagation();
         void navigate({ to: "/scheduled" });
       }
+      if (command === "navigate.terminals") {
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({ to: "/terminals" });
+      }
     };
     window.addEventListener("keydown", onWindowKeyDown);
     return () => {
@@ -135,8 +148,13 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
         case "open-scheduled":
           void navigate({ to: "/scheduled" });
           return;
+        case "open-terminals":
+          void navigate({ to: "/terminals" });
+          return;
         case "open-general-chats":
-          void navigate({ to: "/chats" });
+          // Read when the item fires; the menu subscription stays put.
+          if (getClientSettings().generalChatsPlacement === "threads") requestGeneralChatsReveal();
+          else void navigate({ to: "/chats" });
           return;
         case "open-usage":
           void navigate({ to: "/usage" });
@@ -151,6 +169,8 @@ function AppShellCommands({ hasList }: { readonly hasList: boolean }) {
           appHistory.forward();
           return;
         case "toggle-command-palette":
+          // Not over Add project or a Codex import in progress.
+          if (isPaletteLaunchedDialogOpen()) return;
           useCommandPaletteStore.getState().toggleOpen();
           return;
         case "open-whats-new":
@@ -287,18 +307,22 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const listFloats = useUiStateStore((store) => store.sidebarListFloats);
   const setSidebarListShown = useUiStateStore((store) => store.setSidebarListShown);
   const selectedDestination = useSelectedDestination();
+  const generalChatsInThreads = useGeneralChatsInThreads();
   const hasList = destinationHasList(selectedDestination);
   const isMobile = useIsMobile();
   const panelRef = useRef<HTMLDivElement>(null);
   useSidebarListFloats(panelRef, isMobile);
-  // A floating list gets out of the way of whatever page opens next.
+  // A floating list gets out of the way of whatever page opens next, unless
+  // the change was asked to show it (opening the chats' section in Threads,
+  // GeneralChatsRevealer).
   const pathname = useLocation({ select: (location) => location.pathname });
   const shownPathname = useRef(pathname);
   useEffect(() => {
     if (shownPathname.current === pathname) return;
     shownPathname.current = pathname;
     const state = useUiStateStore.getState();
-    if (state.sidebarListFloats) state.setSidebarListShown(false);
+    if (consumeSidebarListReveal(pathname)) state.setSidebarListShown(true);
+    else if (state.sidebarListFloats) state.setSidebarListShown(false);
   }, [pathname]);
   usePageCrossFade(panelRef, selectedDestination);
   // Dialogs and other window-wide layers center over the page beside the list.
@@ -346,6 +370,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       style={sidebarStyle}
     >
       <AppShellCommands hasList={hasList} />
+      {generalChatsInThreads ? <GeneralChatsRevealer /> : null}
       <AppTitleBar slotRef={setTitleBarSlot} />
       <div className="flex min-h-0 flex-1">
         <NavigationRail />

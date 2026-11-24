@@ -868,6 +868,81 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.map((row) => row.kind)).toEqual(["message", "work", "working"]);
   });
 
+  it("puts a suggested note after its turn's content, and one without a turn above the working row", () => {
+    const suggestion = (id: string, turnId: string | null, createdAt: string) => ({
+      id: id as never,
+      projectId: "project-1" as never,
+      title: `Note ${id}`,
+      summary: "One line.",
+      text: "The text.",
+      author: {
+        kind: "agent" as const,
+        threadId: "thread-1" as never,
+        participantId: null,
+        agentName: "Codex",
+      },
+      turnId: turnId as never,
+      createdAt,
+    });
+    const message = (id: string, role: "user" | "assistant", turnId: string, minute: number) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt: `2026-01-01T00:${minute}:00Z`,
+      message: {
+        id: id as never,
+        role,
+        text: id,
+        turnId: turnId as never,
+        createdAt: `2026-01-01T00:${minute}:00Z`,
+        ...(role === "assistant" ? { completedAt: `2026-01-01T00:${minute}:30Z` } : {}),
+        streaming: false,
+      },
+    });
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        message("ask-1", "user", "turn-1", 10),
+        message("answer-1", "assistant", "turn-1", 11),
+        message("ask-2", "user", "turn-2", 20),
+        {
+          id: "live-read",
+          kind: "work" as const,
+          createdAt: "2026-01-01T00:21:00Z",
+          entry: {
+            id: "live-read",
+            createdAt: "2026-01-01T00:21:00Z",
+            label: "live-read",
+            tone: "tool" as const,
+            turnId: "turn-2" as never,
+          },
+        },
+      ],
+      isWorking: true,
+      activeTurnId: "turn-2" as never,
+      activeTurnStartedAt: "2026-01-01T00:20:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      noteSuggestions: [
+        suggestion("outside", null, "2026-01-01T00:05:00Z"),
+        suggestion("live", "turn-2", "2026-01-01T00:21:30Z"),
+        suggestion("earlier", "turn-1", "2026-01-01T00:10:30Z"),
+      ],
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "ask-1-entry",
+      "answer-1-entry",
+      "note-suggestion:earlier",
+      "ask-2-entry",
+      expect.any(String),
+      "note-suggestion:live",
+      "note-suggestion:outside",
+      "working-indicator-row",
+    ]);
+    // On the live turn's line, not its own agent's stretch: the working row keeps it.
+    const live = rows.find((row) => row.id === "note-suggestion:live");
+    expect(live?.agentLine?.placement).toBe("through");
+  });
+
   it("marks only the active assistant turn as streaming for copy controls", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

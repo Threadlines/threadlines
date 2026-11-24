@@ -1,17 +1,14 @@
 import { EMPTY_CHILD_REQUEST_STATE, type ScopedThreadRef } from "@threadlines/contracts";
 import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { childAttachRefusal } from "@threadlines/shared/childThreads";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 
-import {
-  attachedParentKeyOf,
-  isChildThreadWorking,
-  resolveThreadStatusPill,
-} from "../components/Sidebar.logic";
+import { attachedParentKeyOf } from "../components/Sidebar.logic";
 import { confirmThreadDeleteWithChildren } from "../components/ThreadDeleteDialog";
 import { openThreadMoveDialog } from "../components/ThreadMoveDialog";
 import { openThreadRenameDialog } from "../components/ThreadRenameDialog";
 import {
+  countThreadsToStop,
   describeThreadMenu,
   isThreadTurnRunning,
   describeThreadSelectionMenu,
@@ -26,6 +23,7 @@ import {
   markThreadUnreadByKey,
   reopenThreadByKey,
 } from "../lib/threadInboxSync";
+import { stopThreadsUnder } from "../lib/threadSessionCommands";
 import { newCommandId } from "../lib/utils";
 import { readLocalApi } from "../localApi";
 import {
@@ -36,7 +34,8 @@ import {
 } from "../store";
 import type { SidebarThreadSummary } from "../types";
 import { useSettings } from "./useSettings";
-import { useThreadActions } from "./useThreadActions";
+import { readLeadMenuState, setProjectLead } from "../leadChat";
+import { deletableChildThreadIds, useThreadActions } from "./useThreadActions";
 
 /** The thread a menu is for, and what only its surface knows. */
 export interface ThreadMenuTarget {
@@ -90,14 +89,7 @@ export function useThreadMenu() {
     const children = [...byKey.values()].filter(
       (candidate) => candidate.archivedAt === null && attachedParentKeyOf(candidate) === threadKey,
     );
-    const workingChildCount = children.filter((child) =>
-      isChildThreadWorking({
-        threadKey: scopedThreadKey(scopeThreadRef(child.environmentId, child.id)),
-        thread: child,
-        status: resolveThreadStatusPill({ thread: child }),
-        isDone: false,
-      }),
-    ).length;
+    const stopCount = countThreadsToStop(byKey.values(), thread, new Date().toISOString());
     const parent =
       thread.parentThreadId != null
         ? (byKey.get(
@@ -137,16 +129,18 @@ export function useThreadMenu() {
       inbox: target.inbox ?? null,
       attachedChild,
       putBack,
-      workingChildCount,
-      moveOffered: readThreadMoveOffered(thread.environmentId, thread.moveStatus),
+      stopCount,
+      moveOffered: readThreadMoveOffered(thread),
       running: isThreadTurnRunning(full?.session),
       customOrder: target.customOrder ?? null,
+      lead: readLeadMenuState(useStore.getState(), thread),
     });
   }, []);
 
   /** Does what the menu item says, for the thread as it is now. */
+  /** Does what the item says; "cancelled" when the user said no to a confirmation. */
   const run = useCallback(
-    async (action: ThreadMenuAction, target: ThreadMenuTarget) => {
+    async (action: ThreadMenuAction, target: ThreadMenuTarget): Promise<void | "cancelled"> => {
       const { threadRef } = target;
       const threadKey = scopedThreadKey(threadRef);
       const byKey = summariesByKey();
@@ -184,35 +178,30 @@ export function useThreadMenu() {
         case "reopen":
           reopenThreadByKey(threadKey);
           return;
+        case "stop-children":
+          try {
+            await stopThreadsUnder(threadRef);
+          } catch (error) {
+            errorToast("Couldn't stop its threads", error);
+          }
+          return;
         case "separate":
-        case "attach":
-        case "stop-children": {
+        case "attach": {
           const api = readEnvironmentApi(threadRef.environmentId);
           if (!api) return;
           try {
-            await api.orchestration.dispatchCommand(
-              action === "stop-children"
-                ? {
-                    type: "thread.children.stop",
-                    commandId: newCommandId(),
-                    threadId: threadRef.threadId,
-                    createdAt: new Date().toISOString(),
-                  }
-                : {
-                    type: "thread.parent-attachment.set",
-                    commandId: newCommandId(),
-                    threadId: threadRef.threadId,
-                    attached: action === "attach",
-                    createdAt: new Date().toISOString(),
-                  },
-            );
+            await api.orchestration.dispatchCommand({
+              type: "thread.parent-attachment.set",
+              commandId: newCommandId(),
+              threadId: threadRef.threadId,
+              attached: action === "attach",
+              createdAt: new Date().toISOString(),
+            });
           } catch (error) {
             errorToast(
-              action === "stop-children"
-                ? "Couldn't stop its threads"
-                : action === "attach"
-                  ? "Couldn't put the thread back"
-                  : "Couldn't make it its own thread",
+              action === "attach"
+                ? "Couldn't put the thread back"
+                : "Couldn't make it its own thread",
               error,
             );
           }
@@ -221,6 +210,30 @@ export function useThreadMenu() {
         case "move":
           openThreadMoveDialog(threadRef);
           return;
+        case "make-lead":
+        case "stop-lead": {
+          // The click does what the item said. Since the menu opened, another
+          // client may have done it already (nothing to do) or made it
+          // refused (the item would read disabled now).
+          const lead = readLeadMenuState(useStore.getState(), thread);
+          if (lead === null || lead.kind !== (action === "make-lead" ? "make" : "stop")) return;
+          if (lead.kind === "make" && lead.refusal !== null) return;
+          const made = await setProjectLead({
+            environmentId: thread.environmentId,
+            projectId: thread.projectId,
+            threadId: lead.kind === "stop" ? null : thread.id,
+          });
+          // A lead stays at the top of the list: one the user had wrapped up
+          // comes back, since the user's own wrap-up outranks the lead's keep.
+          if (
+            made &&
+            lead.kind === "make" &&
+            (target.inbox?.isDone === true || thread.doneOverride?.state === "done")
+          ) {
+            reopenThreadByKey(threadKey);
+          }
+          return;
+        }
         case "copy-path": {
           const project = selectProjectByRef(
             useStore.getState(),
@@ -244,7 +257,7 @@ export function useThreadMenu() {
             api &&
             !(await api.dialogs.confirm(`Archive thread "${thread.title}"?`))
           ) {
-            return;
+            return "cancelled";
           }
           try {
             await archiveThread(threadRef);
@@ -255,18 +268,16 @@ export function useThreadMenu() {
         }
         case "delete": {
           const api = readLocalApi();
-          // A parent's threads are separated, not deleted, unless the user says so.
-          const childCount = [...byKey.values()].filter(
-            (candidate) =>
-              candidate.archivedAt === null && attachedParentKeyOf(candidate) === threadKey,
-          ).length;
-          if (confirmDelete && childCount > 0) {
+          // A parent's threads are separated, not deleted, unless the user
+          // says so; then exactly the ones the dialog counted go.
+          const childIds = deletableChildThreadIds(threadRef);
+          if (confirmDelete && childIds.length > 0) {
             const answer = await confirmThreadDeleteWithChildren({
               title: thread.title,
-              childCount,
+              childCount: childIds.length,
             });
-            if (answer === null) return;
-            await deleteThread(threadRef, { withChildren: answer.withChildren });
+            if (answer === null) return "cancelled";
+            await deleteThread(threadRef, answer.withChildren ? { alsoDelete: childIds } : {});
             return;
           }
           if (
@@ -279,7 +290,7 @@ export function useThreadMenu() {
               ].join("\n"),
             ))
           ) {
-            return;
+            return "cancelled";
           }
           await deleteThread(threadRef);
           return;
@@ -409,5 +420,10 @@ export function useThreadMenu() {
     [archiveThread, confirmArchive, confirmDelete, deleteThread, pinThread, unpinThread],
   );
 
-  return { describe, run, open, openSelection };
+  // One object while its functions hold, so the rows it is handed to through
+  // the sidebar's menu handlers can skip their redraws.
+  return useMemo(
+    () => ({ describe, run, open, openSelection }),
+    [describe, run, open, openSelection],
+  );
 }

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { isAnsweringOnTheSide, liveSideTurn, liveSideTurns } from "@threadlines/shared/sideTurns";
 import * as path from "node:path";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 
@@ -32,6 +33,7 @@ import {
   type OutsideAgentConnectionId,
   type OutsideAgentRef,
   type OutsideTurnOrigin,
+  type LeadPassCeiling,
   type RuntimeMode,
   ThreadAccessRaiseDeferredActivityKind,
   type ThreadAccessRaiseDeferredPayload,
@@ -42,13 +44,27 @@ import {
   type ThreadCheckoutSwitchDeferredPayload,
   ThreadForkContextPayload,
   ThreadForkSeedOutcomeActivityKind,
+  ThreadNativeSessionFellBackActivityKind,
+  ThreadNativeSessionFellBackPayload,
   ThreadForkSeedOutcomePayload,
   type TurnId,
+  type TurnStartedBy,
 } from "@threadlines/contracts";
+import { markCheckBacksDormant } from "@threadlines/shared/checkBacks";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import { LEAD_WITHOUT_TOOLS_TEXT, leadRoleText } from "@threadlines/shared/projectLead";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { notesFor, remoteChildOf } from "@threadlines/shared/childThreads";
+import {
+  isAttachedChild,
+  isOwedReport,
+  notesFor,
+  remoteChildOf,
+  requestCeilingRefusalWords,
+  withinModeCeiling,
+} from "@threadlines/shared/childThreads";
 import { settingsChangeNotesFor } from "@threadlines/shared/settingsChangeState";
+import { secretRequestNotesFor } from "@threadlines/shared/secretRequestState";
+import { secretRequestNote } from "@threadlines/shared/secretRequests";
 import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { isOutsideMarked, outsideCeilingDetail, outsideWorkOf } from "../outsideTurns.ts";
@@ -79,6 +95,7 @@ import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -102,9 +119,10 @@ import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { makeSessionLaunchGenerations, withoutLaunchMark } from "../sessionLaunches.ts";
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { messageSentFromNote, previousMessageSentFrom } from "../messageSentFrom.ts";
-import { turnMessageOrigin } from "../turnOrigin.ts";
+import { shouldSuggestNextMessage, turnMessageOrigin } from "../turnOrigin.ts";
+import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
-import { isContinueTrigger } from "../continueTurns.ts";
+import { isContinueTrigger, latestTurnStartFor } from "../continueTurns.ts";
 
 import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import { canReplaceThreadTitle } from "../threadTitle.ts";
@@ -128,7 +146,9 @@ import {
 } from "../../provider/Errors.ts";
 import type { ProviderServiceError, SteerRejection } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { SecretScrubber } from "../../secrets/SecretScrubber.ts";
 import { ThreadContextSeedBuilder } from "../../provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -148,9 +168,13 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { checkoutPresence } from "../../vcs/CheckoutPresence.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { checkpointHandover, HandoverCaptureWait } from "../checkpointHandover.ts";
+import { inviteAnswerRefusal } from "../agentInvites.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
-import { isCancelledReport } from "../childThreadDecisions.ts";
+import { childReportMessageId, isCancelledReport } from "../childThreadDecisions.ts";
 import { NO_BACKGROUND_TASKS } from "../sessionBackgroundTasks.ts";
+import { isRestorePaid } from "../threadMoveDecisions.ts";
+import { isLinkFenced } from "../linkFence.ts";
+import { drainsWhileMoveWaits } from "../threadMoveCarry.ts";
 import { SideAnswerStartError } from "../Errors.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
@@ -216,6 +240,14 @@ export interface ForkTurnBoundary {
   readonly lastTurnId?: TurnId;
 }
 
+/** Why a pass marked never sent did not go when a retry asked for it. */
+const PASS_NOT_SENT_DETAIL =
+  "This message the lead chat passed on was never sent. Send it yourself to run it.";
+
+/** Why a lead chat's pass did not go to the agent: the thread's access went above its ceiling. */
+const PASS_ABOVE_CEILING_DETAIL =
+  "This message the lead chat passed on wasn't sent: this thread has more access than the lead chat now. Send it yourself to run it.";
+
 /** One ensure call's launch mark: its generation and instance, once marked. */
 interface SessionLaunch {
   generation: number | null;
@@ -246,6 +278,20 @@ interface EnsureSessionOptions {
    * on the same read of the thread the session starts from.
    */
   readonly outsideCeiling?: OutsideTurnOrigin;
+  /**
+   * The turn is a lead chat's pass (docs/design/lead-chat.md, "Access"): it
+   * runs only while the thread is within the pass's ceiling, checked on the
+   * same read of the thread the session starts from, since the user may have
+   * raised its access after the decider let the pass through.
+   */
+  readonly passCeiling?: LeadPassCeiling;
+  /**
+   * The turn carries a parent's work or continues one (docs/design/
+   * agent-autonomy-no-limits.md, "Access"): it runs only while the thread is
+   * within this ceiling, checked on the same read of the thread the session
+   * starts from.
+   */
+  readonly requestCeiling?: LeadPassCeiling;
   /**
    * A turn that isn't from outside: an agent outside text reached
    * (OrchestrationOutsideWork) starts fresh for it, a new runtime with a
@@ -432,6 +478,67 @@ const PROVIDER_INTERRUPT_ACK_TIMEOUT = Duration.seconds(10);
 const TURN_PREPARATION_TIMEOUT = Duration.seconds(90);
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
+/**
+ * Whether a thread's queue waits for its move (docs/design/fleet.md, Part
+ * 3e, (e)): while a move waits, sending it would keep the thread from ever
+ * being free; once it moves, its queue went with it.
+ */
+const queueWaitsForMove = (thread: Pick<OrchestrationThread, "pendingMove" | "move">) =>
+  (thread.pendingMove ?? null) !== null || (thread.move ?? null) !== null;
+
+/** A moved agent's carried session: the thread's own agent's, or a room agent's own. */
+const movedNativeSessionOf = (
+  thread: Pick<OrchestrationThread, "nativeSession" | "participants">,
+  participantId: ThreadParticipantId | null,
+) =>
+  participantId === null
+    ? thread.nativeSession
+    : thread.participants.find((entry) => entry.id === participantId)?.nativeSession;
+
+/**
+ * Whether an agent that came with a move hasn't been given the conversation
+ * here yet (docs/design/fleet.md, Parts 3d and 3f, (i)): the thread's own
+ * agent while the thread owes it (historySeedOwed); a room agent that came
+ * with the move until its conversation is caught up here (its room context
+ * cursor). Both from the projection, so they hold across restarts.
+ */
+const owesMovedConversation = (
+  thread: Pick<
+    OrchestrationThread,
+    "historySeedOwed" | "movedFrom" | "participants" | "roomContext"
+  >,
+  participantId: ThreadParticipantId | null,
+) =>
+  participantId === null
+    ? thread.historySeedOwed === true
+    : (thread.movedFrom ?? null) !== null &&
+      thread.participants.find((entry) => entry.id === participantId)?.movedIn === true &&
+      thread.roomContext?.[roomAgentKey(participantId)] === undefined;
+
+/**
+ * What a thread's queue still sends while its move waits (docs/design/
+ * fleet.md, Part 3f, review change 4): a room agent's hand-off or reply, and
+ * its family's requests and answers (drainsWhileMoveWaits), so what it has
+ * going drains and the thread gets free; the user's own messages wait to go
+ * with it. Nothing from `quiescing` on, nor once it moves.
+ */
+const moveDrainHead = (
+  thread: Pick<OrchestrationThread, "pendingMove" | "move" | "queuedFollowUps" | "parentThreadId">,
+): OrchestrationQueuedFollowUp | undefined =>
+  (thread.move ?? null) === null && thread.pendingMove?.stage === "waiting"
+    ? (thread.queuedFollowUps ?? []).find((entry) => drainsWhileMoveWaits(thread, entry))
+    : undefined;
+
+const decodeFellBackPayload = Schema.decodeUnknownOption(ThreadNativeSessionFellBackPayload);
+
+/** A carried session fell back, and its refused message couldn't go again on its own. */
+export const NATIVE_SESSION_RESEND_REFUSED_WORDS =
+  "Your message didn't go again on the new session. Send it again.";
+
+/** A moved thread's send that couldn't carry the conversation it owes, so it wasn't sent. */
+export const MOVED_CONTEXT_UNSENT_WORDS =
+  "Couldn't give the agent this conversation, so the message wasn't sent.";
+
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : "unknown";
@@ -505,6 +612,7 @@ function stalePendingRequestDetail(
 const make = Effect.gen(function* () {
   const handoverCaptureWait = yield* HandoverCaptureWait;
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const secretScrubber = yield* SecretScrubber;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   // Computer links, when this server has them: see RemoteRequestGate.
@@ -523,6 +631,9 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const analytics = yield* Effect.serviceOption(AnalyticsService);
+  // Absent on a CLI-only server, which has no agents to bring in.
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const fileSystem = yield* FileSystem.FileSystem;
 
   /** Checkout existence check, bound to the layer's filesystem. Never fails. */
@@ -572,7 +683,10 @@ const make = Effect.gen(function* () {
    * reason to send by itself: a failed or stopped working turn keeps holding
    * the queue, and a new turn clears the entry (processTurnStartRequested).
    */
-  const waitingOnSideAnswer = new Map<ThreadId, MessageId>();
+  const waitingOnSideAnswer = new Map<
+    ThreadId,
+    { readonly messageId: MessageId; readonly participantId: ThreadParticipantId | null }
+  >();
   /** Agents' replies and threads' reports being steered into a running turn. */
   const steeringAgentMessages = new Set<MessageId>();
   /**
@@ -605,6 +719,15 @@ const make = Effect.gen(function* () {
   const threadsMovedAwayFromSession = new Set<ThreadId>();
 
   /**
+   * Sessions started behind the link fence (linkFence.ts), which got no
+   * Threadlines tools, not even the guide. A moved thread's fence lifts with
+   * the user's message here, and its next start restarts the session (with
+   * resume) to pick them up. In memory only: after a server restart every
+   * session starts again with the thread as it is then.
+   */
+  const sessionsStartedFenced = new Set<ThreadId>();
+
+  /**
    * Sessions that came up without their conversation (the provider couldn't
    * reopen it), keyed by participant session key. Whichever path restarted
    * the session (a send, an access-mode change, a checkout switch) notes the
@@ -627,6 +750,19 @@ const make = Effect.gen(function* () {
        */
       readonly moved?: true;
       /**
+       * Owed because a room agent came with the move (OrchestrationThreadParticipant.movedIn)
+       * and hasn't been given the conversation here: paid like `moved`, only
+       * with the conversation itself, but recorded by its room context cursor,
+       * never on the thread (docs/design/fleet.md, Part 3f, (i)).
+       */
+      readonly movedAgent?: true;
+      /**
+       * Owed because a start handed the runtime the history (a switch from
+       * another agent): the runtime carries it (`carriedBy`), so a room's
+       * catch-up never pays it again.
+       */
+      readonly handoff?: true;
+      /**
        * The runtime started seeded with the conversation, by its start time
        * (ProviderSession.createdAt): a send on that runtime adds no seed of
        * its own, and pays the debt once the provider takes it. A send on any
@@ -636,6 +772,15 @@ const make = Effect.gen(function* () {
       readonly carriedBy?: string;
     }
   >();
+
+  /**
+   * Runtimes that reopened a moved thread's carried session
+   * (OrchestrationThread.nativeSession, docs/design/fleet.md, Part 3d), by
+   * session key and start time (ProviderSession.createdAt). A send on one
+   * carries no summary: the session holds the conversation. In memory only:
+   * after a restart the next start reopens it again and is recorded anew.
+   */
+  const carriedRuntimes = new Map<string, string>();
 
   /** A moved thread's agent was given its conversation with `messageId`'s send: the recorded debt is paid. */
   const markHistorySeedDelivered = (threadId: ThreadId, messageId: MessageId) =>
@@ -850,7 +995,8 @@ const make = Effect.gen(function* () {
         kind: input.kind,
         summary: input.summary,
         payload: {
-          detail: input.detail,
+          // Some callers pass a cause as it is; a provider error can quote a key.
+          detail: secretScrubber.scrubText(input.detail).text,
           ...(input.requestId ? { requestId: input.requestId } : {}),
           ...(input.failedCommandId ? { commandId: input.failedCommandId } : {}),
         },
@@ -919,7 +1065,15 @@ const make = Effect.gen(function* () {
     return null;
   };
 
-  const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
+  /**
+   * A failure as the user reads it. Saved keys are hidden: a provider's
+   * stderr (Pi, OpenCode, Muse) never passed the event hook, and this text is
+   * stored and can reach a phone alert (docs/design/secret-scrubbing.md).
+   */
+  const formatFailureDetail = (cause: Cause.Cause<unknown>): string =>
+    secretScrubber.scrubText(failureText(cause)).text;
+
+  const failureText = (cause: Cause.Cause<unknown>): string => {
     const failReason = cause.reasons.find(Cause.isFailReason);
     const providerError = isProviderAdapterRequestError(failReason?.error)
       ? failReason.error
@@ -939,12 +1093,19 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
     readonly createdAt: string;
+    /** For an update that marks a turn running: the message it was asked with. */
+    readonly turnStartedBy?: TurnStartedBy;
   }) =>
     orchestrationEngine.dispatch({
       type: "thread.session.set",
       commandId: serverCommandId("provider-session-set"),
       threadId: input.threadId,
-      session: input.session,
+      ...(input.turnStartedBy !== undefined ? { turnStartedBy: input.turnStartedBy } : {}),
+      // The stored error reaches the thread and phone alerts: no saved key in it.
+      session:
+        input.session.lastError === null || input.session.lastError === undefined
+          ? input.session
+          : { ...input.session, lastError: secretScrubber.scrubText(input.session.lastError).text },
       createdAt: input.createdAt,
     });
 
@@ -960,15 +1121,21 @@ const make = Effect.gen(function* () {
     readonly participantId: ThreadParticipantId | null;
     readonly providerInstanceId: ProviderInstanceId;
     readonly launch: SessionLaunch;
+    /** A cross-provider handoff on a ready thread (e.g. goal change) still needs the launch mark to block the outgoing provider's exit event. */
+    readonly allowReadyHandoff?: boolean;
   }) =>
     Effect.gen(function* () {
       if (input.launch.providerInstanceId === input.providerInstanceId) {
         return;
       }
       const session = (yield* resolveThread(input.threadId))?.session;
+      const canMarkReadyHandoff =
+        input.allowReadyHandoff === true &&
+        session?.status === "ready" &&
+        session.providerInstanceId !== input.providerInstanceId;
       if (
         !session ||
-        session.status !== "starting" ||
+        (session.status !== "starting" && !canMarkReadyHandoff) ||
         sessionSlotParticipantId(session) !== input.participantId
       ) {
         return;
@@ -1063,9 +1230,51 @@ const make = Effect.gen(function* () {
       createdAt,
     });
 
+  /**
+   * A child's report whose turn start died before the provider took it (a
+   * restart, a failed start) goes back to the front of the queue, or is
+   * marked not run when it can no longer be delivered
+   * (`thread.turn-start.take-back`, docs/design/agent-autonomy-no-limits.md,
+   * "Restart and turn binding", rule A). True when it is back on the queue.
+   * Anything that isn't a report is left alone.
+   */
+  const takeBackReportStart = (
+    threadId: ThreadId,
+    messageId: MessageId,
+    why: "restart" | "failed-start",
+  ) =>
+    Effect.gen(function* () {
+      const thread = yield* resolveThread(threadId);
+      const message = thread?.messages.find((entry) => entry.id === messageId);
+      if (message?.fromThread?.kind !== "report") return false;
+      const taken = yield* orchestrationEngine
+        .dispatch({
+          type: "thread.turn-start.take-back",
+          commandId: serverCommandId(`turn-start-take-back-${why}`),
+          threadId,
+          messageId,
+          createdAt: yield* nowIso,
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor could not take a report's start back", {
+              threadId,
+              messageId,
+              detail: String(error),
+            }).pipe(Effect.as(false)),
+          ),
+        );
+      if (!taken) return false;
+      const latest = yield* resolveThread(threadId);
+      return (latest?.queuedFollowUps ?? []).some((queued) => queued.messageId === messageId);
+    }).pipe(Effect.orElseSucceed(() => false));
+
   const markProviderTurnAccepted = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
+    /** The message the provider took this turn for. */
+    readonly messageId: MessageId;
   }) {
     // The turn owes its checkpoint from now on, whether or not its thread is
     // a room yet: an agent added mid-turn must wait for it (checkpointHandover).
@@ -1075,20 +1284,20 @@ const make = Effect.gen(function* () {
     if (!thread || !session) {
       return;
     }
+    // Only this writer, which sent the message, names its turn, by id
+    // ("Restart and turn binding", rule B).
+    const turnStartedBy = { messageId: input.messageId, turnId: input.turnId };
 
+    // The turn already ended, or the session moved on: nothing is marked
+    // running, and the turn stays as it was recorded (a known limit: a turn
+    // that ends before its send is acknowledged keeps the provider's).
     if (
       session.status === "stopped" ||
       session.status === "error" ||
-      session.status === "interrupted"
+      session.status === "interrupted" ||
+      (session.activeTurnId !== null && session.activeTurnId !== input.turnId) ||
+      (thread.latestTurn?.turnId === input.turnId && thread.latestTurn.state !== "running")
     ) {
-      return;
-    }
-
-    if (session.activeTurnId !== null && session.activeTurnId !== input.turnId) {
-      return;
-    }
-
-    if (thread.latestTurn?.turnId === input.turnId && thread.latestTurn.state !== "running") {
       return;
     }
 
@@ -1103,6 +1312,7 @@ const make = Effect.gen(function* () {
         updatedAt,
       },
       createdAt: updatedAt,
+      turnStartedBy,
     });
   });
 
@@ -1241,6 +1451,13 @@ const make = Effect.gen(function* () {
     );
   };
 
+  /** A moved thread's carried session fell back (processNativeSessionFellBack). */
+  const isNativeSessionFellBack = (
+    event: OrchestrationEvent,
+  ): event is Extract<ProviderIntentEvent, { type: "thread.activity-appended" }> =>
+    event.type === "thread.activity-appended" &&
+    event.payload.activity.kind === ThreadNativeSessionFellBackActivityKind;
+
   /**
    * Makes sure the thread's agent has a live session for what comes next,
    * starting, restarting or handing it over as needed. While a turn waits on
@@ -1295,6 +1512,22 @@ const make = Effect.gen(function* () {
         provider: providerErrorLabel(undefined),
         method: "thread.turn.start",
         detail: `This message from ${outsideCeiling.name} wasn't sent: the thread's access was raised above what it may use.`,
+      });
+    }
+    const passCeiling = options?.passCeiling;
+    if (passCeiling !== undefined && !withinModeCeiling(thread, passCeiling)) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: PASS_ABOVE_CEILING_DETAIL,
+      });
+    }
+    const requestCeiling = options?.requestCeiling;
+    if (requestCeiling !== undefined && !withinModeCeiling(thread, requestCeiling)) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: requestCeilingRefusalWords(thread.title),
       });
     }
     const sessionKey = participantSessionKey(threadId, participantId);
@@ -1354,10 +1587,11 @@ const make = Effect.gen(function* () {
     // started here gets none of them: it must not reach other threads here
     // (docs/design/fleet.md, "Fence"). Nor does one an outside agent started:
     // through its tools the agent could reach past what it was allowed
-    // (docs/design/outside-agents.md, "Fence").
+    // (docs/design/outside-agents.md, "Fence"). Nor does one that moved here
+    // with work from the other computer, until the user here sends it a
+    // message (Part 3e).
     const scheduledRunTools = (thread.scheduledRun ?? null) !== null && participantId === null;
-    const fencedOff =
-      (thread.remoteOrigin ?? null) !== null || (thread.outsideOrigin ?? null) !== null;
+    const fencedOff = isLinkFenced(thread) || (thread.outsideOrigin ?? null) !== null;
     const roomToolsWanted =
       !fencedOff &&
       (hasAgentRecords(thread) ||
@@ -1368,6 +1602,10 @@ const make = Effect.gen(function* () {
     // it can't start threads, its agent can say where that is turned on
     // (docs/design/app-guide.md, "The tool").
     const guideTools = !fencedOff && !roomToolsWanted;
+    const noteSessionFence = Effect.sync(() => {
+      if (fencedOff) sessionsStartedFenced.add(sessionKey);
+      else sessionsStartedFenced.delete(sessionKey);
+    });
 
     const desiredRuntimeMode = early?.runtimeMode ?? thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
@@ -1376,6 +1614,23 @@ const make = Effect.gen(function* () {
         .listSessions()
         .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === threadId)));
 
+    // A moved thread whose carried session fell back and still owes its
+    // summary never resumes that session again (docs/design/fleet.md, Part
+    // 3d): one still alive here is dropped, and with no runtime alive the
+    // saved cursor goes too, which loses nothing (whatever it names never
+    // got the conversation). A drop that fails fails this start; the next
+    // one tries again.
+    if (
+      early === undefined &&
+      movedNativeSessionOf(thread, participantId) === "fell_back" &&
+      owesMovedConversation(thread, participantId)
+    ) {
+      const live = yield* resolveActiveSession(sessionKey);
+      if (live === undefined || carriedRuntimes.get(sessionKey) === live.createdAt) {
+        yield* providerService.dropResumeCursor(sessionKey);
+        carriedRuntimes.delete(sessionKey);
+      }
+    }
     const activeSession = yield* resolveActiveSession(sessionKey);
     const activeThreadSession =
       projectedSession !== null && projectedSession.status !== "stopped" && activeSession
@@ -1551,6 +1806,14 @@ const make = Effect.gen(function* () {
         ? { artifacts: true }
         : {}),
       ...(toolSettings?.enableCommandRequests !== false ? { commandRequests: true } : {}),
+      // "Use devices" and "Agents can use devices", both off by default
+      // (docs/design/devices.md). Drivers leave them off a side runtime, and a
+      // fenced thread gets none: they act on this machine's simulators.
+      ...(!fencedOff &&
+      toolSettings?.enableDevices === true &&
+      toolSettings.agentDeviceAccess === true
+        ? { deviceTools: true }
+        : {}),
       runtimeMode: desiredRuntimeMode,
     });
 
@@ -1569,9 +1832,11 @@ const make = Effect.gen(function* () {
         participantId,
         providerInstanceId: desiredInstanceId,
         launch,
+        allowReadyHandoff: startKind === "handoff",
       }).pipe(
         Effect.andThen(
           providerService.startSession(sessionKey, sessionStartInput(input)).pipe(
+            Effect.tap(() => noteSessionFence),
             withMetrics({
               timer: providerSessionStartDuration,
               attributes: { provider: preferredProvider, startKind },
@@ -1591,13 +1856,48 @@ const make = Effect.gen(function* () {
             claimed: false,
           });
         }
+      }).pipe(Effect.andThen(noteCarriedStart(session)));
+
+    // A moved thread's carried session (docs/design/fleet.md, Part 3d): a
+    // runtime that reopened it is noted, so its sends carry no summary. One
+    // that didn't (the session wouldn't open, another agent, a seeded
+    // handoff) falls back: recorded once, with the summary owed to its next
+    // send.
+    const noteCarriedStart = (session: ProviderSession | "handoff") =>
+      Effect.gen(function* () {
+        if (movedNativeSessionOf(thread, participantId) !== "carried") return;
+        if (session !== "handoff" && session.resumed === true) {
+          carriedRuntimes.set(sessionKey, session.createdAt);
+          return;
+        }
+        carriedRuntimes.delete(sessionKey);
+        if (!owedHistorySeeds.has(sessionKey)) {
+          owedHistorySeeds.set(sessionKey, {
+            driverKind: desiredDriverKind,
+            cwd: effectiveCwd,
+            claimed: false,
+            ...(participantId === null ? { moved: true as const } : { movedAgent: true as const }),
+          });
+        }
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.native-session.fall-back",
+            commandId: serverCommandId("native-session-fall-back"),
+            threadId,
+            reason: "resume_failed",
+            ...(participantId !== null ? { participantId } : {}),
+            createdAt: yield* nowIso,
+          })
+          .pipe(Effect.ignoreCause({ log: true }));
       });
 
     // `adopting`: the session was started early, so the slot still describes
     // an older runtime, and a turn waiting on it must keep its "starting".
+    // `preserveActiveTurn`: rebinding a drifted projection to the live runtime
+    // must keep an already-running turn id intact.
     const bindSessionToThread = (
       session: ProviderSession,
-      bindOptions?: { readonly adopting?: boolean },
+      bindOptions?: { readonly adopting?: boolean; readonly preserveActiveTurn?: boolean },
     ) =>
       Effect.gen(function* () {
         if (session.providerInstanceId === undefined) {
@@ -1625,40 +1925,55 @@ const make = Effect.gen(function* () {
           (options?.preservePendingTurnStartup === true || bindOptions?.adopting === true) &&
           latestSession?.status === "starting" &&
           mappedStatus === "ready";
+        const shouldPreserveActiveTurn =
+          bindOptions?.preserveActiveTurn === true &&
+          latestSession !== null &&
+          latestSession.activeTurnId !== null &&
+          latestSession.status !== "stopped" &&
+          latestSession.status !== "interrupted";
+        const shouldPreserveRunningStatus =
+          shouldPreserveActiveTurn && latestSession.status === "running";
         // Provider-side identifiers can arrive through runtime ingestion or
         // directly on the started session. Prefer the durable projection, but
         // let the runtime heal an older missing value. Projected identifiers
-        // only survive while the same provider instance remains selected.
+        // only survive while the same provider instance and driver remain selected.
         const continuesSameInstance =
-          latestSession?.providerInstanceId === session.providerInstanceId;
+          latestSession?.providerInstanceId === session.providerInstanceId &&
+          (latestSession.providerName === null || latestSession.providerName === session.provider);
         yield* setThreadSession({
           threadId,
           session: {
             threadId,
             participantId,
-            status: shouldPreservePendingTurnStartup ? "starting" : mappedStatus,
+            status: shouldPreserveRunningStatus
+              ? "running"
+              : shouldPreservePendingTurnStartup
+                ? "starting"
+                : mappedStatus,
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
             providerSessionId: continuesSameInstance
               ? (latestSession?.providerSessionId ?? null)
               : null,
-            providerThreadId:
-              continuesSameInstance && bindOptions?.adopting !== true
-                ? (latestSession?.providerThreadId ?? session.providerThreadId ?? null)
-                : (session.providerThreadId ?? latestSession?.providerThreadId ?? null),
+            providerThreadId: continuesSameInstance
+              ? bindOptions?.adopting === true
+                ? (session.providerThreadId ?? latestSession?.providerThreadId ?? null)
+                : (latestSession?.providerThreadId ?? session.providerThreadId ?? null)
+              : (session.providerThreadId ?? null),
             runtimeMode: desiredRuntimeMode,
             // Checkout the runtime actually started in. The next turn compares
             // it against the thread's target checkout to decide whether the
             // session has to be cycled into a different worktree.
             checkoutCwd: session.cwd ?? effectiveCwd ?? null,
             // Provider turn ids are not orchestration turn ids.
-            activeTurnId: null,
+            activeTurnId: shouldPreserveActiveTurn ? latestSession.activeTurnId : null,
             // The program has started: the launch, if this was one, is over.
             startup: null,
             lastError: session.lastError ?? null,
-            updatedAt: shouldPreservePendingTurnStartup
-              ? (latestSession?.updatedAt ?? session.updatedAt)
-              : session.updatedAt,
+            updatedAt:
+              shouldPreserveActiveTurn || shouldPreservePendingTurnStartup
+                ? (latestSession?.updatedAt ?? session.updatedAt)
+                : session.updatedAt,
           },
           createdAt,
         });
@@ -1673,6 +1988,7 @@ const make = Effect.gen(function* () {
         (activeSession === undefined || (yield* providerService.isEarlySession(sessionKey)))
       ) {
         yield* providerService.startEarlySession(sessionKey, sessionStartInput());
+        yield* noteSessionFence;
       }
       return { sessionThreadId: sessionKey, nativeForkApplied: false };
     }
@@ -1723,24 +2039,25 @@ const make = Effect.gen(function* () {
       if (shedsOutsideWork)
         yield* shedOutsideWork(thread, participantId, createdAt, handoffSession);
       if (contextSeed !== undefined) {
-        owedHistorySeeds.delete(sessionKey);
-        // A moved thread's debt is paid once a turn reaches the provider on
-        // this seeded session, not when it starts: some adapters keep the
-        // seed in memory until their first send.
-        if (
-          participantId === null &&
+        // The debt is paid once a turn reaches the provider on this seeded
+        // session, not when it starts: some adapters keep the seed in memory
+        // until their first send, and a send that goes as the agent's own
+        // command (contextDeferred) leaves it with them. Until then the
+        // binding owes it too, so a restart seeds the next start.
+        owedHistorySeeds.set(sessionKey, {
+          driverKind: desiredDriverKind,
+          cwd: effectiveCwd ?? undefined,
+          claimed: false,
+          ...(participantId === null &&
           thread.historySeedOwed === true &&
           contextSeed.entries.length > 0
-        ) {
-          owedHistorySeeds.set(sessionKey, {
-            driverKind: desiredDriverKind,
-            cwd: effectiveCwd ?? undefined,
-            claimed: false,
-            moved: true,
-            carriedBy: handoffSession.createdAt,
-          });
-        }
+            ? { moved: true as const }
+            : { handoff: true as const }),
+          carriedBy: handoffSession.createdAt,
+        });
       }
+      // Another agent than the one a move carried a session for.
+      yield* noteCarriedStart("handoff");
       return { sessionThreadId: handoffSession.threadId, nativeForkApplied: false };
     }
 
@@ -1790,13 +2107,20 @@ const make = Effect.gen(function* () {
 
       // A handover blanks the slot's provider ids and checkout (the decider
       // can not know them); an agent resuming a runtime that is still alive
-      // restores them from it. Only right after a handover: at any other time
-      // the slot is current, and rebinding would clear a running turn.
+      // restores them from it. Also heal a slot whose projected provider
+      // drifted from the live runtime, so runtime ingestion does not drop the
+      // reused session's events as stale.
       const slotBlankedByHandover =
         projectedSession !== null &&
         projectedSession.status === "starting" &&
         (projectedSession.providerThreadId ?? null) === null &&
         (projectedSession.checkoutCwd ?? null) === null;
+      const projectedSessionDisagreesWithRuntime =
+        activeSession !== undefined &&
+        (thread.session === null ||
+          (projectedSession !== null &&
+            (projectedSession.providerName !== activeSession.provider ||
+              projectedSession.providerInstanceId !== activeSession.providerInstanceId)));
       // An adopted early runtime is bound now, as a fresh start would have
       // been, with whatever its start owes the next turn.
       const rebindAfterHandover =
@@ -1806,13 +2130,18 @@ const make = Effect.gen(function* () {
             )
           : inRoom && activeSession !== undefined && slotBlankedByHandover
             ? bindSessionToThread(activeSession)
-            : Effect.void;
+            : projectedSessionDisagreesWithRuntime && activeSession !== undefined
+              ? bindSessionToThread(activeSession, { preserveActiveTurn: true })
+              : Effect.void;
 
       // A runtime started before its thread became a room, or before invites
-      // were turned on, has no room tools. It gets them by restarting with
-      // resume, once; an adapter that could not attach them reports false,
-      // and restarting again would not help.
-      const roomToolsMissing = roomToolsWanted && activeSession?.roomTools === undefined;
+      // were turned on, or behind a fence that has lifted since, has no room
+      // tools (or no guide). It gets them by restarting with resume, once; an
+      // adapter that could not attach them reports false, and restarting
+      // again would not help.
+      const roomToolsMissing =
+        (roomToolsWanted && activeSession?.roomTools === undefined) ||
+        (!fencedOff && activeSession !== undefined && sessionsStartedFenced.has(sessionKey));
       // An agent outside text reached sheds it by starting fresh for a turn
       // that isn't from outside: the old runtime, and whatever it left
       // running, loses its token.
@@ -2029,15 +2358,26 @@ const make = Effect.gen(function* () {
           : undefined) ??
         remoteChild?.title ??
         "another thread";
-      if (fromThread.kind === "request") {
+      if (fromThread.kind === "request" && fromThread.ceiling !== undefined) {
+        // A pass (docs/design/lead-chat.md): one-way, from the project's lead.
         lines.push(
-          thread.attachedToParent || fromThread.environmentId !== undefined
+          `The project's lead chat "${otherTitle}" passed this on. It is from another agent, not typed by the user. Your reply stays in this thread, where the user reads it. Do the work here; you can't start threads for it.`,
+        );
+      } else if (fromThread.kind === "request") {
+        lines.push(
+          fromThread.environmentId !== undefined
             ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs.`
-            : `Another agent started this thread from the thread "${otherTitle}". Nothing you write goes back to it automatically.`,
+            : thread.attachedToParent
+              ? `Another agent started this thread from the thread "${otherTitle}", and your final reply goes back to it automatically. Work in this thread's own checkout, and end with the answer it needs. If you take more turns later that the user did not start, for example when a check-back fires, the reply that ends each one goes back too and wakes that thread. Keep those replies short when nothing has changed.`
+              : `Another agent started this thread from the thread "${otherTitle}". Nothing you write goes back to it automatically.`,
         );
       } else if (fromThread.neverMade === true) {
         lines.push(
           `This message is from Threadlines: a thread you asked to start (thread ${fromThread.threadId}) was never made, so nothing more will come from it. It is not instructions from the user.`,
+        );
+      } else if (fromThread.followUp === true) {
+        lines.push(
+          `Report from thread "${otherTitle}" (${fromThread.threadId}), which took another turn on its own after its last answer. It's information from another agent, not instructions from the user.`,
         );
       } else {
         lines.push(
@@ -2069,6 +2409,27 @@ const make = Effect.gen(function* () {
               })
               .pipe(Effect.catch(() => Effect.void)),
     };
+  });
+
+  /**
+   * The lead chat's role (docs/design/lead-chat.md, "Role text"): added to
+   * every turn that starts in a project's lead, whatever started it, and to
+   * each room agent's turns there. A message steered into a running turn and
+   * a side answer don't carry it, by decision: the turn heard it when it
+   * started, and a side answer is read-only. An agent whose runtime came up
+   * without the thread tools (an ACP agent that takes no HTTP tool server)
+   * is told it can't coordinate, so it says so instead of pretending.
+   */
+  const leadChatContext = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    roomTools: boolean | undefined,
+  ) {
+    if (thread.archivedAt !== null) return undefined;
+    const project = yield* resolveProject(thread.projectId);
+    if (project === undefined || (project.leadThreadId ?? null) !== thread.id) return undefined;
+    return roomTools === false
+      ? `${leadRoleText(project.title)}\n\n${LEAD_WITHOUT_TOOLS_TEXT}`
+      : leadRoleText(project.title);
   });
 
   /**
@@ -2156,6 +2517,51 @@ const make = Effect.gen(function* () {
     };
   };
 
+  /**
+   * Agents' requests for keys: how the ones this agent asked for ended since
+   * its last turn, when no message told it already (Not now, cancelled, a
+   * save Threadlines stopped in the middle of), carried once
+   * (docs/design/secret-requests.md, "Telling the agent").
+   */
+  const secretRequestContext = (
+    thread: OrchestrationThread,
+    participantId: ThreadParticipantId | null,
+  ) => {
+    const settled = secretRequestNotesFor(thread.secretRequests, participantId);
+    const notes = settled.flatMap((request) => {
+      const text = secretRequestNote(request);
+      return text === null ? [] : [text];
+    });
+    return {
+      text:
+        notes.length === 0
+          ? undefined
+          : [
+              "About the keys you asked the user for, since your last turn:",
+              ...notes.map((note) => `- ${note}`),
+            ].join("\n"),
+      delivered:
+        settled.length === 0
+          ? Effect.void
+          : Effect.gen(function* () {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.secret-request.deliver-notes",
+                commandId: serverCommandId("secret-request-notes"),
+                threadId: thread.id,
+                requestIds: settled.map((request) => request.requestId),
+                createdAt: yield* nowIso,
+              });
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("secret request notes were not marked delivered", {
+                  threadId: thread.id,
+                  detail: error.message,
+                }),
+              ),
+            ),
+    };
+  };
+
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
@@ -2173,6 +2579,8 @@ const make = Effect.gen(function* () {
     readonly fromThread?: ThreadMessageOrigin | undefined;
     /** An outside agent's turn: runs only within its ceiling. */
     readonly fromOutside?: OutsideTurnOrigin | undefined;
+    /** A parent request's (or its continue's) access limit. */
+    readonly requestCeiling?: LeadPassCeiling | undefined;
     /**
      * A person sent it from the app (`sentFrom`): an agent outside text
      * reached starts fresh for it (EnsureSessionOptions.shedOutsideWork).
@@ -2200,6 +2608,16 @@ const make = Effect.gen(function* () {
       isForkInitialTurn &&
       isThreadForkContextPayload(forkContextActivity.payload)
         ? forkContextActivity.payload
+        : undefined;
+    // The fork's summarized source, when no prompt carrying it went out yet
+    // (its first message went as the agent's own command, or never out): a
+    // later turn carries it. Its seed outcome is recorded once one did.
+    const owedForkContextText =
+      !isForkInitialTurn &&
+      forkContextActivity !== undefined &&
+      isThreadForkContextPayload(forkContextActivity.payload) &&
+      !thread.activities.some((activity) => activity.kind === ThreadForkSeedOutcomeActivityKind)
+        ? withContextSeedPreamble(forkContextActivity.payload.contextText, undefined)
         : undefined;
     const sourceThread = forkContext ? yield* resolveThread(forkContext.sourceThreadId) : undefined;
 
@@ -2233,6 +2651,20 @@ const make = Effect.gen(function* () {
     }
 
     const sessionKey = participantSessionKey(input.threadId, input.participantId);
+    // Read from the stored message, which keeps it for good: a retry or a
+    // resend of a pass carries no origin on its turn.
+    const storedMessage = thread.messages.find((message) => message.id === input.messageId);
+    const passCeiling = storedMessage?.fromThread?.ceiling ?? input.fromThread?.ceiling;
+    const requestCeiling = storedMessage?.requestCeiling ?? input.requestCeiling;
+    // Marked as never sent while this turn was prepared (a retry the user
+    // made just before the mark landed): it stays unsent.
+    if (passCeiling !== undefined && storedMessage?.notSent === true) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(undefined),
+        method: "thread.turn.start",
+        detail: PASS_NOT_SENT_DETAIL,
+      });
+    }
     const ensured = yield* ensureSessionForThread(input.threadId, input.createdAt, {
       participantId: input.participantId,
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
@@ -2240,6 +2672,8 @@ const make = Effect.gen(function* () {
       preservePendingTurnStartup: true,
       ...(forkFrom !== undefined ? { forkFrom } : {}),
       ...(input.fromOutside !== undefined ? { outsideCeiling: input.fromOutside } : {}),
+      ...(passCeiling !== undefined ? { passCeiling } : {}),
+      ...(requestCeiling !== undefined ? { requestCeiling } : {}),
       ...(input.sentByPerson === true && input.fromOutside === undefined
         ? { shedOutsideWork: true }
         : {}),
@@ -2263,6 +2697,49 @@ const make = Effect.gen(function* () {
         provider: providerErrorLabel(activeSession.provider),
         method: "thread.turn.start",
         detail: `This message from ${input.fromOutside.name} wasn't sent: the agent here still runs with more access than it may use.`,
+      });
+    }
+    // A pass goes only to a runtime within its ceiling, in the mode it runs.
+    if (
+      passCeiling !== undefined &&
+      ((activeSession !== undefined &&
+        exceedsRuntimeMode(activeSession.runtimeMode, passCeiling.runtimeMode)) ||
+        !withinModeCeiling(
+          {
+            runtimeMode: thread.runtimeMode,
+            interactionMode: input.interactionMode ?? thread.interactionMode,
+          },
+          passCeiling,
+        ))
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession?.provider),
+        method: "thread.turn.start",
+        detail: PASS_ABOVE_CEILING_DETAIL,
+      });
+    }
+    // A parent's request (or its continue) goes only to a runtime within its
+    // ceiling, re-read on the thread now (the user may have widened it while
+    // the session was prepared).
+    const latestForCeiling =
+      requestCeiling === undefined ? undefined : ((yield* resolveThread(input.threadId)) ?? thread);
+    if (
+      requestCeiling !== undefined &&
+      latestForCeiling !== undefined &&
+      ((activeSession !== undefined &&
+        exceedsRuntimeMode(activeSession.runtimeMode, requestCeiling.runtimeMode)) ||
+        !withinModeCeiling(
+          {
+            runtimeMode: latestForCeiling.runtimeMode,
+            interactionMode: latestForCeiling.interactionMode,
+          },
+          requestCeiling,
+        ))
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession?.provider),
+        method: "thread.turn.start",
+        detail: requestCeilingRefusalWords(latestForCeiling.title),
       });
     }
     // In a room, what the other agents said and changed since this agent's
@@ -2291,50 +2768,118 @@ const make = Effect.gen(function* () {
     // A debt for another reason (the provider couldn't reopen its
     // conversation) on a thread that still owes its moved history is that
     // debt too: the seed it pays with is the same conversation, and paying
-    // it must record the move's delivery.
+    // it must record the move's delivery. So for a moved room's agent whose
+    // carried session wouldn't reopen (Part 3f, (i)): it is owed the whole
+    // conversation, never a joining agent's last few messages.
     const unmarked = owedHistorySeeds.get(sessionKey);
     if (
       unmarked !== undefined &&
       unmarked.moved !== true &&
+      unmarked.movedAgent !== true &&
       unmarked.carriedBy === undefined &&
       !unmarked.claimed &&
-      thread.historySeedOwed === true &&
-      input.participantId === null
+      owesMovedConversation(thread, input.participantId)
     ) {
-      owedHistorySeeds.set(sessionKey, { ...unmarked, moved: true });
+      owedHistorySeeds.set(
+        sessionKey,
+        input.participantId === null
+          ? { ...unmarked, moved: true }
+          : { ...unmarked, movedAgent: true },
+      );
     }
+    // A runtime that reopened a session the move carried holds the
+    // conversation itself: it owes no summary while that session proves
+    // itself (docs/design/fleet.md, Part 3d). A room agent's own too (Part 3f).
+    const onCarriedSession =
+      movedNativeSessionOf(thread, input.participantId) === "carried" &&
+      activeSession !== undefined &&
+      carriedRuntimes.get(sessionKey) === activeSession.createdAt;
+    // A moved room's agent that came with the move and whose conversation
+    // isn't caught up here yet (Part 3f, (i)): it gets the whole conversation
+    // once, as the summary, unless it reopened its carried session; then it
+    // is caught up on what was said here since. Never the last few messages
+    // a joining agent gets.
+    const firstHereInMovedRoom =
+      (thread.movedFrom ?? null) !== null &&
+      isRoomThread(thread) &&
+      (input.participantId === null ||
+        thread.participants.find((entry) => entry.id === input.participantId)?.movedIn === true) &&
+      thread.roomContext?.[agentKey] === undefined;
     if (
       !owedHistorySeeds.has(sessionKey) &&
-      thread.historySeedOwed === true &&
-      input.participantId === null &&
-      activeSession !== undefined
+      owesMovedConversation(thread, input.participantId) &&
+      activeSession !== undefined &&
+      !onCarriedSession
     ) {
       owedHistorySeeds.set(sessionKey, {
         driverKind: activeSession.provider,
         cwd: thread.worktreePath ?? undefined,
         claimed: false,
-        moved: true,
+        ...(input.participantId === null
+          ? { moved: true as const }
+          : { movedAgent: true as const }),
       });
     }
     const owed = owedHistorySeeds.get(sessionKey);
     const owedCandidate = owed !== undefined && !owed.claimed ? owed : undefined;
-    const roomPaysHistory = owedCandidate !== undefined && isRoomThread(thread);
+    // Paid with the whole conversation as the summary (above): the note only
+    // introduces the room, from where the summary ends.
+    const movedSummary =
+      firstHereInMovedRoom &&
+      owedCandidate !== undefined &&
+      (owedCandidate.moved === true || owedCandidate.movedAgent === true);
+    // A handoff's seed is in the runtime already: the room's note stays as
+    // it would be, or the first prompt carries those turns twice.
+    const roomPaysHistory =
+      owedCandidate !== undefined &&
+      owedCandidate.handoff !== true &&
+      isRoomThread(thread) &&
+      !movedSummary;
+    // A carried session holds what it saw where it was: up to the last
+    // message it was given there (each agent's own, not the room's last),
+    // so its first turn here is caught up on everything after; with nothing
+    // known, on everything.
+    const seenThrough =
+      input.participantId === null
+        ? thread.movedFrom?.seenThrough
+        : thread.participants.find((entry) => entry.id === input.participantId)?.movedSeenThrough;
+    const seenSequence =
+      seenThrough === undefined
+        ? 0
+        : (thread.messages.find((message) => message.id === seenThrough)?.eventSequence ?? 0);
+    const roomCursor: OrchestrationRoomContextCursor | null =
+      firstHereInMovedRoom && onCarriedSession
+        ? { conversationId, throughSequence: seenSequence, partialMessageIds: [] }
+        : movedSummary
+          ? {
+              conversationId,
+              throughSequence: Math.max(
+                0,
+                ...thread.messages
+                  .filter((message) => message.id !== input.messageId)
+                  .map((message) => message.eventSequence ?? 0),
+              ),
+              partialMessageIds: [],
+            }
+          : storedCursor !== null &&
+              conversationId !== null &&
+              storedCursor.conversationId === conversationId
+            ? storedCursor
+            : null;
     const roomCatchUp = buildRoomCatchUp({
       thread,
       participantId: input.participantId,
       messageId: input.messageId,
-      cursor:
-        storedCursor !== null &&
-        conversationId !== null &&
-        storedCursor.conversationId === conversationId
-          ? storedCursor
-          : null,
+      cursor: roomCursor,
       ...(roomPaysHistory ? { fresh: true } : {}),
+      ...(movedSummary ? { introduce: true } : {}),
       lane: "main",
     });
     // A natively forked session already holds the full source history; the
     // context-seed preamble and re-sent source attachments would duplicate it.
-    const forkContextText = !nativeForkApplied ? input.providerContext : undefined;
+    const forkContextText = !nativeForkApplied
+      ? (input.providerContext ?? owedForkContextText)
+      : undefined;
     const builtSeed =
       owedCandidate === undefined || roomPaysHistory || owedCandidate.carriedBy !== undefined
         ? undefined
@@ -2345,16 +2890,29 @@ const make = Effect.gen(function* () {
               toProvider: owedCandidate.driverKind,
               excludeMessageId: input.messageId,
               ...(owedCandidate.cwd ? { cwd: owedCandidate.cwd } : {}),
+              forParticipantId: input.participantId,
             })
             .pipe(Effect.map(Option.getOrUndefined));
     // A moved thread's debt is only paid with the conversation itself: the
     // builder falls back to a workspace pointer when it can't read the
     // transcript, and that send must leave the debt owed.
     const movedSeedEmpty =
-      owedCandidate?.moved === true &&
+      (owedCandidate?.moved === true || owedCandidate?.movedAgent === true) &&
       owedCandidate.carriedBy === undefined &&
       (builtSeed === undefined || builtSeed.entries.length === 0) &&
       thread.messages.some((message) => message.imported === true);
+    // Nor does the message go without it (docs/design/fleet.md, Part 3d): an
+    // agent that never got the conversation would answer as if it began
+    // here. The turn fails where the user sees it, the debt stays owed, and
+    // sending again tries again. A room's catch-up note carries the history
+    // on its own.
+    if (movedSeedEmpty && !roomPaysHistory) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(activeSession?.provider),
+        method: "thread.turn.start",
+        detail: MOVED_CONTEXT_UNSENT_WORDS,
+      });
+    }
     const owedSeed = movedSeedEmpty ? undefined : owedCandidate;
     const resumeSeed = movedSeedEmpty ? undefined : builtSeed;
     const resumeContextText =
@@ -2362,8 +2920,10 @@ const make = Effect.gen(function* () {
     // Child threads: who this message is from, and what this agent's threads
     // did since its last turn without waking it (notes are its alone).
     const childContext = yield* childThreadContext(thread, input.participantId, input.fromThread);
+    const leadContext = yield* leadChatContext(thread, activeSession?.roomTools);
     const scheduleContext = yield* scheduledTaskContext(thread, input.participantId);
     const settingsContext = settingsChangeContext(thread, input.participantId);
+    const secretContext = secretRequestContext(thread, input.participantId);
     const sentMessage = thread.messages.find((message) => message.id === input.messageId);
     // Which device the user sent it from, when that matters (see
     // messageSentFromNote). A native fork carries on the source thread's
@@ -2402,10 +2962,12 @@ const make = Effect.gen(function* () {
       resumeContextText,
       forkContextText,
       roomCatchUp?.note,
+      leadContext,
       childContext.text,
       outsideAgentContext(thread, input.messageId),
       scheduleContext.text,
       settingsContext.text,
+      secretContext.text,
     ]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");
@@ -2448,7 +3010,10 @@ const make = Effect.gen(function* () {
           }
         : undefined;
 
-    if (forkContext !== undefined) {
+    // A native fork holds the source as it starts; a summarized one has it
+    // once a prompt carrying the summary went out (`contextDelivered`).
+    let forkSeedOutcome: Effect.Effect<void> = Effect.void;
+    if (forkContext !== undefined || owedForkContextText !== undefined) {
       const seedOutcomePayload: ThreadForkSeedOutcomePayload = {
         seedMode: nativeForkApplied ? "provider-native" : "context-seed",
         ...(forkFrom !== undefined
@@ -2461,7 +3026,7 @@ const make = Effect.gen(function* () {
             }
           : {}),
       };
-      yield* orchestrationEngine
+      forkSeedOutcome = orchestrationEngine
         .dispatch({
           type: "thread.activity.append",
           commandId: serverCommandId("thread-fork-seed-outcome"),
@@ -2479,7 +3044,14 @@ const make = Effect.gen(function* () {
           },
           createdAt: input.createdAt,
         })
-        .pipe(Effect.catch(() => Effect.void));
+        .pipe(
+          Effect.asVoid,
+          Effect.catch(() => Effect.void),
+        );
+      if (nativeForkApplied) {
+        yield* forkSeedOutcome;
+        forkSeedOutcome = Effect.void;
+      }
     }
     const modelForTurn =
       input.modelSelection ??
@@ -2531,6 +3103,28 @@ const make = Effect.gen(function* () {
               if (owedSeed.moved === true) {
                 yield* markHistorySeedDelivered(input.threadId, input.messageId);
               }
+              // The binding stops owing it too, if it still describes the
+              // runtime that sent it (ProviderService.noteHistoryDelivered).
+              if (activeSession !== undefined) {
+                yield* providerService.noteHistoryDelivered({
+                  threadId: sessionKey,
+                  sessionCreatedAt: activeSession.createdAt,
+                });
+              }
+            }),
+      // What else this prompt carried that is owed until it goes out.
+      contextDelivered: forkSeedOutcome,
+      // The send reopened the runtime without its conversation
+      // (`historyOwed` on its result): the next message carries the history.
+      historyOwedAfterSend:
+        activeSession === undefined
+          ? Effect.void
+          : Effect.sync(() => {
+              owedHistorySeeds.set(sessionKey, {
+                driverKind: activeSession.provider,
+                cwd: activeSession.cwd ?? thread.worktreePath ?? undefined,
+                claimed: false,
+              });
             }),
       // A send that failed before the provider took it delivered nothing.
       historyDebtReturned:
@@ -2539,15 +3133,21 @@ const make = Effect.gen(function* () {
           : Effect.sync(() => {
               owedSeed.claimed = false;
             }),
-      // Child threads', scheduled tasks' and settings changes' notes this turn carries, cleared
-      // once it is taken.
+      // Child threads', scheduled tasks', settings changes' and key requests'
+      // notes this turn carries, cleared once it is taken.
       notesDelivered: Effect.andThen(
         childContext.delivered(input.createdAt),
-        Effect.andThen(scheduleContext.delivered, settingsContext.delivered),
+        Effect.andThen(
+          scheduleContext.delivered,
+          Effect.andThen(settingsContext.delivered, secretContext.delivered),
+        ),
       ),
-      // Recorded only once the provider has taken the turn.
+      // Recorded only once the provider has taken the turn. A moved room's
+      // agent caught up here is recorded even when its provider names no
+      // conversation: the record says it was given the conversation (Part
+      // 3f, (i)), and a cursor with no conversation is never read back as one.
       roomContext:
-        roomCatchUp !== undefined && conversationId !== null
+        roomCatchUp !== undefined && (conversationId !== null || firstHereInMovedRoom)
           ? { agentKey, cursor: { conversationId, ...roomCatchUp.cursor } }
           : undefined,
       // The model the turn request recorded for this agent (recordTurnModel).
@@ -2938,13 +3538,125 @@ const make = Effect.gen(function* () {
         });
       }).pipe(Effect.ignoreCause({ log: true }));
 
-    const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
-      handleTurnStartFailure(cause).pipe(
+    /**
+     * Child threads: a turn that never started settles what its message owed
+     * its parent (docs/design/agent-autonomy-no-limits.md, rule 11). With
+     * `detail`, the start failed: a parent's request settles failed and an
+     * owed report delivers the failure. Without, the start was taken back on
+     * purpose (Stop, a report gone stale): the owed report goes with nothing
+     * sent, and a request is settled by whatever took it back.
+     */
+    const settleChildWorkForUnstartedTurn = (detail: string | null) =>
+      Effect.gen(function* () {
+        const latest = yield* resolveThread(event.payload.threadId);
+        if (latest === undefined || latest.parentThreadId === null) {
+          return;
+        }
+        const messageId = event.payload.messageId;
+        const failure =
+          detail === null
+            ? undefined
+            : `'${latest.title}' could not start its turn: ${detail.replace(/\.$/, "")}.`;
+        if (
+          (latest.childRequests.owedReports ?? []).some((entry) =>
+            isOwedReport(entry, { messageId }),
+          )
+        ) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.child-report.settle",
+            commandId: serverCommandId("child-report-unstarted"),
+            threadId: latest.id,
+            owed: { messageId },
+            turnId: null,
+            ...(failure !== undefined
+              ? { text: `${failure} Send it a message with thread_send to continue.` }
+              : {}),
+            createdAt: yield* nowIso,
+          });
+        }
+        if (failure === undefined || detail === null) {
+          return;
+        }
+        const parent = yield* resolveThread(latest.parentThreadId);
+        const request = parent?.childRequests.open.find(
+          (entry) =>
+            entry.childThreadId === latest.id &&
+            entry.remote === undefined &&
+            entry.status === "running" &&
+            entry.childMessageId === messageId,
+        );
+        if (parent === undefined || request === undefined) {
+          return;
+        }
+        yield* orchestrationEngine.dispatch({
+          type: "thread.child-request.settle",
+          commandId: serverCommandId("child-request-start-failed"),
+          threadId: parent.id,
+          requestId: request.requestId,
+          outcome: "failed",
+          reply: {
+            messageId: childReportMessageId(request.requestId),
+            text: failure,
+            turnId: null,
+          },
+          error: detail,
+          createdAt: yield* nowIso,
+        });
+      }).pipe(Effect.ignoreCause({ log: true }));
+
+    // A message no one can send again never reached the agent: a lead
+    // chat's pass, or an outside agent's message. The decider marks it so no
+    // history carries it (and a pass's lead hears); anything else it leaves.
+    const unsendable =
+      message.fromThread?.ceiling !== undefined || message.fromOutside !== undefined;
+    const markNotRun = (reason: "ceiling" | "stopped" | "failed") =>
+      unsendable
+        ? Effect.gen(function* () {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.message.not-run",
+              commandId: serverCommandId("message-not-run"),
+              threadId: event.payload.threadId,
+              messageId: event.payload.messageId,
+              reason,
+              createdAt: yield* nowIso,
+            });
+          }).pipe(Effect.ignoreCause({ log: true }))
+        : Effect.void;
+
+    // A turn that could not start: a message that never reached the agent
+    // is marked first, so whoever watches the thread stop working (an outside
+    // agent's thread_wait) already sees it unsent; then the failure is
+    // reported and its hand-off ends. `beforeSend`: it failed before the
+    // provider was given the turn, so its text went nowhere.
+    const reportFailedStart = (cause: Cause.Cause<unknown>, beforeSend: boolean) => {
+      if (Cause.hasInterruptsOnly(cause)) return handleTurnStartFailure(cause);
+      const detail = formatFailureDetail(cause);
+      const mark = detail.includes(PASS_ABOVE_CEILING_DETAIL)
+        ? markNotRun("ceiling")
+        : beforeSend
+          ? markNotRun("failed")
+          : Effect.void;
+      // Only a turn the provider never took: one it took ends (and settles
+      // what it owes) by its own turn end, whatever failed after. A child's
+      // report goes back to the front of the queue, before the failure is
+      // recorded, so a stop in between can't leave it out of the queue.
+      const reportStart = beforeSend && message.fromThread?.kind === "report";
+      return mark.pipe(
         Effect.andThen(
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.void
-            : failHandOffForFailedStart(formatFailureDetail(cause)),
+          reportStart
+            ? takeBackReportStart(event.payload.threadId, event.payload.messageId, "failed-start")
+            : Effect.void,
         ),
+        Effect.andThen(handleTurnStartFailure(cause)),
+        Effect.andThen(failHandOffForFailedStart(detail)),
+        Effect.andThen(
+          beforeSend && !reportStart ? settleChildWorkForUnstartedTurn(detail) : Effect.void,
+        ),
+      );
+    };
+
+    const recoverTurnStartFailure = (cause: Cause.Cause<unknown>, beforeSend: boolean) =>
+      reportFailedStart(cause, beforeSend).pipe(
         Effect.catchCause((recoveryCause) =>
           Effect.logWarning("provider command reactor failed to recover turn start failure", {
             eventType: event.type,
@@ -2981,6 +3693,9 @@ const make = Effect.gen(function* () {
         threadId: event.payload.threadId,
         messageId: event.payload.messageId,
       });
+      // A pass or an outside agent's message never ran: marked (before the
+      // thread stops working, like a failed start), so no history carries it.
+      yield* markNotRun("stopped");
       yield* dropStart("Stopped before the turn started.");
       return true;
     });
@@ -3050,6 +3765,7 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
+      yield* settleChildWorkForUnstartedTurn(null);
       yield* Effect.logInfo("continue not sent: the user wrote first", {
         threadId: event.payload.threadId,
         messageId: event.payload.messageId,
@@ -3081,6 +3797,7 @@ const make = Effect.gen(function* () {
             createdAt: yield* nowIso,
           });
         }
+        yield* settleChildWorkForUnstartedTurn(null);
       });
 
     /**
@@ -3158,6 +3875,9 @@ const make = Effect.gen(function* () {
         ...(event.payload.fromOutside !== undefined
           ? { fromOutside: event.payload.fromOutside }
           : {}),
+        ...(event.payload.requestCeiling !== undefined
+          ? { requestCeiling: event.payload.requestCeiling }
+          : {}),
         sentByPerson: message.sentFrom !== undefined,
         createdAt: event.payload.createdAt,
       }).pipe(
@@ -3176,16 +3896,7 @@ const make = Effect.gen(function* () {
             ),
         }),
         Effect.map(Option.some),
-        Effect.catchCause((cause) =>
-          handleTurnStartFailure(cause).pipe(
-            Effect.andThen(
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.void
-                : failHandOffForFailedStart(formatFailureDetail(cause)),
-            ),
-            Effect.as(Option.none()),
-          ),
-        ),
+        Effect.catchCause((cause) => reportFailedStart(cause, true).pipe(Effect.as(Option.none()))),
       );
 
       if (Option.isNone(sendTurnRequest)) {
@@ -3193,12 +3904,15 @@ const make = Effect.gen(function* () {
       }
 
       const checkpointStartedAtMs = yield* Clock.currentTimeMillis;
-      yield* capturePreTurnCheckpointForTurnStart({ threadId: event.payload.threadId }).pipe(
+      const checkpointFailed = yield* capturePreTurnCheckpointForTurnStart({
+        threadId: event.payload.threadId,
+      }).pipe(
+        Effect.as(false),
         Effect.catchCause((cause) =>
           Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
             threadId: event.payload.threadId,
             cause: Cause.pretty(cause),
-          }),
+          }).pipe(Effect.as(true)),
         ),
       );
 
@@ -3212,6 +3926,8 @@ const make = Effect.gen(function* () {
         historyDebtClaimed,
         historyDebtPaid,
         historyDebtReturned,
+        contextDelivered,
+        historyOwedAfterSend,
         notesDelivered,
       } = sendTurnRequest.value;
 
@@ -3247,24 +3963,62 @@ const make = Effect.gen(function* () {
                 : {}),
             }
           : undefined;
+      // Whether the provider took the turn: a failure before that left the
+      // message's text with no agent; one after (bookkeeping) did not.
+      let providerTookTurn = false;
+      // None of the context in front of the message went (see below).
+      let contextDeferred = false;
+      const suggestionThread =
+        origin === "person" ? thread : ((yield* resolveThread(event.payload.threadId)) ?? thread);
       yield* providerService
         .sendTurn({
           ...turnRequest,
           requestedAt,
           origin,
-          // Its sender reads the reply here: Codex suggests their next message.
-          ...(origin === "person" ? { suggestNextMessage: true } : {}),
+          lane: "main",
+          // The user reads the reply here: Codex and Antigravity suggest their next message.
+          ...(shouldSuggestNextMessage({
+            origin,
+            message,
+            fromThread: event.payload.fromThread,
+            participantId: event.payload.participantId,
+            thread: suggestionThread,
+          })
+            ? { suggestNextMessage: true }
+            : {}),
           ...(resend !== undefined ? { resend } : {}),
           handoffSteps: {
             queueMs,
             prepareMs: checkpointStartedAtMs - prepareStartedAtMs,
             checkpointMs: checkpointEndedAtMs - checkpointStartedAtMs,
+            checkpointFailed,
           },
         })
         .pipe(
           // The provider has the history now, whatever the bookkeeping below does.
-          Effect.tap(() => historyDebtPaid),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              providerTookTurn = true;
+            }),
+          ),
+          // The history and a fork's summary count as delivered only once
+          // the prompt carrying them went out to the agent. A send that went
+          // as the agent's own command (`contextDeferred`), or whose prompt
+          // was never written (`undelivered`: its setup failed first),
+          // carried none of the context in front of it, so every debt it was
+          // to pay stays, the binding's `historyOwed` mark included.
+          Effect.tap((turn) =>
+            Effect.suspend(() => {
+              contextDeferred = turn.contextDeferred === true || turn.undelivered === true;
+              return contextDeferred
+                ? historyDebtReturned
+                : Effect.andThen(historyDebtPaid, contextDelivered);
+            }),
+          ),
           Effect.onError(() => historyDebtReturned),
+          // Recovery opened a conversation without the history: this message
+          // stays sent, and the next one carries the history.
+          Effect.tap((turn) => (turn.historyOwed === true ? historyOwedAfterSend : Effect.void)),
           Effect.tap((turn) =>
             Effect.sync(() => providerTakenTurns.set(event.payload.threadId, turn.turnId)),
           ),
@@ -3272,14 +4026,15 @@ const make = Effect.gen(function* () {
             markProviderTurnAccepted({
               threadId: event.payload.threadId,
               turnId: turn.turnId,
+              messageId: event.payload.messageId,
             }),
           ),
           Effect.tap(() =>
-            roomContext !== undefined
+            roomContext !== undefined && !contextDeferred
               ? recordRoomContext(event.payload.threadId, roomContext, event.payload.createdAt)
               : Effect.void,
           ),
-          Effect.tap(() => notesDelivered),
+          Effect.tap(() => (contextDeferred ? Effect.void : notesDelivered)),
           // Replies and reports queued while the turn was starting go in now,
           // behind its own message (and its notes), in this thread's worker.
           Effect.tap(() =>
@@ -3291,7 +4046,7 @@ const make = Effect.gen(function* () {
               ),
             }),
           ),
-          Effect.catchCause(recoverTurnStartFailure),
+          Effect.catchCause((cause) => recoverTurnStartFailure(cause, !providerTookTurn)),
           Effect.forkScoped,
         );
     });
@@ -3788,6 +4543,20 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    // A pause or resume Threadlines made for a wait goes out only while the
+    // goal still carries it: the user took the goal over, or the provider
+    // ended or blocked it, since it was decided (docs/design/goal-wait-pause.md).
+    if (event.payload.origin === "automatic") {
+      const goal = thread.goal;
+      const stillOurs =
+        event.payload.status === "paused"
+          ? // Paused already: a resume of ours may still be on its way.
+            goal?.waitPause === "paused" && (goal.status === "active" || goal.status === "paused")
+          : goal?.waitPause === "resuming" && goal.status === "paused";
+      if (!stillOurs) {
+        return;
+      }
+    }
     // Goals live provider-side, so the thread needs a live session before the
     // goal RPC. Cold threads get their session started (or resumed) here. In a
     // room the goal belongs to the agent holding the session slot. The
@@ -3822,17 +4591,57 @@ const make = Effect.gen(function* () {
             }
           }),
         ),
+        // A resume (status only) on a session whose provider holds no goal
+        // (a moved thread's, or one whose session started fresh) carries the
+        // goal the thread reads, with what is left of its budget: alone it
+        // would fail on Claude and do nothing on Codex.
         Effect.flatMap(() =>
+          event.payload.objective === undefined &&
+          event.payload.status === "active" &&
+          thread.goal !== null
+            ? providerService.getThreadGoal({ threadId: goalHolderSessionKey }).pipe(
+                Effect.map((held) => (held === null ? thread.goal : null)),
+                Effect.orElseSucceed(() => null),
+              )
+            : Effect.succeed(null),
+        ),
+        // A goal that starts work in the lead carries the lead's role, as a
+        // turn there would: the provider runs that work without a turn start
+        // of ours (docs/design/lead-chat.md, "Role text").
+        Effect.flatMap((resumed) =>
+          (event.payload.objective !== undefined || event.payload.status === "active"
+            ? providerService
+                .listSessions()
+                .pipe(
+                  Effect.flatMap((sessions) =>
+                    leadChatContext(
+                      thread,
+                      sessions.find((session) => session.threadId === goalHolderSessionKey)
+                        ?.roomTools,
+                    ),
+                  ),
+                )
+            : Effect.succeed(undefined)
+          ).pipe(Effect.map((context) => ({ resumed, context }))),
+        ),
+        Effect.flatMap(({ resumed, context }) =>
           providerService.setThreadGoal({
             threadId: goalHolderSessionKey,
             modelSelection: goalModelSelection,
+            ...(context !== undefined ? { context } : {}),
+            // A pause or resume for a wait (thread.goal.wait.sync) is ours, not the user's.
+            ...(event.payload.origin !== undefined ? { origin: event.payload.origin } : {}),
             ...(event.payload.objective !== undefined
               ? { objective: event.payload.objective }
-              : {}),
+              : resumed !== null
+                ? { objective: resumed.objective }
+                : {}),
             ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
             ...(event.payload.tokenBudget !== undefined
               ? { tokenBudget: event.payload.tokenBudget }
-              : {}),
+              : resumed !== null && resumed.tokenBudget !== null
+                ? { tokenBudget: Math.max(1, resumed.tokenBudget - resumed.tokensUsed) }
+                : {}),
           }),
         ),
         Effect.asVoid,
@@ -4511,13 +5320,19 @@ const make = Effect.gen(function* () {
       yield* note("Check-back not cancelled: couldn't reach the agent's session", "error");
       return;
     }
-    if (runtime === undefined) {
-      // Nothing is running to come back: the list was stale. Jobs saved to
-      // disk outlive the session, so they stay.
+    // A runtime whose provider sets no check-backs (the agent switched from
+    // Claude, say) holds none of them, so it is left running.
+    const holdsCheckBacks =
+      runtime?.providerInstanceId === undefined ||
+      (yield* providerService.getCapabilities(runtime.providerInstanceId).pipe(
+        Effect.map((capabilities) => capabilities.checkBacks === "supported"),
+        Effect.orElseSucceed(() => true),
+      ));
+    if (runtime === undefined || !holdsCheckBacks) {
+      // Nothing is running that could come back: the list was stale. Jobs
+      // saved to disk outlive the session, so they stay listed as dormant.
       const thread = yield* resolveThread(threadId);
-      const kept = (thread?.checkBacks ?? []).filter(
-        (checkBack) => checkBack.participantId === participantId && checkBack.durable,
-      );
+      const kept = markCheckBacksDormant(thread?.checkBacks ?? [], participantId);
       yield* orchestrationEngine
         .dispatch({
           type: "thread.check-backs.set",
@@ -4618,7 +5433,11 @@ const make = Effect.gen(function* () {
         }),
       { discard: true },
     );
-    yield* endSideTurn(thread.id, thread.sideTurn, event.payload.createdAt);
+    yield* Effect.forEach(
+      liveSideTurns(thread),
+      (sideTurn) => endSideTurn(thread.id, sideTurn, event.payload.createdAt),
+      { discard: true },
+    );
     // Every runtime of the thread is gone, and with it whatever outside work
     // left running: the agents it marked start fresh next time, unless their
     // provider keeps queued work past the runtime (they clear at that start).
@@ -4897,12 +5716,14 @@ const make = Effect.gen(function* () {
       // outran its call, comes back as a message instead, so it outlives the
       // turn that asked. (Detaching is refused once the turn is over, so this
       // read cannot miss one.)
-      const sideTurn = thread.sideTurn ?? null;
+      const sideTurn =
+        request.sideTurnId === undefined
+          ? null
+          : (liveSideTurn(thread, request.sideTurnId) ?? null);
       if (
         (request.kind === "ask" || request.kind === "review") &&
         request.replyAsMessage !== true &&
         sideTurn !== null &&
-        sideTurn.sideTurnId === request.sideTurnId &&
         sideTurn.status !== "cancelling"
       ) {
         yield* orchestrationEngine
@@ -4957,6 +5778,13 @@ const make = Effect.gen(function* () {
     const written = thread.messages.find((message) => message.id === queued.messageId);
     const isReply = queued.fromAgent !== undefined && written?.requestKind === "reply";
     if (!isReply && queued.fromThread?.kind !== "report") {
+      return;
+    }
+    // A thread that reports to a parent reads each report from its own
+    // threads in a turn of its own, which reports in turn: steered into a
+    // running turn, it could be swallowed by the user's turn or a request's
+    // answer (docs/design/agent-autonomy-no-limits.md, rule 9).
+    if (!isReply && isAttachedChild(thread) && (thread.remoteOrigin ?? null) === null) {
       return;
     }
     // Only one that came while this turn ran: one left from before it (its
@@ -5412,7 +6240,19 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
-        return;
+        // The decider can take a message back instead of starting its turn
+        // (a cancelled report, a lead chat's pass over its ceiling): then
+        // the next one goes, as nothing else will move the queue.
+        const after = yield* resolveThread(threadId);
+        const takenBack =
+          after !== undefined &&
+          after.session?.status !== "starting" &&
+          after.session?.status !== "running" &&
+          !(after.queuedFollowUps ?? []).some((queued) => queued.messageId === current);
+        const next = takenBack ? nextQueuedFollowUp(after) : undefined;
+        if (next === undefined || next.messageId === current) return;
+        candidate = next.messageId;
+        continue;
       }
       yield* orchestrationEngine
         .dispatch({
@@ -5448,6 +6288,17 @@ const make = Effect.gen(function* () {
   const processFollowUpQueued = Effect.fn("processFollowUpQueued")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.follow-up-queued" }>,
   ) {
+    // A moved thread's queue, written by its import: the move's own kick
+    // sends its head (docs/design/fleet.md, Part 3e), so nothing goes twice.
+    if (event.payload.imported === true) {
+      return;
+    }
+    // A report put back after its start died waits for the next thing that
+    // moves the queue (a restart's send, a new message, a turn's end): sent
+    // on by itself, a start that keeps failing would never stop.
+    if (event.payload.followUp.putBack === true) {
+      return;
+    }
     // A message the user sent after Stop means they are moving on. One an
     // agent queued (in this thread, or from another thread) never does.
     const fromUser = !isAgentOrigin(event.payload.followUp);
@@ -5461,6 +6312,12 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    // While a move waits or runs the queue waits too, or the thread never
+    // gets free; a room agent's hand-off or reply drains while it waits.
+    const waitsForMove = queueWaitsForMove(thread);
+    if (waitsForMove && moveDrainHead(thread)?.messageId !== event.payload.followUp.messageId) {
+      return;
+    }
     if (status === "running" || status === "starting") {
       // A reply or a report for the agent at work goes into its turn now, and
       // so does the user's message that overtook a continue already sent.
@@ -5472,11 +6329,23 @@ const make = Effect.gen(function* () {
       return;
     }
     // A message an agent queued waits behind any the user queued; the queue
-    // release sends those first (see nextQueuedFollowUp).
-    if (!fromUser && (thread.queuedFollowUps ?? []).some((entry) => !isAgentOrigin(entry))) {
+    // release sends those first (see nextQueuedFollowUp). Not while a move
+    // waits: the user's go with the move.
+    if (
+      !waitsForMove &&
+      !fromUser &&
+      (thread.queuedFollowUps ?? []).some((entry) => !isAgentOrigin(entry))
+    ) {
       return;
     }
-    const next = event.payload.followUp;
+    // In an idle thread, agents' messages run in the order they arrived: one
+    // that waited behind a failed turn goes before the newer one that woke
+    // the queue (docs/design/agent-autonomy-no-limits.md, rule 10).
+    const next =
+      fromUser || waitsForMove
+        ? event.payload.followUp
+        : ((thread.queuedFollowUps ?? []).find((entry) => isAgentOrigin(entry)) ??
+          event.payload.followUp);
     if (yield* releaseSlotForQueuedAgent(thread, next)) {
       releasedMessageByThread.set(thread.id, next.messageId);
       return;
@@ -5497,16 +6366,110 @@ const make = Effect.gen(function* () {
   ) {
     const thread = yield* resolveThread(threadId);
     const queued = thread?.queuedFollowUps?.find((entry) => entry.messageId === messageId);
-    const sideTurn = thread?.sideTurn ?? null;
-    if (
-      queued !== undefined &&
-      sideTurn !== null &&
-      sideTurn.participantId === (queued.participantId ?? null)
-    ) {
-      waitingOnSideAnswer.set(threadId, messageId);
+    const agent = queued?.participantId ?? null;
+    if (queued !== undefined && thread !== undefined && isAnsweringOnTheSide(thread, agent)) {
+      waitingOnSideAnswer.set(threadId, { messageId, participantId: agent });
       return;
     }
     yield* sendQueuedFollowUp(threadId, messageId, createdAt);
+  });
+
+  /**
+   * A moved thread's goal, or one a move that didn't happen put back, reaches
+   * the provider after the conversation does (docs/design/fleet.md, Part 3e,
+   * "Arrival"): once a turn ends with nothing left in the queue, a goal the
+   * thread reads as working that the provider doesn't hold as working is
+   * given to it, with what is left of its budget. Given only after the
+   * message that told the agent, never while a turn runs (a Claude `/goal`
+   * cuts a running turn short; whether Codex takes one mid-turn is
+   * unverified), and again after a carried session fell back to a fresh one.
+   * Only threads that moved here, or owe it back: nothing for any other.
+   */
+  const giveGoalAfterMove = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    createdAt: string,
+  ) {
+    const owed = thread.moveRestoreOwed ?? null;
+    // A put-back paid but for its last steps: its message went and the queue is through.
+    const finishing = owed !== null && isRestorePaid(owed);
+    const owesGoal = finishing && owed?.goalOwed === true;
+    if ((thread.movedFrom ?? null) === null && !finishing) return;
+    if ((thread.queuedFollowUps ?? []).length > 0) return;
+    // The goal is the agent's that holds the thread's session slot: in a
+    // moved room (Part 3f, (i)) the one it arrived for, told by its own
+    // arrival message.
+    const holder = sessionSlotParticipantId(thread.session);
+    const holderKey = participantSessionKey(thread.id, holder);
+    const holderModel =
+      holder === null
+        ? thread.modelSelection
+        : thread.participants.find((entry) => entry.id === holder)?.modelSelection;
+    if (holderModel === undefined) return;
+    const goal = thread.goal;
+    // A goal put back reads paused when the move's stop paused it after the
+    // put-back read it (Codex): it was working, so it works again.
+    if (goal !== null && (goal.status === "active" || (owesGoal && goal.status === "paused"))) {
+      const held = yield* providerService
+        .getThreadGoal({ threadId: holderKey })
+        .pipe(Effect.option);
+      // Unreadable: tried again at the next turn end.
+      if (Option.isNone(held)) return;
+      if (held.value === null || held.value.status !== "active") {
+        // Made the lead here since it arrived: the goal's work hears it.
+        const leadContext = yield* leadChatContext(
+          thread,
+          (yield* providerService.listSessions()).find((session) => session.threadId === holderKey)
+            ?.roomTools,
+        );
+        const given = yield* providerService
+          .setThreadGoal({
+            threadId: holderKey,
+            modelSelection: holderModel,
+            status: "active",
+            ...(leadContext !== undefined ? { context: leadContext } : {}),
+            // The provider counts from zero again: what is left of the budget.
+            ...(held.value === null
+              ? {
+                  objective: goal.objective,
+                  ...(goal.tokenBudget !== null
+                    ? { tokenBudget: Math.max(1, goal.tokenBudget - goal.tokensUsed) }
+                    : {}),
+                }
+              : {}),
+          })
+          .pipe(Effect.exit);
+        if (Exit.isFailure(given)) {
+          yield* appendProviderFailureActivity({
+            threadId: thread.id,
+            kind: "provider.goal.failed",
+            summary: "Goal update failed",
+            detail: formatFailureDetail(given.cause),
+            turnId: null,
+            createdAt,
+          });
+          return;
+        }
+      }
+    }
+    if (finishing && owed !== null) {
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.move.restore",
+          commandId: serverCommandId("move-restore-finished"),
+          threadId: thread.id,
+          at: owed.at,
+          finished: true,
+          createdAt,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo("provider command reactor: a put-back goal wasn't recorded", {
+              threadId: thread.id,
+              detail: String(error),
+            }),
+          ),
+        );
+    }
   });
 
   const maybeSendNextQueuedFollowUp = Effect.fnUntraced(function* (
@@ -5569,7 +6532,20 @@ const make = Effect.gen(function* () {
       return;
     }
     const thread = yield* resolveThread(threadId);
-    const next = thread ? nextQueuedFollowUp(thread) : undefined;
+    // A turn that ended while a move waits is what the move waited for; only
+    // a room agent's hand-off or reply, or the family's traffic, still goes (moveDrainHead).
+    const waitsForMove = thread !== undefined && queueWaitsForMove(thread);
+    if (waitsForMove && moveDrainHead(thread) === undefined) {
+      return;
+    }
+    if (turnFinished && thread !== undefined && !waitsForMove) {
+      yield* giveGoalAfterMove(thread, event.occurredAt);
+    }
+    const next = thread
+      ? waitsForMove
+        ? moveDrainHead(thread)
+        : nextQueuedFollowUp(thread)
+      : undefined;
     if (!thread || !next) {
       return;
     }
@@ -5679,6 +6655,52 @@ const make = Effect.gen(function* () {
       activities: thread.activities,
       detail: "The provider session stopped before the request was answered.",
     });
+  });
+
+  /**
+   * A moved thread's carried session was refused on a turn and fell back
+   * (docs/design/fleet.md, Part 3d, `thread.native-session.fall-back`): the
+   * session was already dropped and its cursor forgotten before that was
+   * recorded, so the next start opens a new conversation. The message that
+   * started the refused turn goes again, once, on it; the thread owes that
+   * conversation its summary, which the send pays (or, without one, doesn't
+   * send). A resend that is refused says so, and the user sends again.
+   */
+  const processNativeSessionFellBack = Effect.fn("processNativeSessionFellBack")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.activity-appended" }>,
+  ) {
+    const { activity, threadId } = event.payload;
+    if (activity.kind !== ThreadNativeSessionFellBackActivityKind) return;
+    // A carried runtime still alive (its drop raced, or failed) is dropped by
+    // the next start (ensureSessionForThread), which is the resend's.
+    const payload = decodeFellBackPayload(activity.payload);
+    if (Option.isNone(payload) || payload.value.resendMessageId === undefined) return;
+    owedHistorySeeds.delete(participantSessionKey(threadId, payload.value.participantId ?? null));
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.turn.resend",
+        commandId: serverCommandId("native-session-resend"),
+        threadId,
+        messageId: payload.value.resendMessageId,
+        ...(payload.value.chainEpoch !== undefined ? { chainEpoch: payload.value.chainEpoch } : {}),
+        createdAt: yield* nowIso,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.gen(function* () {
+                yield* appendProviderFailureActivity({
+                  threadId,
+                  kind: "provider.turn.start.failed",
+                  summary: "Message not sent again",
+                  detail: NATIVE_SESSION_RESEND_REFUSED_WORDS,
+                  turnId: null,
+                  createdAt: yield* nowIso,
+                });
+              }),
+        ),
+      );
   });
 
   const processPendingRequestActivityAppended = Effect.fn("processPendingRequestActivityAppended")(
@@ -5799,6 +6821,31 @@ const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.succeed(undefined)),
     );
 
+  /** Why an invited review cannot start now (see inviteAnswerRefusal), or null. */
+  const inviteStartRefusal = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    requestId: OrchestrationSideTurn["requestId"],
+  ) {
+    const request =
+      requestId === undefined
+        ? undefined
+        : thread.agentRequests.open.find((entry) => entry.requestId === requestId);
+    if (request?.kind !== "invite" || Option.isNone(providerRegistry)) {
+      return null;
+    }
+    const settings = yield* serverSettingsService.getSettings.pipe(Effect.option);
+    if (Option.isNone(settings)) {
+      return "Could not check the invited agent's provider.";
+    }
+    return inviteAnswerRefusal({
+      thread,
+      requestId: request.requestId,
+      choice: "review",
+      mode: agentInvitesMode(settings.value),
+      providers: yield* providerRegistry.value.getProviders,
+    });
+  });
+
   const runSideTurn = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly sideTurnId: SideTurnId;
@@ -5806,8 +6853,8 @@ const make = Effect.gen(function* () {
   }) {
     const { threadId, sideTurnId, modelSelection } = input;
     const thread = yield* resolveThread(threadId);
-    const sideTurn = thread?.sideTurn ?? null;
-    if (!thread || sideTurn === null || sideTurn.sideTurnId !== sideTurnId) {
+    const sideTurn = thread === undefined ? undefined : liveSideTurn(thread, sideTurnId);
+    if (!thread || sideTurn === undefined) {
       return;
     }
     const question = thread.messages.find((message) => message.id === sideTurn.messageId);
@@ -5815,6 +6862,13 @@ const make = Effect.gen(function* () {
       return yield* Effect.fail(
         new SideAnswerStartError({ detail: "The question for this side answer was not found." }),
       );
+    }
+    // An invited review can start long after the user accepted it (it waited
+    // for another side answer), so it is paid for the way the user was shown
+    // only if the provider still says so now.
+    const inviteRefusal = yield* inviteStartRefusal(thread, sideTurn.requestId);
+    if (inviteRefusal !== null) {
+      return yield* Effect.fail(new SideAnswerStartError({ detail: inviteRefusal }));
     }
     const key = sideSessionKey(threadId, sideTurnId, sideTurn.participantId);
     const project = yield* resolveProject(thread.projectId);
@@ -5903,7 +6957,8 @@ const make = Effect.gen(function* () {
 
     // Stopped while it was starting: the question is never sent.
     const latest = yield* resolveThread(threadId);
-    if (latest?.sideTurn?.sideTurnId !== sideTurnId || latest.sideTurn.status === "cancelling") {
+    const latestTurn = latest === undefined ? undefined : liveSideTurn(latest, sideTurnId);
+    if (latestTurn === undefined || latestTurn.status === "cancelling") {
       yield* stopSideRuntime(threadId, sideTurn);
       yield* settleSideTurn({
         threadId,
@@ -5926,6 +6981,7 @@ const make = Effect.gen(function* () {
       ...(deviceNote !== undefined ? { deviceNote } : {}),
       modelSelection,
       interactionMode: "default",
+      lane: isReview ? "side_review" : "side",
       origin: turnMessageOrigin({
         message: question,
         askedByAgent: sideTurn.askedBy !== undefined,
@@ -5955,7 +7011,7 @@ const make = Effect.gen(function* () {
     const stopIfStillRunning = Effect.gen(function* () {
       yield* Effect.sleep(SIDE_TURN_MAX_DURATION);
       const latest = yield* resolveThread(threadId);
-      if (latest?.sideTurn?.sideTurnId !== sideTurn.sideTurnId) {
+      if (latest === undefined || liveSideTurn(latest, sideTurn.sideTurnId) === undefined) {
         return;
       }
       yield* stopSideRuntime(threadId, sideTurn);
@@ -5988,7 +7044,9 @@ const make = Effect.gen(function* () {
             threadId,
             sideTurnId: sideTurn.sideTurnId,
             outcome: "failed",
-            error: `The side answer could not start: ${Cause.squash(cause) instanceof Error ? (Cause.squash(cause) as Error).message : "unknown error"}`,
+            error: secretScrubber.scrubText(
+              `The side answer could not start: ${Cause.squash(cause) instanceof Error ? (Cause.squash(cause) as Error).message : "unknown error"}`,
+            ).text,
             createdAt: yield* nowIso,
           });
           return false;
@@ -6012,8 +7070,8 @@ const make = Effect.gen(function* () {
     ) {
       const { threadId, sideTurnId } = event.payload;
       const thread = yield* resolveThread(threadId);
-      const sideTurn = thread?.sideTurn ?? null;
-      if (sideTurn === null || sideTurn.sideTurnId !== sideTurnId) {
+      const sideTurn = thread === undefined ? undefined : liveSideTurn(thread, sideTurnId);
+      if (sideTurn === undefined) {
         return;
       }
       yield* providerService
@@ -6023,7 +7081,7 @@ const make = Effect.gen(function* () {
         Effect.andThen(
           Effect.gen(function* () {
             const latest = yield* resolveThread(threadId);
-            if (latest?.sideTurn?.sideTurnId !== sideTurnId) {
+            if (latest === undefined || liveSideTurn(latest, sideTurnId) === undefined) {
               return;
             }
             yield* stopSideRuntime(threadId, sideTurn);
@@ -6047,11 +7105,22 @@ const make = Effect.gen(function* () {
   const processSideTurnSettled = Effect.fn("processSideTurnSettled")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.side-turn-settled" }>,
   ) {
-    const { threadId, sideTurnId, participantId } = event.payload;
+    const { threadId, sideTurnId, participantId, outcome, error } = event.payload;
+    if (Option.isSome(analytics)) {
+      yield* analytics.value.record("room.side_turn.settled", {
+        outcome,
+        timedOut: error === "it ran for 30 minutes and was stopped.",
+      });
+    }
     yield* stopSideRuntime(threadId, { sideTurnId, participantId }).pipe(Effect.forkScoped);
+    // Only the agent the message waits for: another agent's answer ending
+    // releases nothing.
     const waiting = waitingOnSideAnswer.get(threadId);
+    if (waiting === undefined || waiting.participantId !== participantId) {
+      return;
+    }
     waitingOnSideAnswer.delete(threadId);
-    if (waiting === undefined || queueHeldByStop.has(threadId)) {
+    if (queueHeldByStop.has(threadId)) {
       return;
     }
     const thread = yield* resolveThread(threadId);
@@ -6063,15 +7132,12 @@ const make = Effect.gen(function* () {
     yield* sendQueuedFollowUpWhenFree(threadId, head.messageId, event.occurredAt);
   });
 
-  /** Stop and settle the side answer in progress, if any (session stop, restart). */
+  /** Stop and settle a side answer in progress (session stop). */
   const endSideTurn = Effect.fnUntraced(function* (
     threadId: ThreadId,
-    sideTurn: OrchestrationSideTurn | null | undefined,
+    sideTurn: OrchestrationSideTurn,
     createdAt: string,
   ) {
-    if (sideTurn === null || sideTurn === undefined) {
-      return;
-    }
     yield* stopSideRuntime(threadId, sideTurn);
     yield* settleSideTurn({
       threadId,
@@ -6192,6 +7258,7 @@ const make = Effect.gen(function* () {
         return;
       case "thread.activity-appended":
         yield* processPendingRequestActivityAppended(event);
+        yield* processNativeSessionFellBack(event);
         return;
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
@@ -6451,6 +7518,57 @@ const make = Effect.gen(function* () {
     "starting",
     "running",
   ]);
+  /**
+   * A restart cut off a turn the provider never took (the session was still
+   * starting): if it was for an outside agent's message, and no provider
+   * turn began after that message was written, the message never reached
+   * the agent, so it is marked (`thread.message.not-run`).
+   */
+  const markOutsideMessageCutBeforeStart = (
+    threadId: ThreadId,
+    participantId: ThreadParticipantId | null,
+  ) =>
+    Effect.gen(function* () {
+      const thread = yield* resolveThread(threadId);
+      if (thread === undefined) return;
+      const message = latestTurnStartFor(thread, participantId);
+      if (
+        message?.fromOutside === undefined ||
+        message.notSent === true ||
+        (thread.latestTurn !== null &&
+          Date.parse(thread.latestTurn.requestedAt) >= Date.parse(message.createdAt))
+      ) {
+        return;
+      }
+      yield* orchestrationEngine.dispatch({
+        type: "thread.message.not-run",
+        commandId: serverCommandId("message-not-run-restart"),
+        threadId,
+        messageId: message.id,
+        reason: "failed",
+        createdAt: yield* nowIso,
+      });
+    }).pipe(Effect.ignoreCause({ log: true }));
+
+  /**
+   * A restart cut off a turn the provider never took: if the start the
+   * thread was waiting on (its pending start, the exact message) was a
+   * child's report, it is taken back. True when the report went back on the
+   * queue, which then sends it.
+   */
+  const takeBackReportCutByRestart = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const pending = yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId });
+      if (Option.isNone(pending)) {
+        // An earlier startup put it back and stopped before it was done.
+        const thread = yield* resolveThread(threadId);
+        return (thread?.queuedFollowUps ?? []).some(
+          (queued) => queued.putBack === true && queued.fromThread?.kind === "report",
+        );
+      }
+      return yield* takeBackReportStart(threadId, pending.value.messageId, "restart");
+    }).pipe(Effect.orElseSucceed(() => false));
+
   const settleSessionsFromPreviousProcess = Effect.fn("settleSessionsFromPreviousProcess")(
     function* () {
       const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
@@ -6461,23 +7579,23 @@ const make = Effect.gen(function* () {
         ...snapshot.threads.map((thread) => ({
           id: thread.id,
           session: thread.session,
-          sideTurn: thread.sideTurn ?? null,
+          sideTurns: liveSideTurns(thread),
         })),
         ...archived.map((entry) => ({
           id: entry.threadId,
           session: entry.session,
-          sideTurn: entry.sideTurn,
+          sideTurns: entry.sideTurns,
         })),
       ];
       for (const thread of threads) {
         // Side runtimes lived in the previous process too. One answering an
         // agent's request fails it with the reason, like other requests the
         // restart cut off; the user's own side answer just stopped.
-        if (thread.sideTurn) {
-          const forAgent = thread.sideTurn.requestId !== undefined;
+        for (const sideTurn of thread.sideTurns) {
+          const forAgent = sideTurn.requestId !== undefined;
           yield* settleSideTurn({
             threadId: thread.id,
-            sideTurnId: thread.sideTurn.sideTurnId,
+            sideTurnId: sideTurn.sideTurnId,
             outcome: forAgent ? "failed" : "interrupted",
             ...(forAgent ? { error: "The server restarted before this finished." } : {}),
             fromPreviousProcess: true,
@@ -6520,6 +7638,16 @@ const make = Effect.gen(function* () {
           continue;
         }
         const createdAt = yield* nowIso;
+        // Marked before the session is settled: a startup that dies in
+        // between finds the session still cut off and marks it again.
+        if (session.activeTurnId === null) {
+          yield* markOutsideMessageCutBeforeStart(thread.id, sessionSlotParticipantId(session));
+        }
+        // A child's report cut before its start goes back on the queue first,
+        // for the same reason, and is sent from there: no restart note and no
+        // continue for it.
+        const reportPutBack =
+          session.activeTurnId === null && (yield* takeBackReportCutByRestart(thread.id));
         yield* setThreadSession({
           threadId: thread.id,
           session: {
@@ -6534,6 +7662,9 @@ const make = Effect.gen(function* () {
           createdAt,
         });
         yield* takeBackOutsideQueued(thread.id, createdAt);
+        if (reportPutBack) {
+          continue;
+        }
         // Read now: startup expires the questions the previous process left.
         const activities = (yield* resolveThread(thread.id))?.activities ?? [];
         turnsCutByRestart.push({
@@ -6562,14 +7693,41 @@ const make = Effect.gen(function* () {
         Effect.map((settings) => settings.continueAfterRestart),
         Effect.orElseSucceed(() => false),
       );
+      if (Option.isSome(analytics)) {
+        yield* analytics.value.record("provider.turn.restart_recovery", {
+          count: cut.length,
+          continueAfterRestart: settingOn,
+        });
+      }
       for (const { threadId, turnId, participantId, waitingOnUser } of cut) {
         const createdAt = yield* nowIso;
+        // The message the cut turn was started with, from its turn record:
+        // a check-back's turn has none and is never continued.
+        const turnRow =
+          turnId === null
+            ? undefined
+            : yield* projectionTurnRepository.getByTurnId({ threadId, turnId }).pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.orElseSucceed(() => undefined),
+              );
+        // Not named yet when the process stopped (the send's acknowledgement
+        // never came): the start still pending is the message it was for.
+        const pendingStart =
+          turnRow === undefined || turnRow.pendingMessageId !== null
+            ? Option.none()
+            : yield* projectionTurnRepository
+                .getPendingTurnStartByThreadId({ threadId })
+                .pipe(Effect.orElseSucceed(() => Option.none()));
+        const turnMessageId =
+          turnRow?.pendingMessageId ??
+          (Option.isSome(pendingStart) ? pendingStart.value.messageId : null);
         yield* orchestrationEngine
           .dispatch({
             type: "thread.restart.continue",
             commandId: serverCommandId("restart-continue"),
             threadId,
             turnId,
+            ...(turnRow !== undefined ? { turnMessageId } : {}),
             participantId,
             waitingOnUser,
             continueAfterRestart: settingOn,
@@ -6647,6 +7805,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.follow-up-queued" ||
         event.type === "thread.turn-interrupt-requested" ||
         isPendingRequestActivityAppended(event) ||
+        isNativeSessionFellBack(event) ||
         event.type === "thread.realtime-start-requested" ||
         event.type === "thread.realtime-stop-requested" ||
         event.type === "thread.background-task-stop-requested" ||
@@ -6741,7 +7900,13 @@ const make = Effect.gen(function* () {
       }
       const thread = yield* resolveThread(input.threadId);
       // Moving or moved to another computer: frozen here, nothing to start.
-      if (!thread || thread.archivedAt !== null || (thread.move ?? null) !== null) {
+      // A move waiting for the thread takes no new work either.
+      if (
+        !thread ||
+        thread.archivedAt !== null ||
+        (thread.move ?? null) !== null ||
+        (thread.pendingMove ?? null) !== null
+      ) {
         return;
       }
       // A turn running or on its way: the message will wait or steer anyway.

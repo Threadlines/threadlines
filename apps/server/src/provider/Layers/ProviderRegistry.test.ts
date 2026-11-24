@@ -52,7 +52,9 @@ import {
   type ClaudeReportedModels,
   claudeReportedModelsFromCache,
   type ClaudeReportedModelsStore,
+  makePendingClaudeProvider,
   readClaudeNormalAuthEmail,
+  seedClaudeProviderUsage,
   stopClaudeCliAfterSignInRenewal,
 } from "./ClaudeProvider.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
@@ -1546,6 +1548,47 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
 
         assert.deepStrictEqual(
           mergeProviderSnapshot(previousProvider, refreshedProvider).accountUsage,
+          usage,
+        );
+      });
+
+      it("never carries one account's usage to another with no email to compare", () => {
+        const usage: ServerProviderAccountUsage = {
+          source: "grok-billing",
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          limits: [
+            {
+              limitId: "antigravity",
+              scoped: [{ scopeLabel: "Gemini", usedPercent: 40, remainingPercent: 60 }],
+            },
+          ],
+        };
+        const signedIn = (accountId: string) =>
+          ({
+            instanceId: ProviderInstanceId.make("antigravity"),
+            driver: ProviderDriverKind.make("antigravity"),
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated", type: "oauth-personal", accountId },
+            checkedAt: "2026-06-10T15:05:00.000Z",
+            version: "1.5.14",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          }) as const satisfies ServerProvider;
+        const previous = {
+          ...signedIn("account-a"),
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          accountUsage: usage,
+        };
+
+        assert.strictEqual(
+          mergeProviderSnapshot(previous, signedIn("account-b")).accountUsage,
+          undefined,
+        );
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previous, signedIn("account-a")).accountUsage,
           usage,
         );
       });
@@ -3299,6 +3342,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             retire: Effect.die("A turned-off OpenCode must not retire its server"),
             withServer: () => Effect.die("A turned-off OpenCode must not use its server"),
             signals: Stream.empty,
+            running: Effect.succeed(undefined),
           };
           const check = (settings: Partial<OpenCodeSettings>) =>
             checkOpenCodeProviderStatus({
@@ -3341,6 +3385,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               retire: Effect.die("A broken OpenCode must not retire its server"),
               withServer: () => Effect.die("A broken OpenCode must not use its server"),
               signals: Stream.empty,
+              running: Effect.succeed(undefined),
             },
             cwd: process.cwd(),
             environment: { PATH: "" },
@@ -3640,6 +3685,129 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         }),
       );
 
+      it.effect("keeps days whose Claude transcripts were deleted", () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homePath = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-claude-history-",
+          });
+          const stateDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-state-",
+          });
+          const projectDir = path.join(homePath, ".claude", "projects", "project");
+          yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+          const now = new Date();
+          yield* TestClock.setTime(now.getTime());
+          const today = now.toISOString().slice(0, 10);
+          const oldDay = new Date(now.getTime() - 60 * 86_400_000);
+          const writeTranscript = (name: string, at: Date, tokens: number) =>
+            fileSystem.writeFileString(
+              path.join(projectDir, `${name}.jsonl`),
+              `${JSON.stringify({
+                type: "assistant",
+                timestamp: at.toISOString(),
+                sessionId: name,
+                requestId: `request-${name}`,
+                message: {
+                  id: `message-${name}`,
+                  model: "claude-opus-4-6",
+                  usage: { input_tokens: tokens, output_tokens: 0 },
+                },
+              })}\n`,
+            );
+          yield* writeTranscript("old", oldDay, 700);
+          yield* writeTranscript("new", now, 30);
+          const settings = { homePath, accountFolder: "" };
+          // Two readers of one folder: two instances, or one replaced by a settings change.
+          const readA = yield* makeClaudeTokenUsageHistoryReader(settings, {}, { stateDir });
+          const readB = yield* makeClaudeTokenUsageHistoryReader(settings, {}, { stateDir });
+
+          const first = yield* readA;
+          assert.deepStrictEqual(first?.dailyBuckets, [
+            { startDate: oldDay.toISOString().slice(0, 10), tokens: 700 },
+            { startDate: today, tokens: 30 },
+          ]);
+
+          // Claude Code's cleanup deletes the old transcript before the other reader runs.
+          yield* fileSystem.remove(path.join(projectDir, "old.jsonl"));
+          yield* writeTranscript("newer", now, 5);
+          const second = yield* readB;
+          assert.deepStrictEqual(second?.dailyBuckets, [
+            { startDate: oldDay.toISOString().slice(0, 10), tokens: 700 },
+            { startDate: today, tokens: 35 },
+          ]);
+
+          assert.strictEqual(second?.summary.lifetimeTokens, 735);
+
+          // What a restarted server reads back.
+          const historyDir = path.join(stateDir, "provider-token-history");
+          const historyFiles = yield* fileSystem.readDirectory(historyDir);
+          assert.strictEqual(historyFiles.length, 1);
+          const saved = JSON.parse(
+            yield* fileSystem.readFileString(path.join(historyDir, historyFiles[0] ?? "")),
+          ) as { readonly days: Record<string, number> };
+          assert.deepStrictEqual(saved.days, {
+            [oldDay.toISOString().slice(0, 10)]: 700,
+            [today]: 35,
+          });
+        }),
+      );
+
+      it.effect("reports only the days Claude Code still keeps as known", () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const homePath = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-claude-history-",
+          });
+          const stateDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-state-",
+          });
+          const claudeDir = path.join(homePath, ".claude");
+          yield* fileSystem.makeDirectory(path.join(claudeDir, "projects", "project"), {
+            recursive: true,
+          });
+          // Raised after Claude Code already deleted files under the default 30.
+          yield* fileSystem.writeFileString(
+            path.join(claudeDir, "settings.json"),
+            JSON.stringify({ cleanupPeriodDays: 365 }),
+          );
+          const startMs = Date.now();
+          const dayKey = (offsetDays: number) =>
+            new Date(startMs + offsetDays * 86_400_000).toISOString().slice(0, 10);
+          const read = Effect.gen(function* () {
+            const reader = yield* makeClaudeTokenUsageHistoryReader(
+              { homePath, accountFolder: "" },
+              {},
+              { stateDir },
+            );
+            return yield* reader;
+          });
+
+          yield* TestClock.setTime(startMs);
+          const first = yield* read;
+          assert.strictEqual(first?.coverageStartDate, dayKey(-29));
+          assert.strictEqual(first?.coverageEndDate, dayKey(0));
+          // Saved for a restarted server, not only held in this process.
+          const historyDir = path.join(stateDir, "provider-token-history");
+          const [historyFile] = yield* fileSystem.readDirectory(historyDir);
+          const saved = JSON.parse(
+            yield* fileSystem.readFileString(path.join(historyDir, historyFile ?? "")),
+          ) as { readonly completeFrom?: string; readonly completeThrough?: string };
+          assert.strictEqual(saved.completeFrom, dayKey(-29));
+          assert.strictEqual(saved.completeThrough, dayKey(0));
+
+          // Read again ten days later, after a restart: still known from the first day.
+          yield* TestClock.setTime(startMs + 10 * 86_400_000);
+          assert.strictEqual((yield* read)?.coverageStartDate, dayKey(-29));
+
+          // Forty days without a read: files may have gone in between, so it starts over.
+          yield* TestClock.setTime(startMs + 50 * 86_400_000);
+          assert.strictEqual((yield* read)?.coverageStartDate, dayKey(21));
+        }),
+      );
+
       it.effect("does not request account usage for API key auth", () =>
         Effect.gen(function* () {
           let usageRequested = false;
@@ -3844,6 +4012,98 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(afterTimeout.auth.usageEmail, "usage@example.com");
           assert.strictEqual(
             carryClaudeUsageAcrossChecks(afterTimeout, asOtherAccount).accountUsage,
+            undefined,
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.289\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("keeps the token calendar on screen from startup through the first check", () =>
+        Effect.gen(function* () {
+          const identity = {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            driver: ProviderDriverKind.make("claudeAgent"),
+          };
+          const tokenUsage = {
+            checkedAt: "2026-06-10T15:00:00.000Z",
+            scope: "local",
+            coverageStartDate: "2026-05-12",
+            coverageEndDate: "2026-06-10",
+            dailyBuckets: [{ startDate: "2026-06-09", tokens: 4200 }],
+            summary: { lifetimeTokens: 4200, peakDailyTokens: 4200 },
+          } as const;
+          const check = checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+            { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "sk-ant-oat01-test" },
+            () => Effect.succeed({ _tag: "Unavailable", reason: "unreachable" } as const),
+            () => Effect.succeed("usage@example.com"),
+          ).pipe(Effect.map((draft) => ({ ...draft, ...identity }) satisfies ServerProvider));
+          // What the last run saved: the calendar, and no subscription meters.
+          const lastRun = yield* check;
+          const saved: ServerProvider = {
+            ...lastRun,
+            accountUsage: {
+              source: "claude-oauth-usage",
+              checkedAt: tokenUsage.checkedAt,
+              limits: [],
+              tokenUsage,
+            },
+          };
+
+          // The server starts: the first snapshot is a pending one seeded from the save.
+          const pendingDraft = {
+            ...(yield* makePendingClaudeProvider(defaultClaudeSettings)),
+            ...identity,
+          };
+          const pending = seedClaudeProviderUsage(pendingDraft, saved);
+          const atStartup = mergeProviderSnapshot(saved, pending);
+          assert.deepStrictEqual(atStartup.accountUsage?.tokenUsage, tokenUsage);
+
+          // The first check reads meters but its calendar read came back partial.
+          const firstCheck = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+            { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "sk-ant-oat01-test" },
+            () =>
+              Effect.succeed({
+                _tag: "Fresh",
+                usage: {
+                  source: "claude-oauth-usage",
+                  checkedAt: "2026-06-11T09:00:00.000Z",
+                  limits: [],
+                },
+              } as const),
+            () => Effect.succeed("usage@example.com"),
+          ).pipe(Effect.map((draft) => ({ ...draft, ...identity }) satisfies ServerProvider));
+          const afterCheck = mergeProviderSnapshot(
+            atStartup,
+            carryClaudeUsageAcrossChecks(atStartup, firstCheck),
+          );
+          assert.deepStrictEqual(afterCheck.accountUsage?.tokenUsage, tokenUsage);
+
+          // An API key reads the calendar too, so its restart keeps it.
+          const onApiKey = { ...saved, auth: { ...saved.auth, type: "apiKey" } };
+          assert.deepStrictEqual(
+            seedClaudeProviderUsage(pendingDraft, onApiKey).accountUsage?.tokenUsage,
+            tokenUsage,
+          );
+
+          // An account folder that shares the main history reads no calendar, so
+          // one saved before it became one doesn't carry over.
+          const noCalendar = { keepsTokenCalendar: false } as const;
+          const sharedPending = seedClaudeProviderUsage(pendingDraft, saved, noCalendar);
+          assert.strictEqual(sharedPending.accountUsage?.tokenUsage, undefined);
+          assert.strictEqual(
+            carryClaudeUsageAcrossChecks(atStartup, firstCheck, noCalendar).accountUsage
+              ?.tokenUsage,
             undefined,
           );
         }).pipe(

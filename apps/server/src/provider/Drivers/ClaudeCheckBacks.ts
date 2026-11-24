@@ -11,7 +11,11 @@
  * and turns each reported list into check-backs, and tells a turn that a
  * fired check-back started from any other.
  */
-import type { RuntimeCheckBack, TurnTrigger } from "@threadlines/contracts";
+import {
+  CHECK_BACK_PROMPT_MAX_CHARS,
+  type RuntimeCheckBack,
+  type TurnTrigger,
+} from "@threadlines/contracts";
 import { nextCronMatch } from "@threadlines/shared/cronSchedule";
 
 /** One entry of the Stop hook's `session_crons`. */
@@ -48,10 +52,20 @@ export interface ClaudeCheckBackState {
   readonly prompts: Map<string, string>;
   /** The list as last reported to orchestration. */
   current: ReadonlyArray<RuntimeCheckBack>;
+  /** Whether Claude has reported its own list in this session. Until then
+   *  the list may lack jobs saved to the project that the CLI restored. */
+  reported: boolean;
 }
 
 export function makeClaudeCheckBackState(): ClaudeCheckBackState {
-  return { wakeups: [], crons: new Map(), nextFire: new Map(), prompts: new Map(), current: [] };
+  return {
+    wakeups: [],
+    crons: new Map(),
+    nextFire: new Map(),
+    prompts: new Map(),
+    current: [],
+    reported: false,
+  };
 }
 
 /** Longest reason or prompt a check-back carries. */
@@ -69,6 +83,15 @@ function clip(text: string): string | undefined {
   return flat.length > DESCRIPTION_MAX_LENGTH
     ? `${flat.slice(0, DESCRIPTION_MAX_LENGTH - 1)}…`
     : flat;
+}
+
+/** A check-back's prompt as kept (OrchestrationCheckBack.prompt): trimmed, and clipped. */
+function keptPrompt(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.length > CHECK_BACK_PROMPT_MAX_CHARS
+    ? `${trimmed.slice(0, CHECK_BACK_PROMPT_MAX_CHARS - 1)}…`
+    : trimmed;
 }
 
 function promptMatches(full: string, reported: string): boolean {
@@ -139,6 +162,96 @@ export function recordClaudeScheduleTool(
 }
 
 /**
+ * The session's list right after a scheduling tool call took effect, before
+ * Claude reports its own at the turn's end. A turn the user stops may never
+ * get that far, and Stop reads the published list to know which agents still
+ * have a check-back to end. Claude's next report replaces this list whole.
+ * Undefined when the call changed nothing.
+ */
+export function claudeCheckBacksAfterScheduleTool(
+  state: ClaudeCheckBackState,
+  call: { readonly toolName: string; readonly input: unknown; readonly result: unknown },
+  nowMs: number,
+  timeZone: string | undefined,
+): ReadonlyArray<RuntimeCheckBack> | undefined {
+  const input = asRecord(call.input) ?? {};
+  // A delete's input names its job; the other tools' results say what they set.
+  const result = asRecord(call.result) ?? {};
+  const without = (drop: (checkBack: RuntimeCheckBack) => boolean) => {
+    const kept = state.current.filter((checkBack) => !drop(checkBack));
+    return kept.length === state.current.length ? undefined : kept;
+  };
+  const withAdded = (checkBack: RuntimeCheckBack) =>
+    [...state.current, checkBack].toSorted((left, right) =>
+      left.scheduledFor.localeCompare(right.scheduledFor),
+    );
+  let next: ReadonlyArray<RuntimeCheckBack> | undefined;
+  if (call.toolName === "ScheduleWakeup") {
+    if (result.stopped === true) {
+      // Wake-ups are the only exact-time jobs.
+      next = without((checkBack) => checkBack.exact);
+    } else {
+      const prompt = asString(input.prompt);
+      const scheduledForMs = result.scheduledFor;
+      if (!prompt || typeof scheduledForMs !== "number" || !Number.isFinite(scheduledForMs)) {
+        return undefined;
+      }
+      const scheduledFor = new Date(scheduledForMs).toISOString();
+      if (
+        state.current.some(
+          (checkBack) => checkBack.exact && checkBack.scheduledFor === scheduledFor,
+        )
+      ) {
+        return undefined;
+      }
+      const description = clip(asString(input.reason) ?? prompt);
+      const kept = keptPrompt(prompt);
+      next = withAdded({
+        // Claude names the job only in its report; until then the time does.
+        id: `wakeup:${scheduledForMs}`,
+        scheduledFor,
+        exact: true,
+        recurring: false,
+        ...(description ? { description } : {}),
+        ...(kept ? { prompt: kept } : {}),
+        durable: false,
+      });
+    }
+  } else if (call.toolName === "CronCreate") {
+    const id = asString(result.id);
+    const prompt = asString(input.prompt);
+    const cron = asString(input.cron)?.trim();
+    if (!id || !prompt || !cron || state.current.some((checkBack) => checkBack.id === id)) {
+      return undefined;
+    }
+    const fire = nextCronMatch(cron, new Date(nowMs), timeZone);
+    if (!fire) return undefined;
+    const recurring = result.recurring === true;
+    const schedule = recurring ? asString(result.humanSchedule) : undefined;
+    const description = clip(prompt);
+    const kept = keptPrompt(prompt);
+    next = withAdded({
+      id,
+      scheduledFor: fire.toISOString(),
+      exact: false,
+      recurring,
+      ...(schedule ? { schedule } : {}),
+      ...(description ? { description } : {}),
+      ...(kept ? { prompt: kept } : {}),
+      cron,
+      durable: result.durable === true,
+    });
+  } else if (call.toolName === "CronDelete") {
+    const id = asString(input.id);
+    if (!id) return undefined;
+    next = without((checkBack) => checkBack.id === id);
+  }
+  if (next === undefined) return undefined;
+  state.current = next;
+  return next;
+}
+
+/**
  * When a reported job fires next. A wake-up's stated time is exact. A cron
  * job's is worked out from its schedule in Claude's time zone, once: a
  * one-shot keeps the first answer (it is never moved to a later day while
@@ -204,6 +317,10 @@ export function claudeCheckBacksFromSessionCrons(
     state.prompts.set(cron.id, prompt);
     const description = clip(wakeup?.reason ?? prompt);
     const schedule = cron.recurring ? record?.schedule : undefined;
+    // What the agent is told when it comes back, and the cron it set: what a
+    // moved thread's agent sets again elsewhere (docs/design/fleet.md, Part 3e).
+    const kept = keptPrompt(prompt);
+    const cronExpression = asString(cron.schedule)?.trim();
     checkBacks.push({
       id: cron.id,
       scheduledFor: new Date(fire.ms).toISOString(),
@@ -211,6 +328,8 @@ export function claudeCheckBacksFromSessionCrons(
       recurring: cron.recurring,
       ...(schedule ? { schedule } : {}),
       ...(description ? { description } : {}),
+      ...(kept ? { prompt: kept } : {}),
+      ...(cronExpression ? { cron: cronExpression } : {}),
       // A job neither set by a CronCreate nor a wake-up this session saw came
       // from disk (a durable job the CLI restored): it outlives the session.
       durable: record ? record.durable : wakeup === undefined,

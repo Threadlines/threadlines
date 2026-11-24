@@ -2924,6 +2924,28 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.detail).toBeUndefined();
   });
 
+  it("shows a key hidden from the agent's output as its line with the advice under it", () => {
+    const message = "Hid STRIPE_SECRET_KEY in the agent's output";
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "secret-hidden",
+          kind: "runtime.warning",
+          summary: "Runtime warning",
+          tone: "warning",
+          payload: {
+            message,
+            warningKind: "secret-hidden",
+            detail: "The agent may have seen it. Replace the key if that matters.",
+          },
+        }),
+      ],
+      undefined,
+    );
+    expect(entry?.label).toBe(message);
+    expect(entry?.detail).toBe("The agent may have seen it. Replace the key if that matters.");
+  });
+
   it("collapses repeated api-retry warnings into one updating row", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -5294,9 +5316,52 @@ describe("a thread that moved here from another computer", () => {
     });
     const entries = deriveMovedInEntries([movedIn]);
     expect(entries).toEqual([
-      expect.objectContaining({ fromLabel: "Mac mini", movedAt: "2026-02-23T00:04:00.000Z" }),
+      expect.objectContaining({
+        fromLabel: "Mac mini",
+        movedAt: "2026-02-23T00:04:00.000Z",
+        agentGot: "summary",
+        brought: [],
+        left: [],
+      }),
     ]);
     expect(deriveWorkLogEntries([movedIn])).toEqual([]);
+
+    // What came along, and what didn't, in the server's words.
+    const withState = {
+      ...movedIn,
+      payload: {
+        ...(movedIn.payload as Record<string, unknown>),
+        brought: ["its goal", "2 queued messages", " "],
+        left: ["Auto-fix is off here: this computer already has a branch named `fix-login`."],
+      },
+    };
+    expect(deriveMovedInEntries([withState])).toEqual([
+      expect.objectContaining({
+        brought: ["its goal", "2 queued messages"],
+        left: ["Auto-fix is off here: this computer already has a branch named `fix-login`."],
+      }),
+    ]);
+
+    // Moved with its agent's own session, which then couldn't be resumed here.
+    const carried = {
+      ...movedIn,
+      payload: { ...(movedIn.payload as Record<string, unknown>), nativeSession: "carried" },
+    };
+    const fellBack = makeActivity({
+      id: "fell-back",
+      createdAt: "2026-02-23T00:06:00.000Z",
+      kind: "thread.native-session-fell-back",
+      summary: "Couldn't resume the agent's session here, so it got a summary instead.",
+      tone: "info",
+      payload: { reason: "resume_failed" },
+    });
+    expect(
+      deriveMovedInEntries([carried, fellBack]).map((entry) => [entry.id, entry.agentGot]),
+    ).toEqual([
+      ["moved-in", "memory"],
+      ["fell-back", "fell_back"],
+    ]);
+    expect(deriveWorkLogEntries([carried, fellBack])).toEqual([]);
 
     const message = (id: string, eventSequence: number, createdAt: string) => ({
       id: MessageId.make(id),

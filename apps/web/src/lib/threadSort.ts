@@ -17,6 +17,21 @@ export function toSortableTimestamp(iso: string | undefined): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+/**
+ * A parent's children in family order: oldest first, then by id, never
+ * re-sorted. The sidebar's families and the Move threads dialog both list
+ * them this way.
+ */
+export function compareFamilyChildren(
+  left: { readonly createdAt?: string | undefined; readonly id: string },
+  right: { readonly createdAt?: string | undefined; readonly id: string },
+): number {
+  return (
+    (toSortableTimestamp(left.createdAt) ?? 0) - (toSortableTimestamp(right.createdAt) ?? 0) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
 function getLatestUserMessageTimestamp(thread: ThreadSortInput): number {
   if (thread.latestUserMessageAt) {
     return toSortableTimestamp(thread.latestUserMessageAt) ?? Number.NEGATIVE_INFINITY;

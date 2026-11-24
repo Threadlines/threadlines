@@ -160,6 +160,13 @@ export const ServerProviderAuth = Schema.Struct({
   label: Schema.optional(TrimmedNonEmptyString),
   email: Schema.optional(TrimmedNonEmptyString),
   usageEmail: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * An opaque name for the signed-in account, for a provider that can't
+   * always say its email (Antigravity). Two snapshots with different ones
+   * belong to different accounts, so one's usage never carries over to the
+   * other. Never shown.
+   */
+  accountId: Schema.optional(TrimmedNonEmptyString),
   capabilities: Schema.optional(ServerProviderAuthCapabilities),
   signInEnds: Schema.optional(ServerProviderSignInEnds),
   /** The workspaces this sign-in can switch between (the `switch-workspace` sign-in flow). */
@@ -198,6 +205,19 @@ export const ServerProviderScopedUsageWindow = Schema.Struct({
   // Provider-reported severity (e.g. "normal" | "warning"); anything other
   // than "normal" should surface ambient warning affordances.
   severity: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * The models this window holds, for a limit that covers a family of models
+   * (Antigravity's "Claude & GPT" pool): a model whose name has one of these
+   * as whole words. Absent: a model whose name has `scopeLabel` (Claude's
+   * per-model limits).
+   */
+  scopeModels: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  /**
+   * Models left out even when `scopeModels` holds them, by the same rule:
+   * those with a window of their own (Antigravity's Gemini 4 Argon beside
+   * the default Gemini pool).
+   */
+  scopeExcludes: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   /** When this window was last read from the provider; see `ServerProviderUsageWindow`. */
   checkedAt: Schema.optional(IsoDateTime),
 });
@@ -296,6 +316,13 @@ export const ServerProviderAccountTokenUsage = Schema.Struct({
 export type ServerProviderAccountTokenUsage = typeof ServerProviderAccountTokenUsage.Type;
 
 export const ServerProviderAccountUsage = Schema.Struct({
+  /**
+   * Which kind of reading it is. Closed on the wire: a client from before a
+   * new value rejects it, and with it the whole server config. Add no value;
+   * a new provider reports under one whose handling suits it and names its
+   * reading in its limit's `limitName` (Antigravity: `grok-billing`, which
+   * clients handle by its label alone). Tell providers apart by `driver`.
+   */
   source: Schema.Literals([
     "codex-rate-limits",
     "claude-oauth-usage",
@@ -362,6 +389,13 @@ export const ServerProviderSlashCommand = Schema.Struct({
   input: Schema.optional(ServerProviderSlashCommandInput),
 });
 export type ServerProviderSlashCommand = typeof ServerProviderSlashCommand.Type;
+
+export const ServerProviderSessionCommands = Schema.Struct({
+  /** Session keys: a thread id, or a room agent's `participantSessionKey`. */
+  sessions: Schema.Array(TrimmedNonEmptyString),
+  commands: Schema.Array(ServerProviderSlashCommand),
+});
+export type ServerProviderSessionCommands = typeof ServerProviderSessionCommands.Type;
 
 export const ServerProviderSkill = Schema.Struct({
   name: TrimmedNonEmptyString,
@@ -541,6 +575,22 @@ export const ServerProvider = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /**
+   * The agent runs a skill when a message starts with `/<skill name>`
+   * (Antigravity), so the composer lists `skills` in its `/` list and inserts
+   * them that way; a running session's own list (OrchestrationThread.agentCommands)
+   * joins them. Absent: skills go the provider's usual way.
+   */
+  slashSkills: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Live state, never history: the slash commands this instance's running
+   * sessions listed (ACP `available_commands_update`), each list once with
+   * the sessions that listed it. A session's entry goes when the session
+   * ends, and none survive a restart; until a session lists its own, the
+   * composer offers `slashCommands` and `skills`. Capped and cleaned on the
+   * server (`@threadlines/shared/slashCommands`).
+   */
+  sessionCommands: Schema.optionalKey(Schema.Array(ServerProviderSessionCommands)),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
   detection: Schema.optionalKey(ServerProviderDetection),
@@ -804,6 +854,62 @@ export const ServerProcessResourceHistoryResult = Schema.Struct({
   ),
 });
 export type ServerProcessResourceHistoryResult = typeof ServerProcessResourceHistoryResult.Type;
+
+/** One process inside a {@link ServerThreadCpuUsageGroup}, from the latest read. */
+export const ServerThreadCpuUsageProcess = Schema.Struct({
+  pid: PositiveInt,
+  command: TrimmedNonEmptyString,
+  /** Percent of one core, as Activity Monitor shows it. */
+  cpuPercent: Schema.Number,
+  rssBytes: NonNegativeInt,
+});
+export type ServerThreadCpuUsageProcess = typeof ServerThreadCpuUsageProcess.Type;
+
+const ServerThreadCpuUsageNumbers = {
+  /** Percent of one core in the latest read; 0 once all its processes ended. */
+  cpuPercent: Schema.Number,
+  /** Percent of one core averaged over every read in the window. */
+  avgCpuPercent: Schema.Number,
+  rssBytes: NonNegativeInt,
+  processCount: NonNegativeInt,
+  /** Its busiest processes in the latest read it had any, busiest first. */
+  topProcesses: Schema.Array(ServerThreadCpuUsageProcess),
+};
+
+/**
+ * Where a share of the machine's CPU goes: a thread's agents and terminals,
+ * Threadlines itself, or a provider process that serves several threads.
+ */
+export const ServerThreadCpuUsageGroup = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("thread"),
+    threadId: ThreadId,
+    ...ServerThreadCpuUsageNumbers,
+  }),
+  Schema.Struct({ kind: Schema.Literal("threadlines"), ...ServerThreadCpuUsageNumbers }),
+  Schema.Struct({
+    kind: Schema.Literal("shared"),
+    provider: ProviderDriverKind,
+    ...ServerThreadCpuUsageNumbers,
+  }),
+]);
+export type ServerThreadCpuUsageGroup = typeof ServerThreadCpuUsageGroup.Type;
+
+export const ServerThreadCpuUsageResult = Schema.Struct({
+  readAt: Schema.DateTimeUtc,
+  /** How far back `avgCpuPercent` reaches. */
+  windowMs: NonNegativeInt,
+  coreCount: PositiveInt,
+  /** The whole machine's use, in percent of one core; null before two reads. */
+  machineCpuPercent: Schema.NullOr(Schema.Number),
+  groups: Schema.Array(ServerThreadCpuUsageGroup),
+  error: Schema.Option(
+    Schema.Struct({
+      message: TrimmedNonEmptyString,
+    }),
+  ),
+});
+export type ServerThreadCpuUsageResult = typeof ServerThreadCpuUsageResult.Type;
 
 export const ServerSignalProcessInput = Schema.Struct({
   pid: PositiveInt,

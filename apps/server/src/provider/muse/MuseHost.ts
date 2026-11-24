@@ -159,6 +159,8 @@ export interface MuseHost {
   /** Whether the process has exited. */
   readonly hasExited: Effect.Effect<boolean>;
   readonly stderrTail: () => string;
+  /** The host's process id, for proof it is gone after a stop (agentProcessLedger). Absent for doubles. */
+  readonly pid?: number;
 }
 
 export interface MuseHostOptions {
@@ -442,11 +444,13 @@ export const startMuseHost = (
       ),
     );
 
-    const schema = isRecord(initializeResult.schema) ? initializeResult.schema : {};
-    if (schema.version !== MUSE_SCHEMA_VERSION) {
+    // The SDK types this reply, but it is still wire data from whatever Muse is installed.
+    const schema: unknown = initializeResult.schema;
+    const schemaVersion = isRecord(schema) ? schema.version : undefined;
+    if (schemaVersion !== MUSE_SCHEMA_VERSION) {
       return yield* new MuseHostError({
         operation: "initialize",
-        detail: `This Muse Code speaks session protocol version ${String(schema.version)}; Threadlines speaks ${MUSE_SCHEMA_VERSION}.`,
+        detail: `This Muse Code speaks session protocol version ${String(schemaVersion)}; Threadlines speaks ${MUSE_SCHEMA_VERSION}.`,
       });
     }
     connection.notify("initialized");
@@ -461,5 +465,6 @@ export const startMuseHost = (
       exited: Deferred.await(exited),
       hasExited: Deferred.isDone(exited),
       stderrTail: () => stderrTail,
+      pid: Number(child.pid),
     } satisfies MuseHost;
   });

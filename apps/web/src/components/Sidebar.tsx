@@ -1,6 +1,7 @@
 import { ChevronDownIcon, ChevronsUpIcon, CloudIcon, MonitorIcon, SearchIcon } from "lucide-react";
 import React, { Suspense, useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
-import { useShallow } from "zustand/react/shallow";
+import { shallow } from "zustand/vanilla/shallow";
+import { useKept, useStableHandlers } from "../hooks/useStableIdentity";
 import type { ScopedThreadRef } from "@threadlines/contracts";
 import {
   parseScopedThreadKey,
@@ -21,11 +22,7 @@ import {
   reopenThreadByKey,
   setRemoteChildDoneOverride,
 } from "../lib/threadInboxSync";
-import {
-  useComputerLinksStore,
-  type ComputerLinksEntry,
-} from "../environments/links/computerLinks";
-import { selectBootstrapCompleteForActiveEnvironment, useStore, type AppState } from "../store";
+import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import {
@@ -43,6 +40,7 @@ import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { preserveRightPanelSearchParamsForDraftNavigation } from "../diffRouteSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { type InboxEntry, useInboxThreads } from "../hooks/useInboxThreads";
+import { useOpenThreadPullRequest } from "../hooks/useOpenThreadPullRequest";
 import { useThreadMenu } from "../hooks/useThreadMenu";
 import { useTouchHoldMenu } from "../hooks/useTouchHoldMenu";
 import { useIsMobile } from "../hooks/useMediaQuery";
@@ -76,7 +74,9 @@ import {
   useSidebar,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
-import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useCommandHandlers } from "../commands/commandHandlers";
+import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
+import { openAddProject } from "./addProject/addProjectStore";
 import {
   buildInboxSections,
   buildProjectScopeOptions,
@@ -90,7 +90,6 @@ import {
   inboxLiveRowHoldsOpenChild,
   inboxLiveRowThreadKeys,
   isNeedsUserStatus,
-  INBOX_AUTO_DONE_AFTER_DAYS,
   labelWrappedRowsByDay,
   mergeThreadDoneOverride,
   mergeWrappedShelfRows,
@@ -101,16 +100,18 @@ import {
   shouldClearThreadSelectionOnMouseDown,
   sortDoneThreads,
   sortInboxThreadsBy,
+  staysOnTop,
   describeInboxGroupMenu,
   countInboxPinDividers,
   moveInInboxGroupOrder,
   orderInboxLiveRowsByGroup,
+  appendInboxGroupKeys,
+  inboxDrawnGroupOrder,
   inboxCustomOrderPeers,
   moveInInboxCustomOrder,
   trimInboxCustomOrder,
   seedInboxCustomOrder,
   summarizeChildThreads,
-  resolveRemoteFamilyChildren,
   toggleProjectScopeKey,
   windowInboxDoneRows,
   windowInboxThreads,
@@ -127,14 +128,27 @@ import {
   InboxChildRow,
   InboxDoneRow,
   InboxLinkRequestRow,
+  InboxMoveGroupRow,
   InboxRemoteChildRow,
   InboxRemoteDoneRow,
   InboxThreadRow,
   type InboxThreadFamily,
+  type RemoteChildOpen,
   type RemoteChildSetDone,
   type RemoteParentLine,
 } from "./sidebar/InboxRows";
-import { useComputerLabel, usePendingLinkRequests } from "./sidebar/linkedComputers";
+import { linkedRefOf } from "./chat/familyTabs.logic";
+import { useConnectedComputerCapabilityCheck } from "../environments/computerCapabilities";
+import {
+  linkedThreadRouteParams,
+  resolveLinkedThreadRouteRef,
+} from "../environments/links/linkedThreads";
+import {
+  groupPendingLinkRequests,
+  useComputerLabel,
+  usePendingLinkRequests,
+} from "./sidebar/linkedComputers";
+import { useThreadMoveStagedApprovalCheck } from "../environments/links/threadMoves";
 import type { ThreadHoverCardLineage } from "./sidebar/ThreadHoverCard";
 
 import {
@@ -152,6 +166,7 @@ import {
   type InboxReorder,
 } from "./sidebar/InboxLiveList";
 import { ProjectScopeMenu } from "./sidebar/ProjectScopeMenu";
+import { provideInboxCustomOrderMenu } from "./sidebar/inboxCustomOrderMenu";
 import { SwipeUndoBar } from "./sidebar/SwipeUndoBar";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { SidebarHoverCardGroup } from "./sidebar/hoverCard";
@@ -159,9 +174,12 @@ import { ThreadHoverCardProvider } from "./sidebar/ThreadHoverCard";
 import { resolveThreadActionProjectRef, startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { SidebarDestinationRow, useSelectedDestination } from "./sidebar/NavigationRail";
 import { AppWordmark } from "./sidebar/AppWordmark";
+import { InboxShelfHeader } from "./sidebar/InboxShelfHeader";
 import { resolveShownDestinationList } from "./sidebar/destinationLists";
 import { useListNewThreadStore } from "./sidebar/listNewThreadStore";
 import { useGeneralChats } from "./chats/useGeneralChats";
+import { useGeneralChatsInThreads } from "./chats/generalChatsPlacement";
+import { lazyWithPreload } from "../lib/lazyWithPreload";
 import { AttentionCounts } from "./sidebar/AttentionCounts";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { isRoom } from "../rooms";
@@ -170,7 +188,8 @@ import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
 import { readEnvironmentApi } from "../environmentApi";
 import { useRoomsEnabled } from "~/hooks/useRoomsEnabled";
-import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
+import { NO_REMOTE_CHILDREN, useRemoteFamilyChildren } from "../hooks/useRemoteFamilyChildren";
+import { useClientSettingsHydrated, useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
 
 import {
@@ -271,23 +290,6 @@ interface InboxLiveSection {
   readonly rows: readonly InboxLiveRow<InboxEntry>[];
 }
 
-/** Every parent without children on other computers shares this. */
-const NO_REMOTE_CHILDREN: readonly InboxRemoteChild[] = [];
-
-/**
- * Whether a computer still links to another, as its last links snapshot says.
- * Unknown (no snapshot yet, or one no longer live) reads as linked: only a
- * computer that says so has dropped the link.
- */
-function stillLinked(entry: ComputerLinksEntry | undefined, environmentId: EnvironmentId) {
-  if (entry === undefined || !entry.live) return true;
-  return entry.snapshot.outbound.some(
-    (link) =>
-      link.remoteEnvironmentId === environmentId &&
-      (link.state === "active" || link.state === "failed"),
-  );
-}
-
 /** Wraps up or reopens a child on a computer this app can't see, through its parent's computer. */
 const setRemoteChildDone: RemoteChildSetDone = (child, state) => {
   if (child.parentRef === undefined || child.threadId === null) return;
@@ -304,16 +306,6 @@ const setRemoteChildDone: RemoteChildSetDone = (child, state) => {
     );
   });
 };
-
-/**
- * The computers whose thread lists this app has: their threads speak for
- * themselves, so a parent's record of a child there stays out of its family.
- */
-function selectEnvironmentIdsWithThreads(state: AppState): string[] {
-  return Object.entries(state.environmentStateById).flatMap(([environmentId, environment]) =>
-    environment.bootstrapComplete ? [environmentId] : [],
-  );
-}
 
 function buildThreadJumpLabelMap(input: {
   keybindings: ReturnType<typeof useServerKeybindings>;
@@ -363,7 +355,8 @@ function inboxLiveGroupKey(
  * chat): a section's name, its count, how many wrapped today, then a hairline
  * running out to the chevron. The whole line is the control. Open, it rises
  * with its own scroll: as tall as its rows, and no taller than leaves the
- * live list room for all of its rows or half the column, whichever is more.
+ * live list room for all of its rows or half the column, whichever is more
+ * (the column less the General chats section under it, when that is there).
  * The live list above keeps its place and scrolls in what is left.
  */
 function InboxWrappedShelf({
@@ -371,6 +364,7 @@ function InboxWrappedShelf({
   count,
   todayCount,
   liveContentHeight,
+  chatsShelfPx,
   shelfRef,
   onToggle,
   foldLine,
@@ -381,6 +375,8 @@ function InboxWrappedShelf({
   todayCount: number;
   /** See InboxColumnLayout.liveContentHeight. */
   liveContentHeight: number | null;
+  /** See InboxColumnLayout.chatsShelfPx: the room under the shelf it doesn't share. */
+  chatsShelfPx: number;
   shelfRef: (element: HTMLElement | null) => void;
   onToggle: () => void;
   /** The "Show N more…" line under the rows; open only. */
@@ -398,43 +394,31 @@ function InboxWrappedShelf({
           ? {
               maxHeight:
                 liveContentHeight === null
-                  ? "50%"
-                  : `max(50%, calc(100% - ${liveContentHeight}px))`,
+                  ? `calc((100% - ${chatsShelfPx}px) / 2)`
+                  : `max(calc((100% - ${chatsShelfPx}px) / 2), calc(100% - ${chatsShelfPx + liveContentHeight}px))`,
             }
           : undefined
       }
     >
-      <button
-        type="button"
-        data-thread-selection-safe
-        data-inbox-shelf-header
-        data-testid="inbox-done-toggle"
-        aria-expanded={open}
-        className="group/section-header flex w-full shrink-0 cursor-pointer items-center gap-2 px-3 py-2 text-left select-none focus-ring"
-        onClick={onToggle}
-      >
-        <span className="shrink-0 text-[11px] font-medium text-muted-foreground transition-colors group-hover/section-header:text-foreground">
-          Wrapped ({count})
-        </span>
-        {/* Closed, the shelf still says what is fresh in it, by the same
-          time its rows show: some threads wrap up on their own. */}
-        {!open && todayCount > 0 ? (
-          <span
-            data-testid="inbox-done-today"
-            className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-          >
-            · {todayCount} today
-          </span>
-        ) : null}
-        <span aria-hidden="true" className="h-px min-w-3 flex-1 bg-sidebar-border" />
-        <ChevronDownIcon
-          aria-hidden="true"
-          className={cn(
-            "size-3.5 shrink-0 text-muted-foreground/50 transition-transform duration-150 group-hover/section-header:text-foreground",
-            !open && "rotate-180",
-          )}
-        />
-      </button>
+      <InboxShelfHeader
+        label={`Wrapped (${count})`}
+        open={open}
+        onToggle={onToggle}
+        testId="inbox-done-toggle"
+        measured
+        detail={
+          // Closed, the shelf still says what is fresh in it, by the same
+          // time its rows show: some threads wrap up on their own.
+          !open && todayCount > 0 ? (
+            <span
+              data-testid="inbox-done-today"
+              className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
+            >
+              · {todayCount} today
+            </span>
+          ) : null
+        }
+      />
       {open ? (
         <ScrollArea hideScrollbars className="h-auto min-h-0 flex-initial">
           {children}
@@ -446,6 +430,20 @@ function InboxWrappedShelf({
     </div>
   );
 }
+
+/**
+ * The General chats section, a chunk of its own: only a device that lists
+ * the chats in Threads fetches it.
+ */
+const GeneralChatsShelf = lazyWithPreload(() =>
+  import("./chats/GeneralChatsShelf").then((module) => module.GeneralChatsShelf),
+);
+
+/**
+ * The open General chats section's cap: about a third of the column, so the
+ * live list keeps most of it even with Wrapped open too.
+ */
+const GENERAL_CHATS_SHELF_MAX_HEIGHT = "35%";
 
 /** A day's label over the first of its rows in the open Wrapped shelf. */
 function InboxWrappedDayLabel({ group }: { group: WrappedDayGroup }) {
@@ -459,6 +457,15 @@ function InboxWrappedDayLabel({ group }: { group: WrappedDayGroup }) {
       {WRAPPED_DAY_GROUP_LABELS[group]}
     </li>
   );
+}
+
+/**
+ * Where a row says its work lives: a project's lead chat says "Lead" there,
+ * with the project's name when the row names one ("Lead · threadlines").
+ */
+function leadRowPlace(isLead: boolean, projectLabel: string | null): string | null {
+  if (!isLead) return projectLabel;
+  return projectLabel === null ? "Lead" : `Lead · ${projectLabel}`;
 }
 
 /** What the line between pinned and unpinned rows takes up; see {@link InboxPinDivider}. */
@@ -603,7 +610,6 @@ export default function Sidebar() {
     sidebarProjectByKey,
     resolveProjectKeyForRef,
     generalChatProjectKeys,
-    openPullRequests,
     pullRequestByThreadKey,
     linkedPullRequestsByThreadKey,
     entries,
@@ -627,11 +633,10 @@ export default function Sidebar() {
   const inboxSort = useSettings((s) => s.inboxSort);
   const inboxCustomOrder = useSettings((s) => s.inboxCustomOrder);
   const inboxGroupOrder = useSettings((s) => s.inboxGroupOrder);
-  const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
-  const wrapUpIdleThreads = useSettings((s) => s.wrapUpIdleThreads);
-  // Which computers each computer still links to: a child on one it no
-  // longer does has nothing more to say.
-  const computerLinksByEnvironmentId = useComputerLinksStore((state) => state.byEnvironmentId);
+  const savedCustomSeenGroups = useSettings((s) => s.inboxCustomGroupOrder);
+  const settingsHydrated = useClientSettingsHydrated();
+  // A family's children on computers this app can't see, as the family tabs read them too.
+  const remoteFamilyChildren = useRemoteFamilyChildren(nowIso);
   const { updateSettings } = useUpdateSettings();
   const roomsEnabled = useRoomsEnabled();
   // The Rooms filter (in the scope menu) narrows what the inbox shows, never
@@ -657,8 +662,18 @@ export default function Sidebar() {
     select: (params) => resolveThreadRouteRef(params),
   });
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+  // A child on a computer this app can't see, open read through the link.
+  const linkedRouteKey = useParams({
+    strict: false,
+    select: (params) => {
+      const ref = resolveLinkedThreadRouteRef(params);
+      return ref === null ? null : scopedThreadKey(ref);
+    },
+  });
+  // The thread open in the chat, as the list keeps it on screen: one here, or
+  // one read through the link.
+  const openInboxKey = routeThreadKey ?? linkedRouteKey;
   const keybindings = useServerKeybindings();
-  const openAddProjectCommandPalette = useCommandPaletteStore((store) => store.openAddProject);
   const { showThreadJumpHints, updateThreadJumpHintsVisibility } = useThreadJumpHintVisibility();
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
@@ -671,11 +686,6 @@ export default function Sidebar() {
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
   const computerLabel = useComputerLabel();
-  const environmentIdsWithThreadsList = useStore(useShallow(selectEnvironmentIdsWithThreads));
-  const environmentIdsWithThreads = useMemo(
-    () => new Set<string>(environmentIdsWithThreadsList),
-    [environmentIdsWithThreadsList],
-  );
   const pendingLinkRequests = usePendingLinkRequests();
   const [renamingThreadKey, setRenamingThreadKey] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
@@ -691,10 +701,13 @@ export default function Sidebar() {
     remoteChildRowPx,
     groupHeaderPx,
     doneRowPx,
+    chatsShelfPx,
     columnRef: inboxColumnRef,
     liveContentRef: inboxLiveContentRef,
     shelfRef: wrappedShelfRef,
+    chatsShelfRef,
   } = useInboxColumnLayout();
+  const generalChatsInThreads = useGeneralChatsInThreads();
   const todayStartMs = useLocalDayStartMs();
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
@@ -827,7 +840,7 @@ export default function Sidebar() {
     }),
   );
 
-  const scopeOptions = useMemo(() => {
+  const scopeOptionsNow = useMemo(() => {
     const lastActivityMsByKey = new Map<string, number>();
     const needsYouCountByKey = new Map<string, number>();
     for (const entry of machineScopedEntries) {
@@ -864,6 +877,13 @@ export default function Sidebar() {
       needsYouCountByKey,
     });
   }, [machineScopedEntries, scopedEnvironmentIdValue, sidebarProjects]);
+  // Kept while the menu would list the same thing: activity times move with
+  // every streamed word, the order and counts rarely do.
+  const scopeOptions = useKept(
+    scopeOptionsNow,
+    (kept, next) =>
+      kept.length === next.length && kept.every((option, index) => shallow(option, next[index])),
+  );
 
   // Families first: a parent's attached children travel with it through
   // every scope, and a family takes one row in the live list. A family can
@@ -883,8 +903,6 @@ export default function Sidebar() {
         entry.thread.environmentId === scopedEnvironmentIdValue) &&
       (!roomsFilterActive || isRoom(entry.thread)) &&
       (scopedProjectKeySet.size === 0 || scopedProjectKeySet.has(entry.projectKey));
-    const canSeeComputer = (environmentId: EnvironmentId) =>
-      environmentIdsWithThreads.has(environmentId);
     const { live, done, doneRemote } = buildInboxSections({
       entries,
       parentKeyOf: (entry) => familyParentKeyOf(entry.thread),
@@ -894,38 +912,20 @@ export default function Sidebar() {
         parent.thread.environmentId !== scopedEnvironmentIdValue &&
         inScope(child),
       remoteChildrenOf: (parent) =>
-        (parent.thread.remoteChildren?.length ?? 0) +
-          (parent.thread.remoteChildStarts?.length ?? 0) +
-          (parent.thread.localChildStarts?.length ?? 0) ===
-        0
-          ? NO_REMOTE_CHILDREN
-          : resolveRemoteFamilyChildren({
-              parent: parent.thread,
-              canSeeComputer,
-              computerLabel,
-              hasThread: (threadId) =>
-                entryByThreadKey.has(
-                  scopedThreadKey(scopeThreadRef(parent.thread.environmentId, threadId)),
-                ),
-              filing: {
-                now: nowIso,
-                wrapUpOnFinish: wrapUpChildThreadsOnFinish,
-                autoDoneAfterDays: wrapUpIdleThreads ? INBOX_AUTO_DONE_AFTER_DAYS : null,
-                linked: (environmentId) =>
-                  stillLinked(
-                    computerLinksByEnvironmentId[parent.thread.environmentId],
-                    environmentId,
-                  ),
-              },
-            }),
+        remoteFamilyChildren(parent.thread, (threadId) =>
+          entryByThreadKey.has(
+            scopedThreadKey(scopeThreadRef(parent.thread.environmentId, threadId)),
+          ),
+        ),
       isFamilyOpen: (parentKey) => childThreadFamilyOpenById[parentKey] === true,
-      activeThreadKey: routeThreadKey,
+      activeThreadKey: openInboxKey,
       now: nowIso,
       sortLive: (heads) =>
         sortInboxThreadsBy(
           heads.map((entry) => entry.thread),
           inboxSort,
           inboxCustomOrder,
+          (thread) => lookup(thread).isLead,
         ).map(lookup),
       sortDone: (heads) =>
         sortDoneThreads(
@@ -940,20 +940,17 @@ export default function Sidebar() {
     return { liveEntries: live, doneEntries: done, doneRemoteEntries: doneRemote };
   }, [
     childThreadFamilyOpenById,
-    computerLabel,
-    computerLinksByEnvironmentId,
     doneThreadOverlays,
     entries,
-    environmentIdsWithThreads,
     inboxCustomOrder,
     inboxSort,
+    linkedRouteKey,
     nowIso,
     roomsFilterActive,
     routeThreadKey,
     scopedEnvironmentIdValue,
     scopedProjectKeys,
-    wrapUpChildThreadsOnFinish,
-    wrapUpIdleThreads,
+    remoteFamilyChildren,
   ]);
   // The Wrapped shelf: wrapped threads, and children on computers this app
   // can't see that left a live family, by when each wrapped.
@@ -967,8 +964,53 @@ export default function Sidebar() {
     sidebarGroupingSetting === "computer" && environmentScopeOptions.length <= 1
       ? "none"
       : sidebarGroupingSetting;
+  // The custom sort remembers where it first showed each group, so a group
+  // keeps its place when its top row goes; a group new to it goes last.
+  const customSeenGroups = useMemo(
+    () =>
+      inboxSort !== "custom" || sidebarGrouping === "none"
+        ? savedCustomSeenGroups
+        : appendInboxGroupKeys(
+            savedCustomSeenGroups,
+            groupInboxLiveRows(liveEntriesBySort, (row) =>
+              inboxLiveGroupKey(sidebarGrouping, row),
+            ).map((group) => group.key),
+          ),
+    [inboxSort, liveEntriesBySort, savedCustomSeenGroups, sidebarGrouping],
+  );
+  // Saved once the computer's threads have loaded, so a half-loaded list doesn't
+  // fix the first places. The last attempt is kept so a failed save isn't
+  // retried on every render.
+  const customSeenGroupsSaveAttempt = useRef<readonly string[] | null>(null);
+  useEffect(() => {
+    if (
+      !settingsHydrated ||
+      !bootstrapComplete ||
+      customSeenGroups === savedCustomSeenGroups ||
+      customSeenGroups === customSeenGroupsSaveAttempt.current
+    ) {
+      return;
+    }
+    customSeenGroupsSaveAttempt.current = customSeenGroups;
+    updateSettings({ inboxCustomGroupOrder: customSeenGroups });
+  }, [
+    bootstrapComplete,
+    customSeenGroups,
+    savedCustomSeenGroups,
+    settingsHydrated,
+    updateSettings,
+  ]);
   // Groups the user dragged keep that order; the fold and the jump labels read
   // the rows in it.
+  const drawnGroupOrder = useMemo(
+    () =>
+      inboxDrawnGroupOrder({
+        sort: inboxSort,
+        draggedOrder: inboxGroupOrder,
+        customSeenOrder: customSeenGroups,
+      }),
+    [customSeenGroups, inboxGroupOrder, inboxSort],
+  );
   const liveEntries = useMemo(
     () =>
       sidebarGrouping === "none"
@@ -976,9 +1018,9 @@ export default function Sidebar() {
         : orderInboxLiveRowsByGroup(
             liveEntriesBySort,
             (row) => inboxLiveGroupKey(sidebarGrouping, row),
-            inboxGroupOrder,
+            drawnGroupOrder,
           ),
-    [inboxGroupOrder, liveEntriesBySort, sidebarGrouping],
+    [drawnGroupOrder, liveEntriesBySort, sidebarGrouping],
   );
   // What a closed Wrapped shelf keeps under its header: the thread open in
   // the chat, and the wrapped thread it sits under. The live list's fill
@@ -1013,13 +1055,14 @@ export default function Sidebar() {
         const hiddenByGroup =
           groupKey !== null &&
           collapsedInboxGroups[groupKey] === true &&
-          !inboxLiveRowHolds(row, routeThreadKey);
+          !row.entry.isLead &&
+          !inboxLiveRowHolds(row, openInboxKey);
         const isFamily = row.children.length > 0 || row.remoteChildren.length > 0;
         return {
-          pinned: row.entry.thread.pinnedAt !== null,
+          pinned: staysOnTop(row.entry),
           alwaysShown:
             inboxLiveRowHasAttention(row) ||
-            inboxLiveRowHolds(row, routeThreadKey) ||
+            inboxLiveRowHolds(row, openInboxKey) ||
             inboxLiveRowHolds(row, renamingThreadKey),
           costPx: hiddenByGroup ? 0 : isFamily ? familyPx : plainPx,
           childrenPx: hiddenByGroup
@@ -1055,9 +1098,9 @@ export default function Sidebar() {
     liveRoomPx,
     localChildRowPx,
     plainRowPx,
+    openInboxKey,
     remoteChildRowPx,
     renamingThreadKey,
-    routeThreadKey,
     sidebarGrouping,
   ]);
   const { visible: visibleLiveEntries, hiddenCount: hiddenLiveCount } = useMemo(
@@ -1066,20 +1109,20 @@ export default function Sidebar() {
         rows: liveEntries,
         hasAttention: (row) =>
           inboxLiveRowHasAttention(row) ||
-          inboxLiveRowHolds(row, routeThreadKey) ||
+          inboxLiveRowHolds(row, openInboxKey) ||
           inboxLiveRowHolds(row, renamingThreadKey),
-        isPinned: (row) => row.entry.thread.pinnedAt !== null,
+        isPinned: (row) => staysOnTop(row.entry),
         limit: liveFoldLimit + revealedLiveCount,
         // New threads go to the bottom of a custom order, so a fold would hide
         // the newest ones. Every row there is where the user put it.
         expanded: inboxSort === "custom",
       }),
-    [inboxSort, liveEntries, liveFoldLimit, renamingThreadKey, revealedLiveCount, routeThreadKey],
+    [inboxSort, liveEntries, liveFoldLimit, openInboxKey, renamingThreadKey, revealedLiveCount],
   );
   const nextLiveRevealCount = Math.min(LIVE_REVEAL_STEP, hiddenLiveCount);
   const visibleDoneEntries = useMemo(
-    () => windowInboxDoneRows(wrappedRows, DONE_PREVIEW_COUNT + revealedDoneCount, routeThreadKey),
-    [wrappedRows, revealedDoneCount, routeThreadKey],
+    () => windowInboxDoneRows(wrappedRows, DONE_PREVIEW_COUNT + revealedDoneCount, openInboxKey),
+    [wrappedRows, revealedDoneCount, openInboxKey],
   );
   const nextDoneRevealCount = Math.min(
     DONE_REVEAL_STEP,
@@ -1093,10 +1136,11 @@ export default function Sidebar() {
         ? visibleDoneEntries
         : wrappedRows.filter(
             (row) =>
-              row.kind === "thread" &&
-              (row.row.entry.threadKey === routeThreadKey || row.row.openChild !== null),
+              (row.kind === "thread" &&
+                (row.row.entry.threadKey === routeThreadKey || row.row.openChild !== null)) ||
+              (row.kind === "remote" && row.row.child.threadKey === linkedRouteKey),
           ),
-    [wrappedRows, routeThreadKey, visibleDoneEntries, wrappedOpen],
+    [linkedRouteKey, wrappedRows, routeThreadKey, visibleDoneEntries, wrappedOpen],
   );
   // Open, the shelf sorts its rows under days; closed, its header says how
   // many wrapped today, so a thread filed away on its own is not lost.
@@ -1198,14 +1242,19 @@ export default function Sidebar() {
   }, [doneEntries, liveEntries, remoteParentOf, sidebarThreadByKey]);
   // The requests waiting for the user's Allow, on the computers the machine
   // filter shows: a request belongs to the computer it would run on.
+  // Moves one computer asked of another show as one row (Part 3c).
+  const moveGroupable = useThreadMoveStagedApprovalCheck();
   const shownLinkRequests = useMemo(
     () =>
-      scopedEnvironmentIdValue === null
-        ? pendingLinkRequests
-        : pendingLinkRequests.filter(
-            (pending) => pending.environmentId === scopedEnvironmentIdValue,
-          ),
-    [pendingLinkRequests, scopedEnvironmentIdValue],
+      groupPendingLinkRequests(
+        scopedEnvironmentIdValue === null
+          ? pendingLinkRequests
+          : pendingLinkRequests.filter(
+              (pending) => pending.environmentId === scopedEnvironmentIdValue,
+            ),
+        moveGroupable,
+      ),
+    [moveGroupable, pendingLinkRequests, scopedEnvironmentIdValue],
   );
   const toggleChildThreadFamily = useCallback(
     (parentThreadKey: string) => {
@@ -1276,11 +1325,13 @@ export default function Sidebar() {
           working: counts.working,
           collapsed,
         },
+        // A folded group still shows its project's lead chat: it never folds.
         rows: collapsed
           ? group.rows.filter(
               (row) =>
+                row.entry.isLead ||
                 row.entry.threadKey === routeThreadKey ||
-                inboxLiveRowHoldsOpenChild(row, routeThreadKey),
+                inboxLiveRowHoldsOpenChild(row, openInboxKey),
             )
           : group.rows,
       };
@@ -1289,6 +1340,7 @@ export default function Sidebar() {
     collapsedInboxGroups,
     environmentScopeOptions,
     liveEntries,
+    openInboxKey,
     routeThreadKey,
     sidebarGrouping,
     sidebarProjectByKey,
@@ -1332,9 +1384,21 @@ export default function Sidebar() {
       "Reset your custom order?\n\nThreads go back to most recent first. You can't undo this.",
     );
     if (confirmed) {
-      updateSettings({ inboxCustomOrder: seedInboxCustomOrder(inboxThreads, "recent") });
+      // Groups take their places afresh from the reset rows.
+      updateSettings({
+        inboxCustomOrder: seedInboxCustomOrder(inboxThreads, "recent"),
+        inboxCustomGroupOrder: [],
+      });
     }
   }, [inboxThreads, updateSettings]);
+  // The scope menu is memoized; these change with the inbox's threads, which
+  // a streaming reply changes many times a second.
+  const scopeMenuHandlers = useStableHandlers({
+    onSortChange: handleSortChange,
+    onResetCustomOrder: handleResetCustomOrder,
+    onAddProject: (opener?: HTMLElement) =>
+      openAddProject(opener ? { returnFocus: opener } : undefined),
+  });
   // What a move reads when it happens; the menu and the drag outlive a render.
   const inboxSortRef = useRef(inboxSort);
   inboxSortRef.current = inboxSort;
@@ -1342,6 +1406,7 @@ export default function Sidebar() {
     liveEntries,
     inboxCustomOrder,
     inboxGroupOrder,
+    customSeenGroups,
     inboxThreads,
     sidebarThreads,
     sidebarGrouping,
@@ -1399,7 +1464,12 @@ export default function Sidebar() {
         describeInboxGroupMenu({
           canMoveUp: index > 0,
           canMoveDown: index < before.shownGroups.length - 1,
-          hasSavedOrder: before.inboxGroupOrder.some((key) => key.startsWith(kind)),
+          // In the custom sort, remembered places count too: resetting takes
+          // them afresh from where each group's first row stands now.
+          hasSavedOrder: [
+            ...before.inboxGroupOrder,
+            ...(inboxSortRef.current === "custom" ? before.customSeenGroups : []),
+          ].some((key) => key.startsWith(kind)),
         }),
         position,
       );
@@ -1407,8 +1477,11 @@ export default function Sidebar() {
       const source = inboxMoveSourceRef.current;
       const current = source.shownGroups.indexOf(groupKey);
       if (clicked === "reset") {
+        // The custom sort's remembered places go too, so it takes them afresh
+        // from where each group's first row stands now.
         updateSettings({
           inboxGroupOrder: source.inboxGroupOrder.filter((key) => !key.startsWith(kind)),
+          inboxCustomGroupOrder: source.customSeenGroups.filter((key) => !key.startsWith(kind)),
         });
       } else if (clicked === "move-up" || clicked === "move-down") {
         const toIndex = current + (clicked === "move-up" ? -1 : 1);
@@ -1448,7 +1521,7 @@ export default function Sidebar() {
 
   // Exactly the inbox rows drawn, in order: jump labels, shift-range
   // selection, previous/next and prewarming walk this list.
-  const orderedThreadKeys = useMemo(
+  const orderedThreadKeysNow = useMemo(
     () => [
       ...liveSections.flatMap((section) => section.rows.flatMap(inboxLiveRowThreadKeys)),
       ...renderedDoneEntries.flatMap(({ kind, row }) =>
@@ -1461,10 +1534,18 @@ export default function Sidebar() {
     ],
     [liveSections, renderedDoneEntries],
   );
+  // Kept while the rows are the same: every row is handed this list, and a
+  // streaming thread rebuilds the sections many times a second.
+  const orderedThreadKeys = useKept(orderedThreadKeysNow, shallow);
   // The general chats in the General Chats list's order. They never join the
   // inbox, so while one is open previous/next walk these instead: chat to
-  // chat, the way the list shows them.
-  const { chats: generalChats } = useGeneralChats();
+  // chat, the way the list shows them. Where the chats are an open section
+  // at the foot of this list, previous/next walk the whole list top to
+  // bottom, chats last, as it reads.
+  const { chats: generalChats } = useGeneralChats(
+    generalChatsInThreads ? { environmentId: scopedEnvironmentIdValue } : undefined,
+  );
+  const generalChatsSectionOpen = useUiStateStore((store) => store.inboxGeneralChatsOpen);
   const generalChatThreadKeys = useMemo(
     () =>
       generalChats.map((thread) =>
@@ -1472,10 +1553,16 @@ export default function Sidebar() {
       ),
     [generalChats],
   );
+  const listedTraversalKeys = useMemo(
+    () => [...orderedThreadKeys, ...generalChatThreadKeys],
+    [generalChatThreadKeys, orderedThreadKeys],
+  );
   const traversalThreadKeys =
-    routeThreadKey !== null && generalChatThreadKeys.includes(routeThreadKey)
-      ? generalChatThreadKeys
-      : orderedThreadKeys;
+    generalChatsInThreads && generalChatsSectionOpen
+      ? listedTraversalKeys
+      : routeThreadKey !== null && generalChatThreadKeys.includes(routeThreadKey)
+        ? generalChatThreadKeys
+        : orderedThreadKeys;
 
   const navigateToThread = useCallback(
     (threadRef: ScopedThreadRef) => {
@@ -1491,6 +1578,40 @@ export default function Sidebar() {
     },
     [clearSelection, closeSheet, navigate, setSelectionAnchor],
   );
+
+  // What the list shows (see destinationLists). This component stays mounted
+  // either way, so the thread shortcuts work on every page.
+  const destinationList = resolveShownDestinationList(selectedDestination, isMobile);
+  const PageListBody =
+    destinationList !== null && destinationList.body !== "inbox" ? destinationList.body : null;
+
+  // The sidebar's commands in the palette: the same traversal its shortcuts
+  // use, offered only when there is a thread that way, and the wrapped shelf
+  // while it is on screen.
+  const adjacentThreadRef = (direction: "previous" | "next") => {
+    const targetKey = resolveAdjacentThreadId({
+      threadIds: traversalThreadKeys,
+      currentThreadId: routeThreadKey,
+      direction,
+    });
+    const target = targetKey ? sidebarThreadByKey.get(targetKey) : undefined;
+    return target ? scopeThreadRef(target.environmentId, target.id) : null;
+  };
+  const previousThreadRef = adjacentThreadRef("previous");
+  const nextThreadRef = adjacentThreadRef("next");
+  useCommandHandlers({
+    "thread.previous": previousThreadRef !== null && {
+      run: () => navigateToThread(previousThreadRef),
+    },
+    "thread.next": nextThreadRef !== null && { run: () => navigateToThread(nextThreadRef) },
+    // Only where the inbox and its wrapped shelf are on screen, not under a
+    // page's own list (Settings, Computers).
+    "inbox.showWrapped": PageListBody === null &&
+      wrappedRows.length > 0 && {
+        ...(wrappedOpen ? { title: "Hide wrapped threads" } : {}),
+        run: toggleWrappedOpen,
+      },
+  });
 
   // A request opens where it can be read in full: the thread that asked, when
   // this app has it, else the Fleet page of the computer it would run on.
@@ -1508,6 +1629,36 @@ export default function Sidebar() {
       void navigate({ to: "/fleet/$environmentId", params: { environmentId } });
     },
     [closeSheet, navigate, navigateToThread],
+  );
+
+  // A child on a computer this app can't see opens read through the link,
+  // where its parent's computer does that (LinkedThreadView).
+  const readsLinked = useConnectedComputerCapabilityCheck("linkedThreadRead");
+  const openLinkedChild = useCallback<RemoteChildOpen>(
+    (child) => {
+      const ref = linkedRefOf(child);
+      if (ref === null) return;
+      closeSheet();
+      void navigate({
+        to: "/linked/$computerId/$linkedThreadId",
+        params: linkedThreadRouteParams(ref),
+      });
+    },
+    [closeSheet, navigate],
+  );
+  const linkedChildOpener = (child: InboxRemoteChild): RemoteChildOpen | undefined =>
+    child.parentRef !== undefined &&
+    linkedRefOf(child) !== null &&
+    readsLinked(child.parentRef.environmentId)
+      ? openLinkedChild
+      : undefined;
+
+  const openFleetComputer = useCallback(
+    (environmentId: EnvironmentId) => {
+      closeSheet();
+      void navigate({ to: "/fleet/$environmentId", params: { environmentId } });
+    },
+    [closeSheet, navigate],
   );
 
   const navigateToDraft = useCallback(
@@ -1566,48 +1717,7 @@ export default function Sidebar() {
     ],
   );
 
-  /**
-   * The pull request badge. A plain click opens the thread's Pull request tab,
-   * which is where the app can actually show it; a modifier or the middle
-   * button is the browser's "open it somewhere else" gesture, and the host is
-   * that somewhere else.
-   */
-  const openPrLink = useCallback(
-    (
-      event: React.MouseEvent<HTMLElement>,
-      pullRequest: Pick<ThreadPullRequest, "number" | "url">,
-      threadRef: ScopedThreadRef,
-    ) => {
-      event.preventDefault();
-      event.stopPropagation();
-
-      if (!(event.metaKey || event.ctrlKey || event.button === 1)) {
-        closeSheet();
-        void navigate({
-          to: "/$environmentId/$threadId",
-          params: buildThreadRouteParams(threadRef),
-          search: { pullRequest: "1", pullRequestNumber: pullRequest.number },
-        });
-        return;
-      }
-
-      const api = readLocalApi();
-      if (!api) {
-        toastManager.add({ type: "error", title: "Can't open links here" });
-        return;
-      }
-
-      void api.shell.openExternal(pullRequest.url).catch((error) => {
-        toastManager.add(
-          failureNotice({
-            title: "Couldn't open the pull request",
-            error,
-          }),
-        );
-      });
-    },
-    [closeSheet, navigate],
-  );
+  const openPrLink = useOpenThreadPullRequest(closeSheet);
 
   const attemptArchiveThread = useCallback(
     async (threadRef: ScopedThreadRef) => {
@@ -1733,6 +1843,8 @@ export default function Sidebar() {
     },
     [inboxPeersOf, moveInboxRow],
   );
+  // The thread's title in the chat header offers the same items.
+  useEffect(() => provideInboxCustomOrderMenu(inboxCustomOrderMenu), [inboxCustomOrderMenu]);
   const handleThreadContextMenu = useCallback(
     async (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
       const threadKey = scopedThreadKey(threadRef);
@@ -1944,7 +2056,7 @@ export default function Sidebar() {
     const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
       const shortcutContext = getCurrentSidebarShortcutContext();
 
-      if (event.defaultPrevented || event.repeat) {
+      if (event.defaultPrevented || event.repeat || isKeyboardOwnedByDialog()) {
         return;
       }
 
@@ -2022,12 +2134,6 @@ export default function Sidebar() {
     };
   }, [clearSelection]);
 
-  // What the list shows (see destinationLists). This component stays mounted
-  // either way, so the thread shortcuts work on every page.
-  const destinationList = resolveShownDestinationList(selectedDestination, isMobile);
-  const PageListBody =
-    destinationList !== null && destinationList.body !== "inbox" ? destinationList.body : null;
-
   return (
     <>
       {/* A phone has no title row and no rail: the sheet carries the name,
@@ -2036,7 +2142,8 @@ export default function Sidebar() {
       {isMobile ? <SidebarDestinationRow /> : null}
 
       {PageListBody !== null ? (
-        // A page with a list of its own (General chats, Computers, Settings)
+        // A page with a list of its own (General chats unless they are a
+        // section of Threads, Computers, Settings)
         // on a wide screen; on a phone, only one whose list is in the sheet.
         <>
           {/* Holds the list's place while its code loads, so the footer stays put. */}
@@ -2103,9 +2210,9 @@ export default function Sidebar() {
                       grouping={sidebarGrouping}
                       onGroupingChange={handleGroupingChange}
                       sort={inboxSort}
-                      onSortChange={handleSortChange}
-                      onResetCustomOrder={handleResetCustomOrder}
-                      onAddProject={() => openAddProjectCommandPalette()}
+                      onSortChange={scopeMenuHandlers.onSortChange}
+                      onResetCustomOrder={scopeMenuHandlers.onResetCustomOrder}
+                      onAddProject={scopeMenuHandlers.onAddProject}
                       onNewThread={isMobile ? handleComposeClick : null}
                       newThreadShortcutLabel={newThreadShortcutLabel}
                     />
@@ -2114,19 +2221,32 @@ export default function Sidebar() {
                       each waits for the user's Allow, and expires unanswered. */}
                     {shownLinkRequests.length > 0 ? (
                       <ul data-testid="inbox-link-requests">
-                        {shownLinkRequests.map(({ environmentId, request }) => (
-                          <InboxLinkRequestRow
-                            key={`${environmentId}:${request.deviceId}:${request.requestId}`}
-                            environmentId={environmentId}
-                            computerLabel={computerLabel(environmentId, environmentId)}
-                            askerLabel={computerLabel(
-                              request.parentEnvironmentId,
-                              request.fromLabel,
-                            )}
-                            request={request}
-                            onOpen={() => openLinkRequest(environmentId, request)}
-                          />
-                        ))}
+                        {shownLinkRequests.map((item) =>
+                          item.kind === "single" ? (
+                            <InboxLinkRequestRow
+                              key={`${item.environmentId}:${item.request.deviceId}:${item.request.requestId}`}
+                              environmentId={item.environmentId}
+                              computerLabel={computerLabel(item.environmentId, item.environmentId)}
+                              askerLabel={computerLabel(
+                                item.request.parentEnvironmentId,
+                                item.request.fromLabel,
+                              )}
+                              request={item.request}
+                              onOpen={() => openLinkRequest(item.environmentId, item.request)}
+                            />
+                          ) : (
+                            <InboxMoveGroupRow
+                              key={`${item.environmentId}:${item.deviceId}:moves`}
+                              computerLabel={computerLabel(item.environmentId, item.environmentId)}
+                              askerLabel={computerLabel(
+                                item.requests[0]!.parentEnvironmentId,
+                                item.requests[0]!.fromLabel,
+                              )}
+                              group={item}
+                              onOpen={() => openFleetComputer(item.environmentId)}
+                            />
+                          ),
+                        )}
                       </ul>
                     ) : null}
 
@@ -2160,7 +2280,9 @@ export default function Sidebar() {
                               type="button"
                               data-testid="inbox-empty-add-project"
                               className="cursor-pointer text-[11px] text-muted-foreground/80 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-ring"
-                              onClick={() => openAddProjectCommandPalette()}
+                              onClick={(event) =>
+                                openAddProject({ returnFocus: event.currentTarget })
+                              }
                             >
                               Add a project
                             </button>
@@ -2192,12 +2314,19 @@ export default function Sidebar() {
                             ) : null}
                             {section.rows.map(
                               (
-                                { entry, shownChildren, shownRemoteChildren, wrappedParent },
+                                {
+                                  entry,
+                                  shownChildren,
+                                  shownRemoteChildren,
+                                  childShortTitles,
+                                  wrappedParent,
+                                },
                                 rowIndex,
                               ) => (
                                 <React.Fragment key={entry.threadKey}>
-                                  {entry.thread.pinnedAt === null &&
-                                  section.rows[rowIndex - 1]?.entry.thread.pinnedAt != null ? (
+                                  {!staysOnTop(entry) &&
+                                  section.rows[rowIndex - 1] !== undefined &&
+                                  staysOnTop(section.rows[rowIndex - 1]!.entry) ? (
                                     <InboxPinDivider />
                                   ) : null}
                                   <InboxReorderRow threadKey={entry.threadKey}>
@@ -2208,9 +2337,11 @@ export default function Sidebar() {
                                       // header right above it already does. Scoped
                                       // to projects, it still names it: the menu that
                                       // says so is out of sight.
-                                      projectLabel={
-                                        sidebarGrouping !== "project" ? entry.projectLabel : null
-                                      }
+                                      projectLabel={leadRowPlace(
+                                        entry.isLead,
+                                        sidebarGrouping !== "project" ? entry.projectLabel : null,
+                                      )}
+                                      isLead={entry.isLead}
                                       // Under a project group's header the project's
                                       // mark is said once, there.
                                       showProjectMark={sidebarGrouping !== "project"}
@@ -2254,6 +2385,7 @@ export default function Sidebar() {
                                       <InboxChildRow
                                         key={child.threadKey}
                                         thread={child.thread}
+                                        shortTitle={childShortTitles.get(child.threadKey)}
                                         status={child.status}
                                         isDone={child.isDone}
                                         doneAt={child.doneAt}
@@ -2293,7 +2425,10 @@ export default function Sidebar() {
                                       <InboxRemoteChildRow
                                         key={child.threadKey}
                                         child={child}
+                                        shortTitle={childShortTitles.get(child.threadKey)}
                                         onSetDone={setRemoteChildDone}
+                                        onOpen={linkedChildOpener(child)}
+                                        isActive={child.threadKey === linkedRouteKey}
                                       />
                                     ))}
                                   </InboxReorderRow>
@@ -2362,7 +2497,7 @@ export default function Sidebar() {
                       </div>
                     ) : null}
                   </SidebarContent>
-                  {wrappedRows.length > 0 ? (
+                  {wrappedRows.length > 0 || generalChatsInThreads ? (
                     <span
                       aria-hidden="true"
                       className="glass-fade pointer-events-none absolute inset-x-0 bottom-0 z-20 h-3 bg-linear-to-t from-sidebar to-transparent"
@@ -2382,6 +2517,7 @@ export default function Sidebar() {
                     count={wrappedRows.length}
                     todayCount={wrappedTodayCount}
                     liveContentHeight={liveContentHeight}
+                    chatsShelfPx={chatsShelfPx}
                     shelfRef={wrappedShelfRef}
                     onToggle={toggleWrappedOpen}
                     foldLine={
@@ -2440,12 +2576,20 @@ export default function Sidebar() {
                                 child={child}
                                 startedByTitle={startedBy.thread.title}
                                 onSetDone={setRemoteChildDone}
+                                onOpen={linkedChildOpener(child)}
+                                isActive={child.threadKey === linkedRouteKey}
                               />
                             </React.Fragment>
                           );
                         }
-                        const { entry, children, remoteChildren, openChild, startedBy } =
-                          shelfRow.row;
+                        const {
+                          entry,
+                          children,
+                          remoteChildren,
+                          openChild,
+                          childShortTitles,
+                          startedBy,
+                        } = shelfRow.row;
                         return (
                           <React.Fragment key={entry.threadKey}>
                             {dayGroup !== null ? <InboxWrappedDayLabel group={dayGroup} /> : null}
@@ -2478,6 +2622,7 @@ export default function Sidebar() {
                             {openChild ? (
                               <InboxChildRow
                                 thread={openChild.thread}
+                                shortTitle={childShortTitles.get(openChild.threadKey)}
                                 status={openChild.status}
                                 isDone
                                 doneAt={openChild.doneAt}
@@ -2518,6 +2663,19 @@ export default function Sidebar() {
                       })}
                     </ul>
                   </InboxWrappedShelf>
+                ) : null}
+                {/* General chats park under Wrapped on a device that lists
+                  them here instead of on their own page. */}
+                {generalChatsInThreads ? (
+                  <Suspense fallback={null}>
+                    <GeneralChatsShelf.Component
+                      environmentId={scopedEnvironmentIdValue}
+                      maxHeight={GENERAL_CHATS_SHELF_MAX_HEIGHT}
+                      shelfRef={chatsShelfRef}
+                      onSwipe={handleRowSwipe}
+                      closeSheet={closeSheet}
+                    />
+                  </Suspense>
                 ) : null}
               </div>
             </ThreadHoverCardProvider>

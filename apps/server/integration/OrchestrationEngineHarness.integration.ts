@@ -36,6 +36,9 @@ import { ProjectionCheckpointRepository } from "../src/persistence/Services/Proj
 import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
 import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
 import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
+import type { ProviderAdapterShape } from "../src/provider/Services/ProviderAdapter.ts";
+import type { ProviderAdapterError } from "../src/provider/Errors.ts";
+import type { ProviderSessionDirectory } from "../src/provider/Services/ProviderSessionDirectory.ts";
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
 import { ServerSettingsService } from "../src/serverSettings.ts";
 import { AgentPages } from "../src/pages/AgentPages.ts";
@@ -56,6 +59,7 @@ import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/L
 import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
 import { ChildThreadReactor } from "../src/orchestration/Services/ChildThreadReactor.ts";
+import { GoalWaitReactor } from "../src/orchestration/Services/GoalWaitReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ThreadContextSeedBuilderLive } from "../src/provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
@@ -83,6 +87,12 @@ import * as VcsDriverRegistry from "../src/vcs/VcsDriverRegistry.ts";
 import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
+import { ThreadSessionAdmissionPermissive } from "../src/provider/Services/ThreadSessionAdmission.ts";
+import {
+  SecretScrubber,
+  type SecretScrubberShape,
+  makeSecretScrubber,
+} from "../src/secrets/SecretScrubber.ts";
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
@@ -222,10 +232,39 @@ export interface OrchestrationIntegrationHarness {
   readonly dispose: Effect.Effect<void, never>;
 }
 
+/**
+ * A real provider adapter to run instead of the scripted test adapter: the
+ * real Codex binary (`realCodex`), or an adapter built on a recorded
+ * transport (replay tests, integration/replay/).
+ */
+export interface RealProviderAdapter {
+  readonly kind: ProviderDriverKind;
+  readonly make: Effect.Effect<
+    ProviderAdapterShape<ProviderAdapterError>,
+    never,
+    Layer.Success<typeof NodeServices.layer> | ServerConfig | ProviderSessionDirectory | Scope.Scope
+  >;
+}
+
 interface MakeOrchestrationIntegrationHarnessOptions {
   readonly provider?: ProviderDriverKind;
   readonly realCodex?: boolean;
+  readonly realAdapter?: (paths: {
+    readonly rootDir: string;
+    readonly workspaceDir: string;
+  }) => RealProviderAdapter;
+  readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
+  /** One registry of watched keys shared by the provider hook and ingestion. Absent: an empty one. */
+  readonly secretScrubber?: SecretScrubberShape;
 }
+
+const realCodexAdapter: RealProviderAdapter = {
+  kind: ProviderDriverKind.make("codex"),
+  make: Effect.gen(function* () {
+    const codexSettings = yield* decodeCodexSettings({});
+    return yield* makeCodexAdapter(codexSettings);
+  }).pipe(Effect.orDie),
+};
 
 export const makeOrchestrationIntegrationHarness = (
   options?: MakeOrchestrationIntegrationHarnessOptions,
@@ -235,8 +274,14 @@ export const makeOrchestrationIntegrationHarness = (
     const fileSystem = yield* FileSystem.FileSystem;
 
     const provider = options?.provider ?? ProviderDriverKind.make("codex");
-    const useRealCodex = options?.realCodex === true;
-    const adapterHarness = useRealCodex
+    const secretScrubberLayer = Layer.succeed(
+      SecretScrubber,
+      options?.secretScrubber ?? makeSecretScrubber(),
+    );
+    const makeProviderServiceWithScrubber = () =>
+      makeProviderServiceLive().pipe(Layer.provide(secretScrubberLayer));
+    const useRealAdapter = options?.realCodex === true || options?.realAdapter !== undefined;
+    const adapterHarness = useRealAdapter
       ? null
       : yield* makeTestProviderAdapterHarness({
           provider,
@@ -267,14 +312,14 @@ export const makeOrchestrationIntegrationHarness = (
     const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
-    const realCodexRegistry = Layer.effect(
+    const realAdapter =
+      options?.realAdapter?.({ rootDir, workspaceDir }) ??
+      (options?.realCodex === true ? realCodexAdapter : null);
+    const realAdapterRegistry = Layer.effect(
       ProviderAdapterRegistry,
       Effect.gen(function* () {
-        const codexSettings = yield* decodeCodexSettings({});
-        const codexAdapter = yield* makeCodexAdapter(codexSettings);
-        return makeAdapterRegistryMock({
-          [ProviderDriverKind.make("codex")]: codexAdapter,
-        });
+        const adapter = yield* realAdapter!.make;
+        return makeAdapterRegistryMock({ [realAdapter!.kind]: adapter });
       }),
     ).pipe(
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
@@ -282,14 +327,16 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(providerSessionDirectoryLayer),
     );
     const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers);
-    const providerLayer = useRealCodex
-      ? makeProviderServiceLive().pipe(
+    const providerLayer = useRealAdapter
+      ? makeProviderServiceWithScrubber().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(providerSessionDirectoryLayer),
-          Layer.provide(realCodexRegistry),
+          Layer.provide(realAdapterRegistry),
           Layer.provide(AnalyticsService.layerTest),
           Layer.provide(providerEventLoggersLayer),
         )
-      : makeProviderServiceLive().pipe(
+      : makeProviderServiceWithScrubber().pipe(
+          Layer.provide(ThreadSessionAdmissionPermissive),
           Layer.provide(providerSessionDirectoryLayer),
           Layer.provide(fakeRegistry!),
           Layer.provide(AnalyticsService.layerTest),
@@ -307,8 +354,9 @@ export const makeOrchestrationIntegrationHarness = (
       providerLayer,
       RuntimeReceiptBusTest,
     );
-    const serverSettingsLayer = ServerSettingsService.layerTest();
+    const serverSettingsLayer = ServerSettingsService.layerTest(options?.serverSettings);
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
+      Layer.provide(secretScrubberLayer),
       // No provider publishes a page in these tests.
       Layer.provideMerge(Layer.mock(AgentPages)({ assetsDirOf: () => null })),
       Layer.provideMerge(Layer.mock(McpApps)({ recordCall: () => Effect.void })),
@@ -384,6 +432,12 @@ export const makeOrchestrationIntegrationHarness = (
         }),
       ),
       Layer.provideMerge(
+        Layer.succeed(GoalWaitReactor, {
+          start: () => Effect.void,
+          drain: Effect.void,
+        }),
+      ),
+      Layer.provideMerge(
         Layer.succeed(ThreadDiffStatBaselineReactor, {
           start: () => Effect.void,
           drain: Effect.void,
@@ -395,7 +449,8 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(orchestrationReactorLayer),
       Layer.provide(persistenceLayer),
       Layer.provideMerge(RepositoryIdentityResolverLive),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(serverSettingsLayer),
+      Layer.provideMerge(secretScrubberLayer),
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
       Layer.provideMerge(NodeServices.layer),
     );

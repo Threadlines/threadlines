@@ -12,12 +12,16 @@
  * `baseFor`. The rules for who may ask live in `@threadlines/shared/childThreads`,
  * shared with the room MCP server.
  */
+import { holdsRuntimeCheckBack } from "@threadlines/shared/checkBacks";
+import { hasLiveCommandRun } from "@threadlines/shared/commandRuns";
+import { hasLiveSideTurn } from "@threadlines/shared/sideTurns";
 import { exceedsRuntimeMode, saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import {
   ChildRequestBatchId,
   ChildRequestId,
   type ChildRequestOutcome,
   type ChildThreadCheckout,
+  type EnvironmentId,
   EventId,
   MessageId,
   type OrchestrationChildRequest,
@@ -34,25 +38,38 @@ import {
   type RemoteChildThread,
 } from "@threadlines/contracts";
 import {
+  attachedDescendantsOf,
   childAttachRefusal,
   childSendRefusal,
   childStartRefusal,
+  effectiveRequestCeiling,
   isAttachedChild,
   isSettingUpChildStart,
+  isStillGoing,
+  narrowerModeCeiling,
   ownChildRefusal,
   remoteChildOf,
+  leadPassRefusal,
+  stopReachOf,
+  withinModeCeiling,
 } from "@threadlines/shared/childThreads";
 import {
   APPROVAL_ACTIVITY_KINDS,
   collectOpenPendingRequests,
   countPendingUserInputs,
 } from "@threadlines/shared/pendingRequests";
-import { isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { awaitingInvite, isAgentOrigin } from "@threadlines/shared/roomAgentRequests";
+import { hasPendingSecretRequest } from "@threadlines/shared/secretRequestState";
+import { hasPendingSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { activeParticipants } from "@threadlines/shared/threadParticipants";
 
 import { handOffReplyText } from "./agentRequestDecisions.ts";
+import { isProjectLeadThread } from "./commandInvariants.ts";
+import { NOT_THE_LINKS_THREAD, stillLinksThread } from "./linkFence.ts";
+
 import { checkoutSelectedEvents } from "./threadCheckout.ts";
 import { currentAgentModel, messageAgentModels } from "./messageAgentModels.ts";
+import { hasBackgroundWork } from "./sessionBackgroundTasks.ts";
 
 type PlannedEvent = Omit<OrchestrationEvent, "sequence">;
 /** Event fields for an event on `threadId`'s aggregate, from the command being decided. */
@@ -68,17 +85,6 @@ type CommandOf<Type extends OrchestrationCommand["type"]> = Extract<
 export type ChildThreadDecision = ReadonlyArray<PlannedEvent> | { readonly refusal: string };
 
 const refuse = (refusal: string) => ({ refusal });
-
-/** Whether `child` asks for no more than `ceiling` allows. Plan is narrower than default. */
-export function withinModeCeiling(
-  child: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
-  ceiling: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
-): boolean {
-  return (
-    !exceedsRuntimeMode(child.runtimeMode, ceiling.runtimeMode) &&
-    (ceiling.interactionMode !== "plan" || child.interactionMode === "plan")
-  );
-}
 
 /**
  * A launch narrowed to its parent's access now: a request approved after the
@@ -113,6 +119,7 @@ export function claimsServerLineage(fields: {
   readonly parentThreadId?: unknown;
   readonly parentTurnId?: unknown;
   readonly attachedToParent?: unknown;
+  readonly stopsWithParent?: unknown;
   readonly remoteOrigin?: unknown;
   readonly scheduledRun?: unknown;
   readonly outsideOrigin?: unknown;
@@ -122,6 +129,7 @@ export function claimsServerLineage(fields: {
     fields.parentThreadId !== undefined ||
     fields.parentTurnId !== undefined ||
     fields.attachedToParent !== undefined ||
+    fields.stopsWithParent !== undefined ||
     fields.remoteOrigin !== undefined ||
     fields.scheduledRun !== undefined ||
     fields.outsideOrigin !== undefined ||
@@ -450,6 +458,7 @@ export function decideChildStart(
       }
     }
   }
+  const requestCeiling = effectiveRequestCeiling(parent);
   return command.children.map((child): PlannedEvent => ({
     ...baseFor(parent.id),
     type: "thread.child-request-submitted",
@@ -465,6 +474,7 @@ export function decideChildStart(
         status: command.mode === "ask" ? "awaiting_user" : "starting",
         childThreadId: child.childThreadId,
         childMessageId: child.childMessageId,
+        requestCeiling,
         launch: child.launch,
         ...(child.launch.target !== undefined
           ? {
@@ -508,16 +518,56 @@ export function decideChildRespond(
         `The user said not now to starting ${quotedList(titles)}. Don't ask again unless the user asks you to.`,
     );
   }
-  return batch.map((request): PlannedEvent => ({
-    ...baseFor(parent.id),
-    type: "thread.child-request-updated",
-    payload: {
-      threadId: parent.id,
-      requestId: request.requestId,
-      status: "starting",
-      updatedAt: command.createdAt,
-    },
-  }));
+  // Some of the batch, picked on the card: the rest are declined with it.
+  const picked = command.requestIds === undefined ? undefined : new Set(command.requestIds);
+  const starting =
+    picked === undefined ? batch : batch.filter((request) => picked.has(request.requestId));
+  if (starting.length === 0) {
+    return refuse("Pick at least one thread to start, or say not now.");
+  }
+  const declined = batch.filter((request) => !starting.includes(request));
+  const startedTitles = starting.map((request) => titleOf(readModel, request, parent));
+  return [
+    ...(declined.length === 0
+      ? []
+      : settleOpenRequests(
+          readModel,
+          baseFor,
+          parent,
+          declined,
+          "declined",
+          command.createdAt,
+          (titles) =>
+            `The user started ${quotedList(startedTitles)} but not ${quotedList(titles)}. Don't ask again for those unless the user asks you to.`,
+        )),
+    ...starting.map((request): PlannedEvent => ({
+      ...baseFor(parent.id),
+      type: "thread.child-request-updated",
+      payload: {
+        threadId: parent.id,
+        requestId: request.requestId,
+        status: "starting",
+        updatedAt: command.createdAt,
+      },
+    })),
+  ];
+}
+
+/**
+ * Why a parent's message can't go to `child` now, or null: a child frozen
+ * for its move takes nothing here (docs/design/fleet.md, Part 3f, (h)), as a
+ * message written now would never reach it. Nor does one whose move is
+ * stopping it (`quiescing`): its queue no longer drains, so the move would
+ * wait on the message and the parent on its answer. For a parent here
+ * (`thread.child.send`) and on another computer (`thread.remote-request.queue`).
+ */
+export function movingChildRefusal(
+  child: Pick<OrchestrationThread, "move" | "pendingMove">,
+): string | null {
+  const move = child.move ?? (child.pendingMove?.stage === "quiescing" ? child.pendingMove : null);
+  return move === null
+    ? null
+    : `That thread is moving to ${move.target.label}. Send it the message once it's there.`;
 }
 
 /** A message from an agent to one of its children (`thread.child.send`). */
@@ -542,6 +592,8 @@ export function decideChildSend(
   if (refusal !== null || child === null) {
     return refuse(refusal?.detail ?? "That thread is gone.");
   }
+  const moving = movingChildRefusal(child);
+  if (moving !== null) return refuse(moving);
   if (
     child.messages.some((message) => message.id === command.childMessageId) ||
     parent.childRequests.open.some((request) => request.requestId === command.requestId)
@@ -568,6 +620,10 @@ export function decideChildSend(
     threadId: parent.id,
     requestId: command.requestId,
     kind: "request" as const,
+  };
+  const accessFields = {
+    requestCeiling: effectiveRequestCeiling(parent),
+    ...(parent.childRequests.passCeiling !== undefined ? { passBlocked: true as const } : {}),
   };
   return [
     ...(checkout === undefined
@@ -628,6 +684,7 @@ export function decideChildSend(
           status: "queued",
           childThreadId: child.id,
           childMessageId: command.childMessageId,
+          ...accessFields,
           createdAt: command.createdAt,
         },
         createdAt: command.createdAt,
@@ -643,6 +700,7 @@ export function decideChildSend(
         text: command.text,
         attachments: [],
         fromThread,
+        ...accessFields,
         turnId: null,
         streaming: false,
         createdAt: command.createdAt,
@@ -659,10 +717,98 @@ export function decideChildSend(
           text: command.text,
           attachments: [],
           fromThread,
+          ...accessFields,
           runtimeMode: child.runtimeMode,
           interactionMode: child.interactionMode,
           createdAt: command.createdAt,
         },
+      },
+    },
+  ];
+}
+
+/**
+ * The lead chat passes a message to a thread it did not start
+ * (`thread.lead.pass`, docs/design/lead-chat.md, "A pass"). One-way: the
+ * message is queued in the target as the lead's, with the lead's access as
+ * its ceiling, and only the lead's send count is recorded. The tool handler
+ * checked the same rules first.
+ */
+export function decideLeadPass(
+  readModel: OrchestrationReadModel,
+  lead: OrchestrationThread,
+  command: CommandOf<"thread.lead.pass">,
+  baseFor: ChildEventBase,
+): ChildThreadDecision {
+  const target = findThread(readModel, command.targetThreadId);
+  const refusal = leadPassRefusal(lead, target, {
+    from: command.from,
+    callerTurnId: command.callerTurnId,
+    isLead: isProjectLeadThread(readModel, lead),
+  });
+  if (refusal !== null || target === null) {
+    return refuse(refusal?.detail ?? "That thread is gone.");
+  }
+  if (target.messages.some((message) => message.id === command.messageId)) {
+    return refuse("That message was already sent.");
+  }
+  const ceiling = { runtimeMode: lead.runtimeMode, interactionMode: lead.interactionMode };
+  if (!withinModeCeiling(target, ceiling)) {
+    return refuse(
+      "That thread has more access than the lead chat, so it can't take work from it. Tell the user, who can send it there.",
+    );
+  }
+  const fromThread = {
+    threadId: lead.id,
+    requestId: command.requestId,
+    kind: "request" as const,
+    ceiling,
+    ...(command.from.participantId !== null && command.from.participantId !== undefined
+      ? { passedBy: command.from.participantId }
+      : {}),
+  };
+  return [
+    {
+      ...baseFor(target.id),
+      type: "thread.message-sent",
+      payload: {
+        threadId: target.id,
+        messageId: command.messageId,
+        role: "user",
+        text: command.text,
+        attachments: [],
+        fromThread,
+        turnId: null,
+        streaming: false,
+        createdAt: command.createdAt,
+        updatedAt: command.createdAt,
+      },
+    },
+    {
+      ...baseFor(target.id),
+      type: "thread.follow-up-queued",
+      payload: {
+        threadId: target.id,
+        followUp: {
+          messageId: command.messageId,
+          text: command.text,
+          attachments: [],
+          fromThread,
+          runtimeMode: target.runtimeMode,
+          interactionMode: target.interactionMode,
+          createdAt: command.createdAt,
+        },
+      },
+    },
+    {
+      ...baseFor(lead.id),
+      type: "thread.lead-pass-recorded",
+      payload: {
+        threadId: lead.id,
+        kind: "sent",
+        messageId: command.messageId,
+        targetThreadId: target.id,
+        createdAt: command.createdAt,
       },
     },
   ];
@@ -705,6 +851,10 @@ function decideRemoteChildSend(
   ) {
     return refuse("That thread is still being set up. Send it a message once it has started.");
   }
+  const accessFields = {
+    requestCeiling: effectiveRequestCeiling(parent),
+    ...(parent.childRequests.passCeiling !== undefined ? { passBlocked: true as const } : {}),
+  };
   return [
     {
       ...baseFor(parent.id),
@@ -722,9 +872,10 @@ function decideRemoteChildSend(
           childThreadId: remoteChild.threadId,
           childMessageId: command.childMessageId,
           text: command.text,
+          ...accessFields,
           remote: {
             environmentId: remoteChild.environmentId,
-            label: remoteLabelOf(parent, remoteChild.environmentId),
+            label: remoteLabelOf(parent, remoteChild.environmentId, remoteChild.label),
             threadId: remoteChild.threadId,
             status: "sending",
           },
@@ -736,12 +887,11 @@ function decideRemoteChildSend(
   ];
 }
 
-/** The name a parent last knew a linked computer by. */
-const remoteLabelOf = (parent: OrchestrationThread, environmentId: string) =>
+/** The name a parent last knew a linked computer by: its newest request's, else its child's record's. */
+const remoteLabelOf = (parent: OrchestrationThread, environmentId: string, recorded: string) =>
   parent.childRequests.open
     .toReversed()
-    .find((request) => request.remote?.environmentId === environmentId)?.remote?.label ??
-  "the other computer";
+    .find((request) => request.remote?.environmentId === environmentId)?.remote?.label ?? recorded;
 
 /** A request moved on (`thread.child-request.update`). */
 export function decideChildRequestUpdate(
@@ -1091,6 +1241,10 @@ export function decideRemoteHandedBackRecord(
   command: CommandOf<"thread.remote-handed-back.record">,
   baseFor: ChildEventBase,
 ): ChildThreadDecision {
+  // Only on a thread still that link's (Part 3f, (g)).
+  if (!stillLinksThread(thread, command.byLink)) {
+    return refuse(NOT_THE_LINKS_THREAD);
+  }
   const latest = thread.latestTurn;
   if (
     latest === null ||
@@ -1157,9 +1311,24 @@ export function decideRemoteRequestQueue(
   if (thread.archivedAt !== null) {
     return refuse("That thread is archived.");
   }
+  const moving = movingChildRefusal(thread);
+  if (moving !== null) return refuse(moving);
   if (thread.messages.some((message) => message.id === command.messageId)) {
     return refuse("That message was already sent.");
   }
+  // Older senders send no ceiling: hold the request to the thread's access
+  // now, or to the access the link started the thread with if narrower
+  // (docs/design/agent-autonomy-no-limits.md, "Access", sequence 2).
+  const requestCeiling =
+    command.requestCeiling ??
+    narrowerModeCeiling(origin.launchedAccess, {
+      runtimeMode: thread.runtimeMode,
+      interactionMode: thread.interactionMode,
+    });
+  const accessFields = {
+    requestCeiling,
+    ...(command.passBlocked === true ? { passBlocked: true as const } : {}),
+  };
   return [
     {
       ...baseFor(thread.id),
@@ -1171,6 +1340,7 @@ export function decideRemoteRequestQueue(
         text: command.text,
         attachments: [],
         fromThread: command.fromThread,
+        ...accessFields,
         turnId: null,
         streaming: false,
         createdAt: command.createdAt,
@@ -1187,6 +1357,7 @@ export function decideRemoteRequestQueue(
           text: command.text,
           attachments: [],
           fromThread: command.fromThread,
+          ...accessFields,
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt: command.createdAt,
@@ -1264,6 +1435,257 @@ export function decideParentAttachmentSet(
   ];
 }
 
+/** Activity on a child that moved to another computer without its parent. */
+export const MovedAloneActivityKind = "thread.moved-alone";
+
+/**
+ * A child that moved to another computer without its parent
+ * (docs/design/fleet.md, Part 3f, (h)), on the computer it left, in the
+ * decision that records the move. Its copy here leaves the family, so the
+ * parent never counts it as a child here; the parent's requests for it
+ * settle as cancelled, with a note for its agent. When that computer kept it
+ * the parent's child across the link (`keptParent`, its answer over the
+ * link), the parent keeps it as a child there, as a thread it started there,
+ * and reaches it over the link from now on. One that already came back here
+ * before this computer heard it landed (`returned`) is never kept there: it
+ * came back under the parent (`adopted`) or as a thread of its own (`own`).
+ */
+export function movedAloneEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  child: OrchestrationThread,
+  moved: {
+    readonly target: { readonly environmentId: EnvironmentId; readonly label: string };
+    readonly threadId: ThreadId;
+    readonly keptParent: boolean;
+    readonly returned?: "adopted" | "own" | undefined;
+  },
+  at: string,
+): ReadonlyArray<PlannedEvent> {
+  if (child.parentThreadId === null || !child.attachedToParent) return [];
+  const parent = findThread(readModel, child.parentThreadId);
+  const label = moved.target.label;
+  const kept =
+    moved.returned === undefined &&
+    moved.keptParent &&
+    parent !== null &&
+    parent.deletedAt === null;
+  const words =
+    moved.returned === "adopted" && parent !== null
+      ? `It moved to ${label} and back, and is still a thread of '${parent.title}' here.`
+      : moved.returned !== undefined
+        ? `It moved to ${label} and back, as a thread of its own.`
+        : kept
+          ? `It's still a thread of '${parent.title}', which reaches it on ${label}.`
+          : `It's its own thread on ${label}, so the thread that started it can't reach it there.`;
+  return [
+    {
+      ...baseFor(child.id),
+      type: "thread.parent-attachment-set",
+      payload: {
+        threadId: child.id,
+        attached: false,
+        attachmentEpoch: child.parentAttachmentEpoch + 1,
+        at,
+      },
+    },
+    {
+      ...baseFor(child.id),
+      type: "thread.activity-appended",
+      payload: {
+        threadId: child.id,
+        activity: {
+          id: EventId.make(`moved-alone:${child.id}:${child.parentAttachmentEpoch + 1}`),
+          tone: "info",
+          kind: MovedAloneActivityKind,
+          summary: words,
+          payload: { parentThreadId: child.parentThreadId, targetLabel: label, kept },
+          turnId: null,
+          createdAt: at,
+        },
+      },
+    },
+    ...(parent === null
+      ? []
+      : settleOpenRequests(
+          readModel,
+          baseFor,
+          parent,
+          requestsFor(parent, child.id),
+          "cancelled",
+          at,
+          (titles) =>
+            moved.returned === "adopted"
+              ? `${quotedList(titles)} moved to ${label} and back before it answered. Send it the message again.`
+              : moved.returned !== undefined
+                ? `${quotedList(titles)} moved to ${label} and back as its own thread, so its answer won't come back to you.`
+                : kept
+                  ? `${quotedList(titles)} moved to ${label} before it answered. Send it the message again there.`
+                  : `${quotedList(titles)} moved to ${label} as its own thread, so its answer won't come back to you.`,
+        )),
+    ...(kept
+      ? [
+          {
+            ...baseFor(parent.id),
+            type: "thread.remote-child-updated" as const,
+            payload: {
+              threadId: parent.id,
+              child: {
+                environmentId: moved.target.environmentId,
+                label,
+                threadId: moved.threadId,
+                // The name RemoteChildReactor gives an asker it can't name.
+                handle: "Agent",
+                title: child.title,
+                attachmentEpoch: 0,
+                cachedStatus: "idle",
+                updatedAt: at,
+              },
+              updatedAt: at,
+            },
+          },
+        ]
+      : []),
+  ];
+}
+
+/**
+ * A thread this computer's agent started on another computer, back home
+ * (docs/design/fleet.md, Part 3f, (h)), on the parent, in the decision that
+ * imports it as the parent's child here: the record of it on that computer
+ * goes, and the requests still open for it there settle as cancelled (that
+ * computer settles its side when the thread leaves it).
+ */
+export function cameHomeEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  parent: OrchestrationThread,
+  from: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId },
+  at: string,
+): ReadonlyArray<PlannedEvent> {
+  return remoteChildGoneEvents(
+    readModel,
+    baseFor,
+    parent,
+    from,
+    at,
+    (titles, label) =>
+      `${quotedList(titles)} moved back to this computer before it answered from ${label}. Send it the message again here.`,
+  );
+}
+
+/**
+ * Threads a moved parent's agent started on the computer it moved to, which
+ * that computer took back as the parent's children there (`adopted` on the
+ * move's answer, docs/design/fleet.md, Part 3f, (g)), on the parent's
+ * read-only copy here, in the decision that records the move: their records
+ * go, and the requests still open for them settle as cancelled.
+ */
+export function adoptedThereEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  parent: OrchestrationThread,
+  environmentId: EnvironmentId,
+  threadIds: ReadonlyArray<ThreadId>,
+  at: string,
+): ReadonlyArray<PlannedEvent> {
+  return [...new Set(threadIds)].flatMap((threadId) =>
+    remoteChildGoneEvents(
+      readModel,
+      baseFor,
+      parent,
+      { environmentId, threadId },
+      at,
+      (titles, label) =>
+        `${quotedList(titles)} is this thread's again on ${label}, so its answer won't come back here.`,
+    ),
+  );
+}
+
+/**
+ * A parent's record of its child on a linked computer goes, and the
+ * requests still open for it there settle as cancelled with `words`. None
+ * when the parent holds no such record.
+ */
+function remoteChildGoneEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  parent: OrchestrationThread,
+  from: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId },
+  at: string,
+  words: (titles: ReadonlyArray<string>, label: string) => string,
+): ReadonlyArray<PlannedEvent> {
+  const record = (parent.childRequests.remoteChildren ?? []).find(
+    (entry) => entry.environmentId === from.environmentId && entry.threadId === from.threadId,
+  );
+  if (record === undefined) return [];
+  const open = parent.childRequests.open.filter(
+    (request) =>
+      request.remote?.environmentId === from.environmentId &&
+      (request.childThreadId === from.threadId || request.remote.threadId === from.threadId),
+  );
+  return [
+    ...settleOpenRequests(readModel, baseFor, parent, open, "cancelled", at, (titles) =>
+      words(titles, record.label),
+    ),
+    {
+      ...baseFor(parent.id),
+      type: "thread.remote-child-updated",
+      payload: { threadId: parent.id, child: record, removed: true, updatedAt: at },
+    },
+  ];
+}
+
+/** Activity on a child whose parent moved to another computer without it. */
+export const ParentMovedAwayActivityKind = "thread.parent-moved-away";
+
+/**
+ * A child that stays on this computer when its parent moves to another one
+ * (docs/design/fleet.md, Part 3f, (g)): it becomes its own thread, as a
+ * separation makes it, and its timeline says why ("Its parent thread moved
+ * to Windows PC, so this is its own thread now."). The parent can't reach it
+ * from there.
+ */
+export function leftBehindEvents(
+  readModel: OrchestrationReadModel,
+  baseFor: ChildEventBase,
+  parent: OrchestrationThread,
+  child: OrchestrationThread,
+  targetLabel: string,
+  at: string,
+): ReadonlyArray<PlannedEvent> {
+  const words = `Its parent thread moved to ${targetLabel}, so this is its own thread now.`;
+  return [
+    {
+      ...baseFor(child.id),
+      type: "thread.parent-attachment-set",
+      payload: {
+        threadId: child.id,
+        attached: false,
+        attachmentEpoch: child.parentAttachmentEpoch + 1,
+        at,
+      },
+    },
+    ...separationEvents(readModel, baseFor, parent, child, at),
+    {
+      ...baseFor(child.id),
+      type: "thread.activity-appended",
+      payload: {
+        threadId: child.id,
+        activity: {
+          id: EventId.make(`parent-moved-away:${child.id}:${child.parentAttachmentEpoch + 1}`),
+          tone: "info",
+          kind: ParentMovedAwayActivityKind,
+          summary: words,
+          payload: { parentThreadId: parent.id, targetLabel },
+          turnId: null,
+          createdAt: at,
+        },
+      },
+    },
+  ];
+}
+
 /** What the parent loses when `child` leaves its family. */
 function separationEvents(
   readModel: OrchestrationReadModel,
@@ -1290,9 +1712,24 @@ function separationEvents(
   ];
 }
 
-/** Whether a child has work going: a turn, a start, background work, or work it asked for. */
-export function childHasLiveWork(thread: OrchestrationThread): boolean {
+/**
+ * Whether a child has work going: a turn, a start, background work its agent
+ * waits on, or work it asked for. `running` also counts what keeps running
+ * without its agent and dies with its runtime or terminal: background work
+ * nobody waits on (a dev server) and a command still going in its terminal.
+ * Ask for it where the thread is about to be stopped and its terminals
+ * closed (archiving a parent's family). A thread's move waits on the same
+ * pieces (threadMoveDecisions.ts, workWaits). A check-back is not work
+ * here: it doesn't keep a thread from wrapping up or being reported idle.
+ * Archiving, which stops the runtime it fires in, checks for one itself
+ * (childArchivePlan).
+ */
+export function childHasLiveWork(
+  thread: OrchestrationThread,
+  options: { readonly running?: boolean } = {},
+): boolean {
   const session = thread.session;
+  const running = options.running === true;
   const latestTurnId = thread.latestTurn?.turnId ?? null;
   return (
     // Waiting on the user counts too: an approval, a question, a plan to act on.
@@ -1308,11 +1745,73 @@ export function childHasLiveWork(thread: OrchestrationThread): boolean {
     thread.latestTurn?.state === "running" ||
     session?.status === "running" ||
     session?.status === "starting" ||
-    (session?.awaitedBackgroundTaskCount ?? session?.pendingBackgroundTaskCount ?? 0) > 0 ||
+    hasBackgroundWork(session, running ? "any" : "awaited") ||
+    (running && hasLiveCommandRun(thread.commandRuns)) ||
     (thread.queuedFollowUps ?? []).length > 0 ||
-    (thread.sideTurn ?? null) !== null ||
+    hasLiveSideTurn(thread) ||
     thread.childRequests.open.length > 0
   );
+}
+
+/**
+ * The shared "still going" test (`isStillGoing`, docs/design/
+ * agent-autonomy-no-limits.md, "Stop") over a loaded thread: what Stop
+ * targets, what "Stop N working threads" counts, and what holds a revert.
+ */
+export function threadIsStillGoing(thread: OrchestrationThread): boolean {
+  const session = thread.session;
+  const latestTurnId = thread.latestTurn?.turnId ?? null;
+  return isStillGoing({
+    turnInFlight:
+      thread.latestTurn?.state === "running" ||
+      session?.status === "running" ||
+      session?.status === "starting",
+    queuedCount: (thread.queuedFollowUps ?? []).length,
+    waitsOnUser:
+      collectOpenPendingRequests(thread.activities, APPROVAL_ACTIVITY_KINDS).length > 0 ||
+      countPendingUserInputs(thread.activities).pendingUserInputCount > 0 ||
+      thread.proposedPlans.some(
+        (plan) =>
+          latestTurnId !== null &&
+          plan.turnId === latestTurnId &&
+          plan.implementedAt === null &&
+          plan.dismissedAt === null,
+      ) ||
+      hasPendingSettingsChange(thread.settingsRequests ?? []) ||
+      hasPendingSecretRequest(thread.secretRequests ?? []) ||
+      awaitingInvite(thread.agentRequests) !== undefined,
+    backgroundWork: hasBackgroundWork(session, "any"),
+    openRequestCount: thread.childRequests.open.length,
+    waitsForReset: (session?.continueAtReset ?? null) !== null,
+    sideAnswerRunning: hasLiveSideTurn(thread),
+    checkBacks: thread.checkBacks,
+  });
+}
+
+/**
+ * The turn a parent's agent cut off with thread_stop is over as far as that
+ * parent is concerned: it chose to end it, so nothing from it is owed back.
+ * Recording it as handed back lets the child wrap itself once the interrupt
+ * lands, like one whose answer went back. Only a turn that is running is
+ * stamped: a finished turn the user started stays theirs to read, and a later
+ * turn (a new thread_send, the user writing) is newer than the stamp.
+ */
+export function stoppedTurnHandedBack(
+  baseFor: ChildEventBase,
+  child: OrchestrationThread,
+  createdAt: string,
+): ReadonlyArray<PlannedEvent> {
+  const turn = child.latestTurn;
+  if (turn === null || turn.state !== "running" || child.handedBackTurnId === turn.turnId) {
+    return [];
+  }
+  return [
+    {
+      ...baseFor(child.id),
+      type: "thread.handed-back",
+      payload: { threadId: child.id, turnId: turn.turnId, handedBackAt: createdAt },
+    },
+  ];
 }
 
 /**
@@ -1348,21 +1847,45 @@ export function decideChildrenStop(
   if (pendingIds.length > 0 && isAttachedChild(parent)) {
     return refuse("This thread was started by another thread, so it cannot stop threads itself.");
   }
-  const targets =
-    command.childThreadIds === undefined
-      ? attachedChildrenOf(readModel, parent.id).filter(
-          (child) => childHasLiveWork(child) || requestsFor(parent, child.id).length > 0,
-        )
-      : command.childThreadIds
-          .filter((id) => !isRemote(id) && !pendingIds.includes(id))
-          .map((id) => findThread(readModel, id));
+  const hasOpenParentRequest = (child: OrchestrationThread) => {
+    if (child.parentThreadId === null) return false;
+    const owner = findThread(readModel, child.parentThreadId);
+    return owner !== null && requestsFor(owner, child.id).length > 0;
+  };
   const children: OrchestrationThread[] = [];
-  for (const child of targets) {
-    const refusal = ownChildRefusal(parent, child);
-    if (refusal !== null || child === null) {
-      return refuse(refusal?.detail ?? "That thread is gone.");
-    }
+  const seenChildIds = new Set<ThreadId>();
+  const addChild = (child: OrchestrationThread) => {
+    if (seenChildIds.has(child.id)) return;
+    seenChildIds.add(child.id);
     children.push(child);
+  };
+  if (command.childThreadIds === undefined) {
+    // Stop's reach: every attached thread under parent, plus flagged loose
+    // threads (reportBack: false not yet written in by the user), that is
+    // still going or has an open request on its parent.
+    for (const { thread: member } of stopReachOf(readModel.threads, parent.id)) {
+      if (member.archivedAt !== null) continue;
+      if (threadIsStillGoing(member) || hasOpenParentRequest(member)) {
+        addChild(member);
+      }
+    }
+  } else {
+    for (const id of command.childThreadIds.filter(
+      (entry) => !isRemote(entry) && !pendingIds.includes(entry),
+    )) {
+      const child = findThread(readModel, id);
+      const refusal = ownChildRefusal(parent, child);
+      if (refusal !== null || child === null) {
+        return refuse(refusal?.detail ?? "That thread is gone.");
+      }
+      addChild(child);
+      for (const { thread: member } of stopReachOf(readModel.threads, child.id)) {
+        if (member.archivedAt !== null) continue;
+        if (threadIsStillGoing(member) || hasOpenParentRequest(member)) {
+          addChild(member);
+        }
+      }
+    }
   }
   if (remoteTargets.length > 0 && isAttachedChild(parent)) {
     return refuse("This thread was started by another thread, so it cannot stop threads itself.");
@@ -1378,34 +1901,55 @@ export function decideChildrenStop(
   const remoteRequests = parent.childRequests.open.filter(
     (request) => request.remote !== undefined && stoppedIds.has(request.childThreadId),
   );
+  // Settle open requests on every parent whose child is being stopped
+  // (walking from parent down covers both direct children and any nested ones).
+  const ownersWithStoppedChildren = [
+    parent,
+    ...children.filter((child) =>
+      child.childRequests.open.some((request) => stoppedIds.has(request.childThreadId)),
+    ),
+  ];
   return {
     events: [
-      ...settleOpenRequests(
-        readModel,
-        baseFor,
-        parent,
-        parent.childRequests.open.filter((request) => stoppedIds.has(request.childThreadId)),
-        "stopped",
-        command.createdAt,
-        (titles) =>
-          `${quotedList(titles)} ${titles.length === 1 ? "was" : "were"} stopped, so no answer will come back.`,
+      ...ownersWithStoppedChildren.flatMap((owner) =>
+        settleOpenRequests(
+          readModel,
+          baseFor,
+          owner,
+          owner.childRequests.open.filter((request) => stoppedIds.has(request.childThreadId)),
+          "stopped",
+          command.createdAt,
+          (titles) =>
+            `${quotedList(titles)} ${titles.length === 1 ? "was" : "were"} stopped, so no answer will come back.`,
+        ),
       ),
-      // An answer a child gave just before it was stopped does not come back
-      // either: queued ones are taken back, and one already on its way to a
-      // turn is cut off by moving the child's delivery epoch.
-      ...children.flatMap((child): ReadonlyArray<PlannedEvent> => [
-        ...unqueueReportsFrom(baseFor, parent, child.id, command.createdAt),
-        {
-          ...baseFor(child.id),
-          type: "thread.parent-attachment-set",
-          payload: {
-            threadId: child.id,
-            attached: true,
-            attachmentEpoch: child.parentAttachmentEpoch + 1,
-            at: command.createdAt,
+      // An answer an attached child gave just before it was stopped does not
+      // come back either: queued ones are taken back, and one already on its
+      // way to a turn is cut off by moving the child's attachment epoch. A
+      // loose thread (stopsWithParent) was never attached and reports to nobody.
+      ...children.flatMap((child): ReadonlyArray<PlannedEvent> => {
+        if (!child.attachedToParent) {
+          return [];
+        }
+        const owner =
+          child.parentThreadId === null ? null : findThread(readModel, child.parentThreadId);
+        return [
+          ...(owner !== null
+            ? unqueueReportsFrom(baseFor, owner, child.id, command.createdAt)
+            : []),
+          {
+            ...baseFor(child.id),
+            type: "thread.parent-attachment-set",
+            payload: {
+              threadId: child.id,
+              attached: true,
+              attachmentEpoch: child.parentAttachmentEpoch + 1,
+              at: command.createdAt,
+            },
           },
-        },
-      ]),
+          ...stoppedTurnHandedBack(baseFor, child, command.createdAt),
+        ];
+      }),
       // A child on a linked computer: the same, kept on the parent, and its
       // computer is told to drop the requests and stop its session.
       ...remoteCancelEvents(baseFor, parent, remoteRequests, command.createdAt, true),
@@ -1566,11 +2110,17 @@ export function childDeletionEvents(
   createdAt: string,
   withChildren: boolean,
   verb: "deleted" | "archived" = "deleted",
+  deletedChildIds?: ReadonlySet<ThreadId>,
 ): ReadonlyArray<PlannedEvent> {
   // Children deleted along with it need nothing; the rest (all of them, or
-  // with `withChildren` the archived ones) are separated.
+  // with `withChildren` the archived ones, or with `deletedChildIds` any not
+  // named in the list) are separated.
   const familyEvents = attachedChildrenOf(readModel, thread.id)
-    .filter((child) => !withChildren || child.archivedAt !== null)
+    .filter((child) =>
+      deletedChildIds !== undefined
+        ? !deletedChildIds.has(child.id)
+        : !withChildren || child.archivedAt !== null,
+    )
     .map((child): PlannedEvent => ({
       ...baseFor(child.id),
       type: "thread.parent-attachment-set",
@@ -1618,14 +2168,93 @@ export function childArchivePlan(
     (child) => child.archivedAt === null,
   );
   // A child its parent still has a request open for is at work for it, even
-  // one with nothing running yet because it is still being set up.
+  // one with nothing running yet because it is still being set up. Archiving
+  // stops a child's runtime and closes its terminals, so a dev server or a
+  // command still going in its terminal keeps it out too, and so does a
+  // check-back its agent set that would die with the runtime: unarchiving
+  // brings the thread back, not the promise to come back.
   const live = (child: OrchestrationThread) =>
-    childHasLiveWork(child) || requestsFor(parent, child.id).length > 0;
+    childHasLiveWork(child, { running: true }) ||
+    requestsFor(parent, child.id).length > 0 ||
+    holdsRuntimeCheckBack(child);
   return {
     archive: children.filter((child) => !live(child)),
     separate: children.filter(live),
   };
 }
+
+/**
+ * Why a parent's agent can't wrap up `child` (thread_wrap), or null. Only a
+ * thread `parent` started that is still attached to it, and only once nothing
+ * runs in it, waits on the user or is owed to `parent`, so a wrap never files
+ * away work still going. The decider applies it to a
+ * `thread.done-override.set` carrying `byParentAgent`; the handler reads it
+ * first for a precise outcome.
+ */
+export function agentWrapRefusal(
+  parent: Pick<OrchestrationThread, "id" | "childRequests"> | null,
+  child: OrchestrationThread,
+): { readonly kind: "not_yours" | "refused" | "working"; readonly detail: string } | null {
+  if (parent === null || child.parentThreadId !== parent.id) {
+    return {
+      kind: "not_yours",
+      detail: "That is not a thread you started. You can only wrap up your own threads.",
+    };
+  }
+  if (!child.attachedToParent) {
+    return {
+      kind: "not_yours",
+      detail: "The user made that thread its own, so it's theirs to wrap up.",
+    };
+  }
+  if (child.archivedAt !== null) {
+    return { kind: "refused", detail: "That thread is archived." };
+  }
+  if (
+    childHasLiveWork(child) ||
+    (child.childRequests.owedReports ?? []).length > 0 ||
+    hasPendingSettingsChange(child.settingsRequests ?? []) ||
+    hasPendingSecretRequest(child.secretRequests ?? []) ||
+    awaitingInvite(child.agentRequests) !== undefined ||
+    parent.childRequests.open.some((request) => request.childThreadId === child.id)
+  ) {
+    return {
+      kind: "working",
+      detail: `'${child.title}' is still working or waiting for the user. Wait for its reply, or stop it with thread_stop first.`,
+    };
+  }
+  // The user has been talking to it since its work for the parent: an answer
+  // they may not have read is theirs, not the parent's agent's, to put away.
+  if (personWroteSince(child, child.handedBackAt ?? child.createdAt)) {
+    return {
+      kind: "refused",
+      detail: `The user has been writing to '${child.title}' since, so it's theirs to wrap up.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Whether a person sent this message from the app (they typed it, or their
+ * signed-in device sent it), never an agent, another thread, a scheduled run,
+ * an automatic fix or a continue after a usage limit.
+ */
+export const personWrote = (message: {
+  readonly composer?: unknown;
+  readonly sentFrom?: unknown;
+}): boolean => message.composer !== undefined || message.sentFrom !== undefined;
+
+/** Whether a person wrote to `thread` after `since` (personWrote). */
+export const personWroteSince = (
+  thread: Pick<OrchestrationThread, "messages">,
+  since: string,
+): boolean => {
+  const after = Date.parse(since);
+  return thread.messages.some(
+    (message) =>
+      message.role === "user" && personWrote(message) && Date.parse(message.createdAt) > after,
+  );
+};
 
 /** The children an unarchive of `parent` brings back: those its archive took along. */
 export const childrenArchivedWith = (
@@ -1650,9 +2279,15 @@ export function childRevertRefusal(
   readModel: OrchestrationReadModel,
   thread: OrchestrationThread,
 ): string | null {
+  // Any attached thread under this one that is still going (by Stop's test,
+  // excluding loose threads which report to nobody) can still wake it about
+  // work a revert would take back (docs/design/agent-autonomy-no-limits.md).
   if (
     thread.childRequests.open.length > 0 ||
-    (thread.queuedFollowUps ?? []).some((queued) => queued.fromThread?.kind === "report")
+    (thread.queuedFollowUps ?? []).some((queued) => queued.fromThread?.kind === "report") ||
+    attachedDescendantsOf(readModel.threads, thread.id).some(
+      ({ thread: child }) => child.archivedAt === null && threadIsStillGoing(child),
+    )
   ) {
     return "Finish or stop its threads first: their answers are about work a revert would take back.";
   }
@@ -1740,4 +2375,4 @@ export const isAgentQueued = (queued: {
   readonly fromThread?: unknown;
 }) => isAgentOrigin(queued);
 
-export { isAttachedChild };
+export { isAttachedChild, withinModeCeiling };

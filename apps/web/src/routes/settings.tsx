@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
+import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import { SettingsSearchResults } from "../components/settings/SettingsSearch";
 import {
@@ -15,16 +16,16 @@ import {
   useSettingsSearchActive,
 } from "../components/settings/SettingsSearchField";
 import {
-  SettingsPlaceSignalsProvider,
-  SettingsSurfaceContext,
+  SettingsAvailabilityProvider,
+  useSettingsStoreSearchHost,
 } from "../components/settings/settingsPlaceAvailability";
 import { useSettingsSearchStore } from "../components/settings/settingsSearchStore";
+import { settingsSectionLabelForPath } from "../components/settings/settingsNavigation";
 import {
   isVisibleSettingsSectionPath,
   rememberVisibleSettingsSection,
   resolveSettingsEntryRedirect,
-  settingsSectionLabelForPath,
-} from "../components/settings/settingsNavigation";
+} from "../components/settings/settingsPaths";
 import { Button } from "../components/ui/button";
 import { PageTitlebar } from "../components/PageTitlebar";
 import { SidebarInset, useSidebar } from "../components/ui/sidebar";
@@ -110,8 +111,9 @@ function SettingsContentLayout() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // An open menu or dialog takes its Escape first.
-      if (event.defaultPrevented) return;
+      // An open menu or dialog takes its Escape first, and the palette or
+      // Add project takes every key while it is open.
+      if (event.defaultPrevented || isKeyboardOwnedByDialog()) return;
       if (event.key === "Escape") {
         const search = useSettingsSearchStore.getState();
         if (search.query.trim().length > 0) {
@@ -154,87 +156,86 @@ function SettingsContentLayout() {
     setListOpen,
   ]);
 
+  const searchHost = useSettingsStoreSearchHost();
   return (
-    <SettingsSurfaceContext.Provider value={isHostedStatic ? "phone" : "full"}>
-      <SettingsPlaceSignalsProvider>
-        <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate desktop:h-auto">
-          {/* Clear under a theme with art: the page's column is glass (index.css). */}
-          <div
-            {...glassPage.shell}
-            className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground"
-          >
-            {!isElectron && (
-              <header
-                {...glassPage.header}
-                className={cn(
-                  "border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 desktop:hidden",
-                )}
-              >
-                <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
-                  {!isSettingsIndex ? (
-                    <Button
-                      size="icon-xs"
-                      variant="ghost"
-                      aria-label="All settings"
-                      className="shrink-0 text-muted-foreground hover:text-foreground desktop:hidden"
-                      onClick={() => void navigate({ to: "/settings", replace: true })}
-                    >
-                      <ArrowLeftIcon />
-                    </Button>
-                  ) : null}
-                  <span className="text-sm font-medium text-foreground">
-                    <span className="desktop:hidden">{mobileHeaderTitle}</span>
-                    <span className="hidden desktop:inline">Settings</span>
+    <SettingsAvailabilityProvider surface={isHostedStatic ? "phone" : "full"} host={searchHost}>
+      <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate desktop:h-auto">
+        {/* Clear under a theme with art: the page's column is glass (index.css). */}
+        <div
+          {...glassPage.shell}
+          className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground"
+        >
+          {!isElectron && (
+            <header
+              {...glassPage.header}
+              className={cn(
+                "border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 desktop:hidden",
+              )}
+            >
+              <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
+                {!isSettingsIndex ? (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label="All settings"
+                    className="shrink-0 text-muted-foreground hover:text-foreground desktop:hidden"
+                    onClick={() => void navigate({ to: "/settings", replace: true })}
+                  >
+                    <ArrowLeftIcon />
+                  </Button>
+                ) : null}
+                <span className="text-sm font-medium text-foreground">
+                  <span className="desktop:hidden">{mobileHeaderTitle}</span>
+                  <span className="hidden desktop:inline">Settings</span>
+                </span>
+                {isHostedStatic ? (
+                  <span className="rounded-sm border border-border/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                    Phone
                   </span>
-                  {isHostedStatic ? (
-                    <span className="rounded-sm border border-border/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-                      Phone
-                    </span>
-                  ) : null}
-                  <div className="ms-auto flex items-center gap-2">
-                    {showRestoreDefaults && !searching ? (
-                      <RestoreDefaultsButton onRestored={handleRestored} />
-                    ) : null}
-                    <Button
-                      size="icon-xs"
-                      variant="ghost"
-                      aria-label="Close settings"
-                      className="shrink-0 text-muted-foreground hover:text-foreground"
-                      onClick={navigateBackWithinApp}
-                    >
-                      <XIcon />
-                    </Button>
-                  </div>
-                </div>
-              </header>
-            )}
-
-            <PageTitlebar label="Settings" mobile="none">
-              {showRestoreDefaults && !searching ? (
+                ) : null}
                 <div className="ms-auto flex items-center gap-2">
-                  <RestoreDefaultsButton onRestored={handleRestored} />
+                  {showRestoreDefaults && !searching ? (
+                    <RestoreDefaultsButton onRestored={handleRestored} />
+                  ) : null}
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label="Close settings"
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                    onClick={navigateBackWithinApp}
+                  >
+                    <XIcon />
+                  </Button>
                 </div>
-              ) : null}
-            </PageTitlebar>
-
-            <div key={restoreSignal} className="relative min-h-0 flex flex-1 flex-col">
-              {searching ? <SettingsSearchResults /> : null}
-              {/* Kept mounted under the results, so a half-done page (a sign-in, a
-              typed field) and its scroll are there when the search clears. */}
-              <div
-                className={cn(
-                  "min-h-0 flex flex-1 flex-col",
-                  searching && "invisible absolute inset-0 overflow-hidden",
-                )}
-                inert={searching}
-              >
-                <Outlet />
               </div>
+            </header>
+          )}
+
+          <PageTitlebar label="Settings" mobile="none">
+            {showRestoreDefaults && !searching ? (
+              <div className="ms-auto flex items-center gap-2">
+                <RestoreDefaultsButton onRestored={handleRestored} />
+              </div>
+            ) : null}
+          </PageTitlebar>
+
+          <div key={restoreSignal} className="relative min-h-0 flex flex-1 flex-col">
+            {searching ? <SettingsSearchResults /> : null}
+            {/* Kept mounted under the results, so a half-done page (a sign-in, a
+              typed field) and its scroll are there when the search clears. */}
+            <div
+              className={cn(
+                "min-h-0 flex flex-1 flex-col",
+                searching && "invisible absolute inset-0 overflow-hidden",
+              )}
+              inert={searching}
+            >
+              <Outlet />
             </div>
           </div>
-        </SidebarInset>
-      </SettingsPlaceSignalsProvider>
-    </SettingsSurfaceContext.Provider>
+        </div>
+      </SidebarInset>
+    </SettingsAvailabilityProvider>
   );
 }
 

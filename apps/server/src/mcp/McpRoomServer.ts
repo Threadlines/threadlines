@@ -16,18 +16,20 @@
  * (scheduleTools.ts) are served here too: they need the same caller identity
  * and the same per-runtime grant.
  */
+import { PullRequestObservations } from "../pullRequest/PullRequestObservations.ts";
 import {
   agentInvitesMode,
   agentThreadsMode,
   agentThreadsShareWorktrees,
 } from "@threadlines/shared/serverSettings";
-import type { ThreadId } from "@threadlines/contracts";
+import type { ModelSelection, ThreadId } from "@threadlines/contracts";
+import { runtimeModeOnAgent } from "@threadlines/shared/runtimeMode";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpServer, Toolkit } from "effect/ai";
+import { McpProtocol, McpServer, Tool, Toolkit } from "effect/ai";
 import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -35,7 +37,12 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { GUIDE_TOOL_NAME, SCHEDULE_TOOL_NAMES } from "./roomToolAccess.ts";
+import {
+  GUIDE_TOOL_NAME,
+  PROJECT_NOTE_WRITE_TOOL_NAME,
+  SCHEDULE_TOOL_NAMES,
+} from "./roomToolAccess.ts";
+import { ProjectContext } from "../projectContext/ProjectContext.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { ComputerLinkClient } from "../links/ComputerLinkClient.ts";
@@ -45,6 +52,8 @@ import { ComputerLinkRepository } from "../links/ComputerLinkRepository.ts";
 import { makeThreadToolLinks } from "../links/threadToolLinks.ts";
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { ScheduledTasks } from "../scheduled/ScheduledTasks.ts";
+import { MoveQueue } from "../moves/MoveQueue.ts";
+
 import {
   listOnlyGrantedTools,
   MCP_ROOM_ROUTE_PATH,
@@ -56,6 +65,7 @@ import { type McpInvocationScope, mcpSessionRegistry } from "./McpSessionRegistr
 import { limitReaches, makeOutsideToolLimits, outsideLimitDetail } from "./outsideToolLimit.ts";
 import { makeRoomRequestRegistry } from "./roomRequests.ts";
 import { makeRoomToolHandlers } from "./roomToolHandlers.ts";
+import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { McpRoomInvocation, RoomToolkit } from "./roomTools.ts";
 import { makeGuideToolHandler } from "./guideToolHandlers.ts";
 import { GuideToolkit } from "./guideTools.ts";
@@ -63,8 +73,14 @@ import { offeredModels } from "../settingsChanges/modelChoices.ts";
 import { makeSettingsChangeToolHandler } from "./settingsChangeToolHandlers.ts";
 import { ThemeLibrary } from "../themes/ThemeLibrary.ts";
 import { SettingsChangeToolkit } from "./settingsChangeTools.ts";
+import { makeSecretRequestToolHandler } from "./secretRequestToolHandlers.ts";
+import { SecretRequestToolkit } from "./secretRequestTools.ts";
+import { AgentSecretRequests } from "../secrets/AgentSecretRequests.ts";
+import { SecretScrubber } from "../secrets/SecretScrubber.ts";
 import { makeAlertAssistantsToolHandler } from "./alertAssistantsToolHandlers.ts";
 import { AlertAssistantsToolkit } from "./alertAssistantsTools.ts";
+import { makeProjectNoteToolHandlers } from "./projectNoteToolHandlers.ts";
+import { ProjectNoteToolkit } from "./projectNoteTools.ts";
 import { AssistantAlerts } from "../assistants/AssistantAlerts.ts";
 import { makeScheduleToolHandlers } from "./scheduleToolHandlers.ts";
 import { ScheduleToolkit } from "./scheduleTools.ts";
@@ -73,16 +89,22 @@ import { ThreadToolkit } from "./threadTools.ts";
 import { requestService } from "./requestService.ts";
 
 /** Every tool the endpoint serves. */
-const RoomEndpointToolkit = Toolkit.merge(
+export const RoomEndpointToolkit = Toolkit.merge(
   RoomToolkit,
   ThreadToolkit,
   ScheduleToolkit,
   GuideToolkit,
   SettingsChangeToolkit,
+  SecretRequestToolkit,
   AlertAssistantsToolkit,
+  ProjectNoteToolkit,
 );
 
 type RoomEndpointToolName = keyof typeof RoomEndpointToolkit.tools;
+
+/** Why a call that changes something was refused: it held a saved key's value. */
+export const secretInCallDetail = (name: string) =>
+  `Your call contains ${name}. Don't pass a key through this tool. The other agent can ask the user for it.`;
 
 /**
  * What each tool on this endpoint reaches, for outside work's limit: `own`,
@@ -106,6 +128,10 @@ const ROOM_TOOL_REACH = {
   thread_read: "project",
   thread_send: "changes",
   thread_stop: "changes",
+  // Files away threads the caller started, from the user's active list.
+  thread_wrap: "changes",
+  // Moves only the caller's own thread, but off this computer.
+  thread_move: "changes",
   schedule_list: "project",
   schedule_create: "changes",
   schedule_update: "changes",
@@ -114,9 +140,17 @@ const ROOM_TOOL_REACH = {
   // Only shows a card on the caller's own thread, but asks to change app-wide
   // settings: refused while outside work limits the caller.
   settings_change: "changes",
+  // Only shows a card on the caller's own thread, and the key lands in its
+  // own folder or its own private file.
+  secret_request: "own",
   // Only marks the caller's own turn, but sends word of it off this computer:
   // refused while outside work limits the caller.
   alert_assistants: "changes",
+  // Reads the caller's project's notes: beyond its own thread.
+  project_note_read: "project",
+  // Leaves a note other threads may read: refused while outside work limits
+  // the caller (docs/design/project-brief-notes.md, "What a write becomes").
+  project_note_write: "changes",
 } as const satisfies Record<
   Exclude<RoomEndpointToolName, typeof GUIDE_TOOL_NAME>,
   "own" | "project" | "changes"
@@ -146,14 +180,18 @@ const authenticate = Effect.gen(function* () {
       Effect.map(agentThreadsMode),
       Effect.orElseSucceed(() => "off" as const),
     );
-    const listed: ReadonlySet<string> =
-      mode === "off"
-        ? new Set(
-            [...scope.roomTools].filter(
-              (tool) => !(SCHEDULE_TOOL_NAMES as ReadonlyArray<string>).includes(tool),
-            ),
-          )
-        : scope.roomTools;
+    // So does project_note_write "Notes agents write".
+    const notesOff = yield* settings.getSettings.pipe(
+      Effect.map((current) => current.projectNotes === "off"),
+      Effect.orElseSucceed(() => true),
+    );
+    const listed: ReadonlySet<string> = new Set(
+      [...scope.roomTools].filter(
+        (tool) =>
+          !(mode === "off" && (SCHEDULE_TOOL_NAMES as ReadonlyArray<string>).includes(tool)) &&
+          !(notesOff && tool === PROJECT_NOTE_WRITE_TOOL_NAME),
+      ),
+    );
     // Read per call: outside work can limit a credential while it lives.
     const outsideLimit = yield* limits.forScope(scope);
     return yield* handler.pipe(
@@ -179,10 +217,12 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
     const providerService = yield* ProviderService;
     const git = yield* GitVcsDriver;
     const settings = yield* ServerSettingsService;
+    const secretScrubber = yield* SecretScrubber;
     // Linked computers, when this server has them (docs/design/fleet.md).
     const linkClient = yield* Effect.serviceOption(ComputerLinkClient);
     const linkRepo = yield* Effect.serviceOption(ComputerLinkRepository);
     const identities = yield* Effect.serviceOption(RepositoryIdentityResolver);
+    const pullRequestObservations = yield* Effect.serviceOption(PullRequestObservations);
     const links =
       Option.isSome(linkClient) && Option.isSome(linkRepo) && Option.isSome(identities)
         ? makeThreadToolLinks({
@@ -197,6 +237,16 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       snapshots.getThreadDetailById(threadId).pipe(Effect.map(Option.getOrUndefined), Effect.orDie);
     const readThreadShell = (threadId: ThreadId) =>
       snapshots.getThreadShellById(threadId).pipe(Effect.map(Option.getOrUndefined), Effect.orDie);
+    const modelNameOf = (selection: ModelSelection) =>
+      providers.getProviders.pipe(
+        Effect.map((all) => {
+          const model = all
+            .find((provider) => provider.instanceId === selection.instanceId)
+            ?.models.find((candidate) => candidate.slug === selection.model);
+          return model?.shortName ?? model?.name ?? selection.model;
+        }),
+      );
+    const analytics = yield* Effect.serviceOption(AnalyticsService);
     const handlers = makeRoomToolHandlers({
       engine,
       readThread,
@@ -217,15 +267,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           ),
           Effect.orElseSucceed(() => undefined),
         ),
-      modelNameOf: (selection) =>
-        providers.getProviders.pipe(
-          Effect.map((all) => {
-            const model = all
-              .find((provider) => provider.instanceId === selection.instanceId)
-              ?.models.find((candidate) => candidate.slug === selection.model);
-            return model?.shortName ?? model?.name ?? selection.model;
-          }),
-        ),
+      modelNameOf,
       threadTitleOf: (threadId) =>
         readThreadShell(threadId).pipe(
           Effect.map((thread) => thread?.title),
@@ -238,9 +280,12 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       ),
       git,
       requests,
+      ...(Option.isSome(analytics) ? { recordAnalytics: analytics.value.record } : {}),
     });
     // Scheduled tasks, when this server has them (docs/design/fleet.md, Part 6).
     const scheduledTasks = yield* Effect.serviceOption(ScheduledTasks);
+    // Moving a thread to a linked computer, when this server has links (Part 3b).
+    const moveQueue = yield* Effect.serviceOption(MoveQueue);
     // The user's default for new threads: the last reasoning an agent-made thread follows.
     const userDefaultModel = settings.getSettings.pipe(
       Effect.map((current) => current.newThreadModelSelection),
@@ -262,6 +307,9 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
         snapshots
           .getProjectShellById(projectId)
           .pipe(Effect.map(Option.getOrUndefined), Effect.orDie),
+      ...(Option.isSome(pullRequestObservations)
+        ? { knownPullRequests: pullRequestObservations.value.known }
+        : {}),
       providers: providers.getProviders,
       userDefaultModel,
       threadsMode: settings.getSettings.pipe(
@@ -278,6 +326,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       ...(Option.isSome(scheduledTasks)
         ? { scheduleAnswerWaiting: scheduledTasks.value.waitingThreadIds }
         : {}),
+      ...(Option.isSome(moveQueue) ? { moves: { queue: moveQueue.value.queue } } : {}),
     });
     const scheduleHandlers = makeScheduleToolHandlers({
       scheduledTasks: Option.getOrUndefined(scheduledTasks),
@@ -401,6 +450,13 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           )
         : Effect.succeed([]),
     });
+    const secretRequests = yield* AgentSecretRequests;
+    const secretRequest = makeSecretRequestToolHandler({
+      engine,
+      readThread,
+      threadFolder: secretRequests.threadFolder,
+      destinations: secretRequests.destinations,
+    });
     const assistantAlerts = yield* Effect.serviceOption(AssistantAlerts);
     const alertAssistants = makeAlertAssistantsToolHandler({
       readThread,
@@ -411,6 +467,40 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           Effect.orElseSucceed(() => false),
         ),
       alerts: Option.getOrUndefined(assistantAlerts),
+    });
+    const projectContext = yield* Effect.serviceOption(ProjectContext);
+    const projectNotes = makeProjectNoteToolHandlers({
+      readThread,
+      context: Option.getOrUndefined(projectContext),
+      notesMode: settings.getSettings.pipe(
+        Effect.map((current) => current.projectNotes),
+        Effect.orElseSucceed(() => "off" as const),
+      ),
+      // The level the runtime's chat asks for, and the one it really runs
+      // at: an agent without the asked level (Pi has no Auto) runs at the
+      // next safer one. A provider that can't be found reads as the three
+      // legacy levels, which only lowers `runs`.
+      runtimeModeOf: (sessionKey) =>
+        Effect.gen(function* () {
+          const session = (yield* providerService.listSessions()).find(
+            (entry) => entry.threadId === sessionKey,
+          );
+          if (session === undefined) return undefined;
+          const provider = (yield* providers.getProviders).find(
+            (entry) => entry.instanceId === session.providerInstanceId,
+          );
+          return {
+            asked: session.runtimeMode,
+            runs: runtimeModeOnAgent({
+              requested: session.runtimeMode,
+              providerModes: provider?.supportedRuntimeModes,
+              modelModes: provider?.models.find((model) => model.slug === session.model)
+                ?.supportedRuntimeModes,
+            }),
+          };
+        }).pipe(Effect.orElseSucceed(() => undefined)),
+      modelNameOf: (selection) =>
+        modelNameOf(selection).pipe(Effect.orElseSucceed(() => selection.model)),
     });
     const caller = requestService(McpRoomInvocation);
     type Refused = { readonly outcome: "refused"; readonly detail: string };
@@ -425,15 +515,34 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       _tool: ToolsReaching<"own">,
       run: (scope: McpInvocationScope) => Effect.Effect<A>,
     ) => Effect.flatMap(caller, run);
+    /**
+     * Refuses a call whose input holds a saved key's value: what these tools
+     * carry reaches another agent, a thread, a card or a task's history, none
+     * of which hides one (docs/design/secret-scrubbing.md).
+     */
+    const unlessWatched = <A, R = Refused>(
+      input: unknown,
+      run: () => Effect.Effect<A>,
+      refusedAs: (detail: string) => R = (detail) =>
+        ({ outcome: "refused", detail }) satisfies Refused as R,
+    ): Effect.Effect<A | R> => {
+      const [watched] = secretScrubber.contains(input);
+      return watched === undefined ? run() : Effect.succeed(refusedAs(secretInCallDetail(watched)));
+    };
     const changes = <A>(
       _tool: ToolsReaching<"changes">,
+      input: unknown,
       run: (scope: McpInvocationScope) => Effect.Effect<A>,
     ) =>
-      Effect.flatMap(caller, (scope): Effect.Effect<A | Refused> =>
-        scope.outsideLimit === undefined
-          ? run(scope)
-          : Effect.succeed({ outcome: "refused", detail: outsideLimitDetail(scope.outsideLimit) }),
-      );
+      Effect.flatMap(caller, (scope): Effect.Effect<A | Refused> => {
+        if (scope.outsideLimit !== undefined) {
+          return Effect.succeed({
+            outcome: "refused",
+            detail: outsideLimitDetail(scope.outsideLimit),
+          });
+        }
+        return unlessWatched(input, () => run(scope));
+      });
     const projectRead = <A>(
       _tool: ToolsReaching<"project">,
       run: (scope: McpInvocationScope) => Effect.Effect<A>,
@@ -453,12 +562,14 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
       room_agents: () => own("room_agents", handlers.room_agents),
       room_history: (input) => own("room_history", (scope) => handlers.room_history(scope, input)),
       room_diff: (input) => own("room_diff", (scope) => handlers.room_diff(scope, input)),
-      room_ask: (input) => changes("room_ask", (scope) => handlers.room_ask(scope, input)),
-      room_review: (input) => changes("room_review", (scope) => handlers.room_review(scope, input)),
+      room_ask: (input) => changes("room_ask", input, (scope) => handlers.room_ask(scope, input)),
+      room_review: (input) =>
+        changes("room_review", input, (scope) => handlers.room_review(scope, input)),
       room_hand_off: (input) =>
-        changes("room_hand_off", (scope) => handlers.room_hand_off(scope, input)),
+        changes("room_hand_off", input, (scope) => handlers.room_hand_off(scope, input)),
       room_available_agents: () => own("room_available_agents", handlers.room_available_agents),
-      room_invite: (input) => changes("room_invite", (scope) => handlers.room_invite(scope, input)),
+      room_invite: (input) =>
+        changes("room_invite", input, (scope) => handlers.room_invite(scope, input)),
       thread_agents: (input) =>
         projectRead(
           "thread_agents",
@@ -466,7 +577,7 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           (detail) => ({ outcome: "refused", detail, agents: [], unavailable: [] }),
         ),
       thread_start: (input) =>
-        changes("thread_start", (scope) => threadHandlers.thread_start(scope, input)),
+        changes("thread_start", input, (scope) => threadHandlers.thread_start(scope, input)),
       thread_list: (input) =>
         projectRead(
           "thread_list",
@@ -480,9 +591,13 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           (detail) => ({ outcome: "refused", detail, messages: [], next: null, more: false }),
         ),
       thread_send: (input) =>
-        changes("thread_send", (scope) => threadHandlers.thread_send(scope, input)),
+        changes("thread_send", input, (scope) => threadHandlers.thread_send(scope, input)),
       thread_stop: (input) =>
-        changes("thread_stop", (scope) => threadHandlers.thread_stop(scope, input)),
+        changes("thread_stop", input, (scope) => threadHandlers.thread_stop(scope, input)),
+      thread_wrap: (input) =>
+        changes("thread_wrap", input, (scope) => threadHandlers.thread_wrap(scope, input)),
+      thread_move: (input) =>
+        changes("thread_move", input, (scope) => threadHandlers.thread_move(scope, input)),
       schedule_list: (input) =>
         projectRead(
           "schedule_list",
@@ -490,14 +605,36 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
           (detail) => ({ outcome: "refused", detail, tasks: [] }),
         ),
       schedule_create: (input) =>
-        changes("schedule_create", (scope) => scheduleHandlers.schedule_create(scope, input)),
+        changes("schedule_create", input, (scope) =>
+          scheduleHandlers.schedule_create(scope, input),
+        ),
       schedule_update: (input) =>
-        changes("schedule_update", (scope) => scheduleHandlers.schedule_update(scope, input)),
+        changes("schedule_update", input, (scope) =>
+          scheduleHandlers.schedule_update(scope, input),
+        ),
       scheduled_run_finish: (input) =>
-        own("scheduled_run_finish", (scope) => scheduleHandlers.scheduled_run_finish(scope, input)),
+        own("scheduled_run_finish", (scope) =>
+          unlessWatched(
+            input,
+            () => scheduleHandlers.scheduled_run_finish(scope, input),
+            (detail) => ({ outcome: "not_allowed" as const, detail }),
+          ),
+        ),
       settings_change: (input) =>
-        changes("settings_change", (scope) => settingsChange(scope, input)),
-      alert_assistants: () => changes("alert_assistants", alertAssistants),
+        changes("settings_change", input, (scope) => settingsChange(scope, input)),
+      secret_request: (input) =>
+        own("secret_request", (scope) => unlessWatched(input, () => secretRequest(scope, input))),
+      alert_assistants: () => changes("alert_assistants", undefined, alertAssistants),
+      project_note_read: (input) =>
+        projectRead(
+          "project_note_read",
+          (scope) => projectNotes.project_note_read(scope, input),
+          (detail) => ({ outcome: "refused", detail }),
+        ),
+      project_note_write: (input) =>
+        changes("project_note_write", input, (scope) =>
+          projectNotes.project_note_write(scope, input),
+        ),
       // Listed only to runtimes granted it; a call from any other is refused
       // too (a review runtime reads the checkout and nothing else). Refused
       // while outside work limits the caller: it reads app-wide settings,
@@ -520,16 +657,26 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
   }),
 );
 
-export const layer = Layer.fresh(
-  McpServer.toolkit(RoomEndpointToolkit).pipe(
-    Layer.provide(RoomToolHandlersLive),
-    Layer.provideMerge(
-      McpServer.layerHttp({
-        name: "threadlines-room",
-        version: "1",
-        path: MCP_ROOM_ROUTE_PATH,
-        protocols: [McpProtocol.v2025_06_18],
-      }).pipe(Layer.provide(AuthenticationLive)),
+/**
+ * The room endpoint with the given tool handlers: production's below; the
+ * tool-use evals (apps/server/evals) serve the same tools, listing and
+ * sign-in check with canned answers.
+ */
+export const makeLayer = <E, R>(
+  handlers: Layer.Layer<Tool.HandlersFor<typeof RoomEndpointToolkit.tools>, E, R>,
+) =>
+  Layer.fresh(
+    McpServer.toolkit(RoomEndpointToolkit).pipe(
+      Layer.provide(handlers),
+      Layer.provideMerge(
+        McpServer.layerHttp({
+          name: "threadlines-room",
+          version: "1",
+          path: MCP_ROOM_ROUTE_PATH,
+          protocols: [McpProtocol.v2025_06_18],
+        }).pipe(Layer.provide(AuthenticationLive)),
+      ),
     ),
-  ),
-);
+  );
+
+export const layer = makeLayer(RoomToolHandlersLive);

@@ -1,3 +1,6 @@
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
+import { type EnvironmentId, TERMINALS_PAGE_THREAD_ID, ThreadId } from "@threadlines/contracts";
+
 interface TerminalRetentionThread {
   key: string;
   deletedAt: string | null;
@@ -7,6 +10,8 @@ interface TerminalRetentionThread {
 interface CollectActiveTerminalThreadIdsInput {
   snapshotThreads: readonly TerminalRetentionThread[];
   draftThreadKeys: Iterable<string>;
+  /** Computers this app knows: each keeps its Terminals page's tabs. */
+  environmentIds: Iterable<EnvironmentId>;
 }
 
 export function collectActiveTerminalThreadIds(
@@ -28,6 +33,10 @@ export function collectActiveTerminalThreadIds(
       continue;
     }
     activeThreadIds.add(draftThreadKey);
+  }
+  const pageThreadId = ThreadId.make(TERMINALS_PAGE_THREAD_ID);
+  for (const environmentId of input.environmentIds) {
+    activeThreadIds.add(scopedThreadKey(scopeThreadRef(environmentId, pageThreadId)));
   }
   return activeThreadIds;
 }

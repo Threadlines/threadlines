@@ -1,10 +1,11 @@
 import {
+  parseScopedThreadKey,
   scopedProjectKey,
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
 } from "@threadlines/client-runtime";
-import type { KeybindingCommand } from "@threadlines/contracts";
+import { type KeybindingCommand, TERMINALS_PAGE_THREAD_ID } from "@threadlines/contracts";
 import { formatTokensCompact } from "@threadlines/shared/usageFormat";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
@@ -13,6 +14,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useShallow } from "zustand/react/shallow";
 
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
+import { useGeneralChatsInThreads } from "../chats/generalChatsPlacement";
 import { startNewThreadFromContext } from "../../lib/chatThreadActions";
 import {
   PULL_REQUEST_COUNT_REFETCH_INTERVAL_MS,
@@ -31,6 +33,7 @@ import { shortcutLabelForCommand } from "../../keybindings";
 import { useComposerDraftStore, type DraftId } from "../../composerDraftStore";
 import { useServerKeybindings } from "../../rpc/serverState";
 import {
+  type AppState,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
   useStore,
@@ -70,6 +73,7 @@ import {
 export const NAVIGATION_RAIL_WIDTH_PX = 48;
 
 const DESTINATION_SHORTCUTS: Partial<Record<NavigationDestinationId, KeybindingCommand>> = {
+  terminals: "navigate.terminals",
   fleet: "navigate.fleet",
   scheduled: "navigate.scheduled",
 };
@@ -90,8 +94,9 @@ export interface NavigationDestination {
   /** Threads waiting on the user: an amber count on the icon. */
   readonly needsYou: number;
   /**
-   * General chats only: a result nobody has looked at yet (a finished turn, a
-   * ready plan). A blue dot beside the count, unless `ownListShowing`.
+   * General chats only (on Threads while they are a section of it): a result
+   * nobody has looked at yet (a finished turn, a ready plan). A blue dot
+   * beside the count, unless `ownListShowing`.
    */
   readonly unread: boolean;
   /** Threads at work: a blue dot and count under the icon, unless `ownListShowing`. */
@@ -108,12 +113,23 @@ export interface NavigationDestination {
 }
 
 /**
- * The last thread view (a thread, a draft or home) the user was on, so the
- * Threads button brings them back to it from Fleet or Usage. Kept for the
- * life of the window: on a fresh launch Threads opens home, which restores
- * the last thread itself.
+ * The last thread views (a thread, a draft or home) the user was on, so the
+ * Threads button brings them back from Fleet or Usage: the last of any kind,
+ * a general chat included while the chats are a section of Threads, and the
+ * last outside a general chat, for when they have their own page (switching
+ * back must not leave Threads pointing at a chat). Kept for the life of the
+ * window: on a fresh launch Threads opens home, which restores the last
+ * thread itself.
  */
-let lastThreadsViewHref: string | null = null;
+let lastThreadsViewHref: { readonly any: string | null; readonly project: string | null } = {
+  any: null,
+  project: null,
+};
+
+/** Where the Threads button goes: the last thread view it covers, else home. */
+export function threadsViewHref(generalChatsInThreads: boolean): string {
+  return (generalChatsInThreads ? lastThreadsViewHref.any : lastThreadsViewHref.project) ?? "/";
+}
 
 /**
  * What the main view has open: no thread (home, a page), a thread or draft
@@ -160,7 +176,8 @@ function useOpenThreadKind(): OpenThreadKind {
 export function useSelectedDestination(): NavigationDestinationId {
   const pathname = useLocation({ select: (location) => location.pathname });
   const openThreadIsGeneralChat = useOpenThreadKind() === "general-chat";
-  return resolveSelectedDestination({ pathname, openThreadIsGeneralChat });
+  const generalChatsInThreads = useGeneralChatsInThreads();
+  return resolveSelectedDestination({ pathname, openThreadIsGeneralChat, generalChatsInThreads });
 }
 
 /**
@@ -214,7 +231,10 @@ export function useRememberThreadsView(): void {
     // general chat could become the Threads button's target, so only an
     // address that matches a known thread view is remembered.
     if (onThreadsView && openThread !== "unknown" && pathname === threadViewPath) {
-      lastThreadsViewHref = href;
+      lastThreadsViewHref = {
+        any: href,
+        project: openThread === "general-chat" ? lastThreadsViewHref.project : href,
+      };
     }
   }, [href, onThreadsView, openThread, pathname, threadViewPath]);
 }
@@ -232,43 +252,64 @@ function useDestinationAttention(): {
   /** Whether any general chat holds a result nobody has seen. */
   readonly chatsUnread: boolean;
 } {
-  const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
-  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const seenSources = useThreadSeenSources();
   const pendingLinkRequestCount = usePendingLinkRequests().length;
-  return useMemo(() => {
-    const generalChatProjectKeys = new Set(
-      projects
-        .filter((project) => project.kind === "general-chat")
-        .map((project) => scopedProjectKey(scopeProjectRef(project.environmentId, project.id))),
-    );
-    const threadAttention: Array<ThreadAttention | null> = [];
-    const chatAttention: Array<ThreadAttention | null> = [];
-    let chatsUnread = false;
-    for (const thread of threads) {
-      if (thread.archivedAt !== null) continue;
-      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      const { lastVisitedAt, status } = resolveSeenThreadStatus(thread, threadKey, seenSources);
-      const attention = resolveThreadAttention(
-        { ...thread, ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}) },
-        status,
-      );
-      const isGeneralChat = generalChatProjectKeys.has(
-        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
-      );
-      (isGeneralChat ? chatAttention : threadAttention).push(attention);
-      if (isGeneralChat && isUnreadResultStatus(status)) chatsUnread = true;
-    }
-    const threadCounts = countThreadAttention(threadAttention);
-    return {
-      threads:
-        pendingLinkRequestCount === 0
-          ? threadCounts
-          : { ...threadCounts, needsYou: threadCounts.needsYou + pendingLinkRequestCount },
-      chats: countThreadAttention(chatAttention),
-      chatsUnread,
-    };
-  }, [pendingLinkRequestCount, projects, seenSources, threads]);
+  // Counted inside the store read, so only a changed count redraws the rail:
+  // a streaming thread changes its sidebar row many times a second.
+  const counts = useStore(
+    useShallow(
+      useCallback(
+        (state: AppState) => {
+          const generalChatProjectKeys = new Set(
+            selectProjectsAcrossEnvironments(state)
+              .filter((project) => project.kind === "general-chat")
+              .map((project) =>
+                scopedProjectKey(scopeProjectRef(project.environmentId, project.id)),
+              ),
+          );
+          const threadAttention: Array<ThreadAttention | null> = [];
+          const chatAttention: Array<ThreadAttention | null> = [];
+          let chatsUnread = false;
+          for (const thread of selectSidebarThreadsAcrossEnvironments(state)) {
+            if (thread.archivedAt !== null) continue;
+            const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+            const { lastVisitedAt, status } = resolveSeenThreadStatus(
+              thread,
+              threadKey,
+              seenSources,
+            );
+            const attention = resolveThreadAttention(
+              { ...thread, ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}) },
+              status,
+            );
+            const isGeneralChat = generalChatProjectKeys.has(
+              scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+            );
+            (isGeneralChat ? chatAttention : threadAttention).push(attention);
+            if (isGeneralChat && isUnreadResultStatus(status)) chatsUnread = true;
+          }
+          const threadCounts = countThreadAttention(threadAttention);
+          const chatCounts = countThreadAttention(chatAttention);
+          return {
+            threadsNeedYou: threadCounts.needsYou + pendingLinkRequestCount,
+            threadsWorking: threadCounts.working,
+            chatsNeedYou: chatCounts.needsYou,
+            chatsWorking: chatCounts.working,
+            chatsUnread,
+          };
+        },
+        [pendingLinkRequestCount, seenSources],
+      ),
+    ),
+  );
+  return useMemo(
+    () => ({
+      threads: { needsYou: counts.threadsNeedYou, working: counts.threadsWorking },
+      chats: { needsYou: counts.chatsNeedYou, working: counts.chatsWorking },
+      chatsUnread: counts.chatsUnread,
+    }),
+    [counts],
+  );
 }
 
 function describeWorking(count: number): string | null {
@@ -288,7 +329,8 @@ function joinDetails(...parts: Array<string | null>): string | null {
  * Every destination with what the rail says about it, and what choosing one
  * does. `listOpen` is whether the list beside the rail is showing: the Threads
  * and General Chats icons carry their work unless that list is their own,
- * which says it otherwise.
+ * which says it otherwise. While the chats are a section of Threads, General
+ * Chats has no button and Threads carries the chats' work too.
  *
  * `select` takes the click's place in a run of quick clicks (its `detail`: 1
  * for a single click, 2 for a double-click's second, 0 from a key). Choosing
@@ -320,19 +362,40 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
   );
   const shortcutContext = useRouteShortcutContext();
   const { isMobile, toggleSidebar } = useSidebar();
+  // Commands running in the Terminals page's tabs, on every computer.
+  const terminalsRunning = useTerminalStateStore((state) => {
+    let count = 0;
+    for (const [threadKey, terminal] of Object.entries(state.terminalStateByThreadKey)) {
+      if (parseScopedThreadKey(threadKey)?.threadId === TERMINALS_PAGE_THREAD_ID) {
+        count += terminal.runningTerminalIds.length;
+      }
+    }
+    return count;
+  });
+  const generalChatsInThreads = useGeneralChatsInThreads();
 
   const destinations = useMemo(() => {
     const platform = typeof navigator === "undefined" ? "" : navigator.platform;
     const shortcutOptions = { platform, context: shortcutContext };
     const workingEverywhere = attention.threads.working + attention.chats.working;
+    // The Threads button's counts, and whose unread results it marks.
+    const threadsCounts = generalChatsInThreads
+      ? {
+          needsYou: attention.threads.needsYou + attention.chats.needsYou,
+          working: workingEverywhere,
+        }
+      : attention.threads;
+    const unreadOn = generalChatsInThreads ? "threads" : "chats";
     const shownList = options.listOpen ? resolveShownDestinationList(selected, isMobile) : null;
     return NAVIGATION_DESTINATION_ORDER.flatMap((id): NavigationDestination[] => {
       // A destination that would only ever say "unsupported" is not offered.
       if (id === "pull-requests" && !hasPullRequests) return [];
       // Hidden until a connected computer's server runs scheduled tasks.
       if (id === "scheduled" && !hasScheduledTasks) return [];
+      // The chats are a section of Threads on this device.
+      if (id === "chats" && generalChatsInThreads) return [];
       const command = DESTINATION_SHORTCUTS[id];
-      const counts = id === "threads" ? attention.threads : id === "chats" ? attention.chats : null;
+      const counts = id === "threads" ? threadsCounts : id === "chats" ? attention.chats : null;
       return [
         {
           id,
@@ -343,7 +406,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           listOpen:
             selected === id && !isMobile && destinationHasList(id) ? options.listOpen : undefined,
           needsYou: id === "pull-requests" ? pullRequestsNeedingYou : (counts?.needsYou ?? 0),
-          unread: id === "chats" && attention.chatsUnread,
+          unread: id === unreadOn && attention.chatsUnread,
           working: counts?.working ?? 0,
           ownListShowing: shownList !== null && shownList === DESTINATION_LISTS[id],
           shortcutLabel: command
@@ -359,22 +422,27 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
               ? joinDetails(
                   describeNeedsYou(counts?.needsYou ?? 0),
                   describeWorking(counts?.working ?? 0),
-                  id === "chats" && attention.chatsUnread ? "unread" : null,
+                  id === unreadOn && attention.chatsUnread ? "unread" : null,
                 )
-              : id === "fleet"
-                ? describeWorking(workingEverywhere)
-                : id === "scheduled"
-                  ? scheduledSummary
-                  : id === "pull-requests"
-                    ? describeNeedsYou(pullRequestsNeedingYou)
-                    : id === "usage" && usageTokens !== null
-                      ? `${formatTokensCompact(usageTokens)} today`
-                      : null,
+              : id === "terminals"
+                ? terminalsRunning > 0
+                  ? `${terminalsRunning} running`
+                  : null
+                : id === "fleet"
+                  ? describeWorking(workingEverywhere)
+                  : id === "scheduled"
+                    ? scheduledSummary
+                    : id === "pull-requests"
+                      ? describeNeedsYou(pullRequestsNeedingYou)
+                      : id === "usage" && usageTokens !== null
+                        ? `${formatTokensCompact(usageTokens)} today`
+                        : null,
         },
       ];
     });
   }, [
     attention,
+    generalChatsInThreads,
     hasPullRequests,
     hasScheduledTasks,
     isMobile,
@@ -384,6 +452,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
     scheduledSummary,
     selected,
     shortcutContext,
+    terminalsRunning,
     usageTokens,
   ]);
 
@@ -403,16 +472,14 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
       if (id === "threads" && selected === "threads") return;
       runNavigatedRef.current = true;
       switch (id) {
-        case "threads": {
-          if (lastThreadsViewHref !== null) {
-            void router.navigate({ href: lastThreadsViewHref });
-            return;
-          }
-          void navigate({ to: "/" });
+        case "threads":
+          void router.navigate({ href: threadsViewHref(generalChatsInThreads) });
           return;
-        }
         case "chats":
           void navigate({ to: "/chats" });
+          return;
+        case "terminals":
+          void navigate({ to: "/terminals" });
           return;
         case "pull-requests":
           void navigate({ to: "/pull-requests", search: { state: "open" } });
@@ -431,7 +498,7 @@ export function useNavigationDestinations(options: { readonly listOpen: boolean 
           return;
       }
     },
-    [isMobile, navigate, router, selected, toggleSidebar],
+    [generalChatsInThreads, isMobile, navigate, router, selected, toggleSidebar],
   );
 
   return { destinations, select };

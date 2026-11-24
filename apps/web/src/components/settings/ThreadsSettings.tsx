@@ -6,12 +6,17 @@ import {
   type NewWorktreeBaseFrom,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderInteractionMode,
   ROOM_AGENT_ROLE_MAX_LENGTH,
+  RUNTIME_MODES,
+  type RuntimeMode,
 } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import {
   AGENT_INVITES_LABELS,
   AGENT_THREADS_LABELS,
+  GENERAL_CHATS_PLACEMENT_LABELS,
+  INTERACTION_MODE_LABELS,
   NEW_WORKTREE_BASE_LABELS,
   THREAD_ENV_MODE_LABELS,
 } from "@threadlines/shared/appPlaces";
@@ -26,6 +31,8 @@ import { useState } from "react";
 
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { roomsEnabledFor } from "../../hooks/useRoomsEnabled";
+import { interactionModeConfig, interactionModeOptions } from "../../interactionModeOptions";
+import { cn } from "../../lib/utils";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -35,6 +42,8 @@ import {
 import { canRunOnComputer } from "../../newThreadDefaults";
 import { deriveDisplayProviderInstanceEntries } from "../../providerInstances";
 import { useServerProviders } from "../../rpc/serverState";
+import { runtimeModeConfig } from "../../runtimeModeOptions";
+import { AccessOptionContent } from "../chat/ComposerRunControls";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
@@ -61,7 +70,7 @@ const PAIRED_COMPUTER_NOTE = "Applies to your paired computer.";
 /**
  * Settings › Threads: how a new thread starts (its agent, the agents beside
  * it, where it works, whether its agent can start threads of its own), Rooms, the model that writes titles, and what happens
- * when a thread is done. The phone shows the same page; the computer's
+ * when a thread is done, and where General Chats sit in the sidebar. The phone shows the same page; the computer's
  * settings there are the paired computer's.
  */
 export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | "phone" }) {
@@ -72,6 +81,8 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
       <SettingsSection place="threads.newThreads" description={computerNote}>
         <NewThreadAgentRow />
         <NewThreadRoomRow />
+        <NewThreadModeRow />
+        <NewThreadAccessRow />
         <DefaultThreadEnvModeRow />
         <NewWorktreeBaseRow />
         <AgentThreadsRow />
@@ -79,8 +90,6 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <AgentPagesRow />
         <ClaudeArtifactsRow />
         <ClaudeWorkflowSizeRow />
-        <ClaudeSuggestionsRow />
-        <CodexSuggestionsRow />
         <ContinueAfterUsageLimitsRow />
         <ContinueAfterRestartRow />
         <CommandRequestsRow />
@@ -103,6 +112,10 @@ export function ThreadsSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <WrapUpChildThreadsRow />
         <ConfirmArchiveRow />
         <ConfirmDeleteRow />
+      </SettingsSection>
+
+      <SettingsSection place="threads.sidebar">
+        <GeneralChatsPlacementRow />
       </SettingsSection>
     </SettingsPageContainer>
   );
@@ -319,6 +332,126 @@ export function NewThreadRoomRow() {
         )}
       </div>
     </SettingsRow>
+  );
+}
+
+export function NewThreadModeRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const mode = settings.newThreadInteractionMode;
+  const current = interactionModeConfig[mode];
+  const CurrentIcon = current.icon;
+  return (
+    <SettingsRow
+      place="threads.mode"
+      resetAction={
+        mode !== DEFAULT_UNIFIED_SETTINGS.newThreadInteractionMode ? (
+          <SettingResetButton
+            label="build or plan"
+            onClick={() =>
+              updateSettings({
+                newThreadInteractionMode: DEFAULT_UNIFIED_SETTINGS.newThreadInteractionMode,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={mode}
+          onValueChange={(value) => {
+            if (value === "default" || value === "plan") {
+              updateSettings({ newThreadInteractionMode: value satisfies ProviderInteractionMode });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Default build or plan mode">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <CurrentIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+              <SelectValue>{INTERACTION_MODE_LABELS[mode]}</SelectValue>
+            </span>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false} matchTriggerWidth={false}>
+            {interactionModeOptions.map((option) => {
+              const Icon = option.icon;
+              return (
+                <SelectItem key={option.mode} value={option.mode} className="min-w-60 py-2">
+                  <div className="grid min-w-0 gap-0.5">
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <Icon
+                        aria-hidden="true"
+                        className="size-3.5 shrink-0 text-muted-foreground"
+                      />
+                      {INTERACTION_MODE_LABELS[option.mode]}
+                    </span>
+                    <span className="text-muted-foreground text-xs leading-4">
+                      {option.description}
+                    </span>
+                  </div>
+                </SelectItem>
+              );
+            })}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+export function NewThreadAccessRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const mode = settings.newThreadRuntimeMode;
+  const current = runtimeModeConfig[mode];
+  const CurrentIcon = current.icon;
+  return (
+    <SettingsRow
+      place="threads.access"
+      resetAction={
+        mode !== DEFAULT_UNIFIED_SETTINGS.newThreadRuntimeMode ? (
+          <SettingResetButton
+            label="new thread access"
+            onClick={() =>
+              updateSettings({
+                newThreadRuntimeMode: DEFAULT_UNIFIED_SETTINGS.newThreadRuntimeMode,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={mode}
+          onValueChange={(value) => {
+            if (RUNTIME_MODES.includes(value as RuntimeMode)) {
+              updateSettings({ newThreadRuntimeMode: value as RuntimeMode });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-auto sm:min-w-44" aria-label="Default access level">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <CurrentIcon
+                aria-hidden="true"
+                className={cn(
+                  "size-3.5 shrink-0",
+                  mode === "full-access" ? "text-warning-foreground" : "text-muted-foreground",
+                )}
+              />
+              <SelectValue>{current.label}</SelectValue>
+            </span>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false} matchTriggerWidth={false}>
+            {RUNTIME_MODES.map((candidate) => (
+              <SelectItem key={candidate} value={candidate} className="min-w-64 py-2">
+                <AccessOptionContent
+                  option={{ mode: candidate, ...runtimeModeConfig[candidate] }}
+                />
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
   );
 }
 
@@ -664,72 +797,6 @@ export function ClaudeWorkflowSizeRow() {
 }
 
 /**
- * Claude skips suggesting the user's next message while the user is on track
- * to run out of usage early; on keeps the suggestions coming. For every Claude
- * account, read before each message, so running threads follow it from their
- * next message.
- */
-export function ClaudeSuggestionsRow() {
-  const on = useSettings((settings) => settings.claudeSuggestionsWhenUsageRunsFast);
-  const { updateSettings } = useUpdateSettings();
-  return (
-    <SettingsRow
-      place="threads.claudeSuggestions"
-      description="Claude stops suggesting your next message (the gray text you can take with Tab) when you're on track to run out of usage early. Turn this on to keep them. Each one uses a little usage."
-      resetAction={
-        on ? (
-          <SettingResetButton
-            label="Keep Claude's suggestions when you're using a lot"
-            onClick={() => updateSettings({ claudeSuggestionsWhenUsageRunsFast: false })}
-          />
-        ) : null
-      }
-      control={
-        <Switch
-          checked={on}
-          onCheckedChange={(checked) =>
-            updateSettings({ claudeSuggestionsWhenUsageRunsFast: Boolean(checked) })
-          }
-          aria-label="Keep Claude's suggestions when you're using a lot"
-        />
-      }
-    />
-  );
-}
-
-/**
- * Codex suggests the user's next message after replying to them: one extra
- * answer from the thread's cached context each time. Read by the thread's
- * computer before each suggestion; off also hides Codex suggestions already
- * made.
- */
-export function CodexSuggestionsRow() {
-  const on = useSettings((settings) => settings.codexSuggestions);
-  const { updateSettings } = useUpdateSettings();
-  return (
-    <SettingsRow
-      place="threads.codexSuggestions"
-      description="After a reply to your message, Codex suggests what you might send next (the gray text you can take with Tab). Each one uses a little Codex usage, and none come while a usage limit is 90% used."
-      resetAction={
-        on ? null : (
-          <SettingResetButton
-            label="Codex suggestions"
-            onClick={() => updateSettings({ codexSuggestions: true })}
-          />
-        )
-      }
-      control={
-        <Switch
-          checked={on}
-          onCheckedChange={(checked) => updateSettings({ codexSuggestions: Boolean(checked) })}
-          aria-label="Codex suggestions"
-        />
-      }
-    />
-  );
-}
-
-/**
  * Turns on "Continue at reset" for every thread a Claude or Codex usage limit
  * stops, the switch on the limit's notice above the composer. Read by the
  * thread's computer as each limit lands.
@@ -740,7 +807,7 @@ export function ContinueAfterUsageLimitsRow() {
   return (
     <SettingsRow
       place="threads.continueAfterUsageLimits"
-      description="When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets, while Threadlines is running on that computer."
+      description="When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets, while Threadlines is running on that computer. A thread an agent started waits too, and answers that agent after."
       resetAction={
         on ? (
           <SettingResetButton
@@ -1254,6 +1321,52 @@ export function ConfirmDeleteRow() {
           onCheckedChange={(checked) => updateSettings({ confirmThreadDelete: Boolean(checked) })}
           aria-label="Confirm thread deletion"
         />
+      }
+    />
+  );
+}
+
+/** Where General Chats live on this device: their own page, or a section in Threads. */
+export function GeneralChatsPlacementRow() {
+  const placement = useSettings((settings) => settings.generalChatsPlacement);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      id="general-chats-placement"
+      place="threads.generalChats"
+      resetAction={
+        placement !== DEFAULT_UNIFIED_SETTINGS.generalChatsPlacement ? (
+          <SettingResetButton
+            label="general chats"
+            onClick={() =>
+              updateSettings({
+                generalChatsPlacement: DEFAULT_UNIFIED_SETTINGS.generalChatsPlacement,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={placement}
+          onValueChange={(value) => {
+            if (value === "page" || value === "threads") {
+              updateSettings({ generalChatsPlacement: value });
+            }
+          }}
+        >
+          <SelectTrigger
+            className="w-full sm:w-44"
+            aria-label="General chats"
+            data-testid="general-chats-placement"
+          >
+            <SelectValue>{GENERAL_CHATS_PLACEMENT_LABELS[placement]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="page">{GENERAL_CHATS_PLACEMENT_LABELS.page}</SelectItem>
+            <SelectItem value="threads">{GENERAL_CHATS_PLACEMENT_LABELS.threads}</SelectItem>
+          </SelectPopup>
+        </Select>
       }
     />
   );

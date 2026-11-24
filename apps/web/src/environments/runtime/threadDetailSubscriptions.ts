@@ -30,6 +30,7 @@
  *
  * @module threadDetailSubscriptions
  */
+import { hasLiveSideTurn } from "@threadlines/shared/sideTurns";
 import type {
   EnvironmentId,
   OrchestrationEvent,
@@ -159,6 +160,7 @@ export function shouldWarmThreadShell(thread: OrchestrationThreadShell): boolean
     thread.hasPendingApprovals ||
     thread.pendingChildApproval ||
     thread.pendingSettingsChange ||
+    thread.pendingSecretRequest ||
     thread.hasPendingUserInput ||
     thread.hasActionableProposedPlan
   ) {
@@ -170,7 +172,7 @@ export function shouldWarmThreadShell(thread: OrchestrationThreadShell): boolean
     sessionStatus === "starting" ||
     sessionStatus === "running" ||
     thread.latestTurn?.state === "running" ||
-    (thread.sideTurn ?? null) !== null
+    hasLiveSideTurn(thread)
   );
 }
 
@@ -186,6 +188,7 @@ function isNonIdleThread(environmentId: EnvironmentId, threadId: ThreadId): bool
       sidebarThread.hasPendingApprovals ||
       sidebarThread.pendingChildApproval === true ||
       sidebarThread.pendingSettingsChange === true ||
+      sidebarThread.pendingSecretRequest === true ||
       sidebarThread.hasPendingUserInput ||
       sidebarThread.hasActionableProposedPlan
     ) {
@@ -201,10 +204,7 @@ function isNonIdleThread(environmentId: EnvironmentId, threadId: ThreadId): bool
       return true;
     }
 
-    if (
-      sidebarThread.latestTurn?.state === "running" ||
-      (sidebarThread.sideTurn ?? null) !== null
-    ) {
+    if (sidebarThread.latestTurn?.state === "running" || hasLiveSideTurn(sidebarThread)) {
       return true;
     }
   }
@@ -220,7 +220,7 @@ function isNonIdleThread(environmentId: EnvironmentId, threadId: ThreadId): bool
       orchestrationStatus && orchestrationStatus !== "idle" && orchestrationStatus !== "stopped",
     ) ||
     thread.latestTurn?.state === "running" ||
-    (thread.sideTurn ?? null) !== null ||
+    hasLiveSideTurn(thread) ||
     thread.pendingSourceProposedPlan !== undefined
   );
 }

@@ -68,6 +68,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * then hide link UI for them.
    */
   computerLinks: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server reads a thread one of its threads started on a linked computer
+   * for its clients (`links.readThread`), so a client that can't see that
+   * computer can still open it. Absent: such a child can't be opened.
+   */
+  linkedThreadRead: Schema.optionalKey(Schema.Boolean),
   /** The server runs scheduled tasks. Absent until a server ships them. */
   scheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** The server keeps a theme library (`themes.*`, docs/design/custom-themes.md). */
@@ -79,10 +85,44 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * the GitHub account's email. Absent on servers from before both.
    */
   themeShowcaseTakeBack: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server updates an already-listed Showcase theme in place
+   * (`ThemeShowcaseSubmitInput.updateSlug`). Absent on older servers, which
+   * always open a new folder.
+   */
+  themeShowcaseUpdate: Schema.optionalKey(Schema.Boolean),
   /** The server searches the Open VSX store for VS Code themes (`themeVsCode.*`). */
   themeVsCode: Schema.optionalKey(Schema.Boolean),
   /** The server moves threads to linked computers. Absent until a server ships it. */
   threadMove: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server queues moves (`moves.queue`, `moves.unqueue`, `moves.retry`):
+   * a move waits for a working thread to be free, and a free thread's starts
+   * at once, so a client may send every move through the queue. Absent: only
+   * `moves.start`.
+   */
+  threadMoveQueue: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server moves several threads at once (`moves.previewMany`,
+   * `moves.queueMany`, `moves.setMode`, `moves.batchStatus`) and keeps each
+   * thread's `lastMoveOutcome` (docs/design/fleet.md, Part 3c). Absent: the
+   * Move threads dialog and the quit offer don't show.
+   */
+  threadMoveBatch: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Under Ask first, the server takes a moved thread's bytes before its user
+   * allows it, so the computer it leaves can count the move as sent; it
+   * groups waiting moves by link (`moves.respondMany`). Absent: an Ask-first
+   * move here holds its bytes back until Allow.
+   */
+  threadMoveStagedApproval: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server moves threads with what they had going (docs/design/fleet.md,
+   * Part 3e): a goal, check-backs, pull request switches, queued messages,
+   * plans, and General Chats threads. Absent: clients don't offer Move on a
+   * General Chats thread, nor list one in the Move threads dialog.
+   */
+  threadMoveState: Schema.optionalKey(Schema.Boolean),
   /** The server sets up projects copied from another computer (`projectSetups.*`). */
   projectSetup: Schema.optionalKey(Schema.Boolean),
   /** The server reports when it froze (`subscribeServerStalls`). */
@@ -166,6 +206,31 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * a busy room's message to Grok when the agent at work finishes instead.
    */
   grokAnswersOnTheSide: Schema.optionalKey(Schema.Boolean),
+  /**
+   * A project can have a lead chat (`OrchestrationProject.leadThreadId`,
+   * `project.lead.set`, docs/design/lead-chat.md). Older servers omit it and
+   * would refuse the command, so clients hide the lead actions for them.
+   */
+  projectLead: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The approval card for starting several threads can start some of them
+   * (`thread.child-request.respond` `requestIds`). An older server would start
+   * the whole batch, so clients only show the checkboxes for this one.
+   */
+  childStartSelection: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server keeps a brief per project and gives it to every thread there
+   * (`projectContext.*`, docs/design/project-brief-notes.md). Older servers
+   * omit it: clients hide the brief, and a save to several computers skips
+   * one without it.
+   */
+  projectContext: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The Device tab and Settings → Devices (`device.*`, docs/design/devices.md).
+   * Older servers omit it; clients then hide the Device tab, its keybinding,
+   * its palette entry and the Devices settings for them.
+   */
+  devices: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

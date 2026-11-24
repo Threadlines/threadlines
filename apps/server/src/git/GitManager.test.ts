@@ -204,12 +204,25 @@ function isGitHubCliError(error: unknown): error is GitHubCliError {
   );
 }
 
+/**
+ * A temp folder removed when the test ends. A status read starts a best-effort
+ * `git fetch` in the shared driver's background, which can still be running
+ * in the folder then, and Windows can't remove a folder a running process
+ * works in. Node retries the removal for about three seconds; a folder still
+ * held after that fails the test.
+ */
 function makeTempDir(
   prefix: string,
 ): Effect.Effect<string, PlatformError.PlatformError, FileSystem.FileSystem | Scope.Scope> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    return yield* fileSystem.makeTempDirectoryScoped({ prefix });
+    const directory = yield* fileSystem.makeTempDirectory({ prefix });
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() =>
+        fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
+      ),
+    );
+    return directory;
   });
 }
 

@@ -25,6 +25,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
     projectExpandedById: {},
     projectOrder: [],
+    pinnedProjectCwds: [],
     seenThreadOverlays: {},
     threadSeedVisitedAtById: {},
     threadChangedFilesExpandedById: {},
@@ -35,6 +36,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     inboxEnvironmentScopeId: null,
     collapsedInboxGroups: {},
     inboxWrappedOpen: false,
+    inboxGeneralChatsOpen: true,
     sidebarListOpen: true,
     sidebarListFloats: false,
     sidebarFloatingListOpen: false,
@@ -89,6 +91,19 @@ describe("uiStateStore pure functions", () => {
       resendsLeft: 0,
     });
     expect(overtaken.seenThreadOverlays).toEqual({});
+  });
+
+  it("a project on a computer that connects later goes back to its saved place", () => {
+    // Saved: remote first. The local computer's projects load first.
+    hydratePersistedProjectState({ projectOrderCwds: ["/srv/remote", "/work/local"] });
+    const local = { key: "local:/work/local", logicalKey: "local", cwd: "/work/local" };
+    const remote = { key: "remote:/srv/remote", logicalKey: "remote", cwd: "/srv/remote" };
+
+    const localOnly = syncProjects(makeUiState(), [local]);
+    const both = syncProjects(localOnly, [local, remote]);
+
+    expect(both.projectOrder).toEqual([remote.key, local.key]);
+    hydratePersistedProjectState({});
   });
 
   it("reorderProjects moves a project to a target index", () => {
@@ -613,19 +628,22 @@ describe("uiStateStore persistence round-trip", () => {
     expect(readPersistedState().inboxEnvironmentScopeId).toBe(null);
   });
 
-  it("remembers a hidden thread list, folded inbox groups and an open Wrapped shelf across a restart", () => {
-    // A fresh install shows the list, with Wrapped closed.
+  it("remembers a hidden thread list, folded inbox groups and shelves across a restart", () => {
+    // A fresh install shows the list, with Wrapped closed and General chats open.
     window.localStorage.removeItem(PERSISTED_STATE_KEY);
     expect(readPersistedState().sidebarListOpen).toBe(true);
     expect(readPersistedState().inboxWrappedOpen).toBe(false);
+    expect(readPersistedState().inboxGeneralChatsOpen).toBe(true);
 
     persistState(
       makeUiState({
         sidebarListOpen: false,
         collapsedInboxGroups: { "computer:env-macbook": true },
         inboxWrappedOpen: true,
+        inboxGeneralChatsOpen: false,
       }),
     );
+    expect(readPersistedState().inboxGeneralChatsOpen).toBe(false);
     expect(readPersistedState().sidebarListOpen).toBe(false);
     expect(readPersistedState().collapsedInboxGroups).toEqual({ "computer:env-macbook": true });
     expect(readPersistedState().inboxWrappedOpen).toBe(true);

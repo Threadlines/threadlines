@@ -361,7 +361,7 @@ The environment descriptor's `capabilities` gains `computerLinks`, `scheduledTas
 
 ### Client
 
-- The parent's child list (the option B family line) includes remote children. When the client is connected to B, the row is B's real thread and opens it. Otherwise it shows A's cached status.
+- The parent's child list (the option B family line) includes remote children. When the client is connected to B, the row is B's real thread and opens it. Otherwise it shows A's cached status and opens the thread read through the link (docs/design/child-threads.md, "Opening a child on a computer the app can't see").
 - Fleet draws cross-computer work on the line between the two computers.
 
 ### Filing a child on another computer (Oct 30)
@@ -615,6 +615,956 @@ The two test servers:
 - Kill A mid-send.
 - Kill B mid-import.
 - A real Codex turn on the moved thread, to see the seed.
+
+## Part 3b: Move a working thread (Nov 15, v2 step 1)
+
+Will's ask: keep a thread going on another computer when this one has to shut down. Move v1 refuses any thread with live work, so a working thread can't move. Step 1 adds a move that waits for the thread to be free, an option to stop the work first, and an agent tool. Clearing a whole computer from Fleet and the quit dialog is step 2, carrying the provider's own session is step 3, and families, goals, check-backs and PR automation are step 4. Step 1 changes none of v1's transfer protocol. A queued move ends in today's `thread.move.start`, and nothing about freezing, export, import or abort changes.
+
+### What the user sees
+
+- **Dialog.** When the only things stopping a move are live work, the dialog no longer refuses. It shows what the thread is doing and two choices:
+  - **Move when it's done** (default): the move starts as soon as the thread is free.
+  - **Stop and move now**: ends the thread's agent session, which stops the turn and all its background work, then moves.
+
+  A thread that can't move for any other reason (room, children, goal, check-back, PR automation, General Chats) is still refused with today's words.
+
+- **While it waits.** A notice above the message box: "Moves to Windows PC when this turn ends." with Cancel. The text changes when it waits on something else: "...when its background work finishes", or "...once you answer" for an approval or question. While a move waits, the thread takes no new turns. The send button reads why. "Send when done" messages, steering and outside assistants' queued messages are refused with the same words. Approvals and questions still work, since the turn needs them to finish.
+- **When it can no longer move.** If the turn leaves something that blocks a move (the agent set a check-back or a goal, started a child thread, turned on PR automation, or proposed a plan), the wait ends. The notice says why: "Didn't move: this thread's agent set itself a time to come back. Cancel it first, then move again." It stays until dismissed. The same happens when the thread is archived or deleted, the link is removed, or the target no longer has the chosen agent.
+- **Target offline.** A move that is ready but can't reach the target keeps waiting and says "Waiting for Windows PC to connect." It starts when the link comes back. Cancel always works.
+- **Sidebar.** The row shows the same "moving" state v1 shows once frozen, and a quieter "move queued" mark before that.
+
+### State
+
+`OrchestrationThread.pendingMove: { requestId, target: { environmentId, label }, agent: ModelSelection, mode: "when-done" | "stop-now", stage: "waiting" | "quiescing", requestedAt, requestedBy: { kind: "user" } | { kind: "agent", turnId } } | null`, projected into a new `pending_move_json` column (migration 111). A thread has at most one: a pending move or a move (`thread.move`), never both.
+
+Events:
+
+- `thread.move-queued`
+- `thread.move-quiescing { requestId }`
+- `thread.move-queue-ended { requestId, reason: "started" | "cancelled" | "blocked" | "gone", words? }`
+
+Commands:
+
+- `thread.move.queue`, from the user or from the agent tool;
+- `thread.move.unqueue { requestId }`, Cancel;
+- `thread.move.quiesce { requestId }`, internal, from the reactor;
+- `thread.move.queue-end { requestId }`, internal, from the reactor.
+
+Every unqueue and queue-end names the request it ends, and the decider ignores one that names an older request. A late Cancel or an old blocked evaluation can't clear a newer queued move.
+
+### Who may queue (decider, one shared check)
+
+`threadMoveRefusal` becomes `threadMoveRefusals(model, thread) → Array<{ code, kind: "wait" | "blocked", words }>`. Every check runs, instead of the first one winning, so a busy thread doesn't hide a goal behind its running turn.
+
+- `wait`, gone on its own:
+  - a running turn, a waiting approval or question, a side turn;
+  - background tasks (both counts), a running command run or workflow run, voice active;
+  - another thread working in the same checkout.
+- `blocked`, needs the user:
+  - everything else v1 refuses;
+  - **queued follow-up messages**: they would start the next turn as soon as this one ends ("Send or remove your queued messages first");
+  - **a proposed plan waiting to be implemented**: `childHasLiveWork` counts it as live work, but only the user's answer clears it, and implementing it starts a turn ("Implement or dismiss the plan first").
+
+`thread.move.queue` is refused when there is a `blocked` code, a pending move, or a move. It is allowed with zero or more `wait` codes. With no `wait` code it still queues, and the reactor starts it at once. That gives one path whether the thread is busy or not.
+
+For `mode: "stop-now"` the decision also plans:
+
+- `thread.session-stop-requested`: ends every runtime of the thread (ProviderCommandReactor `processSessionStopRequested`), and with them the running turn and the background work inside them;
+- `thread.side-turn.interrupt` when a side turn runs (its runtime is separate);
+- the existing stops for running command runs and workflow runs.
+
+Per-task stops and interrupts aren't used. Claude's interrupt deliberately leaves background tasks running (`perTaskStopAffordance`). Codex, ACP and Pi have no per-task stop, and Muse only has stop-all. An interrupt also projects `interrupted` before ACP and OpenCode finish cancelling. Ending the session is the one stop every driver completes.
+
+### The guard
+
+`threadMoveGuardRefusal` gains a pending-move rule. On a thread with `pendingMove`, it refuses one shared set of work-starting commands, `WORK_START_COMMANDS`:
+
+- `thread.turn.start`, `thread.turn.retry`, `thread.turn.resend`;
+- `thread.follow-up.submit`, both steer and queue (scheduled runs into an existing thread use it too);
+- `thread.side-turn.start`, `thread.realtime.start`, `thread.command-run.start`;
+- `thread.goal.set`, `thread.participant.add`, `thread.pull-request-automation.set` turning a switch on, `thread.continue-at-reset.set` arming;
+- `thread.create` with this thread as attached parent;
+- implementing a plan.
+
+The automatic continue-at-reset arming inside `thread.session.set` (decider.ts:4143) is skipped while a move waits. The user asked to move, and that wins over an automatic retry here. Early agent start while typing is refused for the thread too.
+
+The words: "This thread is waiting to move to Windows PC. Cancel the move to keep working here." Everything a running turn needs keeps working: approvals, answers, activity, session updates, interrupt. The guard keeps the wait short and tells the user why. It is not what keeps the move safe. Providers start turns of their own, through runtime events rather than commands: Claude after queued steering or a finished background agent (ClaudeAdapter.ts:5150), ACP autonomous turns (AcpAdapter.ts:834), Codex `turn/started`. No command guard can refuse those. The barrier below handles them.
+
+### The barrier: the session ends before the freeze
+
+A thread is ready to move only when no runtime of it exists. The projected state can say "free" while a provider is still cancelling, or just before it starts a turn of its own. So the queue never goes straight from "free" to the freeze:
+
+1. When the projection has no `wait` code, the reactor dispatches `thread.move.quiesce { requestId }`. The decider records `thread.move-quiescing`, which sets `pendingMove.stage: "quiescing"`, and plans `thread.session-stop-requested`. In "stop-now" mode the queue decision records it straight away. From here the **session fence** holds (below).
+2. It calls the new `ProviderService.quiesceThread(threadId)` and waits for it. This stops every session whose parsed thread id is this thread: main, participants, side runtimes (their own keys, ProviderCommandReactor.ts:5774) and early starts. Each driver confirms its teardown (below). The result is `confirmed`, or `unconfirmed { reason }`.
+   - `unconfirmed` keeps the move waiting, with "Couldn't confirm the agent stopped: <reason>." plus Try again and Cancel. It never moves anyway.
+3. It re-reads the projection. If a turn slipped in (a provider turn that ended before the stop, for example), it goes back to waiting.
+4. Otherwise it calls `ThreadMoves.start`. `decideMoveStart` checks again, in the same decision as the freeze, that the session is stopped and there are no `wait` codes. If either fails, the move isn't started, and the reactor goes back to step 1.
+
+**The session fence.** A command guard can't stop sessions that reopen without a command. `serverReadSubagentTranscript` (ws.ts:1727) and context compaction both let ProviderService recover a stopped session (ProviderService.ts:792, 2205, 2793). So ProviderService itself asks one admission check before it starts or recovers any session for a thread: `ThreadSessionAdmission.check(threadId)`. The check reads the projection and refuses while `pendingMove.stage === "quiescing"` or `thread.move` is set, frozen or moved away. That covers starts, recovery, compaction, transcript reads that would recover, room agents, side runtimes and early starts. The fence lives in the projection, so it holds across restarts, and startup recovery skips fenced threads. v1 gains this fence too: today a frozen thread can be recovered by a transcript read. `thread.context-compact.request` joins `WORK_START_COMMANDS`.
+
+If the user cancels while the move is quiescing, the fence lifts with the pending move, and the next message starts a fresh session as usual.
+
+**Confirmed teardown, per driver.** `quiesceThread` passes only when each runtime confirms its work is gone. A session missing from `listSessions()` isn't enough: today Claude marks itself closed after a `query.close()` that may have failed (ClaudeAdapter.ts:8442-8482). ACP also ignores `session/close` failures, though Grok's background shells live in separate process groups that survive a plain kill (AcpSessionRuntime.ts:859-873). Each driver's stop gains a confirmed result:
+
+- **Claude:** wait for the CLI child process to exit after close, then kill its process group and wait for it.
+- **Codex:** the app-server process exits.
+- **ACP:** after `session/close`, or its timeout, kill the agent's process group and any process groups it reported for shells, then wait for exit.
+- **OpenCode, Pi, Muse:** their host or process exits, after Muse's `task/stopAll`.
+
+A driver that can't prove it returns `unconfirmed`. These are the same checks v1's freeze should have made. v1's export also starts only after `quiesceThread` confirms.
+
+Once quiesced and fenced, nothing can start work. Provider turns need a session, and no session can open. A command the guard misses only makes the move wait.
+
+### The reactor (`moves/MoveQueue.ts`, beside ThreadMoves)
+
+It watches projected thread changes and link changes (added, removed, access changed, reconnected) for threads with `pendingMove`. It subscribes before its startup scan, so a change during the scan isn't missed, and the scan waits until provider session recovery has run. A move that is waiting on its target also retries on its own, every 15 s at first and backing off to 2 minutes, so a failed `peer.describe` on a connected link doesn't leave the thread stuck. For each one:
+
+1. A `blocked` code → `thread.move.queue-end { reason: "blocked", words }`.
+2. A `wait` code → nothing. It looks again on the next change.
+3. Free → the barrier above, then `ThreadMoves.start({ threadId, targetEnvironmentId, agent, queuedRequestId })`. `start` already re-runs preview and checks the target and the agent.
+   - A target refusal that can pass (unreachable, `peer.describe` failed) → keep waiting with "Waiting for <target> to connect."
+   - A refusal that won't pass (link removed or off, agent gone, no project there) → `queue-end { reason: "blocked", words }`.
+   - Success → the decider's `decideMoveStart` records `thread.move-started` and, in the same decision, `thread.move-queue-ended { reason: "started" }` when the command carries the thread's current `queuedRequestId`. The pending move and the freeze swap in one commit.
+
+`decideMoveStart` refuses a `queuedRequestId` that isn't the thread's current one, so an old reactor pass can't start a cancelled move. A direct user `thread.move.start` on a thread with a pending move is refused ("A move is already waiting").
+
+**Cancel against start.** `moves.unqueue { threadId, requestId }` dispatches `thread.move.unqueue`. If the move already started from that request (the thread's `move.queuedRequestId` matches), it becomes v1's `thread.move.cancel` for that transfer, which asks the target to drop it. The user sees one Cancel button either way.
+
+### Agent tool: `thread_move`
+
+- **Who gets it:** a room tool, main runtime only, in `THREAD_TOOL_NAMES`, access tier "changes".
+- **What it moves:** the caller's own thread only, in step 1.
+- **Input:** `{ computer, agent? }`. Computer names come from `thread_agents`' `computers`. `agent` defaults to the target's suggested agent, the way the dialog does.
+- **What it does:** queues `mode: "when-done"` with `requestedBy: { kind: "agent", turnId }`. The caller's own turn is the live work, so the move starts once this turn ends, after the agent's last words. A turn that ends in an error or is interrupted still ends, and the move goes ahead. The user's Cancel is the way to keep the thread here.
+- **What it returns:** "Queued: this thread moves to <computer> when your turn ends. Finish your reply; don't start more work." Or the refusal words.
+
+Fences:
+
+- refused on threads started by a link (`remoteOrigin`, already a `blocked` code) and on threads an outside agent works in (`outsideOrigin`); the endpoint's existing `changes` fence stays;
+- refused for side runtimes;
+- the target's own Ask first/Allowed/Off gate applies unchanged, as in v1.
+
+The user sees the same notice, with "Your agent asked to move this thread", and can Cancel.
+
+### Contracts
+
+- `ThreadMovePreview` gains `waitsFor?: ThreadMoveWait[]`: the wait codes with words. Only `blocked` codes fill `refusal`.
+- New RPCs: `moves.queue { threadId, targetEnvironmentId, agent, mode }` and `moves.unqueue { threadId, requestId }`. The client sends the `requestId` it shows, never the server's current one.
+- `moves.start` stays for older clients and for the reactor's path.
+
+### App guide
+
+The Fleet topic paragraph (added Nov 15) gains a sentence on Move when it's done, Stop and move now, and the agent tool.
+
+### Tests (focused)
+
+Decider:
+
+- queue refused on a `blocked` code;
+- queue accepted while a turn runs;
+- the guard refuses `thread.turn.start` and a "Send when done" follow-up while a move waits;
+- a stale `queuedRequestId` is refused;
+- start and queue-end happen in one decision;
+- stop-now plans the session stop and the side-turn interrupt;
+- the freeze is refused while the projected session isn't stopped;
+- an unqueue or queue-end naming an old request changes nothing.
+
+Reactor, against a fake engine and links:
+
+- starts after the turn completes;
+- not before background tasks settle;
+- ends as blocked when the agent set a check-back during the turn;
+- keeps waiting while the target is offline, then starts on reconnect;
+- survives a restart with a pending move;
+- a provider-started turn after "free" sends the move back to waiting;
+- a Cancel that races the start cancels the transfer instead;
+- a failed describe on a connected link retries.
+
+Browser:
+
+- the dialog's two choices on a working thread;
+- the notice with Cancel;
+- the send button's reason.
+
+One live check on the two-computer test stack with a fake fx agent: queue during a turn, the turn ends, the move commits, the thread continues on B.
+
+### Out of scope here (later steps)
+
+- clearing a computer from Fleet and the quit dialog (step 2);
+- carrying native sessions (step 3);
+- families, goals, check-backs, PR automation, rooms and General Chats (step 4);
+- moving another thread with the agent tool.
+
+## Part 3c: Clear a computer before you shut it down (Nov 16, v2 step 2)
+
+Step 1 (Part 3b) moves one thread at a time, from its menu. Step 2 is for the moment Will asked about: this computer is about to shut down, and its threads should keep going on another one. It adds a way to move several threads at once, an offer in the quit dialog, and a way for a move to finish without anyone at the other computer. Each thread still moves through Part 3b's queue and Part 3's transfer, unchanged in kind.
+
+### What the user sees
+
+- **Move threads dialog.** Opened from Fleet (a computer's page: "Move threads here…"; this computer's page: "Move threads to another computer…") and from ⌘K. It shows:
+  - the target computer (picker; preset when opened from that computer's page);
+  - this computer's open threads, one row each with its title and what moving it means: "Moves now", "Moves when the agent finishes", or, greyed out, why it can't move ("Has a goal set. Clear it first.");
+  - threads whose agent is working come first and are ticked by default; idle ones are listed, unticked;
+  - for working threads, the same two choices as Part 3b, once for all of them: "Move when each agent finishes" (default) or "Stop the agents and move now";
+  - a button "Move 3 threads".
+
+  "Open threads" are this computer's project threads in the inbox: not archived, not wrapped up, not General Chats. Threads that can't move are still listed (greyed out, with the reason), so nothing is silently left behind.
+
+- **Progress.** While a batch runs, the target's Fleet row and page show "Moving 3 threads here: 1 moved, 2 waiting for their agents". Each thread's own notice is Part 3b's. When it's done, it reads "Moved 3 threads to Windows PC" for a while, or names the ones that didn't move and why.
+- **Quit dialog.** When threads are working on this computer and a linked computer is connected that takes moves, the dialog adds "Move them to Windows PC and quit" (a picker when there are several computers), beside today's Cancel and Quit.
+  - Clicking it queues the working threads ("when each agent finishes") and turns the dialog into progress: "Moving 3 threads to Windows PC. 1 moved, 2 waiting for their agents to finish."
+  - Buttons while it runs: "Stop the agents and move now" (switches the waiting ones to stop-now), "Quit anyway" (the rest stay waiting here and carry on when this computer starts again), "Cancel" (cancels the moves that haven't started; started ones finish).
+  - When every thread has a final answer, the app quits by itself after a short "All moved. Quitting…". If any didn't move, it doesn't quit: it lists them with why, and offers Quit anyway.
+  - Only a quit the user starts gets this. A system shutdown or log-out can't be held for minutes; it keeps today's behavior.
+- **The other computer doesn't need anyone there.** When the other computer's permission is Ask first, the move still sends everything right away and waits there for its user to allow it. This computer counts it as done once the other computer has every byte ("Sent, waiting for Windows PC to allow it"), so it can quit. Allow imports it; Don't allow drops it, and this computer's copy unfreezes the next time it starts and hears back.
+  - The other computer's allow card groups moves from one computer: "Mac wants to move 3 threads here" with Allow all and Don't allow, plus each thread's title.
+
+### Server
+
+1. **Batch RPCs** (WsMovesRpcGroup):
+   - `moves.previewMany { threadIds } → { threads: [{ threadId, refusal?, waitsFor? }], targets }`: the same checks as `moves.preview`, one read of the targets.
+   - `moves.queueMany { threadIds, targetEnvironmentId, mode } → { batchId, queued: [{ threadId, requestId }], refused: [{ threadId, words }] }`: one `thread.move.queue` per thread, each decided on its own. One refusal doesn't stop the others. No `agent`: each picks the target's suggestion when it starts (Part 3b).
+   - `moves.setMode { threadId, requestId, mode: "stop-now" }` for "Stop the agents and move now" on moves already waiting. It re-plans the stop for that request; a request that already started is untouched.
+2. **`batchId` on `pendingMove` and on the move** (optional), so any client can group a batch and show its progress from the projection alone. No new table.
+3. **The other computer's caps become waits.** Today the target refuses a third open move from one link ("already taking other moves", LinkMoves.ts:75, per link 2, total 4), and Part 3b ends a queued move on that refusal. That refusal becomes a code (`busy`) that MoveQueue treats as "wait and retry" with its backoff, showing "Waiting for Windows PC to finish other moves." The caps stay: they bound disk and memory on the target.
+4. **Receive before allow.** On the target, `peer.move.prepare` under Ask first records the move as `awaiting_approval` and **accepts chunks** into staging, as `receiving` does. Only the import waits for Allow.
+   - The staged bytes count against the same per-transfer and unpack limits as today. The 24-hour expiry of unanswered moves stays, and deletes the staging.
+   - `peer.move.status` gains a state the source can read: `staged_awaiting_approval`, meaning every byte arrived and the import waits for its user.
+   - The source records this as a move phase (`awaiting_approval`, already shown in v1's notice as "waiting for X to allow it") and treats it as a final answer **for quitting only**. The thread stays frozen here. Its outcome (imported, or dropped) is read the next time the link connects, as v1 recovery already does.
+5. **Grouped allow card.** The target's pending-move notifications group by link: one inbox row and one card listing the threads, with Allow all and Don't allow. Allowing one at a time stays possible on each thread's row.
+
+### Desktop
+
+The quit confirmation already waits for the page's answer (`resolveQuitConfirmation`). The page keeps the dialog open while moves run and answers `true` when it's time to quit. Check the window code for any timeout on that wait, and make sure a quit asked again while moves run (a second ⌘Q) shows the same dialog rather than quitting.
+
+### Clients
+
+- The batch dialog, Fleet entries, ⌘K entry and quit-dialog flow above, on desktop, web and phone. The quit flow is desktop only.
+- Progress is computed from the threads' `pendingMove` and `move` with a `batchId`. The quit flow remembers its `batchId`.
+- Offered only for targets with `threadMoveQueue` (and, for receive-before-allow, a new capability `threadMoveStagedApproval`; without it, an Ask-first target means "Waiting for X to allow it" blocks quitting, and the dialog says so).
+
+### Tests (focused)
+
+- Decider and RPC: queueMany decides each thread on its own; a refused thread doesn't stop the others; setMode affects only its own waiting request.
+- MoveQueue: a busy target keeps the move waiting and retries; three moves to a 2-per-link target all land in turn.
+- LinkMoves: Ask first stages every chunk before Allow; Allow imports; Don't allow and expiry delete the staging; the source reads `staged_awaiting_approval`.
+- Web: the batch dialog's list (working first and ticked, refusals greyed out with words); the quit dialog's progress and auto-quit; Quit anyway; a thread that didn't move stops the auto-quit.
+- Live, on the two-server stack: move three working threads to a 2-per-link target from the batch RPC; quit-style flow against an Ask-first target where A's part ends at "sent" and B's Allow imports later.
+
+### Review changes (Nov 16, outside review of this plan)
+
+The plan above is corrected as follows. Where they differ, this wins.
+
+1. **Staged moves get their own budget.** Moves held for Ask first (every byte staged, waiting for Allow) no longer count against the 2-per-link and 4-total caps. Those caps now bound only transfers in flight, so they always drain.
+   - Staged moves have their own limits on the target: at most 20 per link and 2 GiB of staged bytes per link, counted at prepare from the manifest's declared sizes.
+   - A move past them is refused at prepare with the code `staging_full`: "Windows PC is holding other moves until its user allows them." That is a final answer: the source unfreezes the thread, and it's reported as not moved.
+2. **A busy target makes the transfer wait, not fail.** The cap refusal at `peer.move.prepare` (ThreadMoves.ts, after MoveQueue has handed the move off) becomes the code `busy`. The transfer worker keeps the thread frozen in a phase `waiting_for_target` ("Waiting for Windows PC to finish other moves") and asks again with backoff (15 s, rising to 2 min). Today it settles the move as aborted.
+3. **Batches and outcomes are durable.**
+   - A table `thread_move_batches (batch_id, target_environment_id, created_at, members_json, refused_json)` records every thread asked for and the refusals given at queue time.
+   - Each thread gains `lastMoveOutcome { batchId?, requestId, result: "moved" | "not_moved" | "awaiting_approval", words?, at }`, set by the same decisions that end a pending move or settle a move. It survives the abort and blocked paths that clear `pendingMove` and `move` today.
+   - `moves.batchStatus { batchId }` returns every member with its state. Final means moved, not moved, or staged and waiting for approval.
+   - The quit flow and the Fleet progress read that instead of guessing from the projection.
+4. **The quit wait belongs to the desktop app's main process, not the page.**
+   - New IPC: `desktop:quit-after-moves { batchId }` starts it, and `desktop:quit-after-moves-cancel` ends it.
+   - While it runs, hiding or closing the window doesn't answer the quit question with "no" (DesktopWindow.ts:1488). The window hides, the page keeps running, and it answers "quit" when `batchStatus` is final for every member with nothing not moved.
+   - A second ⌘Q shows the same progress dialog.
+   - If the page goes away (a renderer crash), the main process asks `batchStatus` itself, through the backend.
+   - The update-restart path stays as it is (no update-flow changes): moves under way stop with the backend and resume when the app starts again, which the queue and the transfer worker already do.
+5. **Capabilities.**
+   - `threadMoveBatch` on the source server gates the batch RPCs and the batch dialog. Without it, the Move threads dialog and the quit offer don't appear, and the single-thread move works as in step 1.
+   - `threadMoveStagedApproval` on the target gates receive-before-allow. Without it, an Ask-first target holds the bytes back as today, and the quit dialog says the move will wait for Allow there before this computer can quit.
+
+### Out of scope
+
+- A system shutdown waiting for moves.
+- Moving General Chats, rooms, families (step 4).
+- Native session carry (step 3).
+
+## Part 3d: The agent keeps its memory when a thread moves (Nov 16, v2 step 3)
+
+Today a moved thread's agent starts a fresh session on the other computer with a text summary of the conversation (the handoff seed). It loses its tool history, the files it read, its subagents' work and anything it held in context but never wrote into a message. Step 3 carries the agent's own session file to the other computer, so it resumes where it was. The summary stays as the fallback for every case that can't carry one, or where the carried session fails to resume.
+
+### Which agents
+
+- **Claude, Codex and Pi** keep their sessions as files, and Threadlines already resumes each from a file (`ClaudeSessionTranscripts.ts`, Codex's resume by path in `CodexSessionRuntime.ts`, Pi's `--session`/`--fork`). These three carry.
+- **OpenCode** keeps sessions in its server's SQLite database, with no export call in our code. **Muse** and the **ACP agents** (fx, Cursor, Grok, Antigravity, community) keep them where we don't know. They all get the summary, as today.
+- A session carries only when the agent picked on the other computer is the **same driver** (Claude to Claude, and so on). A different driver gets the summary. The model may differ.
+
+### What the user sees
+
+- **Move dialog** (single thread and batch), one quiet line per thread: "The agent keeps its full memory." or "The agent gets a summary of the conversation." It updates with the agent picked. A session too large to send reads "…a summary (its session is too large to send)".
+- **On the other computer**, the moved-in line in the timeline says which it was: "Moved here from Mac with its agent's memory" or "…with a summary of the conversation". If a carried session fails and falls back: "Couldn't resume the agent's session here, so it got a summary instead."
+
+### Export (the computer the thread leaves)
+
+`ThreadMoves` reads the thread's provider binding (ProviderSessionDirectory: instance, `resumeCursor`) while the thread is frozen and quiesced (Part 3b). With a confirmed stop, the files are no longer written. It asks the driver's new `exportNativeSession(binding) → NativeSessionExport | null`:
+
+- **Claude:**
+  - `projects/<slug>/<sessionId>.jsonl` from the instance's config folder;
+  - the `<sessionId>/subagents/` tree, so subagent transcripts open on the other side;
+  - not `file-history`, `todos`, `plans` or `shell-snapshots`. Checkpoints don't cross a move (Part 3), and the rest is per-machine state.
+  - The cursor keeps `resume` and `resumeSessionAt`.
+- **Codex:** the rollout file (`sessions/YYYY/MM/DD/rollout-*<threadId>.jsonl`, or `.zst` as found), plus the cursor `{threadId}`.
+- **Pi:** the session file named in the cursor, plus the cursor with `sessionFile` made relative.
+
+The export becomes a new manifest part kind, `session`: `{ driver, cliVersion?, files: [{ relPath, bytes, sha256 }], cursor }`. Paths are relative to the driver's home, checked for traversal on both sides. Sizes:
+
+- The session counts against the move's existing 100 MB cap, with a per-session cap of 50 MB.
+- Past either, no session part is sent, and the manifest says `sessionOmitted: "too_large"`.
+- The preview reports the expected outcome (`carries | summary | too_large`) per thread and target agent, so the dialog line is right before the move starts.
+
+The part is only sent to a target whose peer descriptor has `moveNativeSession: true` (a new capability). Older targets refuse unknown part kinds (`moveManifestRefusal`), so they never get one.
+
+### Import (the computer the thread arrives at)
+
+In `commitStage`, before `thread.import`, under the per-transfer lock:
+
+- The chosen instance's driver gets `importNativeSession(export, { worktreePath }) → { cursor } | { refused }`. It writes the files into **that instance's own home** (its account folder or CODEX_HOME or Pi dir) and returns the cursor for this computer:
+  - **Claude:** writes under `projects/<slug of the new worktree path>/`. The transcript's `worktree-state` line names the old worktree, so the existing `forkResumeOutOfWorktree` resumes it as a fork in the new place. No file is rewritten.
+  - **Codex:** writes the rollout under this home's `sessions/` with the same relative path. The cursor gains the rollout's path, so the first start resumes it by path with the new cwd (the side-answer path already does this). Codex's state database learns it from that resume.
+  - **Pi:** writes the session file under this computer's Pi sessions folder and returns a cursor with the new absolute `sessionFile` and the old `cwd`. The cwd differs, so Pi forks it into the new folder, as it already does.
+- The import writes the thread's provider binding (`ProviderSessionDirectory.upsert`) with that cursor, inside the same commit step, so a crash between the two is redone by the existing import recovery. The import is idempotent per transfer key: files land under names derived from the session id, and are rewritten on retry.
+- `thread.import` records `nativeSession: "carried"` on the thread, alongside the existing `historySeedOwed`.
+
+### Resume, and falling back to the summary
+
+The seed debt stays owed on a carried thread until the carried session proves itself:
+
+1. The first start resumes from the imported cursor.
+   - If the driver reports it couldn't resume (Claude's resume-fallback, Codex's `onResumeFallback`, Pi failing to open the file), the reactor pays the seed as today. It records `nativeSession: "fell_back"`, with the timeline line.
+   - `ProviderService.startSession` must return whether it truly resumed. Add that signal where a driver lacks a clean one; don't infer it from warnings.
+2. If the first turn after a carried resume fails with an error showing the session's contents can't be used on this account or version, the reactor:
+   - drops the carried session;
+   - starts a seeded session;
+   - sends the user's message again, once;
+   - records the fallback.
+
+   Codex examples: encrypted reasoning from another account, or a rollout written by a newer Codex. Claude example: a rejected thinking-block signature.
+
+   The exact error signatures come from each provider's real errors. Verify them against the Codex open-source repo and real Claude errors; don't guess. An unrecognized failure is an ordinary failed turn.
+
+3. Once a turn succeeds on the carried session, the debt is cleared: `nativeSession: "resumed"`, no seed. A later revert past the move boundary still re-owes the seed, as Part 3 already does.
+
+### Review changes (Nov 16, outside review of this plan)
+
+Where they differ, these win.
+
+1. **The target names every file itself.** A manifest's paths are never used to write. `importNativeSession` takes the session id from the cursor, checks its shape (Claude: a UUID; Codex: its thread id format; Pi: its session id), and computes each destination from it with the driver's own layout:
+   - **Claude:** `projects/<slug>/<sessionId>.jsonl`, plus `<sessionId>/subagents/` files named `agent-<id>.jsonl` or `.meta.json`, and `workflows/<runId>/` under it.
+   - **Codex:** `sessions/YYYY/MM/DD/rollout-<timestamp>-<threadId>.jsonl` or `.zst`, with the date taken from the rollout's own name.
+   - **Pi:** `sessions/<slug>/<timestamp>_<id>.jsonl`.
+
+   Anything else in the part is refused, and the move carries no session (summary). No credential, settings or other home file can be named.
+
+   **Ownership:** a destination that already exists is overwritten only if it was written by this same transfer (a marker beside it, or the same SHA-256). Otherwise the session isn't carried, rather than overwriting someone else's.
+
+2. **A fallback never sends without context.** For a thread whose context is owed (moved, or a fallen-back carried session), a send that can't build its seed is not sent. The turn fails visibly with "Couldn't give the agent this conversation, so the message wasn't sent." and the debt stays owed. That replaces today's path, which drops both seeds and sends anyway (ProviderCommandReactor.ts ~2353, ~2498). Retrying the send tries again.
+
+### Not in this step
+
+- OpenCode, Muse and ACP native carry. Each needs its own export or import story.
+- Carrying sessions between different drivers.
+- Checkpoints and file history across a move.
+
+### Tests (focused)
+
+- Export picks the right files per driver, skips the per-machine folders, and respects both caps with `sessionOmitted`.
+- Import writes under the target instance's home with traversal refused, writes the binding in the commit step, and is idempotent on retry.
+- Preview outcome per agent choice.
+- Reactor:
+  - a resumed session pays no seed;
+  - a resume fallback pays it;
+  - a first-turn signature error falls back once and resends;
+  - an ordinary failure doesn't.
+- Live, on the two-server stack: real Claude and Codex runs need Will's OK for usage. Without it, a stand-in Pi or Claude CLI isn't feasible, so the live part tests the file placement and binding with a fake session file, and states that a real resume is unverified.
+
+## Part 3e: A thread moves with what it had going (Nov 17, v2 step 4a)
+
+Steps 1 to 3 move a thread that is doing nothing special. A thread with a goal, a check-back, pull request auto-fix or auto-merge, queued messages or a plan waiting is still refused, and so is every General Chats thread. Those are the threads people leave running, so they are the ones a shutdown most needs to move. Step 4a lifts those six refusals. Families (threads that started threads) and rooms are step 4b.
+
+Nothing in Part 3's transfer, Part 3b's queue and barrier, Part 3c's batches or Part 3d's session carry changes in kind. This step adds what rides along, and what happens to it at each end.
+
+### The rule
+
+**What was going to run by itself here runs by itself there, fenced.** A goal that was working, a check-back that was due, a message waiting its turn: each keeps going on the other computer without the user setting it up again, as far as the link's permission allows (its access ceiling caps the thread's mode). A thread with none of these still arrives idle, as today. (Will's call 1 below: the default is that this starts work on arrival.) Two things are the other computer's user's to give, not the move's (Security changes, below): pull request switches arrive off, and the thread works behind the link fence (no Threadlines tools) until that user sends it a message.
+
+Three more rules follow from the requirements:
+
+- **Never on two computers.** Everything that acts on its own for a thread (the queue drain, the pull request watcher, check-back timers, the goal) stops on this computer before the thread leaves, and stays stopped on the read-only copy.
+- **Nothing is left behind quietly.** The dialog says what comes along before the move. The "Moved here" line on the other computer says what arrived and what could not, with why.
+- **If the move doesn't happen, the thread gets back what the move took.** Stopping the agent for a move ends its timers and pauses its goal. A move that is then cancelled, blocked or dropped puts them back here ("Put back", below).
+
+### What each one does
+
+| The thread has                          | What happens                                                                                                                                                            | Still refused                                                                                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (a) A goal                              | **Carried.** The goal, its budget and its counts come along. One that was working is picked up there by itself. One the user had paused arrives paused, with Resume.    | Nothing. An agent picked there that can't keep goals gets none: the arrival line says so and quotes the goal.                                     |
+| (b) Check-backs                         | **Set up again there.** The agent's timers end with its process here. On arrival the agent is told what it had planned and when, and sets them again itself.            | Nothing. An agent picked there that can't set check-backs is still told once, on arrival.                                                         |
+| (c) Pull request auto-fix or auto-merge | **Linked, off.** The linked pull requests come along; every switch arrives off. The thread's notice there says what was on, with Turn on. They stop here at the freeze. | Nothing. When the branch had to be renamed there, there is no Turn on: the arrival line says why.                                                 |
+| (d) A General Chats thread              | **Carried.** The chat and every file in its folder land in General chats on the other computer.                                                                         | A folder over the move's 100 MB limit, with its size.                                                                                             |
+| (e) Queued messages                     | **Carried.** The user's own queued messages wait here while the move waits, travel with their attachments, and are sent there in order.                                 | A queued message from a scheduled task, another thread or an outside assistant: "…is waiting its turn. Move once it has been sent, or remove it." |
+| (f) A plan waiting                      | **Carried.** The thread's plans come along. The waiting one arrives waiting, and Implement and Dismiss work there.                                                      | Nothing.                                                                                                                                          |
+
+All of it only when the other computer says it takes it (Capabilities). Against an older computer, every one of these is refused exactly as today.
+
+### What the user sees
+
+- **Move dialog** (single thread and batch). Under the agent line from Part 3d, one quiet line per thing that comes along, in the server's words:
+  - "Its goal carries on there." or "Its goal arrives paused."
+  - "Its agent sets its 2 check-backs again there."
+  - "Auto-fix for pull request #212 arrives off, for you to turn on there."
+  - "2 queued messages are sent there."
+  - "The plan waits for you there."
+  - General Chats: "Lands in General chats on Windows PC · 14 files". The branch and "Staged changes arrive as unstaged changes" lines don't show.
+- **Warnings**, same place, when something won't work as it did:
+  - "GitHub isn't signed in on Windows PC. Sign in there before you turn auto-fix on."
+  - "Codex on Windows PC can't set check-backs. It's told once what was planned."
+  - Claude with a working goal: "It's working toward its goal. Move when it's done waits until it gets there."
+- **The batch dialog and the quit dialog** (Part 3c) stop greying these threads out. Working General Chats threads are listed with the project threads.
+- **On the other computer**, the "Moved here from Mac" line lists what arrived ("its goal · 2 queued messages · pull request #212") and, on a second line, anything that didn't, or waits for the user there ("Auto-fix was on for pull request #212 on Mac. It's off here until you turn it on." "Its agent can't use other threads, rooms or schedules here until you send it a message."). A notice above the message box says the same about the switches, with Turn on.
+- **The arrival message.** When the agent has to be told something (a goal to carry on with, check-backs to set again), the first message on the other computer is one Threadlines wrote. It shows as a quiet system-written row, like the "Continue where you left off." row after a restart, not as something the user typed.
+- **On this computer**, the read-only copy shows no queue, no armed switches and no goal controls. If the move didn't happen: "The move to Windows PC didn't happen. Your goal and check-backs are back on here."
+
+### Capabilities
+
+- **`PeerDescriptor.moveThreadState`** (new, optional): the computer takes goal, check-backs, pull request switches, queued messages and plans in a manifest, and runs arrival. **`PeerDescriptor.moveGeneralChats`** (new, optional): it takes a thread with no git checkout. Two flags so the General Chats work can ship on its own.
+- An older computer decodes a manifest by dropping fields it doesn't know (no `onExcessProperty: "error"` on any peer path), so new fields sent to it would vanish without a word. They are never sent: without the flag, the thread is refused with today's words.
+- **The decider can't see links**, so the answer travels on the command. `thread.move.queue` and `thread.move.start` gain `targetTakes?: { threadState?: true, generalChats?: true }`, filled by `ThreadMoves` from the descriptor it just read. A pending move keeps it (`pendingMove.targetTakes`), and every later check uses it: `threadMoveRefusals(view, thread, takes)`. Absent means "takes nothing": today's refusals.
+- **A target that is offline when the move is queued** is assumed to take everything. The queue asks it before it stops anything (below), and `decideMoveStart` gets the real answer on its command.
+- **Per-target refusal.** In the preview, `ThreadMovePreview.refusal` is computed as if the target took everything. A target without the flag gets its own `refusal` (an existing field): "Update Threadlines on Windows PC to move this thread: it has a goal." No new refusal code: `refusalCode` is never extended.
+- **`ServerEnvironment.threadMoveState`** (new, optional) tells clients this server moves these threads, so they offer Move on General Chats threads and list them in the batch dialog.
+- **`PeerAgent` gains `threadGoals?: boolean` and `checkBacks?: boolean`**, so the dialog's lines are right for the agent picked.
+
+### Shared pieces
+
+Four pieces serve all six items. Build them first.
+
+**1. One pure description of what a thread carries: `threadMoveCarry(view, thread)`** (`apps/server/src/orchestration/threadMoveCarry.ts`). It returns what the thread has of (a) to (f), and which capability each needs. Three callers: `threadMoveRefusals` (to decide refused or not), the preview (the dialog's lines), and the export (what to pack). One function, so the three can't disagree.
+
+**2. What the stop takes: `interrupted`.** Ending the agent's session for a move pauses a Codex goal (`pauseActiveThreadGoalForStop`) and kills every check-back that isn't saved to disk (the adapter reports them ended, and ingestion clears the list). By the time the thread is exported they are gone from the projection. So the decision that plans the stop records them first:
+
+- `interrupted?: { goalActive?: true, checkBacks?: OrchestrationCheckBack[] }`, optional on `ThreadPendingMove` and on `OrchestrationThreadMove`.
+- Written by the same decisions that plan `thread.session-stop-requested`: `thread.move-queued` in `stop-now` mode, `thread.move-quiescing`, `thread.move-mode-set` to `stop-now`, and a direct `thread.move-started` whose session isn't stopped yet. `thread.move-started` from a queue copies the pending move's.
+- Kept for the life of the request, and only ever added to: a move that goes back to waiting after its stop (a turn slipped in) must not forget the goal was working.
+- `goalActive` is `thread.goal?.status === "active"` at that decision. The decider needs no knowledge of the provider.
+- `thread.goal.state.set` joins `FROZEN_THREAD_COMMANDS`. Today a direct move freezes the thread in the same decision as its stop, so the pause Codex reports is refused and the projection says `active` while Codex says `paused`. If that move is then dropped, the goal bar is wrong.
+
+**3. Arrival, on the computer the thread lands on.** `thread.import` creates the thread with its state in one decision (per item, below). What needs the agent is sent as ordinary messages, never by setting provider state on a cold thread. The reason is Part 3d: a moved thread's agent gets its conversation (a carried session, or the summary) only through a message send, and that send is also where a carried session that fails falls back and tries again. A goal set by RPC, or a turn the provider starts itself, would run without the conversation.
+
+- **The arrival message.** When `interrupted` has a working goal or check-backs, `thread.import` puts one server-written message at the head of the thread's queue, ahead of the user's carried messages. Built by `moves/arrivalMessage.ts`:
+
+  ```
+  This thread moved from Mac to Windows PC, and your session was restarted for it.
+  - Your goal is still on: <objective>. Carry on with it.
+  - Your check-backs ended with the move. Run CronList, then set again the ones you still need:
+    - at 14:32 today: <prompt>
+    - every 5 minutes (*/5 * * * *): <prompt>
+  ```
+
+  Marked `afterMove: true`, a new optional field on `OrchestrationQueuedFollowUp`, `OrchestrationMessage` and the `thread.message-sent` payload. Not a new `MessageTrigger`: that is a closed list older clients decode. An older client shows the row as a user message.
+
+- **One kick, owned by `LinkMoves`.** Queued entries written by an import carry `imported: true` on `thread.follow-up-queued`, and `processFollowUpQueued` ignores those. Otherwise each event would try to send, and nothing would send after a crash (the reactor drains nothing at startup). After the import lands, `LinkMoves` dispatches `thread.follow-up.send-queued` for the head of the queue, with a command id derived from `K`, then records the stage `arrived`. Startup redoes it for any committed row not yet `arrived`. Once the first turn ends, the ordinary drain sends the rest.
+- **The goal reaches the provider after the conversation does.** One rule in `ProviderCommandReactor`, for a thread with `movedFrom`: when a send is accepted and the projected goal is `active` but the provider holds no goal for that session (Codex `thread/goal/get`; Claude's folded goal), the reactor gives it: objective, what is left of the budget, `active`. It needs no marker, so it survives a restart, and it runs again by itself if a carried session falls back to a fresh one.
+- **Capped as every import is.** The arrival turn and the queued messages run with the runtime mode capped at `link_max_runtime_mode`.
+
+**4. Put back, on the computer the thread stays on.** When a move ends without moving and `interrupted` is set (`thread.move-queue-ended` with `cancelled` or `blocked`, or `thread.move-aborted`), `MoveQueue` puts the thread back as it was:
+
+- a goal that was working and now reads `paused`: `thread.goal.set { status: "active" }`;
+- check-backs: the same server-written message, with "The move to Windows PC didn't happen" as its first line;
+- queued messages: one drain kick, since nothing else sends them once the turn has ended.
+
+Not for `gone` (the thread was archived or deleted). To make this rare, the queue asks the target what it takes **before** the barrier whenever the thread carries something, and ends the move as blocked there instead of stopping the agent first.
+
+### (a) Goals
+
+**Decision: carry.** Lifted when the target takes thread state. A `complete` goal already moved; now its record comes along too.
+
+- **While the move waits.** No new wait code (`ThreadMoveWaitCode` is closed). A Claude goal keeps its turn running until it is met, so "Move when it's done" waits for the goal; the dialog says so and "Stop and move now" is the way to move it sooner. A Codex goal works in separate turns, so the move goes at the next turn end and the goal carries on there. `thread.goal.set` stays refused while a move waits, as today.
+- **Manifest:** `thread.state.goal { objective, status, tokenBudget, tokensUsed, timeUsedSeconds, createdAt, updatedAt, checks?, lastCheck?, pickUp }`. `status` is the projected one on the frozen thread; `pickUp` is `interrupted.goalActive`.
+- **Import:** `thread.import.goal`, written as `thread.goal-state-set` in the same decision.
+  - `pickUp` → `active`, plus the arrival message.
+  - Otherwise `active`, `paused` and `usageLimited` → `paused`. The provider here doesn't hold it, and a continue-at-reset wait is not carried.
+  - `blocked`, `budgetLimited` and `complete` arrive as they are: they need an edit, and editing sets the goal whole.
+  - The agent picked here can't keep goals (`threadGoals` not supported): no goal is written, and the arrival line quotes it.
+- **Resume, by hand.** Today a status-only resume fails on Claude (the adapter refuses a set without an objective), and would do nothing useful on a Codex session that never had the goal. `processGoalSetRequested` changes:
+  - a resume with no objective, on a session whose provider holds no goal, sends the projected objective and the remaining budget with it;
+  - on a moved thread whose conversation is still owed, it doesn't call the provider at all: it records the goal as `active` and queues the arrival message, and the rule in "Arrival" gives the goal once that message is accepted.
+- **Budget.** The provider counts from zero again, so it is given `max(1, tokenBudget - tokensUsed)`. The goal bar shows what is left.
+- **Per driver.** Codex and Claude support goals. Every other driver: not carried, named in the arrival line.
+- **Risks.**
+  - Whether a carried Claude transcript resumed as a fork re-arms its goal is unverified. The design doesn't depend on it: if it does, the provider holds the goal and nothing is set; if not, the reactor sets it.
+  - Claude's `/goal` sent while a turn runs cuts that turn short. On the summary path that cuts the arrival turn right after it delivered the conversation, which is wasteful but correct. Check the adapter's late-goal path (`lateGoalCommands`) before building, and prefer it if it waits for the turn.
+  - Whether Codex takes `thread/goal/set` during a running turn: read the Codex source. If it refuses, give the goal when that turn ends.
+  - A Codex goal set to `active` starts work by itself. That is the point, and it is why the goal is given only after a send.
+
+### (b) Check-backs
+
+**Decision: set up again on the other computer, by the agent.** Only Claude has them (`ScheduleWakeup`, `CronCreate`). Nothing can create one without a model turn, and a check-back is a model turn waiting to happen, so the arrival turn is the honest way to bring it.
+
+- **What's recorded.** The projected check-back has only a clipped description and the schedule in words. `OrchestrationCheckBack` gains optional `prompt` (clipped at 2 000 characters) and `cron`; the Claude adapter already holds both. A carried session's agent knows what it scheduled from its own transcript; these fields make the message complete for the summary case.
+- **At the stop.** The decision records the list in `interrupted.checkBacks`. The session stop then ends them here, as it does today for any stop. The note ingestion writes reads "Check-back ended: this thread is moving to Windows PC" while a move is under way.
+- **Manifest:** `thread.state.checkBacks [{ scheduledFor, recurring, exact, schedule?, cron?, description?, prompt?, durable }]`.
+- **Import:** they are not written to the thread's `checkBacks`: that list mirrors the provider, which has none yet. They go into the arrival message, and the list fills in when the agent sets them and its next turn ends.
+- **A different agent there.** One that can't set check-backs still gets the message, without the "set again" line, so it acts once on what was planned. The dialog warns.
+- **Saved to disk (`durable`).** Treated the same (Will's call 3). The message says "Run CronList" first, so if Claude restores a saved one in the new folder by itself, the agent doesn't set it twice. Claude's saved copy stays in this computer's folder, where Threadlines can't remove it.
+- **The words today are wrong.** "Cancel it first" can't be done for a saved check-back (the decider refuses, since stopping the runtime doesn't remove it). Against an older target, where the refusal stays, a thread whose check-backs are all saved reads: "Claude saved this thread's check-back to disk. Ask the agent to delete it, then move."
+- **Risks.**
+  - The agent may not set them again. The message is explicit, and the user sees the list refill or not. A check-back is never guaranteed anyway (the runtime can be reaped).
+  - A time that passed during the move: the message says "was due at 14:32", and the agent decides.
+  - Where Claude keeps saved ones (`.claude/scheduled_tasks.json`, folder unverified), and whether another Claude session in this computer's folder would later run the copy left here: check live. If it would, the dialog gains one calm line.
+
+### (c) Pull request auto-fix and auto-merge
+
+**Decision: carry the links, not the switches; stop them here at the freeze.** (Changed by the security review, below: this section first carried the switches on.) GitHub-side auto-merge (`gh pr merge --auto`) lives on GitHub and needs nothing.
+
+- **Here.** `PullRequestAutomationWatcher` skips any thread with `pendingMove` or `move`: no look, no baseline step, no turn, no merge. Today it knows nothing of moves. Its merge is a direct `gh` call that no command guard sees, so an armed frozen thread would still merge from this computer. A turn refused by the move guard also still steps the baseline, which would swallow a failure. `decideMoveComplete` turns the switches off on the read-only copy (`thread.pull-request-automation-changed`). A dropped move leaves them on, and the watcher picks up where its baseline was.
+- **Manifest:** `thread.state.pullRequests { autoFix, autoMerge, linked: [{ number, url, autoFix, autoMerge }] }`, and `git.upstreamBranch?` (the branch on the project's remote that this branch tracks).
+- **Import:** `thread.pull-request-linked` for each, every switch off. What was on goes to `movedFrom.pullRequestSwitches`; the thread's notice and the arrival line offer it, and Turn on sends the normal `thread.pull-request-automation.set` from the user's client, once per pull request. Any switch set there clears the offer (`clearsMovedSwitches` on `thread.pull-request-automation-changed`). The watcher sees a switch turned on while it runs, so it treats what is failing now as news. Its turn cap starts again.
+- **The branch keeps its upstream.** The import creates the branch with no upstream today. The thread's own pull request is found by upstream name, else by local name, and the "wait for unpushed commits" guard before a merge compares against the upstream. A moved thread can arrive with commits that were never pushed. At the `worktree` stage, when `<remote>/<upstreamBranch>` exists after the fetch, the import sets `branch.<name>.remote` and `.merge`. For every move, not only armed ones.
+- **No Turn on, with why,** when the branch had to be renamed (`<branch>-from-<computer>`): a plain push from it would not reach the pull request. Also when the upstream couldn't be set on an armed thread.
+- **No GitHub sign-in there** (Will's call 2). Move anyway, and say so at both ends: "GitHub isn't signed in on this computer. Sign in before you turn them on."
+- **Asking the target.** New `peer.move.readiness { canonicalKey } → { gitHubReady?: boolean }`, called by the preview only for a thread with armed switches and a target with `moveThreadState`. It runs the probe behind `server.discoverSourceControl`. Not on `peer.describe`: every preview would pay for a `gh` call.
+- **Risks.**
+  - Whether `remoteStatus` reports unpushed commits with no upstream is unverified. If it reports none, auto-merge could merge a pull request that lacks the thread's local commits. Setting the upstream closes it. Test it with a real repo.
+  - A restart there before the first look baselines quietly, as any restart does.
+
+### (d) General Chats threads
+
+**Decision: carry the chat and its folder.** A general chat has no project to match (every computer has `project-general-chats`), no git, no branch and no checkpoints. Its files are whatever the agent wrote into `<stateDir>/general-chats/threads/<threadId>`.
+
+- **Manifest.** `PeerMoveManifest` becomes a union: today's shape, and a second with `workspace: "scratch"`, `project: { title }` and no `git`. An older computer can't decode the second, and is never sent one (`moveGeneralChats`).
+- **Export** (`moveExport.ts`, a second path beside the git one): every file under the thread's folder, with Part 3's untracked-file rules (regular files keep their executable bit, symlinks go as their text, anything else refuses the move). No bundle, no diff. The same before-and-after listing check (path, size, mtime), with one retry. A folder that was never made is zero files.
+- **Size** (Will's call 4). No `.gitignore` says what to skip, so everything goes, under the move's existing limits (100 MB, 20 000 files). Over that: "This chat's folder is 240 MB. Moves take up to 100 MB."
+- **Preview.** `targetPreviewOf` skips the project match for a general chat. Today it would mark every target `no_project`, and the app would offer to set a project up. The target is fine when it has the flag; `projectName` is "General chats". `ThreadMovePreview` gains `folder?: { files, bytes }` in place of `changes`.
+- **Import** (`LinkMoves`): the git stages (`fetched`, `worktree`, `applied`) don't run. Instead:
+  - **`folder`**: the path is `generalChatThreadScratchCwd(root, linkMoveThreadId(K))` (`orchestration/generalChats.ts`), saved in the row first, then made with an exclusive mkdir. One that exists and isn't empty stops the move.
+  - **`applied`**: each file through `writeReceivedFile` (the same path rules and exclusive create).
+  - **commit**: attachments, the agent's session with that folder as its cwd (`carrySession` returns false today when `worktreePath` is null), then `thread.import` into `GENERAL_CHATS_PROJECT_ID` with `branch` and `worktreePath` null.
+- **Clean-up needs its own proof.** Part 3's proof reads the worktree's `.git` file. Here: the path equals the one derived from this row's `K`, and no thread with that id exists (checked under the transfer lock, as abort already checks for a landed import). Only a session start for that thread could have made the folder otherwise, and that needs the thread. A crashed `applied` empties the folder under the same proof and writes again.
+- **The shared-folder wait.** `checkoutOf` returns the project's root for a thread with no worktree, so every general chat shares one "checkout" and any busy one would make all the others wait. For a general-chat project it returns the thread's own folder (`resolveThreadProviderCwd` already knows it).
+- **Left here:** the folder stays with the read-only copy, as a worktree does.
+- **Risks.** Claude's session carry writes under `projects/<slug of the folder>`. That is expected to work with the new folder's path, but it is inferred, so test it.
+
+### (e) Queued messages
+
+**Decision: carry the user's own; keep refusing the others.**
+
+- **Which.** An entry with none of `fromAgent`, `fromThread`, `fromOutside`, `scheduledTaskId` is the user's. The others answer to something on this computer: a scheduled run waiting for its turn, an outside assistant waiting for a reply, another thread. Those keep a `blocked` refusal, with words that name whose message it is.
+- **While the move waits.** The queue must not drain here, or the thread never becomes free. That is why queued messages are refused today. `thread.follow-up.send-queued` joins the pending-move guard, and the reactor's two drains (`processFollowUpQueued`, `maybeSendNextQueuedFollowUp`) skip a thread with `pendingMove` or `move`. Edit and Remove still work while it waits. A cancelled or blocked move gets a drain kick (Put back).
+- **Manifest:** `thread.state.queuedFollowUps [{ messageId, text, attachments, skills?, composer?, sentFrom?, interactionMode, createdAt }]`. Their attachments are packed as `attachment` parts. Today only history messages' attachments are packed and remapped.
+- **Import:** `thread.follow-up-queued` (`imported: true`) for each, in order, behind the arrival message when there is one. Message ids and attachment ids are remapped as messages' are. Each entry runs on the agent picked for the move, with the thread's capped runtime mode: a per-message model names an agent on the computer it left, so it is dropped. `overtakes` is dropped.
+- **Sent on arrival**, after the arrival message if there is one. The user queued them to run next, and "next" is now there. "Stop and move now" sends them too: the user asked to move, not to stop working.
+- **Here.** `decideMoveComplete` removes them from the read-only copy. Otherwise they would sit on a thread that can't unqueue.
+- **Risks.**
+  - The first queued message is the first send on a carried session. Part 3d's fall back and one resend cover it as they cover a typed message.
+  - A skill named in a queued message that the other computer lacks: check what a send does with one. If it fails the send, drop the reference at import and say so in the arrival line.
+
+### (f) A plan waiting
+
+**Decision: carry the thread's plans.** Today they vanish from a moved thread's history: the timeline draws plan cards from `proposedPlans[]`, which no move carries.
+
+- **Not a block, not a wait.** A waiting plan is waiting for the user, who can answer on either computer. `childHasLiveWork` keeps counting it for families; the move check stops.
+- **Manifest:** `thread.state.proposedPlans`: the newest 20, at most 1 MiB of markdown together.
+- **Import:** `thread.proposed-plan-upserted` for each. Ids are rebuilt for the new thread, with turn ids remapped as messages' are. `implementationThreadId` becomes the new thread's id when it named the old one, else null. `implementedAt` and `dismissedAt` are kept.
+- **Implement works there with no provider state.** The client sends the plan's markdown in the message, and the decider only checks that the plan exists on the thread. An imported thread has no latest turn, and the web's `actionableProposedPlan` already falls back to the newest plan then, so the card shows as ready.
+- **Risks.** With a summary instead of a carried session, the agent doesn't remember proposing the plan. Implement sends the whole plan, so nothing is missing.
+
+### Contracts
+
+- **`peerRpc.ts`**
+  - `PeerDescriptor.moveThreadState`, `.moveGeneralChats`;
+  - `PeerAgent.threadGoals`, `.checkBacks`;
+  - `PeerMoveManifest.thread.state?` as above, `git.upstreamBranch?`, and the `workspace: "scratch"` variant;
+  - `peer.move.readiness`.
+- **`orchestration.ts`**
+  - `thread.import` gains `goal?`, `pullRequests?`, `queuedFollowUps?`, `proposedPlans?`, `arrival?: { message, brought: string[], left: string[] }`;
+  - `interrupted?` on `ThreadPendingMove` and `OrchestrationThreadMove`; `targetTakes?` on `ThreadPendingMove` and on the queue and start commands;
+  - `OrchestrationCheckBack.prompt?`, `.cron?`;
+  - `afterMove?` on queued follow-ups and messages; `imported?` on the `thread.follow-up-queued` payload;
+  - the `thread.moved-in` activity payload gains `brought?: string[]` and `left?: string[]`, plain words.
+- **`moves.ts`**
+  - `ThreadMovePreview.brings?: Array<{ words }>` and `.folder?`;
+  - `ThreadMoveTargetPreview.notes?: Array<{ words }>`.
+- **`environment.ts`**: `threadMoveState`.
+- **Nothing closed is extended:** no new wait code, phase, outcome, trigger or refusal code. Every addition is an optional field, and every sentence a client shows is the server's.
+- **Bounds** (`moveManifestRefusal`): `thread.state` at most 2 MiB encoded, 50 queued messages, 50 check-backs, 20 plans, 50 linked pull requests.
+- **No migration rewrites rows.** `link_moves.stage` gains the values `folder` and `arrived` (a text column).
+
+### Will's calls
+
+Each has a default written into this plan, so the build can start. Changing one is small.
+
+1. **Work starts on arrival.** Default: yes. A goal that was working, check-backs and queued messages make the other computer start a turn by itself when the thread lands (under Ask first, when its user allows the move). That spends that computer's usage with nobody watching, which is what a goal or a check-back already does. The other choice: everything arrives held, with one "Pick up here" button on the thread. It is the same build with the kick moved from `LinkMoves` to that button.
+2. **Auto-fix, and the other computer has no GitHub sign-in.** Default: warn and move. Refusing would block a shutdown over something fixable later. (The switches arrive off now either way: Security changes, below.)
+3. **Check-backs Claude saved to disk.** Default: bring them like the others, through the arrival message. The copy Claude saved stays in this computer's folder. The other choice: keep refusing those, with the honest words.
+4. **General Chats files.** Default: every file in the chat's folder, up to 100 MB, refused above that with the size. The other choice: offer "move without its files".
+5. **A live check on real agents.** Three facts decide details here and can't be read from our code: whether Claude re-arms a goal on a forked resume, where it keeps saved check-backs, and how Codex takes a goal set during a turn. Checking them needs a few real Claude and Codex turns. Without an OK the build follows this plan's safe side (set the goal when the provider holds none; "Run CronList" first) and the report says a real resume is unverified.
+
+### Build order
+
+1. **Shared pieces:** `threadMoveCarry`, `targetTakes`, the two capabilities, `interrupted`, the preview's `brings` and `notes`, the arrival line. No refusal lifted yet.
+2. **(f) plans and (e) queued messages:** projection only, plus the drain fence and the kick.
+3. **(c) pull requests:** the watcher's skip (a fix worth having on its own), the upstream, `peer.move.readiness`.
+4. **(a) goals and (b) check-backs:** the arrival message, the goal rule, put back.
+5. **(d) General Chats:** the scratch manifest, export and import path.
+
+One PR is fine. Steps 3 and 5 can each be their own if the review gets long.
+
+### Tests (focused)
+
+- **Decider.**
+  - Each of the six is refused without `targetTakes`, and allowed with it.
+  - A queued message from a scheduled task still blocks.
+  - `interrupted` is recorded by each stop decision, and survives a move going back to waiting.
+  - `thread.goal.state.set` is accepted on a frozen thread.
+  - `thread.import` writes the goal, pull requests, queue and plans in one decision.
+  - `decideMoveComplete` clears the queue and turns the switches off.
+- **MoveQueue and the reactor.**
+  - The queue doesn't drain while a move waits, and drains after a cancel.
+  - Put back resumes a Codex goal and queues the message after a cancel and after an abort.
+  - A target without the flag ends the move as blocked before anything is stopped.
+- **Arrival.**
+  - An import with an arrival message and three queued messages starts exactly one turn, and the rest follow in order.
+  - A crash between the import and the kick still sends.
+  - The goal is given only after a send is accepted, and again after a carried session falls back.
+- **Watcher.** An armed thread that is frozen or moved away is never looked at and never merged. One with a pending move doesn't step its baseline.
+- **LinkMoves.**
+  - A scratch manifest lands in General chats with its files.
+  - Path rules hold, a folder that exists stops the move, and an abort removes only its own folder.
+  - The upstream is set when the remote branch exists.
+  - A renamed branch arrives with the switches off and the reason.
+- **Web.** The dialog's lines and warnings; the batch dialog lists a goal thread and a General Chats thread as movable; the arrival row; the moved-in line's two lists.
+- **Live**, on the two-server stack with the stand-in fx agent: a thread with queued messages and a waiting plan; a General Chats thread with files. Goals and check-backs need real Claude or Codex (call 5).
+
+### Out of scope
+
+- Families and rooms (step 4b).
+- Queued messages from scheduled tasks, other threads and outside assistants.
+- Carrying a continue-at-reset wait, or the watcher's baselines and turn counts.
+- Checkpoints for General Chats (there are none).
+
+### Review changes (Nov 17, outside review of this plan)
+
+These win over the text above where they differ.
+
+1. **The freeze fences PR actions already in flight.**
+   - The watcher and the move share one in-process gate per thread (`ThreadActionGate`). The watcher holds it from the thread read through `runAction` (PullRequestAutomationWatcher.ts ~783-803), and re-reads `move` and `pendingMove` under it before acting.
+   - The move's barrier (Part 3b) takes the gate before the freeze. That waits for an action under way, and no new one starts until the move ends.
+   - After a restart the freeze is in the projection, so the watcher's own check is enough.
+2. **Put back means what was running, not what reads paused.**
+   - Restoring on a cancel or a dropped move works from the interruption record: was the goal working when the move stopped it. It doesn't look at the goal's current status.
+   - A goal that was working is picked up again here by the same arrival-style turn the target would have run. That covers Claude, which can't pause a goal and leaves it reading active.
+   - A goal the user had paused stays paused.
+3. **What a move owes back is durable.**
+   - The decision that ends a move without moving it (unqueue, queue-end, abort) records `moveRestoreOwed` on the thread: a new optional field holding the interruption record.
+   - A reactor pays it (goal, check-backs, queued messages) and clears it with its own event, only once that succeeds.
+   - Startup scans for threads that still owe it.
+4. **A goal that finished stays finished.**
+   - At export, a goal whose status is `complete`, or anything other than working or paused, is carried with `pickUp: false`, whatever the earlier interruption record says.
+   - Teardown accepting an already-complete goal (ProviderService.ts ~2461) is the case this covers.
+5. **A goal the target's agent can't hold arrives paused, with why.**
+   - Today the one known case is a token budget going to Claude, which refuses any budget (ClaudeAdapter.ts ~6897). The goal lands paused, not dropped. The notice and the "Moved here" line say: "Its goal came paused: the agent here can't keep its token budget. Resume runs it without one."
+   - Resume clears the budget explicitly, so nothing spends past the user's limit without them choosing it.
+   - The preview names this before the move starts.
+6. **No plan is dropped silently.**
+   - Every proposed plan is carried, up to 100. Past that, the oldest stay behind, and the dialog and the "Moved here" line say "N older plans stayed on <source>".
+   - The newest plan, the one with Implement, always comes.
+
+### Security changes (Nov 17, PR #976 review)
+
+These win over everything above in Part 3e. What a move carries came from another computer, so it gets no more trust than work that computer's agent starts here over the link.
+
+1. **Pull request switches arrive off, every one.**
+   - A switch acts with this computer's GitHub sign-in: auto-fix starts turns, auto-merge merges. The other computer can't turn one on here.
+   - The linked pull requests still come along, so the thread's pull request rows show.
+   - What was on rides in `ThreadMovedFrom.pullRequestSwitches`. The "Moved here" line says it ("Auto-fix was on for pull request #212 on Mac. It's off here until you turn it on."). So does a notice above the message box, with Turn on and a dismiss.
+   - Turn on sends the normal `thread.pull-request-automation.set` from the user's client, one per pull request. Never from the peer.
+   - Any switch the user sets here clears the offer (`clearsMovedSwitches`).
+2. **A moved thread works behind the link fence until the user here takes it over.**
+   - The import sets `ThreadMovedFrom.fenced`. A new optional field, not a new kind of thread.
+   - Every place that fences a thread another computer's agent started (`remoteOrigin`) fences this one too, through one rule (`orchestration/linkFence.ts`):
+     - the room and guide tools the reactor gives the agent;
+     - the thread and room tool handlers' guard, `thread_read` and `thread_list` included;
+     - the schedule tools;
+     - continuing it on a schedule.
+   - Work still picks up on arrival as the link's permission allows, fenced. Its mode stays capped by the link's access ceiling, as before.
+   - **The fence lifts** when a message a person sent from the app starts a turn in the thread, directly or from the queue ("send when done"): `liftsMoveFence` on that `thread.turn-start-requested`, which clears `fenced` in every projection. A restart keeps whatever the projection holds. The rule is an allow-list (`turnLiftsMoveFence` in `linkFence.ts`): the message must carry `sentFrom`, which only this server stamps from the connection's sign-in, so nothing Threadlines writes can lift it by forgetting a marker.
+   - **What doesn't lift it:** the arrival message (`afterMove`), queued messages the move carried (`imported` on the queued entry; the other computer's `sentFrom` on them is dropped at import), and anything Threadlines or an agent sends: command output, another thread, an outside assistant, a scheduled task, a restart or usage-limit resume, a retry, pull request auto-fix. A session that is no person's device gets no `sentFrom` and can't lift it either: a linked computer (`peer`), a CLI-issued token or a sign-in that looked like a script (`bot`), or one that said nothing about itself. A browser paired through the relay counts as a computer (`sessionDeviceKind` in `messageSentFrom.ts`).
+   - A session started fenced is restarted with resume at the next start after the lift, so the agent gets its tools.
+   - The "Moved here" line says it: "Its agent can't use other threads, rooms or schedules here until you send it a message."
+
+## Part 3f: Families and rooms move too (Nov 17, v2 step 4b)
+
+After step 4a, three kinds of thread still can't move: one that started other threads, one that was started by another thread or by another computer's agent, and one with more than one agent. That is most of the threads worth moving. A thread that ever started a child stays unmovable for good, because the finished child keeps it a parent, and a room is how two agents work on one thing. Step 4b lifts those refusals where a move can be honest and safe, and keeps the rest with words that say the real reason.
+
+The transfer (Part 3), the queue and barrier (3b), batches (3c), session carry (3d), and what rides along and the arrival fence (3e) are unchanged in kind. Each thread still moves as its own transfer.
+
+### What each case does
+
+| The case                                                                | What happens                                                                                                                                                                                                       |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A parent moves with its children                                        | **The family moves together** and arrives as a family: the children are still its children there.                                                                                                                  |
+| A parent moves and some children stay                                   | **They become their own threads here**, each with a line saying why. The parent can't reach them from the other computer.                                                                                          |
+| A parent has children on another computer                               | **They stay where they are.** The moved parent can't reach them. Named in the dialog and on arrival. Moved to that computer, they are its children again there (Nov 18).                                           |
+| A parent is waiting on answers from its children                        | "Move when it's done" waits for the answers. "Stop and move now" ends the waiting as Stop does, and says so.                                                                                                       |
+| A child moves and its parent stays                                      | **It stays its parent's child**, as a thread on another computer: the parent can still send to it, read it and stop it over the link. There it is fenced for good, as any thread another computer's agent directs. |
+| A thread another computer's agent started (or a child that moved there) | **It can move back to that computer, and nowhere else.** At home it becomes a local child of the thread that started it again.                                                                                     |
+| A room                                                                  | **Carried with its agents.** Each agent is matched to one on the other computer. One that has no match stays behind, shown as having left, and the dialog says which.                                              |
+| The project's lead chat                                                 | Still refused, with today's words: each computer keeps its own lead.                                                                                                                                               |
+
+### Rules
+
+These hold for every case below. The first four are the link fence, and a move must never loosen it.
+
+1. **`remoteOrigin` is only ever written by the computer the thread is on, from the link it authenticated.** A manifest can ask for a thread to arrive as its sender's child. It can't supply the link, the environment, or anyone else's. That computer also clears it in one case only: the thread that asked moves there over that same link and takes the thread back as its child ("Also when the child's computer is the target", below).
+2. **A thread with `remoteOrigin` moves only to `remoteOrigin.environmentId`**, and only when that identity is pinned (`environmentPinned`). This is checked in the decider, not the dialog. There is no path from "an agent on A started work on B" to that work running on C.
+3. **Every import arrives fenced** (`movedFrom.fenced`, Part 3e). Each thread of a family lifts its own fence with its own message from the user here. A message in the parent doesn't lift a child's.
+4. **A peer can't attach a thread under one of this computer's threads.** Lineage is written in three cases only: both threads arrived in the same family from the same link, this computer's own records already name the incoming thread as that parent's child (coming home), or this computer's own records name a thread here as one the incoming thread started over that same link (taken back on arrival, below).
+5. **Never on two computers.** The reactors that act for a family (`ChildThreadReactor`, `RemoteChildReactor`) and the room's request chain stop for a thread with `pendingMove` or `move`, as the queue drain and the watcher do since 4a.
+6. **Nothing closed is extended.** Waits reuse existing codes with their own words. No new phase, hold kind, outcome, watch event or peer status.
+
+### What the user sees
+
+- **Move dialog, on a parent.** "Its 3 threads move with it", with the list and a tick each. Unticking one says "Stays here as its own thread." Children on another computer are listed apart: "2 threads it started on Windows PC stay there. It can't reach them from Mac mini."
+- **Move dialog, on a child.** Two choices: "Move just this thread" (default; "It stays a thread of <parent> on Mac, which can still send to it") and "Move its whole family (4 threads)".
+- **Move dialog, on a room.** One row per agent: its name here, and a picker of the other computer's agents, preset to the same agent and model when there is one. The last choice is "Leave out". An agent with no match reads "Sol can't come: Windows PC has no Codex agent." Under each, Part 3d's memory line.
+- **Batch and quit dialogs.** A family is one group: ticking any member ticks all of it, and it expands to untick members. A room is one row.
+- **While it moves.** Each thread shows its own notice (Part 3b). A child that is ready before its parent reads "Moves to Windows PC with <parent>."
+- **On the other computer.** Children are nested under the parent as here. The "Moved here" line names what stayed: "2 threads it started stayed on Mac: Fix tests, Review.", "Sol didn't come: this computer has no Codex agent." On a child that came alone: "Started by <parent> on Mac, which still directs it."
+- **On this computer.** A child left behind: "Its parent thread moved to Windows PC, so this is its own thread now." A child that went alone shows under its parent as a thread on Windows PC, as any thread started there does.
+- **A thread another computer started**, moving anywhere but home: "This thread was started by an agent on Mac, which still directs it. It can move back to Mac, not to another computer." When this computer has no link to Mac: "…Link this computer to Mac in Fleet first."
+
+### Capabilities
+
+- **`PeerDescriptor.moveFamilies`** and **`PeerDescriptor.moveRooms`** (new, optional). Without one, that kind of thread is refused with today's words, and nothing new is sent.
+- **`targetTakes`** (Part 3e) gains `families?: true` and `rooms?: true`.
+- No new client flag. The preview's new fields are optional, and an older client that sends none gets the server's defaults: the whole family, and the suggested agent for each room agent.
+
+### (g) A thread that started threads
+
+#### The family moves together
+
+A family is a parent and its attached local children that aren't archived or deleted. It is one level deep by the existing rule.
+
+- **How it's asked for.** `moves.queueMany` already takes a set of threads. The set decides: a parent and some of its children in one call are a family; a child without its parent moves alone (h); children left out stay behind. The single-thread dialog uses the same call when children are ticked. No new RPC.
+- **`familyId`.** The server gives the family one id, recorded on each member's pending move and move as `family?: { id, parentThreadId? }` (`parentThreadId` on children only), and in the batch record. The parent is queued first; a child's queue decision checks that its parent holds a move with the same family id.
+- **Each member is its own transfer**, with its own freeze, export and import. Nothing about one thread's move changes.
+- **Ids that members can name before they exist.** Today every new id derives from the transfer key `K = hash(L, T)`. A family member's thread, turn and message ids derive from the family key `FK = hash(L, familyId)` and the id it had here. So a child's import can name its parent's new id, and the parent's history can name its children's, whichever arrives first. Rows, locks, staging folders, git refs, worktrees and attachments keep deriving from `K`.
+- **The parent lands first.** On the other computer a child's import waits until its parent's has committed (`link_moves` gains `family_id` and `source_thread_id`, two nullable columns with an index). If the parent's move is dropped, the child's is dropped with "Its parent thread didn't move." The child's status to the sender stays `importing` while it waits. So no child ever sits there pointing at a parent that never came.
+- **On this computer** (`MoveQueue`):
+  - the parent's queued move ends without starting → the children's end too;
+  - the parent's transfer is dropped → the children's are cancelled (none can have committed);
+  - the parent moved and a child's move then fails → that child is left behind (below).
+- **Import.** `thread.import` gains `lineage?: { parentThreadId, parentTurnId, attachedToParent: true }`, filled by `LinkMoves` from `FK`. `decideThreadImport` checks the parent exists, isn't deleted, isn't itself a child, is in the same project, and came in the same family. The attachment epoch starts fresh.
+- **History keeps its labels.** `ThreadImportMessage` gains optional `fromThread`, kept only when it names a member of the family, with ids remapped by `FK`. Reports and requests between members keep "from <thread>". One that names a thread outside the family arrives as a plain message, as today.
+- **Threads that shared a folder share one there.** Members are grouped by checkout (`checkoutOf`). In a group, the owner is the thread whose worktree it is (not a guest: no `worktreeOrigin`), else the parent, else the oldest. Only the owner exports the files. A sharer's manifest says `family.sharesCheckoutOf: <owner's id here>` and has no bundle, diff or file parts; its import skips the git stages, waits for the owner's, and takes the owner's worktree and branch. Clean-up never removes a worktree for a sharer. If the owner's move fails, the sharer's fails with "The thread whose folder it works in didn't move." Without this, each would get its own copy and they would drift apart.
+- **The fence.** Parent and children each arrive fenced. Reports between them are `fromThread` messages, which don't lift it. After the user's message in the parent, `thread_list`, `thread_send` and `thread_stop` work on the children, which are found by `parentThreadId` as here.
+
+#### Children that stay
+
+A child that isn't in the set, or whose own move failed after the parent's committed.
+
+- `decideMoveComplete` for the parent detaches each attached local child still here, in the same decision. These are the events `thread.parent-attachment.set { attached: false }` writes: the parent's open requests for it settle as cancelled, and its queued reports are taken back. An activity is added on the child with the line above.
+- Why not keep them as the moved parent's children across the link: that needs a link from the other computer back to this one and its permission to direct threads here, which the move can't assume. Not in this step.
+- Archived children stay attached to the read-only copy, as history.
+
+#### Waiting on answers
+
+`childRequests.open` holds requests whose answers are owed. Today any open request refuses the move.
+
+- **"Move when it's done"** waits. A request to a child reuses the `background` wait code with the words "when the threads it started report back". A start or invite waiting for the user's OK (`awaiting_user`) reuses `approval`: "once you answer".
+- **"Stop and move now"** ends the waiting the way the user's Stop does: the delivery epoch rises and the open requests settle as stopped, in the decision that plans the session stop. Children in the family are stopped by their own moves. The "Moved here" line says: "It was waiting on 2 threads it started. They were stopped for the move."
+- No arrival message for this. The children arrive idle, like any thread stopped mid-turn, and a fenced parent couldn't send to them anyway.
+
+#### Children on another computer
+
+`childRequests.remoteChildren` lists threads this parent's agent started on linked computers. They stay listed after they finish, so today such a parent can never move.
+
+- **They stay where they are, and the moved parent doesn't know them.** Taking them along would mean the new computer directing threads that the child's computer let _this_ computer start. That is the hop rule 2 forbids, so nothing is re-pointed or handed over.
+- **Open remote requests:** "when done" waits for them as above. "Stop and move now" cancels them through the path Stop already uses (`cancelRequested`, `peer.request.cancel`, `peer.thread.stop`) and settles them here at once.
+- **`RemoteChildReactor` learns about moves.** It reads only `id`, `title`, `participants`, `childRequests`, `archivedAt` and `deletedAt` today. It now skips a parent with `move` set for watches and for anything that writes to the parent. One exception: `thread.remote-cancels.delivered` joins `FROZEN_THREAD_COMMANDS`, so cancels owed at the freeze still drain.
+- **A hole this closes.** On a frozen parent the reactor's four commands are refused. It reads a refused settle as "settled meanwhile" and acks the report as not delivered (RemoteChildReactor.ts ~609-619), so the answer is lost. No frozen parent can have remote children today, so it can't happen yet. Skipping frozen parents makes sure it never does.
+- **A parent moving without its family** (no children on its own computer) still names the threads its agent started on other computers. The manifest's `startedElsewhere` (label and title, at most `PEER_MOVE_FAMILY_MAX_STAYED`) gives the "Moved here" line the same words a family's `remoteStayed` does. It is words only, and an older receiver ignores the field.
+- **Also when the child's computer is the target (Nov 18: taken back on arrival).** Kept apart, such a thread was stranded: fenced for good, pointing at a read-only copy, its reports retried forever, and nobody could direct it. So the parent takes it back as its child there.
+  - **Who.** A thread both lists name: the sender's `remoteChildren` on the target (`PeerMoveManifest.startedThere`, at most 50, each with the user's pending Wrap up or Reopen), and the target's own records (threads started over this very link by the thread the move came from, not deleted or moved away). Of those, only threads that pass the decider's checks below (`adoptionRefusal`, asked once before the release with the modes the import will write, and again in the decision) are released and taken back; one that fails, archived ones included, keeps what its link asked of it, and the "Moved here" line says why. The sender sends the list only to a computer that says `PeerDescriptor.moveAdoptsChildren`; an older one keeps them apart, with the line below. Only a thread that lands on its own (no `lineage`, `remoteOrigin` or `adopt`) takes any back; a family's parent does.
+  - **Checks, per thread, in the decider** (`thread.import`'s `adoptsChildren`, with the link from the transfer's row, never the manifest). Its `remoteOrigin` is this link, names the thread the move came from, and is pinned to the computer the move came from; it is in the same project; it isn't archived, moving or queued to move; it has no attached children; and it asks no more access than the arriving thread has there (its modes as the import writes them, after the link's cap). One that fails stays as it is, never with its access lowered, and the "Moved here" line says why. The import never fails for it.
+  - **What it becomes.** In the same decision: `remoteOrigin` is cleared, it is the arriving thread's attached child (no parent turn, a fresh attachment epoch), and it carries `adoptedFromLink { environmentId, label, fenced: true }` (`thread.parent-attachment-set` with `adoptedBy`). A newer Wrap up or Reopen from the list stands, as `fromLinkedComputer` decides. Its timeline says what happened.
+  - **The fence.** It works behind the link fence until a message the user sends in it there lifts it (the moved-thread rule, `turnLiftsMoveFence`). That is Will's call (Nov 18): the user there taking it over is the same proof a moved thread needs. A message in the parent, a `fromThread` send, or a scheduled run doesn't lift it. While fenced it moves only back to `adoptedFromLink.environmentId`.
+  - **The link lets go first.** Under the transfer lock, before the import, each thread is released (`LinkRequests.releaseThread`): every open request of the link's for it ends cancelled ("The thread that asked moved here."), its queued message is taken back, it is stopped only while the turn running was started by that request's own message and is still the newest started there (read from the thread's turn starts, so a turn the user started since is never stopped; the stop names that turn, `expectedTurnId`, and the decider refuses it if another began before it lands), all decided before the request is marked ended so a retry decides it again, and the ledger owes the link nothing more for it (`closeForThread`: reports marked delivered, clean-up and owed stops cleared). After the import lands this runs again for the threads the parent holds, so a request that arrived between the release and the import ends too and its message is taken back. If the import fails, they stay the link's, with those requests ended. A known window, left open on purpose: a thread that queues its own move after the check but before the import isn't taken back, and still loses the requests the release ended.
+  - **Ownership.** Everything the link does to a thread asks first that the thread is still the link's (`ownedThread`): a cancel's clean-up (live and at startup), an ack, send, read, stop and wrap. That read can be stale by the time its command lands, so the decider is the guard: a stop, Wrap up or answer's record the link asks for names it (`byLink`) and is refused unless the thread is still that link's, and a link's queued request (`fromThread` naming that computer) is taken back instead of run once the thread isn't. So the sender's late `peer.request.cancel { stopThread }` stops nothing the user started there since.
+  - **The answer.** The committed `PeerMoveState.adopted` names them, read from the threads (so a restart between import and answer still says it). `thread.move.complete { adopted }` removes their `remoteChildren` entries from the read-only copy and settles any request still open for them. `RemoteChildReactor` acks a report for a parent that moved away as not delivered, so the target stops offering it.
+  - **Words.** On the parent: "Its thread 'Fix tests' was already on this computer. It's this thread's again." One kept apart: "Its thread 'Fix tests' is already on this computer. It stays separate because it has more access than this thread has here, so this thread can't reach it." A thread in the target's records but not on the list (an older sender) gets today's line: "Its thread 'Fix tests' is already on this computer. It stays separate, so this thread can't reach it." The sender leaves them out of `remoteStayed`, which would otherwise say they "stayed there". The move dialog says "'Fix tests' on Mac mini becomes its thread there again." to a target that takes them.
+
+### (h) A child, and a thread another computer started
+
+#### A child moves alone
+
+The link the move travels over is the one a parent needs to direct a child on that computer. So the child keeps its parent.
+
+- **Asked for** by moving a child without its parent (`family.remoteParent` on its pending move).
+- **Manifest:** `family.remoteParent { threadId, title }`.
+- **Import.** `LinkMoves` builds `remoteOrigin` itself: `linkDeviceId` from the transfer's row, `environmentId` and label from the link's pinned identity, `threadId` and `threadTitle` from the manifest. That is the same trust as a thread this link starts here, where the sender also names its own parent. `thread.import` gains `remoteOrigin?`. The thread also has `movedFrom`.
+- **An unpinned link** can't prove where home is. The child arrives as its own thread, and both ends say so.
+- **Fenced for good.** `remoteOrigin` fences it whatever the user there types, like every thread another computer's agent directs. It is stricter than a plain moved thread, and it is what keeps rule 2 simple.
+- **On this computer.** `decideMoveComplete` for the child writes, in one decision, the parent's `remoteChildren` entry (as a remote start records one) and the detach of the read-only copy, so the parent doesn't count it as a local child. `RemoteChildReactor` picks it up from the parent's record. `thread_send`, `thread_read` and `thread_stop` then reach it through `peer.request.*`, which the other computer's `linkThread` accepts because the link matches.
+- **Its parent is itself moving or moved:** it arrives as its own thread.
+
+#### Moving back home
+
+The only move a `remoteOrigin` thread makes. It covers a child that moved out, and a thread started over the link.
+
+- **Decider.** `threadMoveRefusals` allows a `remoteOrigin` thread when `target.environmentId === remoteOrigin.environmentId`, `environmentPinned` is true and the target takes families. Any other target gets the words above. The `remote_origin` refusal stays for everything else.
+- **Manifest:** `family.home { parentThreadId }`, from `remoteOrigin.threadId`.
+- **Import at home.** The thread arrives over home's link from that computer. `LinkMoves` asks home's own records: does `parentThreadId` exist here, undeleted and not moving, with a `remoteChildren` entry for (the link's pinned environment, `manifest.source.threadId`)?
+  - **Yes:** `thread.import` carries `adopt { parentThreadId }`. The decider checks the record again and, in one decision, creates the thread as that parent's attached local child, removes the `remoteChildren` entry (a new event, `thread.remote-child-removed`), and settles any request still open for it as cancelled.
+  - **No** (the parent is gone, moved, or never held it): it arrives as its own thread, and the line says "The thread that started it isn't on this computer anymore."
+- **No `remoteOrigin` at home**, only `movedFrom.fenced`. Home is where the permission to start it came from, so the user there may take it over with a message.
+- **Where it left.** The request ledger's open rows for the thread settle as failed with "the thread moved to Mac", as an archive settles them.
+
+### (i) Rooms
+
+**Decision: carry the room with every agent that has a match.**
+
+- **Who comes.** Every participant is carried as a record, those who left and guests included, so old messages keep their authors. Each one still in the room needs an agent on the other computer.
+- **Matching.** New `suggestRoomAgent`: the same driver and model, else the same driver's default model, else none. Today's `suggestAgent` matches the model's name only, and looks at the thread's own agent only. The dialog shows the suggestion and lets the user pick any of the target's agents or "Leave out". A batch move, and a target that is offline when queued, take the suggestions when the move starts.
+- **An agent with no match, or left out,** arrives as having left (`leftAt` = the move's time). Its messages keep its name, and the dialog and the "Moved here" line say why it didn't come. The room goes on with the others. This is Will's call 3.
+- **Asked for:** `ThreadMoveQueueInput.roomAgents?: [{ participantId, agent: ModelSelection | null }]` (null leaves it out; absent takes the suggestion), kept on the pending move.
+- **Manifest:** `thread.room { agentRole?, participants: [{ id, handle, role?, joinedAt, leftAt, guest?, source: { driver, model }, agent?, session? }] }`. Messages gain `participantId`, `fromAgent` and the request kind and outcome; activities, check-backs and queued messages keep `participantId`.
+- **Import.**
+  - Participant ids are rebuilt from `K` and remapped everywhere, the keys inside `agentModels` included.
+  - `decideThreadImport` writes the participant events as `thread.create` with participants does.
+  - `LinkMoves` checks each handle is free, and each chosen agent and model exists here (`resolveAgent`). At most 16 agents.
+  - `sentModels`, `roomContext` and the request counters start empty.
+- **Each agent's memory.** Part 3d, once per agent: `exportNativeSession` for each participant's session key, when the matched agent is the same driver. A `session` part gains optional `participantId`. All sessions share the move's 100 MB, 50 MB each. When they don't fit, the largest go as a summary first, and the dialog's line for that agent says so. A participant gains optional `nativeSession`, as the thread has for its own agent.
+- **Each agent gets the conversation.** Today this would be wrong: in a room, a moved thread's first send gets only the join note (the last 8 messages) and skips the summary, for the thread's own agent and for the others. New rule in the reactor, for a thread with `movedFrom`: an agent that came with the move and has no `roomContext` cursor yet gets the whole conversation summary on its first send, unless it reopened its carried session. Then it is caught up only on what was said here. Derived from the projection, so it holds across restarts.
+- **Requests between agents.** A room is free when `agentRequests.open` is empty.
+  - **"Move when it's done"** waits for the chain to finish (reusing `side_turn`: "when its agents finish"). Agent hand-offs keep draining while the move waits. Only the user's own queued messages are held (Part 3e), and the request limit already bounds a chain.
+  - **An invite waiting for the user:** "once you answer".
+  - **"Stop and move now"** ends the chain as Stop does (`decideAgentChainStop`): requests settle as stopped and agents' queued messages are taken back. Today a move's stop skips this.
+- **What rides along, per agent.**
+  - The goal belongs to the agent holding the session slot, and check-backs name their agent. The arrival message (Part 3e) becomes one per agent that has something, addressed to it.
+  - A queued message for an agent that didn't come arrives as a not-sent message, with a line saying so.
+- **The fence** is per thread. No agent has room tools until the user's first message there, which lifts it for all of them.
+- **Per driver.** Session carry is Claude, Codex and Pi, as in 3d. Every other agent gets the summary.
+
+### Fixes this step needs in today's code
+
+- **`sessionStopEvents` interrupts one side answer** (`thread.sideTurn`). A room can have three (`sideTurns`). Interrupt all of them.
+- **Outside-work marks aren't carried** (`outsideWork`; moveExport.ts ~307 keeps only who wrote a message). An agent that outside text reached has limited tools until it starts fresh. With a carried session it arrives holding that text and without the limit, and the limit doesn't come back when the fence lifts. Carry the marks, remapped per agent. Check whether this is reachable after 4a for a single-agent thread. If it is, fix it there first.
+- **`ChildThreadReactor`** has no move check beyond the lent checkout. A settle aimed at a frozen parent is refused and only logged. It skips threads with `move`, and its startup pass does too.
+
+### Contracts
+
+- **`peerRpc.ts`**
+  - `PeerDescriptor.moveFamilies`, `.moveRooms`;
+  - `PeerMoveManifest.family? { id?, parentThreadId?, sharesCheckoutOf?, remoteParent?, home? }` and `thread.room?`;
+  - `PeerMovePart.participantId?`.
+- **`orchestration.ts`**
+  - `thread.import` gains `lineage?`, `remoteOrigin?`, `adopt?`, `participants?`, `agentRole?`;
+  - `ThreadImportMessage` gains `fromThread?`, `participantId?`, `fromAgent?`, request kind and outcome;
+  - `family?` and `roomAgents?` on `ThreadPendingMove` and `OrchestrationThreadMove`;
+  - `families?`, `rooms?` on `targetTakes`;
+  - `nativeSession?` on a participant;
+  - new event `thread.remote-child-removed`.
+- **`moves.ts`**
+  - `ThreadMovePreview.family? { parent?, children: [{ threadId, title, refusal? }], remoteChildren: [{ label, title }] }`;
+  - `ThreadMovePreview.room? { agents: [{ participantId, name }] }`;
+  - `ThreadMoveTargetPreview.roomAgents? [{ participantId, suggestedAgent?, sessionOutcome? }]`;
+  - `ThreadMoveQueueInput.roomAgents?`.
+- **Migration:** `link_moves.family_id`, `.source_thread_id`. New nullable columns, no rows rewritten.
+- **Bounds** (`moveManifestRefusal`): at most 16 participants; a family manifest names one parent or one home, never both.
+
+### Will's calls
+
+Each has a default in this plan.
+
+1. **A child that moves alone.** Default: it stays its parent's child across the link, and so is fenced for good on the other computer. The other choice: it becomes its own thread there, which a message can unfence, and the parent loses it.
+2. **Children left behind when the parent moves.** Default: they become their own threads here, with a line saying why. The other choice: refuse to move a parent unless every child comes.
+3. **A room agent with no match on the other computer.** Default: the room moves without it, shown as having left, named before and after. The other choice: refuse until every agent has a match.
+4. **Threads another computer's agent started.** Default: they may move back to that computer and nowhere else. The other choice: keep refusing them entirely. Simpler, but a child that moved out could then never come back.
+5. **Children on another computer when the parent moves.** Default: they stay and the parent loses them, named. The other choice: refuse to move such a parent, which keeps most of today's refusal. (Nov 18: when the parent moves to the computer they are on, it takes them back as its children, fenced until the user there writes in each; see (g).)
+6. **Tools for a moved family.** Default: each thread needs its own message from the user to get its tools back. The other choice: a message in the parent also unfences the children that came with it. More convenient, and looser than the rule the security fix just set.
+
+### Build order
+
+Three PRs, each useful alone.
+
+1. **Rooms** (`moveRooms`): participants, matching, per-agent sessions and history, the chain stop, the two reactor fixes. Nothing here touches families.
+2. **Families together** (`moveFamilies`): the family id and `FK` ids, parent-first on the target, shared folders, children left behind, waiting on answers, children on another computer, the reactors' move checks.
+3. **Across the link:** a child alone, and moving back home. Smallest, and the most security-sensitive, so it gets Sol's review on its own.
+
+Each waits for the security scan before it merges.
+
+### Tests (focused)
+
+- **Decider.**
+  - A `remoteOrigin` thread is refused for any target but its pinned home, and for an unpinned one.
+  - A child's queue is refused unless its parent holds the same family id, or it moves alone to a target that takes families.
+  - `thread.import` with `lineage` is refused when the parent is missing, deleted, itself a child or from another family.
+  - `adopt` is refused when the parent holds no `remoteChildren` entry for that thread.
+  - The parent's moved-away detaches the children still here, and settles its requests for them.
+  - "Stop and move now" settles open child requests and open agent requests as stopped.
+- **LinkMoves.**
+  - A child staged before its parent imports after it; a dropped parent drops it.
+  - A sharer takes the owner's worktree, and its abort removes nothing.
+  - `remoteOrigin` is built from the link, whatever the manifest claims.
+  - A manifest naming a local thread of this computer as its parent is refused.
+  - Participants land with fresh ids, and an unknown instance is refused.
+- **Reactors.**
+  - `RemoteChildReactor` opens no watch for a moved-away parent, never acks a report for one, and still drains owed cancels.
+  - A child that moved alone is reachable from its parent by `thread_send`, and its answer comes back.
+  - A moved room's agent gets the whole summary once, and one on its carried session doesn't.
+  - Every imported thread is fenced; a message in the parent leaves the child fenced.
+- **Web.** The family list with ticks; the two choices on a child; the per-agent rows with "Leave out" and "can't come"; the family as one group in the batch dialog; the arrival lines.
+- **Live**, two servers with the stand-in fx agent: a parent and two children, one sharing its folder; a child alone, then a send from its parent and its answer; that child moving home; a two-agent room with one agent that has no match.
+
+### Out of scope
+
+- Keeping children as the moved parent's children when they stay behind (needs the reverse link's permission).
+- Handing a child on another computer over to the parent's new computer.
+- Moving the lead chat.
+- A message in the parent unfencing its children (call 6).
+
+### Review changes (Nov 17, outside review of this plan)
+
+These win over the text above where they differ.
+
+1. **Sharers keep their guest marker.**
+   - The import carries each sharer's `worktreeOrigin` guest marker, remapped to the family's new ids, so a sharer can never do a whole-workspace restore of a checkout it doesn't own (CheckpointRevert.ts ~116). That holds even after the owner is gone.
+   - The manifest carries the marker, and the target re-derives it from the family's ownership map. It never trusts a raw path from the peer.
+2. **A wait for the family holds no admission slot.**
+   - A transfer that waits for another member (a parent's commit, a checkout's owner) moves to a new row state, `waiting_for_family`, with every byte staged.
+   - That state counts against the staging budget (20 moves, 2 GiB per link) like an Allow wait, and holds none of the in-flight slots (2 per link, 4 total). The member it waits for can always get a slot.
+3. **Checkouts first, then threads, so no cycle.**
+   - A family's import runs in two phases.
+     - **(a) Materialize every checkout the family uses.** Each checkout's owner transfer brings its files and makes the worktree, in any order, without waiting on any thread commit.
+     - **(b) Commit threads parent-first.**
+   - A sharer waits only for its checkout to be materialized, never for another thread's commit, so a parent working in its child's worktree can't deadlock.
+   - The family key orders phase (b); phase (a) has no ordering.
+4. **Waiting drains, quiescing stops.**
+   - While a move is pending at stage `waiting`, the requests the thread already has keep settling: child answers (RemoteChildReactor, ChildThreadReactor), the room's request chain, and side turns already asked. "Move when it's done" needs them finished. Starting new work stays refused, as in Part 3b.
+   - The room chain's sends of already-open requests are exempt from the waiting guard (threadMoveDecisions.ts ~435-437, ~493) during `waiting`. Not during `quiescing`.
+   - The reactors stop for the thread only from `quiescing` on, and when frozen.
+5. **An explicit family choice.**
+   - `moves.queueMany` and `moves.queue` gain an optional `familySelection: "explicit"`.
+   - Absent (older clients): a parent moves with its whole family, as promised.
+   - Present: exactly the listed threads move, and the unlisted children stay behind under the rule above.
+   - New clients always send it.
+
+### Build notes for "across the link" (Nov 17)
+
+Where the build differs from the text above, and why.
+
+1. **Its own capability.** `PeerDescriptor.moveLinkLineage` and `targetTakes.linkLineage`, not `moveFamilies`: a computer that already takes families would read a lone child's manifest as a family member and wait for a parent that never comes.
+2. **Its own manifest field.** `PeerMoveManifest.linkLineage { remoteParent? | home? }` (exactly one, never with `family`), not `family.remoteParent` / `family.home`: `PeerMoveFamily.id` stays required, and nothing in the family code path sees these moves.
+3. **No new event.** "Moving back home" removes the parent's record with `thread.remote-child-updated` and a new optional `removed: true`, not a new `thread.remote-child-removed`: the event union is closed to clients that decode it. An older client keeps showing the record until it reloads.
+4. **Nothing new on the pending move.** A child queued without a family, to a computer that takes `linkLineage`, is a child moving alone. The export names `remoteParent` only when the parent is here and not moving; the other computer's committed answer says whether it kept the parent (`PeerMoveState.keptParent`, read from the thread it wrote), and `thread.move.complete` carries that into the decision that writes the parent's record.
+5. **The child's dialog.** "Move its whole family" queues the parent with no `familySelection` (the server's whole family). A computer without `linkLineage` disables "Move just this thread" with why (`ThreadMoveTargetPreview.aloneRefusal`).
+6. **Moves that don't wait** (`moves.start`, older apps) never cross the link, for a child or a thread going home.
+7. **A fenced thread goes only back where it came from** (review fix). A thread a move brought, still fenced (`movedFrom.fenced`), may move only to `movedFrom.environmentId` until a person here sends it a message, for every kind of move (single, batch, alone, family). Without this, a link-started thread that came home as a local child could move on to a third computer with nobody having taken it over.
+8. **A parent and its child moving alone never cross** (review fix). A parent's move waits (`background`, "when '<child>' finishes moving") while a child of it has a move of its own queued or under way; the freeze decision checks it again. A child doesn't start moving alone while its parent's move is under way, nor queue while its parent's is queued. Otherwise the parent's move could leave behind a child that lands on the other computer as the parent's child.
+9. **What a queued move holds isn't work in a shared folder** (review fix). A thread whose own move is queued holds its user's messages and its plan (the guard refuses them), so the shared-folder wait counts only what still runs there: everything that thread's own move would wait on (a turn and its approvals and questions, side answers, either background count, a command in the terminal, a workflow, a voice chat, the room's and the family's open requests), one list for both (`workWaits`), and while it waits (`waiting`) the room's and the family's messages that still drain. Otherwise a parent waiting for its child's own move, in the same folder, and the child waiting for the parent's held message, would wait on each other for good.
+10. **A queued parent keeps its lone child** (review fix). The export names `remoteParent` whenever the parent is here and not frozen or moved away. A parent whose own move is queued waits for the child, so if it cancels the child is still its child there, and if it moves later the child is one of its threads on another computer, which stay, named.
 
 ## Part 4: The rail and the Fleet page
 

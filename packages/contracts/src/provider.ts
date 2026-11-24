@@ -74,6 +74,13 @@ export const ProviderSession = Schema.Struct({
    * the thread's history (see ProviderCommandReactor).
    */
   resumeFailed: Schema.optional(Schema.Boolean),
+  /**
+   * The session reopened the conversation its resume cursor named (set by
+   * ProviderService.startSession). Absent: it started without one, or the
+   * reopen failed (`resumeFailed`). A moved thread's carried session counts
+   * as arrived only on this (docs/design/fleet.md, Part 3d).
+   */
+  resumed: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),
@@ -221,9 +228,24 @@ export const ProviderSessionStartInput = Schema.Struct({
    * docs/terminal-command-runs.md). Never for a locked-down side runtime.
    */
   commandRequests: Schema.optional(Schema.Boolean),
+  /**
+   * Attach the device tools endpoint (`threadlines_device`): `device_list`,
+   * `device_open`, `device_screenshot`, `device_close` (docs/design/devices.md).
+   * Set when "Use devices" and "Agents can use devices" are both on. Never for
+   * a locked-down side runtime.
+   */
+  deviceTools: Schema.optional(Schema.Boolean),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
+  /**
+   * The project's brief, as standing instructions for this session
+   * (docs/design/project-brief-notes.md). Filled by `ProviderService` at every
+   * start, recovery included, from the project as it is then; never by
+   * callers. Each driver puts it where its own standing instructions go.
+   * Absent: nothing to add (no brief, a fenced thread, a side runtime).
+   */
+  projectInstructions: Schema.optional(Schema.String),
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
@@ -267,16 +289,22 @@ export const ProviderTurnOrigin = Schema.Literals([
 ]);
 export type ProviderTurnOrigin = typeof ProviderTurnOrigin.Type;
 
+/** Which room lane ran a turn, for usage analytics only. */
+export const ProviderTurnLane = Schema.Literals(["main", "side", "side_review"]);
+export type ProviderTurnLane = typeof ProviderTurnLane.Type;
+
 /**
  * How long the steps before the agent gets a message took, for usage analytics
  * only. `queueMs`: waiting behind the thread's earlier work. `prepareMs`: getting
  * the agent ready, its startup included when it had to start. `checkpointMs`:
- * saving the code snapshot the turn is measured against.
+ * saving the code snapshot the turn is measured against. `checkpointFailed`:
+ * that snapshot was not saved, so the wait bought nothing.
  */
 export const ProviderTurnHandoffSteps = Schema.Struct({
   queueMs: NonNegativeInt,
   prepareMs: NonNegativeInt,
   checkpointMs: NonNegativeInt,
+  checkpointFailed: Schema.optional(Schema.Boolean),
 });
 export type ProviderTurnHandoffSteps = typeof ProviderTurnHandoffSteps.Type;
 
@@ -306,6 +334,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   requestedAt: Schema.optional(IsoDateTime),
   /** See ProviderTurnOrigin. */
   origin: Schema.optional(ProviderTurnOrigin),
+  /** See ProviderTurnLane. */
+  lane: Schema.optional(ProviderTurnLane),
   /**
    * A person sent this from the app and reads the reply: a driver that makes
    * its own suggestion of their next message (Codex) does so after this turn.
@@ -389,6 +419,30 @@ export const ProviderTurnStartResult = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
   resumeCursor: Schema.optional(Schema.Unknown),
+  /**
+   * The provider was sent only the person's typed text (`typed.text`), as one
+   * of its own commands, without the context in front of it (`typed.context`)
+   * or context the driver holds. Nothing that context carried was delivered:
+   * the caller keeps every debt it paid for the next message.
+   */
+  contextDeferred: Schema.optional(Schema.Literal(true)),
+  /**
+   * The prompt that carried this message was never written to the provider:
+   * its setup (the mode, the model) failed first, or the session ended
+   * before it went out. Neither the message nor the context in front of it
+   * was delivered; the driver keeps the context it held for the next
+   * message, the caller keeps every debt it was to pay, and the turn ends
+   * failed. Absent: the prompt was written (a driver returns only after it
+   * was, or after its setup failed).
+   */
+  undelivered: Schema.optional(Schema.Literal(true)),
+  /**
+   * The send reopened a runtime that had gone and the provider could not
+   * reopen its conversation (`resumeFailed`): the message went to a new
+   * conversation without the thread's history. The caller owes that history
+   * to its next message, as after any start that couldn't resume.
+   */
+  historyOwed: Schema.optional(Schema.Literal(true)),
 });
 export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 

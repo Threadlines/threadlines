@@ -74,6 +74,8 @@ export function buildOnDemandToolInstructions(input: {
     "thread_read",
     "thread_list",
     "thread_stop",
+    "thread_wrap",
+    "thread_move",
     "thread_agents",
   ]);
   const agents = named(["room_invite", "room_review", "room_hand_off", "room_available_agents"]);
@@ -86,7 +88,7 @@ export function buildOnDemandToolInstructions(input: {
       : []),
     ...(threads.length > 0
       ? [
-          `- Other threads, to work in parallel: start them, then message, read, list and stop them (${threads}).`,
+          `- Other threads, to work in parallel: start them, then message, read, list, stop and wrap them up (${threads}).`,
         ]
       : []),
     ...(agents.length > 0

@@ -37,6 +37,7 @@ import {
   type ThreadForkContextPayload,
   type ThreadParticipantId,
   ThreadForkSeedOutcomeActivityKind,
+  ThreadNativeSessionFellBackActivityKind,
   type ThreadForkSeedOutcomePayload,
   type ToolLifecycleItemType,
   type UserInputQuestion,
@@ -76,7 +77,11 @@ import {
 } from "./mcpAuthStatus";
 import { filterSupersededManualContextCompactionActivities } from "./lib/contextCompactionActivities";
 import { keyedMemo } from "./lib/derivationMemo";
-import { THREAD_MOVE_FAILED_ACTIVITY_KIND, THREAD_MOVED_IN_ACTIVITY_KIND } from "./threadMove";
+import {
+  THREAD_MOVE_FAILED_ACTIVITY_KIND,
+  THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND,
+  THREAD_MOVED_IN_ACTIVITY_KIND,
+} from "./threadMove";
 
 import type {
   ChatMessage,
@@ -594,6 +599,21 @@ export interface MovedInEntry {
   /** The computer it came from, by the name it had then. */
   readonly fromLabel: string;
   readonly movedAt: string;
+  /**
+   * What its agent got here (docs/design/fleet.md, Part 3d): its own session
+   * (`memory`), or a summary of the conversation. `fell_back`: the later
+   * line that says a carried session couldn't be resumed here, so it got a
+   * summary instead.
+   */
+  readonly agentGot: "memory" | "summary" | "fell_back";
+  /**
+   * What came along besides the conversation ("its goal", "2 queued
+   * messages"), and what didn't, each a full sentence with why, in the
+   * server's plain words (docs/design/fleet.md, Part 3e). Empty on the
+   * fell-back line, and for a move from before they were said.
+   */
+  readonly brought: ReadonlyArray<string>;
+  readonly left: ReadonlyArray<string>;
 }
 
 /** An MCP app card: the finished tool call whose tool ships the app
@@ -1804,30 +1824,50 @@ export function deriveForkContextEntries(
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
-/** The moved-in boundaries a thread's activities hold: one for a thread that moved here. */
+/**
+ * The moved-in boundaries a thread's activities hold (one for a thread that
+ * moved here), and after it the line that says its carried session fell back.
+ */
 export function deriveMovedInEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): MovedInEntry[] {
-  return activities
-    .filter((activity) => activity.kind === THREAD_MOVED_IN_ACTIVITY_KIND)
-    .flatMap((activity) => {
-      const payload = asRecord(activity.payload);
-      const fromLabel = asTrimmedString(payload?.fromLabel);
-      if (!fromLabel) {
-        return [];
-      }
-      return [
-        {
-          id: activity.id,
-          createdAt: activity.createdAt,
-          ...(activity.eventSequence !== undefined
-            ? { eventSequence: activity.eventSequence }
-            : {}),
-          fromLabel,
-          movedAt: asTrimmedString(payload?.movedAt) ?? activity.createdAt,
-        },
-      ];
-    });
+  let boundary: MovedInEntry | undefined;
+  return activities.flatMap((activity): MovedInEntry[] => {
+    const base = {
+      id: activity.id,
+      createdAt: activity.createdAt,
+      ...(activity.eventSequence !== undefined ? { eventSequence: activity.eventSequence } : {}),
+    };
+    if (activity.kind === ThreadNativeSessionFellBackActivityKind) {
+      return boundary === undefined
+        ? []
+        : [
+            {
+              ...base,
+              fromLabel: boundary.fromLabel,
+              movedAt: boundary.movedAt,
+              agentGot: "fell_back",
+              brought: [],
+              left: [],
+            },
+          ];
+    }
+    if (activity.kind !== THREAD_MOVED_IN_ACTIVITY_KIND) return [];
+    const payload = asRecord(activity.payload);
+    const fromLabel = asTrimmedString(payload?.fromLabel);
+    if (!fromLabel) {
+      return [];
+    }
+    boundary = {
+      ...base,
+      fromLabel,
+      movedAt: asTrimmedString(payload?.movedAt) ?? activity.createdAt,
+      agentGot: payload?.nativeSession === "carried" ? "memory" : "summary",
+      brought: trimmedStrings(payload?.brought),
+      left: trimmedStrings(payload?.left),
+    };
+    return [boundary];
+  });
 }
 
 interface TurnModelSelection {
@@ -3184,8 +3224,10 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "subagent.result")
     .filter((activity) => activity.kind !== "subagent.metadata")
     .filter((activity) => activity.kind !== "thread.fork.context")
-    // A moved thread's boundary is its own row (deriveMovedInEntries).
+    // A moved thread's boundary is its own row, and so is the line that says
+    // its carried session fell back (deriveMovedInEntries).
     .filter((activity) => activity.kind !== THREAD_MOVED_IN_ACTIVITY_KIND)
+    .filter((activity) => activity.kind !== ThreadNativeSessionFellBackActivityKind)
     .filter((activity) => activity.kind !== "context-window.updated")
     // Account telemetry; belongs in a usage meter, not the work narrative.
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
@@ -3503,9 +3545,14 @@ function toDerivedWorkLogEntry(
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
   const runtimeWarningDisplay = deriveRuntimeWarningDisplay(activity, payload);
-  // A dropped move says why under its "Couldn't move to …".
+  // A dropped move says why under its "Couldn't move to …", and a queued
+  // move that never started under its "Didn't move to …".
   const moveFailureReason =
-    activity.kind === THREAD_MOVE_FAILED_ACTIVITY_KIND ? asTrimmedString(payload?.reason) : null;
+    activity.kind === THREAD_MOVE_FAILED_ACTIVITY_KIND
+      ? asTrimmedString(payload?.reason)
+      : activity.kind === THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND
+        ? asTrimmedString(payload?.words)
+        : null;
   const detail = moveFailureReason
     ? moveFailureReason
     : isTaskActivity
@@ -4461,6 +4508,12 @@ function deriveRuntimeWarningDisplay(
     return { label: message };
   }
 
+  // A key hidden from the agent's output: the line, and the advice under it.
+  if (warningKind === "secret-hidden" && message) {
+    const rawDetail = extractRuntimeActivityDetail(activity, payload);
+    return rawDetail ? { label: message, detail: rawDetail } : { label: message };
+  }
+
   if (warningKind === "api-retry") {
     if (!codexStreamWarning) {
       const label = message ?? "Provider API retry";
@@ -4709,6 +4762,15 @@ function extractMcpToolResultText(payload: Record<string, unknown> | null): stri
       : JSON.stringify(structured);
   }
   return mcpContentText(result.content);
+}
+
+/** The non-empty strings of `value`, trimmed, when it is a list; else none. */
+function trimmedStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const text = asTrimmedString(item);
+    return text === null ? [] : [text];
+  });
 }
 
 function asTrimmedString(value: unknown): string | null {

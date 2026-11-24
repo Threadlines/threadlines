@@ -1158,10 +1158,10 @@ it.layer(NodeServices.layer)("resolveAvailableEditors", (it) => {
   it.effect("finds macOS editors inside their app when the command is not on PATH", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
       const applications = yield* fs.makeTempDirectoryScoped({ prefix: "t3-applications-" });
-      const binDir = path.join(applications, "Visual Studio Code.app/Contents/Resources/app/bin");
-      const codePath = path.join(binDir, "code");
+      // The macOS lookup joins with "/" whatever machine runs it, so these do too.
+      const binDir = `${applications}/Visual Studio Code.app/Contents/Resources/app/bin`;
+      const codePath = `${binDir}/code`;
       yield* fs.makeDirectory(binDir, { recursive: true });
       yield* fs.writeFileString(codePath, "#!/bin/sh\nexit 0\n");
       yield* fs.chmod(codePath, 0o755);

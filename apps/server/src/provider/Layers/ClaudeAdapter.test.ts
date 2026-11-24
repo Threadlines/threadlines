@@ -60,7 +60,9 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { attachmentRelativePath, createAttachmentId } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { isProcessRunning, startTestAgentProcess } from "../testAgentProcess.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { canMakeSymlinks } from "../../testUtils/symlinks.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { outsideWorkLookup } from "../outsideWorkLookup.ts";
@@ -1933,7 +1935,12 @@ describe("ClaudeAdapterLive", () => {
             },
           },
         } as unknown as SDKMessage);
-        const created = yield* nextEvent("item.completed");
+        // Listed as soon as the tool returns, before the turn's own report.
+        const toolReturned = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) =>
+            event.type === "item.completed" || event.type === "session.check-backs.updated",
+        ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
         harness.query.emit({
           type: "user",
           session_id: "sdk-session-check-back",
@@ -1950,7 +1957,9 @@ describe("ClaudeAdapterLive", () => {
             durable: false,
           },
         } as unknown as SDKMessage);
-        const createdItem = yield* Fiber.join(created);
+        const returned = yield* Fiber.join(toolReturned);
+        const update = returned.find((event) => event.type === "session.check-backs.updated");
+        const createdItem = returned.find((event) => event.type === "item.completed");
         // Scheduling a check-back is a tool call, not a file change.
         assert.equal(
           createdItem?.type === "item.completed" ? createdItem.payload.itemType : null,
@@ -1967,14 +1976,13 @@ describe("ClaudeAdapterLive", () => {
         } as unknown as SDKMessage);
         yield* Fiber.join(turnDone);
 
-        const reported = yield* nextEvent("session.check-backs.updated");
+        // Claude's report at the turn's end says the same.
         yield* runHook("Stop", {
           hook_event_name: "Stop",
           session_crons: [
             { id: "job-1", schedule: "*/5 * * * *", recurring: true, prompt: "Look at the deploy" },
           ],
         });
-        const update = yield* Fiber.join(reported);
         assert.equal(update?.type, "session.check-backs.updated");
         if (update?.type !== "session.check-backs.updated") return;
         assert.deepEqual(
@@ -2172,7 +2180,7 @@ describe("ClaudeAdapterLive", () => {
       harness.query.taskOutputs.set("task-run", "line 1\nline 2\n");
       assert.deepEqual(yield* read("tool-run"), {
         status: "running",
-        tail: "line 1\nline 2\n",
+        output: "line 1\nline 2\n",
         totalBytes: 14,
       });
 
@@ -5173,9 +5181,10 @@ describe("ClaudeAdapterLive", () => {
       );
       // Out to `other` once (the second edit there is no new move), the
       // helper's edit and the file outside every checkout say nothing, then
-      // back home.
+      // back home. The native resolver also expands Windows short (8.3)
+      // folder names, as the checkout lookup does.
       assert.deepStrictEqual(moves, [
-        { cwd: realpathSync(other), reason: "file-edited" },
+        { cwd: realpathSync.native(other), reason: "file-edited" },
         { cwd: home, reason: "file-edited" },
       ]);
     }).pipe(
@@ -6121,6 +6130,65 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(layer),
     );
   });
+
+  it.live.skipIf(process.platform === "win32")(
+    "proves a stopped session's Claude Code process, and what it started, are gone",
+    () =>
+      Effect.gen(function* () {
+        const agent = yield* startTestAgentProcess;
+        const reported = new FakeClaudeQuery();
+        (reported as { close: () => void }).close = () => {
+          reported.closeCalls += 1;
+          Effect.runSync(agent.stop);
+        };
+        const layerFor = (createQuery: NonNullable<ClaudeAdapterLiveOptions["createQuery"]>) =>
+          Layer.effect(
+            ClaudeAdapter,
+            Effect.gen(function* () {
+              return yield* makeClaudeAdapter(decodeClaudeSettings({}), { createQuery });
+            }),
+          ).pipe(
+            Layer.provideMerge(ServerConfig.layerTest("/tmp/claude-adapter-test", "/tmp")),
+            Layer.provideMerge(ServerSettingsService.layerTest()),
+            Layer.provideMerge(NodeServices.layer),
+          );
+        const stopAndConfirm = Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            runtimeMode: "full-access",
+          });
+          yield* adapter.noteBeforeStop!(THREAD_ID);
+          yield* adapter.stopSession(THREAD_ID);
+          return yield* adapter.confirmThreadStopped!(THREAD_ID, []);
+        }).pipe(Effect.provideService(Random.Random, makeDeterministicRandomService()));
+
+        // The SDK says which process it started: the stop is proven, and a
+        // shell Claude Code left in a process group of its own is ended.
+        const confirmed = yield* stopAndConfirm.pipe(
+          Effect.provide(
+            layerFor((input) => {
+              (input.options as { onProcessSpawned?: (pid: number) => void }).onProcessSpawned?.(
+                agent.pid,
+              );
+              return reported;
+            }),
+          ),
+        );
+        assert.deepEqual(confirmed, { confirmed: true });
+        assert.equal(isProcessRunning(agent.shellPid), false);
+
+        // An SDK that never says can't prove anything.
+        const unproven = yield* stopAndConfirm.pipe(
+          Effect.provide(layerFor(() => new FakeClaudeQuery())),
+        );
+        assert.deepEqual(unproven, {
+          confirmed: false,
+          reason: "Claude Code didn't report which process it started",
+        });
+      }).pipe(Effect.scoped),
+  );
 
   it.effect("stopSession does not throw into the SDK prompt consumer", () => {
     // The SDK consumes user messages via `for await (... of prompt)`.
@@ -10189,9 +10257,12 @@ describe("ClaudeAdapterLive", () => {
       yield* expectAsked(ask("Read", { file_path: unsentLog }, "read-unsent"));
 
       // Swapped for a link since, it no longer reads as the staged file.
-      rmSync(stagedLog);
-      symlinkSync(unsentLog, stagedLog);
-      yield* expectAsked(ask("Read", { file_path: stagedLog }, "read-link"));
+      // Windows makes such a link only with Developer Mode.
+      if (canMakeSymlinks) {
+        rmSync(stagedLog);
+        symlinkSync(unsentLog, stagedLog);
+        yield* expectAsked(ask("Read", { file_path: stagedLog }, "read-link"));
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -10372,6 +10443,51 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "puts the project's brief after Threadlines' own text, and not in a side answer",
+    () => {
+      const sessionId = "0f0e0d0c-0b0a-4908-8706-050403020100";
+      const seeded = seedClaudeTranscript(sessionId);
+      const harness = makeHarness({ environment: seeded.environment });
+      const brief = "Use pnpm here. Never touch the generated folder.";
+      const appendOf = (options: { readonly systemPrompt?: unknown }) =>
+        (options.systemPrompt as { readonly append?: string } | undefined)?.append ?? "";
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: ThreadId.make("thread-claude-no-brief"),
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        const plain = appendOf(harness.getLastCreateQueryInput()!.options);
+        assert.notInclude(plain, brief);
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          projectInstructions: brief,
+        });
+        assert.equal(appendOf(harness.getLastCreateQueryInput()!.options), `${plain}\n\n${brief}`);
+
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd: process.cwd(),
+          lockdown: "side-answer",
+          forkFrom: { providerThreadId: sessionId },
+          runtimeMode: "full-access",
+          projectInstructions: brief,
+        });
+        assert.notInclude(appendOf(harness.getLastCreateQueryInput()!.options), brief);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(seeded.cleanup)),
+      );
+    },
+  );
 
   it.effect(
     "attaches the room tools to a room's working agent, on a credential its stop revokes",
@@ -12419,6 +12535,32 @@ describe("ClaudeAdapterLive goals", () => {
       );
     },
   );
+
+  it.effect("puts a goal's context ahead of /goal without a turn of its own", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const { adapter } = yield* startGoalSession(harness);
+      const setting = yield* adapter.setThreadGoal!({
+        threadId: THREAD_ID,
+        objective: "Tests pass",
+        origin: "user",
+        context: "This thread is the lead chat.",
+      }).pipe(Effect.forkChild);
+      const sent = yield* Effect.promise(() =>
+        readPromptMessages(harness.getLastCreateQueryInput(), 2),
+      );
+      assert.deepEqual(sent.map(promptMessageShape), [
+        { origin: undefined, shouldQuery: false, text: "This thread is the lead chat." },
+        { origin: { kind: "human" }, shouldQuery: undefined, text: "/goal Tests pass" },
+      ]);
+      harness.query.emit(goalReply("Tests pass", "Goal set: Tests pass"));
+      const goal = yield* Fiber.join(setting);
+      assert.equal(goal.objective, "Tests pass");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   // As Claude Code 2.1.301 answers it: the running turn's result comes first,
   // then the clear's own answer and its zero-turn result.

@@ -67,7 +67,7 @@ const readOutcome = (activity: OrchestrationThreadActivity) => {
 export function deriveSideAnswers(input: {
   readonly messages: ReadonlyArray<ChatMessage>;
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
-  readonly sideTurn: OrchestrationSideTurn | null | undefined;
+  readonly sideTurns: ReadonlyArray<OrchestrationSideTurn> | undefined;
 }): SideAnswerView[] {
   const views: SideAnswerView[] = [];
   for (const question of input.messages) {
@@ -87,7 +87,7 @@ export function deriveSideAnswers(input: {
       own.filter((activity) => activity.kind !== SIDE_ANSWER_OUTCOME_ACTIVITY_KIND),
       null,
     );
-    const current = input.sideTurn?.sideTurnId === sideTurnId ? input.sideTurn : null;
+    const current = input.sideTurns?.find((sideTurn) => sideTurn.sideTurnId === sideTurnId) ?? null;
     // The server records an outcome only when an answer ended without a
     // finished reply: it failed, was stopped (maybe partway), or said nothing.
     const outcome = outcomeActivity !== undefined ? readOutcome(outcomeActivity) : null;

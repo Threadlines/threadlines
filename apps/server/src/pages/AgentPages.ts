@@ -86,6 +86,7 @@ import {
   removePageVersion,
   writePageVersion,
 } from "./PageStore.ts";
+import { SecretScrubber } from "../secrets/SecretScrubber.ts";
 import { PagePreview, type PagePreviewResult } from "./preview/PagePreview.ts";
 import { THEME_PAGE_HEIGHT, themePageContent, themePreviewText } from "./themePages.ts";
 
@@ -319,6 +320,7 @@ const make = Effect.gen(function* () {
   const workshop = yield* ThemeWorkshop;
   const vscode = yield* ThemeVsCode;
   const analytics = yield* AnalyticsService;
+  const secretScrubber = yield* SecretScrubber;
 
   const pending = new Set<string>();
   // One publish at a time per page, so versions are numbered in the order
@@ -406,6 +408,12 @@ const make = Effect.gen(function* () {
     readonly height?: number | undefined;
     readonly icon?: string | undefined;
     readonly shareUrl?: string | undefined;
+    /**
+     * A page the agent published elsewhere and Threadlines adopts: a saved
+     * key in it is hidden, since the call can't be refused. Otherwise a page
+     * holding one is refused (docs/design/secret-scrubbing.md).
+     */
+    readonly adopted?: boolean | undefined;
     /** What the agent is told once it shows. Default: SHOWN_MESSAGE. */
     readonly message?: Effect.Effect<string> | undefined;
     /** Whether the page still has its turn to show in, asked right before it is stored. */
@@ -424,7 +432,21 @@ const make = Effect.gen(function* () {
             .map((page) => page.version),
         );
 
-      const prepared = yield* args.content;
+      const content = yield* args.content;
+      let title = args.title;
+      let prepared = content;
+      if (args.adopted === true) {
+        title = secretScrubber.scrubText(title).text;
+        prepared = secretScrubber.scrubText(content).text;
+      } else {
+        const [watched] = secretScrubber.contains([args.title, content, args.icon ?? ""]);
+        if (watched !== undefined) {
+          return {
+            outcome: "refused" as const,
+            detail: `Your page contains ${watched}. Don't put a key on a page; name the file it is in instead.`,
+          };
+        }
+      }
 
       // A theme shows as a row of one height; there is nothing to measure.
       const measured =
@@ -484,7 +506,7 @@ const make = Effect.gen(function* () {
               version,
               turnId: args.turnId,
               participantId: args.participantId,
-              title: args.title,
+              title,
               kind,
               height,
               ...(heights !== undefined ? { heights } : {}),
@@ -576,6 +598,7 @@ const make = Effect.gen(function* () {
           content: Effect.succeed(published.content),
           icon: input.icon,
           shareUrl,
+          adopted: true,
           stillStands,
         }),
       );

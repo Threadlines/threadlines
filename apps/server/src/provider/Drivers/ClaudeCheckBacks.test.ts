@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   claudeCheckBackTrigger,
+  claudeCheckBacksAfterScheduleTool,
   claudeCheckBacksFromSessionCrons,
   makeClaudeCheckBackState,
   recordClaudeScheduleTool,
@@ -10,6 +11,48 @@ import {
 const at = (iso: string) => Date.parse(iso);
 
 describe("Claude check-backs", () => {
+  it("lists a check-back as soon as its tool returns, before the turn's report", () => {
+    const state = makeClaudeCheckBackState();
+    const now = at("2026-10-20T15:27:30Z");
+    const after = (call: { toolName: string; input: unknown; result: unknown }) =>
+      claudeCheckBacksAfterScheduleTool(state, call, now, "UTC");
+    const cron = {
+      toolName: "CronCreate",
+      input: { cron: "*/5 * * * *", prompt: "Look at the deploy", recurring: true },
+      result: { id: "job-1", humanSchedule: "every 5 minutes", recurring: true },
+    };
+    expect(after(cron)).toEqual([
+      {
+        id: "job-1",
+        scheduledFor: "2026-10-20T15:30:00.000Z",
+        exact: false,
+        recurring: true,
+        schedule: "every 5 minutes",
+        description: "Look at the deploy",
+        prompt: "Look at the deploy",
+        cron: "*/5 * * * *",
+        durable: false,
+      },
+    ]);
+    // The same job again changes nothing.
+    expect(after(cron)).toBeUndefined();
+    const wakeup = after({
+      toolName: "ScheduleWakeup",
+      input: { delaySeconds: 900, reason: "Waiting for CI", prompt: "Check CI" },
+      result: { scheduledFor: at("2026-10-20T15:42:00Z") },
+    });
+    expect(wakeup?.map((checkBack) => [checkBack.scheduledFor, checkBack.exact])).toEqual([
+      ["2026-10-20T15:30:00.000Z", false],
+      ["2026-10-20T15:42:00.000Z", true],
+    ]);
+    expect(
+      after({ toolName: "CronDelete", input: { id: "job-1" }, result: undefined })?.map(
+        (checkBack) => checkBack.description,
+      ),
+    ).toEqual(["Waiting for CI"]);
+    expect(after({ toolName: "ScheduleWakeup", input: {}, result: { stopped: true } })).toEqual([]);
+  });
+
   it("states a wake-up's exact time and reason, and a cron job's wording and next run", () => {
     const state = makeClaudeCheckBackState();
     recordClaudeScheduleTool(state, {
@@ -40,6 +83,9 @@ describe("Claude check-backs", () => {
         recurring: true,
         schedule: "every 5 minutes",
         description: "Look at the deploy",
+        // What a moved thread's agent is told to set again (fleet.md, Part 3e).
+        prompt: "Look at the deploy",
+        cron: "*/5 * * * *",
         durable: false,
       },
       {
@@ -48,6 +94,8 @@ describe("Claude check-backs", () => {
         exact: true,
         recurring: false,
         description: "Waiting for CI on PR #502",
+        prompt: "Check CI on #502",
+        cron: "42 15 20 10 *",
         durable: false,
       },
     ]);

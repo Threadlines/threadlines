@@ -11,10 +11,11 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { describe, it, vi } from "vite-plus/test";
 
+import { makeSecretScrubber } from "../secrets/SecretScrubber.ts";
 import { importExternalProviderThread } from "./ExternalThreadImport.ts";
 
 describe("importExternalProviderThread", () => {
-  it("backfills the transcript in order and requires the exact native Codex session", async () => {
+  it("backfills the transcript in order, keys hidden, and requires the exact native Codex session", async () => {
     const providerInstanceId = ProviderInstanceId.make("codex");
     const projectId = ProjectId.make("project-1");
     const threadId = ThreadId.make("thread-imported");
@@ -40,6 +41,8 @@ describe("importExternalProviderThread", () => {
       }),
     );
     const stopSession = vi.fn((_input: { readonly threadId: ThreadId }) => Effect.void);
+    const secretScrubber = makeSecretScrubber();
+    secretScrubber.watch("STRIPE_SECRET_KEY", "sk_test_51Hq9xYz");
     const services: Parameters<typeof importExternalProviderThread>[1] = {
       projectionSnapshotQuery: {
         getProjectShellById: () =>
@@ -86,7 +89,7 @@ describe("importExternalProviderThread", () => {
                 providerItemId: "item-assistant",
                 providerTurnId: "turn-1",
                 role: "assistant",
-                text: "I fixed the parser.",
+                text: "I fixed the parser. The key is sk_test_51Hq9xYz.",
                 createdAt: "2026-07-19T10:05:00.000Z",
               },
             ],
@@ -96,6 +99,7 @@ describe("importExternalProviderThread", () => {
         stopSession,
       },
       orchestrationEngine: { dispatch },
+      secretScrubber,
     };
 
     const result = await Effect.runPromise(
@@ -123,6 +127,8 @@ describe("importExternalProviderThread", () => {
         "thread.session.set",
       ],
     );
+    const reply = commands.find((command) => command.type === "thread.message.assistant.delta");
+    assert.equal(reply?.delta, "I fixed the parser. The key is [STRIPE_SECRET_KEY hidden].");
     const createCommand = commands.find((command) => command.type === "thread.create");
     assert.equal(createCommand?.createdAt, "2026-07-19T10:00:00.000Z");
     assert.equal(startSession.mock.calls.length, 1);

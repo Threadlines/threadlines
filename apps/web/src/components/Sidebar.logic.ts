@@ -1,3 +1,4 @@
+import { hasLiveSideTurn } from "@threadlines/shared/sideTurns";
 import * as React from "react";
 import type {
   AgentThreadStatusWord,
@@ -15,6 +16,7 @@ import {
   getThreadInFlightStatus,
   getThreadSortTimestamp,
   sortThreads,
+  compareFamilyChildren,
   toSortableTimestamp,
   type ThreadSortInput,
 } from "../lib/threadSort";
@@ -22,7 +24,8 @@ import type { SidebarThreadSummary, Thread } from "../types";
 import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logic";
 import { startOfLocalDayMs } from "../timestampFormat";
 import { nextCheckBack } from "./chat/checkBacks";
-import { isHandedBackCompletion } from "@threadlines/shared/childThreads";
+import { shortFamilyTitles } from "./familyTitles.logic";
+import { isHandedBackCompletion, type StillGoingInput } from "@threadlines/shared/childThreads";
 import {
   hasUnseenCompletion as hasUnseenCompletionSince,
   hasUnseenSessionFailure as hasUnseenSessionFailureSince,
@@ -90,10 +93,11 @@ type ThreadStatusInput = Pick<
   | "interactionMode"
   | "latestTurn"
   | "session"
-  | "sideTurn"
+  | "sideTurns"
   | "pendingChildApproval"
   | "pendingScheduleApproval"
   | "pendingSettingsChange"
+  | "pendingSecretRequest"
   | "awaitedChildThreadCount"
   | "checkBacks"
 > & {
@@ -305,23 +309,18 @@ function awaitingInputPill(): ThreadStatusPill {
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
-  /**
-   * Look past waiting on the threads its agent started, to what the thread
-   * itself shows beneath it. Wrapping up reads it this way: those threads keep
-   * running wrapped or not.
-   */
-  ignoreChildThreadWait?: boolean;
 }): ThreadStatusPill | null {
   const { thread } = input;
 
   // Threads its agent asked to start, scheduled tasks it asked to create or
-  // change, and settings it asked to change wait for the user's yes like any
-  // other approval: blocking, and never wrapped away.
+  // change, settings it asked to change and keys it asked for wait for the
+  // user's yes like any other approval: blocking, and never wrapped away.
   if (
     thread.hasPendingApprovals ||
     thread.pendingChildApproval === true ||
     thread.pendingScheduleApproval === true ||
-    thread.pendingSettingsChange === true
+    thread.pendingSettingsChange === true ||
+    thread.pendingSecretRequest === true
   ) {
     return {
       label: "Pending Approval",
@@ -358,7 +357,7 @@ export function resolveThreadStatusPill(input: {
   }
 
   // In a room, an agent answering on the side while the others are idle.
-  if ((thread.sideTurn ?? null) !== null) {
+  if (hasLiveSideTurn(thread)) {
     return {
       label: "Answering",
       colorClass: "text-primary-readable",
@@ -425,11 +424,7 @@ export function resolveThreadStatusPill(input: {
   // Its own turn is over and the threads its agent started still owe it
   // answers: each one that comes back starts it up again on its own.
   const awaitedChildThreads = thread.awaitedChildThreadCount ?? 0;
-  if (
-    input.ignoreChildThreadWait !== true &&
-    awaitedChildThreads > 0 &&
-    isLatestTurnSettled(thread.latestTurn, thread.session)
-  ) {
+  if (awaitedChildThreads > 0 && isLatestTurnSettled(thread.latestTurn, thread.session)) {
     return {
       label: "Waiting",
       colorClass: WAITING_STATUS_TONE,
@@ -478,6 +473,26 @@ const NEEDS_USER_STATUSES: ReadonlySet<ThreadStatusPill["label"]> = new Set([
 /** True when the thread is blocked waiting on the user. */
 export function isNeedsUserStatus(status: ThreadStatusPill | null): boolean {
   return status !== null && NEEDS_USER_STATUSES.has(status.label);
+}
+
+/**
+ * Whether opening the thread now shows the user something new: an answer or a
+ * failure they haven't seen since `seenAt`, or an approval or question waiting
+ * on them (a failure already seen is not news). The
+ * chat then opens at the end, not where it was left (threadScrollMemory),
+ * since opening it marks it seen.
+ */
+export function threadHasNewsForUser(
+  thread: ThreadStatusInput,
+  seenAt: string | null | undefined,
+): boolean {
+  return (
+    hasUnseenCompletionSince(thread, seenAt) ||
+    hasUnseenSessionFailureSince(thread, seenAt) ||
+    isWaitingOnUserStatus(
+      resolveThreadStatusPill({ thread: { ...thread, lastVisitedAt: undefined } }),
+    )
+  );
 }
 
 /**
@@ -666,6 +681,7 @@ type InboxLifecycleInput = Pick<
   | "pendingChildApproval"
   | "pendingScheduleApproval"
   | "pendingSettingsChange"
+  | "pendingSecretRequest"
   | "awaitedChildThreadCount"
   | "handedBackTurnId"
   | "queuedFollowUpCount"
@@ -713,10 +729,10 @@ export function hasQueuedTurnStart(
  * A failed thread CAN be marked done after it has been inspected -- that is
  * "I saw it, I'm done with it" rather than an accidental dismissal.
  *
- * Waiting on the threads its agent started does not hold a thread open:
- * wrapping it up never stops them, so the check reads what the thread shows
- * beneath that wait. Nor does a check-back: the agent's turn is over, and
- * wrapping never cancels it. When it fires, that new work outranks the old
+ * Waiting on the threads its agent started holds it like any other wait:
+ * their answers start it up again, so it isn't finished until they report
+ * back. A check-back does not: the agent's turn is over, and wrapping never
+ * cancels it. When it fires, that new work outranks the old
  * word and brings the thread back by itself, like a snoozed email. (A usage
  * reset still holds: that work was cut off, not finished.)
  */
@@ -733,7 +749,7 @@ export function canMarkThreadDone(
 ): boolean {
   // The same status resolution the row uses, so "can't be marked done" and
   // "shows a status that deserves attention" can never drift apart.
-  const status = resolveThreadStatusPill({ thread, ignoreChildThreadWait: true });
+  const status = resolveThreadStatusPill({ thread });
   if (status !== null && status.label !== "Checking back") {
     const handedBack = status.label === "Completed" && options.handedBackCompletionSeen === true;
     if (!handedBack) {
@@ -813,10 +829,7 @@ export function freshThreadDoneOverride(
   override: ThreadDoneOverride | null | undefined,
 ): ThreadDoneOverride | null {
   if (override == null) return null;
-  const lastActivityAt = resolveDoneTimestamp(thread, null);
-  return lastActivityAt !== null && Date.parse(lastActivityAt) > Date.parse(override.at)
-    ? null
-    : override;
+  return Date.parse(threadLastActivityAt(thread)) > Date.parse(override.at) ? null : override;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -876,6 +889,11 @@ export function isThreadDone(
      * threads" is on: whether that parent is wrapped. Absent: rule 4 is off.
      */
     readonly childWrapUp?: { readonly parentDone: boolean } | null;
+    /**
+     * Its project's lead chat (docs/design/lead-chat.md): kept like a pinned
+     * thread, so no idle or pull request rule files it away.
+     */
+    readonly lead?: boolean;
   },
 ): boolean {
   const childWrapUp = options.childWrapUp ?? null;
@@ -889,7 +907,7 @@ export function isThreadDone(
     {
       held: () => !canMarkThreadDone(thread, { now: options.now, handedBackCompletionSeen }),
       freshOverride: () => freshThreadDoneOverride(thread, override),
-      pinned: thread.pinnedAt !== null,
+      pinned: thread.pinnedAt !== null || options.lead === true,
       childFinished: childWrapUp !== null && (handedBackCompletionSeen || childWrapUp.parentDone),
       filedByPullRequest: () =>
         isFiledByPullRequest(thread, override, options.pullRequestSettledAt),
@@ -1060,6 +1078,8 @@ export function fileInboxThreads(input: {
   readonly wrapUpIdleThreads: boolean;
   /** When the thread's pull requests landed, if a landing should file it; null otherwise. */
   readonly pullRequestSettledAt: (thread: SidebarThreadSummary, threadKey: string) => string | null;
+  /** Scoped keys of the projects' lead chats; see `staysOnTop`. */
+  readonly leadThreadKeys?: ReadonlySet<string>;
 }): FiledInboxThread[] {
   const prepared = input.threads.map((thread) => {
     const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
@@ -1096,6 +1116,7 @@ export function fileInboxThreads(input: {
         autoDoneAfterDays: input.wrapUpIdleThreads ? INBOX_AUTO_DONE_AFTER_DAYS : null,
         pullRequestSettledAt: input.pullRequestSettledAt(item.thread, item.threadKey),
         childWrapUp,
+        lead: input.leadThreadKeys?.has(item.threadKey) === true,
       },
     );
     doneByKey.set(item.threadKey, isDone);
@@ -1129,6 +1150,18 @@ export function isUnreadFinishedWork(entry: {
     latestTurn: entry.thread.latestTurn,
     lastVisitedAt: entry.lastVisitedAt,
   });
+}
+
+/**
+ * Whether an inbox row stays at the top of its list: pinned, or its project's
+ * lead chat (docs/design/lead-chat.md). The sort, the fold, the custom order
+ * and the line under the pins all read this one rule.
+ */
+export function staysOnTop(entry: {
+  readonly thread: { readonly pinnedAt: string | null };
+  readonly isLead?: boolean | undefined;
+}): boolean {
+  return entry.thread.pinnedAt !== null || entry.isLead === true;
 }
 
 /**
@@ -1178,6 +1211,17 @@ function compareUnplacedThreads(left: InboxSortInput, right: InboxSortInput): nu
  * bottom, so nothing but the user ever moves a row.
  */
 export function sortInboxThreadsBy<T extends InboxSortInput>(
+  threads: readonly T[],
+  sort: InboxSort,
+  customOrder: readonly string[],
+  /** A project's lead chat goes first, ahead of the pins, in every sort. */
+  isLead: (thread: T) => boolean = () => false,
+): T[] {
+  const sorted = sortInboxThreadsWithoutLeads(threads, sort, customOrder);
+  return [...sorted.filter(isLead), ...sorted.filter((thread) => !isLead(thread))];
+}
+
+function sortInboxThreadsWithoutLeads<T extends InboxSortInput>(
   threads: readonly T[],
   sort: InboxSort,
   customOrder: readonly string[],
@@ -1297,16 +1341,26 @@ export function trimInboxCustomOrder(
 
 /** The rows a live row can swap with: under the same group header, on the same side of the pins. */
 export function inboxCustomOrderPeers<
-  R extends { readonly entry: { readonly threadKey: string; readonly thread: InboxSortInput } },
+  R extends {
+    readonly entry: {
+      readonly threadKey: string;
+      readonly thread: InboxSortInput;
+      readonly isLead?: boolean | undefined;
+    };
+  },
 >(rows: readonly R[], threadKey: string, groupKeyOf: (row: R) => string | null): string[] {
   const row = rows.find((candidate) => candidate.entry.threadKey === threadKey);
   if (row === undefined) return [];
+  // The lead chat has no peers: it stays first.
+  if (row.entry.isLead === true) return [];
   const group = groupKeyOf(row);
-  const pinned = row.entry.thread.pinnedAt !== null;
+  const pinned = staysOnTop(row.entry);
   return rows
     .filter(
       (candidate) =>
-        (candidate.entry.thread.pinnedAt !== null) === pinned && groupKeyOf(candidate) === group,
+        candidate.entry.isLead !== true &&
+        staysOnTop(candidate.entry) === pinned &&
+        groupKeyOf(candidate) === group,
     )
     .map((candidate) => candidate.entry.threadKey);
 }
@@ -1317,16 +1371,20 @@ type DoneSortInput = Pick<
 >;
 
 /**
- * Done rows are history, so they order by when the work ended: the explicit
- * mark when there is one, else the thread's last activity. Label and order
- * both come from here so they can never disagree.
+ * Done rows are history, so they order by when the work ended: the user's
+ * Wrap up while it still stands, else the thread's last activity. A mark that
+ * newer work outran no longer dates anything: the thread that comes back and
+ * wraps again (its pull request landing, or sitting idle) wrapped after that
+ * work, not on the old day. Label and order both come from here so they can
+ * never disagree.
  */
 export function resolveDoneTimestamp(
   thread: DoneSortInput,
   override: ThreadDoneOverride | null | undefined,
 ): string | null {
-  if (override?.state === "done" && !Number.isNaN(Date.parse(override.at))) {
-    return override.at;
+  const standing = freshThreadDoneOverride(thread, override);
+  if (standing?.state === "done" && !Number.isNaN(Date.parse(standing.at))) {
+    return standing.at;
   }
   return threadLastActivityAt(thread);
 }
@@ -1539,7 +1597,7 @@ export interface InboxFamilyExit extends InboxFamilyStatus {
 /** What the family rules read about each inbox thread. */
 export interface InboxFamilyEntry extends InboxFamilyExit {
   readonly threadKey: string;
-  readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt">;
+  readonly thread: Pick<SidebarThreadSummary, "id" | "createdAt" | "title">;
   readonly seenAt: string | undefined;
   readonly wrappedByUser: boolean;
 }
@@ -1592,9 +1650,9 @@ export type InboxRemoteChildPhase = AgentThreadStatusWord | RemoteChildRequestSt
  * A child in a parent's family the app has no thread for, shown from the
  * parent's own record of it: one on a computer this app can't see (its last
  * known status, or a start that has no thread there yet), or one started here
- * that is still being set up. It can't be opened: there is no thread to open,
- * so once wrapped and seen through the parent it has no row until the parent
- * wraps and holds it.
+ * that is still being set up. This app has no thread to open: one on another
+ * computer opens read through the link where the parent's computer can do
+ * that (`linkedRefOf`, LinkedThreadView), and stays in the family while open.
  */
 export interface InboxRemoteChild extends InboxFamilyExit {
   /**
@@ -1612,6 +1670,8 @@ export interface InboxRemoteChild extends InboxFamilyExit {
   readonly computerLabel: string;
   readonly title: string;
   readonly phase: InboxRemoteChildPhase;
+  /** The parent's computer no longer links to that one: nothing can be read from there. */
+  readonly unlinked?: true | undefined;
   /**
    * The user can wrap it up (or reopen it, once done) from here: a thread
    * there that nothing holds in front of them. Absent: a start, or one being
@@ -1634,6 +1694,12 @@ export interface InboxLiveRow<E extends InboxFamilyEntry> {
   readonly remoteChildren: readonly InboxRemoteChild[];
   /** The ones drawn: all while open, else only those that need the user. */
   readonly shownRemoteChildren: readonly InboxRemoteChild[];
+  /**
+   * What a child's row shows where its title shares a topic with its
+   * siblings' (`shortFamilyTitles`, as the family tabs do), by thread key.
+   * A child missing here shows its title.
+   */
+  readonly childShortTitles: ReadonlyMap<string, string>;
   /** A live child whose parent is wrapped stands on its own, naming the parent. */
   readonly wrappedParent: E | null;
   /**
@@ -1662,6 +1728,8 @@ export interface InboxDoneRow<E extends InboxFamilyEntry> {
   readonly remoteChildren: readonly InboxRemoteChild[];
   /** A wrapped child of this wrapped parent that is open in the chat. */
   readonly openChild: E | null;
+  /** What its children's rows show, as on a live row (InboxLiveRow.childShortTitles). */
+  readonly childShortTitles: ReadonlyMap<string, string>;
   /**
    * The thread that started it, when it stands here apart from that thread's
    * family: it left a live parent's family, or the machine filter hides the
@@ -1670,14 +1738,38 @@ export interface InboxDoneRow<E extends InboxFamilyEntry> {
   readonly startedBy: E | null;
 }
 
+const NO_SHORT_TITLES: ReadonlyMap<string, string> = new Map();
+
+/** A family's shortened child titles by thread key, over every member, drawn or folded. */
+function childShortTitlesOf(
+  children: readonly InboxFamilyEntry[],
+  remoteChildren: readonly InboxRemoteChild[],
+): ReadonlyMap<string, string> {
+  const members = [
+    ...children.map((child) => ({ key: child.threadKey, title: child.thread.title })),
+    ...remoteChildren.map((child) => ({ key: child.threadKey, title: child.title })),
+  ];
+  if (members.length < 2) return NO_SHORT_TITLES;
+  const short = shortFamilyTitles(members.map((member) => member.title));
+  const changed = members.flatMap((member, index) =>
+    short[index] === member.title ? [] : [[member.key, short[index]!] as const],
+  );
+  return changed.length === 0 ? NO_SHORT_TITLES : new Map(changed);
+}
+
 const NEEDS_YOU_NOW: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Pending Approval",
   "Awaiting Input",
 ]);
 
+/** An approval or a question waits on the user (a failure, seen or not, is not one). */
+export function isWaitingOnUserStatus(status: ThreadStatusPill | null): boolean {
+  return status !== null && NEEDS_YOU_NOW.has(status.label);
+}
+
 /** A child that is waiting on the user's answer: never folded out of sight. */
 export function isChildThreadNeedingYou(entry: InboxFamilyStatus): boolean {
-  return !entry.isDone && entry.status !== null && NEEDS_YOU_NOW.has(entry.status.label);
+  return !entry.isDone && isWaitingOnUserStatus(entry.status);
 }
 
 const IN_FLIGHT: ReadonlySet<ThreadStatusPill["label"]> = new Set([
@@ -1687,9 +1779,52 @@ const IN_FLIGHT: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Waiting",
 ]);
 
-/** A child with work in flight: what "Stop N working threads" stops. */
+/**
+ * A child whose row shows work in flight (Working, Starting, Answering,
+ * Waiting): what a family's summary line counts as working. What a Stop
+ * reaches is wider (threadMenu.logic.ts, `countThreadsToStop`).
+ */
 export function isChildThreadWorking<T extends InboxFamilyStatus>(entry: T): boolean {
   return !entry.isDone && entry.status !== null && IN_FLIGHT.has(entry.status.label);
+}
+
+/**
+ * The "still going" facts (`isStillGoing`) from a sidebar summary. A summary
+ * says `connecting` for a session the server calls `starting`, keeps only how
+ * many messages are queued, keeps some approvals apart, and is the one place
+ * that sees a message no turn has picked up yet ({@link hasQueuedTurnStart}),
+ * which counts as a turn about to start.
+ */
+export function stillGoingInputOfSummary(
+  thread: SidebarThreadSummary,
+  now: string,
+): StillGoingInput {
+  const session = thread.session;
+  return {
+    turnInFlight:
+      thread.latestTurn?.state === "running" ||
+      session?.status === "running" ||
+      session?.status === "connecting" ||
+      hasQueuedTurnStart(thread, { now }),
+    queuedCount: thread.queuedFollowUpCount ?? 0,
+    // Every wait the "Pending Approval" pill reads: a summary rebuilt from the
+    // thread's detail keeps a settings change, a key or a schedule apart from
+    // hasPendingApprovals, where the server's shell folds the first two in.
+    waitsOnUser:
+      thread.hasPendingApprovals ||
+      thread.pendingSettingsChange === true ||
+      thread.pendingSecretRequest === true ||
+      thread.pendingScheduleApproval === true ||
+      thread.hasPendingUserInput ||
+      thread.hasActionableProposedPlan,
+    backgroundWork:
+      (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
+      (session?.awaitedBackgroundTaskCount ?? 0) > 0,
+    openRequestCount: (thread.awaitedChildThreadCount ?? 0) + (thread.pendingChildApproval ? 1 : 0),
+    waitsForReset: (session?.continueAtReset ?? null) !== null,
+    sideAnswerRunning: hasLiveSideTurn(thread),
+    checkBacks: thread.checkBacks,
+  };
 }
 
 /** What a thread asks of the user right now, as the rail and Fleet count it. */
@@ -1757,6 +1892,65 @@ export function countThreadAttention(
  * and wrapped orders come from the caller's sorts, applied to the rows that
  * stand on their own; children keep creation order and are never re-sorted.
  */
+/** A parent's children in family order: oldest first, never re-sorted. */
+export function sortFamilyChildren<
+  E extends { readonly thread: { readonly createdAt: string; readonly id: string } },
+>(children: readonly E[]): E[] {
+  return children.toSorted((left, right) => compareFamilyChildren(left.thread, right.thread));
+}
+
+/**
+ * Whether a parent heads a live family: it is not wrapped, or a child on a
+ * computer this app can't see still works or needs the user (that child has
+ * no row of its own to stand on).
+ */
+export function headsLiveFamily(
+  parent: Pick<InboxFamilyEntry, "isDone">,
+  remoteChildren: readonly InboxRemoteChild[],
+): boolean {
+  return (
+    !parent.isDone ||
+    remoteChildren.some((child) => isChildThreadNeedingYou(child) || isChildThreadWorking(child))
+  );
+}
+
+/** Whether a child of a live parent is still in its family (the open thread always is). */
+export function isLiveFamilyMember(
+  child: InboxFamilyExit & { readonly threadKey: string },
+  parent: { readonly seenAt: string | undefined },
+  input: { readonly activeThreadKey: string | null; readonly now: string },
+): boolean {
+  return child.threadKey === input.activeThreadKey || !hasLeftLiveFamily(child, parent, input.now);
+}
+
+/**
+ * A parent's open family: the members the sidebar draws under its row and
+ * the family tabs show (docs/design/lead-chat.md, "Family tabs"). One rule
+ * for both, so they never disagree. Null when the parent heads no live
+ * family (wrapped, or no members left).
+ */
+export function liveFamilyOf<E extends InboxFamilyEntry>(input: {
+  readonly parent: E;
+  /** Its attached children, in any order. */
+  readonly children: readonly E[];
+  /** Its children on computers this app can't see. */
+  readonly remoteChildren: readonly InboxRemoteChild[];
+  readonly activeThreadKey: string | null;
+  readonly now: string;
+}): { readonly children: E[]; readonly remoteChildren: InboxRemoteChild[] } | null {
+  if (!headsLiveFamily(input.parent, input.remoteChildren)) return null;
+  const children = sortFamilyChildren(input.children).filter((child) =>
+    isLiveFamilyMember(child, input.parent, input),
+  );
+  // One open in the chat (read through the link) stays, as a child here does.
+  const remoteChildren = input.remoteChildren.filter(
+    (child) =>
+      child.threadKey === input.activeThreadKey ||
+      !hasLeftLiveFamily(child, input.parent, input.now),
+  );
+  return children.length === 0 && remoteChildren.length === 0 ? null : { children, remoteChildren };
+}
+
 export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   readonly entries: readonly E[];
   readonly parentKeyOf: (entry: E) => string | null;
@@ -1790,11 +1984,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
   // A wrapped parent whose children on a computer this app can't see still
   // work or need the user stays live: those children have no row of their
   // own to stand on, unlike its children here.
-  const wrapped = (entry: E): boolean =>
-    entry.isDone &&
-    !remoteChildrenOf(entry).some(
-      (child) => isChildThreadNeedingYou(child) || isChildThreadWorking(child),
-    );
+  const wrapped = (entry: E): boolean => !headsLiveFamily(entry, remoteChildrenOf(entry));
   const childrenByParentKey = new Map<string, E[]>();
   for (const entry of input.entries) {
     const parent = parentOf(entry);
@@ -1803,13 +1993,8 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
     siblings.push(entry);
     childrenByParentKey.set(parent.threadKey, siblings);
   }
-  for (const siblings of childrenByParentKey.values()) {
-    siblings.sort(
-      (left, right) =>
-        (toSortableTimestamp(left.thread.createdAt) ?? 0) -
-          (toSortableTimestamp(right.thread.createdAt) ?? 0) ||
-        left.thread.id.localeCompare(right.thread.id),
-    );
+  for (const [parentKey, siblings] of childrenByParentKey) {
+    childrenByParentKey.set(parentKey, sortFamilyChildren(siblings));
   }
 
   const liveHeads: E[] = [];
@@ -1834,10 +2019,7 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
     }
     if (!wrapped(parent)) {
       // Finished with, it moves to Wrapped; otherwise it is in the family.
-      if (
-        entry.threadKey !== input.activeThreadKey &&
-        hasLeftLiveFamily(entry, parent, input.now)
-      ) {
+      if (!isLiveFamilyMember(entry, parent, input)) {
         doneHeads.push(entry);
         liveParentByKey.set(entry.threadKey, parent);
       }
@@ -1861,8 +2043,10 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       : [];
     const remoteChildren: InboxRemoteChild[] = [];
     for (const child of heads ? remoteChildrenOf(entry) : []) {
-      if (hasLeftLiveFamily(child, entry, input.now)) doneRemote.push({ child, startedBy: entry });
-      else remoteChildren.push(child);
+      // One open in the chat (read through the link) stays, as a child here does.
+      if (child.threadKey !== input.activeThreadKey && hasLeftLiveFamily(child, entry, input.now)) {
+        doneRemote.push({ child, startedBy: entry });
+      } else remoteChildren.push(child);
     }
     const open = input.isFamilyOpen(entry.threadKey);
     const shownChildren = open
@@ -1872,13 +2056,16 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
         );
     const shownRemoteChildren = open
       ? remoteChildren
-      : remoteChildren.filter(isChildThreadNeedingYou);
+      : remoteChildren.filter(
+          (child) => isChildThreadNeedingYou(child) || child.threadKey === input.activeThreadKey,
+        );
     return {
       entry,
       children,
       shownChildren,
       remoteChildren,
       shownRemoteChildren,
+      childShortTitles: childShortTitlesOf(children, remoteChildren),
       wrappedParent,
       scopedOutParent,
     };
@@ -1888,10 +2075,12 @@ export function buildInboxSections<E extends InboxFamilyEntry>(input: {
       liveParentByKey.get(entry.threadKey) ?? scopedOutParentByKey.get(entry.threadKey) ?? null;
     const standsApart = startedBy !== null;
     const children = standsApart ? [] : (childrenByParentKey.get(entry.threadKey) ?? []);
+    const remoteChildren = standsApart ? [] : remoteChildrenOf(entry);
     return {
       entry,
       children,
-      remoteChildren: standsApart ? [] : remoteChildrenOf(entry),
+      remoteChildren,
+      childShortTitles: childShortTitlesOf(children, remoteChildren),
       openChild:
         children.find((child) => child.isDone && child.threadKey === input.activeThreadKey) ?? null,
       startedBy,
@@ -1965,7 +2154,9 @@ export function inboxLiveRowHoldsOpenChild(
   activeThreadKey: string | null,
 ): boolean {
   return (
-    activeThreadKey !== null && row.children.some((child) => child.threadKey === activeThreadKey)
+    activeThreadKey !== null &&
+    (row.children.some((child) => child.threadKey === activeThreadKey) ||
+      row.remoteChildren.some((child) => child.threadKey === activeThreadKey))
   );
 }
 
@@ -1996,7 +2187,8 @@ export function windowInboxDoneRows<E extends InboxFamilyEntry>(
     (row, index) =>
       index < limit ||
       (row.kind === "thread" &&
-        (row.row.openChild !== null || row.row.entry.threadKey === activeThreadKey)),
+        (row.row.openChild !== null || row.row.entry.threadKey === activeThreadKey)) ||
+      (row.kind === "remote" && row.row.child.threadKey === activeThreadKey),
   );
 }
 
@@ -2383,6 +2575,7 @@ export function remoteChildEntry(
     phase,
     // With its link gone, its last word is history, not news.
     status: linked ? status : null,
+    ...(linked ? {} : { unlinked: true as const }),
   };
   const filing = child.filing;
   if (filing === undefined) {
@@ -2494,12 +2687,17 @@ export function groupInboxLiveRows<R>(
 
 /** How many lines between pinned and unpinned rows the list draws: one per group with both. */
 export function countInboxPinDividers<
-  R extends { readonly entry: { readonly thread: { readonly pinnedAt: string | null } } },
+  R extends {
+    readonly entry: {
+      readonly thread: { readonly pinnedAt: string | null };
+      readonly isLead?: boolean | undefined;
+    };
+  },
 >(rows: readonly R[], groupKeyOf: (row: R) => string | null): number {
   const pinned = new Set<string | null>();
   const unpinned = new Set<string | null>();
   for (const row of rows) {
-    (row.entry.thread.pinnedAt === null ? unpinned : pinned).add(groupKeyOf(row));
+    (staysOnTop(row.entry) ? pinned : unpinned).add(groupKeyOf(row));
   }
   return [...pinned].filter((group) => unpinned.has(group)).length;
 }
@@ -2530,6 +2728,42 @@ export function orderInboxLiveRowsByGroup<R>(
 }
 
 /**
+ * `order` with the keys it lacks added at the end, in the order given. The same
+ * array when nothing is new, so a caller can tell a change by identity.
+ */
+export function appendInboxGroupKeys(
+  order: readonly string[],
+  keys: readonly string[],
+): readonly string[] {
+  const placed = new Set(order);
+  let grew = false;
+  for (const key of keys) {
+    if (placed.has(key)) continue;
+    placed.add(key);
+    grew = true;
+  }
+  return grew ? [...placed] : order;
+}
+
+/**
+ * The group order the inbox draws. In the custom sort, a group the user never
+ * dragged keeps the place it held when the sort first showed it, so it stays
+ * put when its top row is wrapped, archived or moved. In the other sorts it
+ * follows its first row, as {@link orderInboxLiveRowsByGroup} does.
+ */
+export function inboxDrawnGroupOrder(input: {
+  readonly sort: InboxSort;
+  /** The order the user dragged the headers into. */
+  readonly draggedOrder: readonly string[];
+  /** Where the custom sort first showed each group. */
+  readonly customSeenOrder: readonly string[];
+}): readonly string[] {
+  return input.sort === "custom"
+    ? appendInboxGroupKeys(input.draggedOrder, input.customSeenOrder)
+    : input.draggedOrder;
+}
+
+/**
  * The saved group order with one header moved among the ones on screen. Every
  * group on screen gets a place, so moving one never makes another jump, and a
  * group a filter hides, or one of the other grouping's, keeps its own.
@@ -2541,9 +2775,12 @@ export function moveInInboxGroupOrder(input: {
   readonly groupKey: string;
   readonly toIndex: number;
 }): string[] {
-  const placed = new Set(input.groupOrder);
-  const order = [...placed, ...input.shownGroups.filter((key) => !placed.has(key))];
-  return tradeSavedPlaces(order, input.shownGroups, input.groupKey, input.toIndex);
+  return tradeSavedPlaces(
+    appendInboxGroupKeys(input.groupOrder, input.shownGroups),
+    input.shownGroups,
+    input.groupKey,
+    input.toIndex,
+  );
 }
 
 /**

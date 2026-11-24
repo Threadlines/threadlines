@@ -12,16 +12,25 @@ import {
   formatProviderTokenCount,
   headlineUsageMeter,
   isProviderUsageNearLimit,
+  modelOwnUsageLimit,
+  modelUsageLimitLabel,
   providerRateLimitResetCreditsExpirationUrgency,
   providerRateLimitResetCreditExpirationUrgency,
   providerUsageNearLimitColor,
   usageMeterColor,
+  usageWindowElapsedPercent,
 } from "./providerUsage";
 
 describe("deriveProviderAccountUsagePresentation", () => {
   it("formats billion-scale token counts without million overflow", () => {
     expect(formatProviderTokenCount(6_220_800_000)).toBe("6.22B");
     expect(formatProviderTokenCount(279_500_000)).toBe("279.5m");
+  });
+
+  it("rounds a floor down so it never claims more than was counted", () => {
+    expect(formatProviderTokenCount(10_600)).toBe("11k");
+    expect(formatProviderTokenCount(10_600, { roundDown: true })).toBe("10k");
+    expect(formatProviderTokenCount(6_229_999_999, { roundDown: true })).toBe("6.22B");
   });
 
   it("formats Codex rate limit usage with used percent and reset time", () => {
@@ -112,11 +121,13 @@ describe("deriveProviderAccountUsagePresentation", () => {
         {
           key: "secondary",
           label: "Weekly",
-          detail: "64% used · resets in 7d",
+          detail: "64% used · ahead of pace · resets in 7d",
           usedPercent: 64,
           remainingPercent: 36,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 0,
+          paceDetail: "0% of the week has passed",
         },
       ],
     });
@@ -414,11 +425,13 @@ describe("deriveProviderAccountUsagePresentation", () => {
         {
           key: "secondary",
           label: "Weekly",
-          detail: "69% used · resets in 7d",
+          detail: "69% used · ahead of pace · resets in 7d",
           usedPercent: 69,
           remainingPercent: 31,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 0,
+          paceDetail: "0% of the week has passed",
         },
       ],
     });
@@ -472,21 +485,26 @@ describe("deriveProviderAccountUsagePresentation", () => {
       {
         key: "secondary",
         label: "Weekly",
-        detail: "39% used · resets in 7d",
+        detail: "39% used · ahead of pace · resets in 7d",
         usedPercent: 39,
         remainingPercent: 61,
         reachedLimit: false,
         warning: false,
+        elapsedPercent: 0,
+        paceDetail: "0% of the week has passed",
       },
       {
         key: "scoped-0",
         label: "Fable (weekly)",
         shortLabel: "Fable",
-        detail: "78% used · resets in 7d",
+        detail: "78% used · ahead of pace · resets in 7d",
         usedPercent: 78,
         remainingPercent: 22,
         reachedLimit: false,
         warning: true,
+        elapsedPercent: 0,
+        paceDetail: "0% of the week has passed",
+        scope: { name: "Fable", period: "Weekly", resetDetail: "resets in 7d" },
       },
     ]);
     expect(presentation?.reachedLimit).toBe(false);
@@ -540,6 +558,9 @@ describe("deriveProviderAccountUsagePresentation", () => {
         remainingPercent: 0,
         reachedLimit: true,
         warning: true,
+        elapsedPercent: 0,
+        paceDetail: "0% of the week has passed",
+        scope: { name: "Fable", period: "Weekly", resetDetail: "resets in 7d" },
       },
     ]);
     expect(presentation?.reachedLimit).toBe(true);
@@ -591,6 +612,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 91,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 78.7,
+          paceDetail: "79% of the week has passed",
         },
       ],
     });
@@ -648,6 +671,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 36,
           reachedLimit: false,
           warning: false,
+          elapsedPercent: 78.7,
+          paceDetail: "79% of the week has passed",
         },
       ],
     });
@@ -705,6 +730,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
           remainingPercent: 0,
           reachedLimit: true,
           warning: true,
+          elapsedPercent: 78.7,
+          paceDetail: "79% of the week has passed",
         },
       ],
     });
@@ -748,6 +775,96 @@ describe("deriveProviderAccountUsagePresentation", () => {
       },
       windows: [],
     });
+  });
+});
+
+describe("usageWindowElapsedPercent", () => {
+  const nowMs = 1_800_000_000_000;
+
+  it("places a reading in its window, and leaves out readings it can't place", () => {
+    // Two days into a week: 2/7 of the window has passed.
+    const week = { windowDurationMins: 10_080, resetsAt: (nowMs + 5 * 86_400_000) / 1000 };
+    expect(usageWindowElapsedPercent(week, nowMs)).toBe(28.6);
+    // No window length, or a reset time already past or further off than the window.
+    expect(usageWindowElapsedPercent({ resetsAt: week.resetsAt }, nowMs)).toBeUndefined();
+    expect(usageWindowElapsedPercent({ ...week, resetsAt: nowMs / 1000 - 60 }, nowMs)).toBe(
+      undefined,
+    );
+    expect(
+      usageWindowElapsedPercent({ ...week, resetsAt: (nowMs + 8 * 86_400_000) / 1000 }, nowMs),
+    ).toBeUndefined();
+  });
+
+  it("says a limit is ahead of pace only once usage is clearly past the mark", () => {
+    const detailAt = (usedPercent: number) =>
+      deriveProviderAccountUsagePresentation(
+        {
+          source: "codex-rate-limits",
+          checkedAt: "2026-04-10T00:00:00.000Z",
+          limits: [
+            {
+              secondary: {
+                usedPercent,
+                remainingPercent: 100 - usedPercent,
+                resetsAt: (nowMs + 5 * 86_400_000) / 1000,
+                windowDurationMins: 10_080,
+              },
+            },
+          ],
+        },
+        nowMs,
+      )?.windows[0]?.detail;
+    // 28.6% of the week has passed.
+    expect(detailAt(30)).toBe("30% used · resets in 5d");
+    expect(detailAt(34)).toBe("34% used · ahead of pace · resets in 5d");
+  });
+
+  it("keeps pace marks and ahead-of-pace copy on weekly windows, not 5h sessions", () => {
+    const presentation = deriveProviderAccountUsagePresentation(
+      {
+        source: "grok-billing",
+        checkedAt: "2026-04-10T00:00:00.000Z",
+        primaryLimitId: "antigravity",
+        limits: [
+          {
+            limitId: "antigravity",
+            limitName: "Antigravity usage",
+            scoped: [
+              {
+                scopeLabel: "Gemini",
+                usedPercent: 40,
+                remainingPercent: 60,
+                resetsAt: nowMs + 4 * 3_600_000,
+                windowDurationMins: 300,
+              },
+              {
+                scopeLabel: "Gemini",
+                usedPercent: 40,
+                remainingPercent: 60,
+                resetsAt: nowMs + 5 * 86_400_000,
+                windowDurationMins: 10_080,
+              },
+            ],
+          },
+        ],
+      },
+      nowMs,
+    );
+
+    expect(presentation?.windows).toEqual([
+      expect.objectContaining({
+        label: "Gemini (5h)",
+        detail: "40% used · resets in 4h",
+      }),
+      expect.objectContaining({
+        label: "Gemini (weekly)",
+        detail: "40% used · ahead of pace · resets in 5d",
+        elapsedPercent: 28.6,
+        paceDetail: "29% of the week has passed",
+      }),
+    ]);
+    expect(presentation?.windows[0]?.elapsedPercent).toBeUndefined();
+    expect(presentation?.windows[0]?.paceDetail).toBeUndefined();
   });
 });
 
@@ -936,6 +1053,80 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       ),
     ).toBeNull();
   });
+
+  it("says what Antigravity's server says about its limits, in its words", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const reading = (checkedAt: string): ServerProviderAccountUsage => ({
+      source: "grok-billing",
+      checkedAt,
+      primaryLimitId: "antigravity",
+      limits: [
+        {
+          limitId: "antigravity",
+          limitName: "Antigravity usage",
+          scoped: [
+            {
+              scopeLabel: "Gemini",
+              scopeModels: ["Gemini"],
+              usedPercent: 12,
+              remainingPercent: 88,
+              windowDurationMins: 300,
+              checkedAt,
+            },
+          ],
+        },
+      ],
+    });
+    const auth = (
+      usage: NonNullable<NonNullable<ServerProvider["auth"]["capabilities"]>["usage"]>,
+    ): ServerProvider["auth"] => ({
+      status: "authenticated",
+      type: "oauth-personal",
+      capabilities: { usage },
+    });
+    const expired = { status: "unavailable" as const, detail: "Start a chat to refresh." };
+    const failed = {
+      status: "unavailable" as const,
+      reason: "unreachable" as const,
+      detail: "Couldn't read Antigravity limits.",
+    };
+
+    // An expired sign-in is said beside the kept numbers, which show their age.
+    const kept = deriveProviderAccountUsagePresentationForProvider(
+      {
+        driver: antigravity,
+        auth: auth(expired),
+        accountUsage: reading("2026-07-09T10:00:00.000Z"),
+      },
+      nowMs,
+    );
+    expect(kept?.label).toBe("Antigravity usage");
+    expect(kept?.windows[0]?.detail).toBe("12% used · as of 2h ago");
+    expect(kept?.notice).toEqual({ signIn: false, text: "Start a chat to refresh." });
+
+    // A failed read stays quiet while the numbers are recent, and says so with none.
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        {
+          driver: antigravity,
+          auth: auth(failed),
+          accountUsage: reading("2026-07-09T11:58:00.000Z"),
+        },
+        nowMs,
+      )?.notice,
+    ).toBeUndefined();
+    expect(
+      deriveProviderAccountUsagePresentationForProvider(
+        { driver: antigravity, auth: auth(failed) },
+        nowMs,
+      ),
+    ).toEqual({
+      label: "Antigravity usage",
+      windows: [],
+      reachedLimit: false,
+      notice: { signIn: false, text: "Couldn't read Antigravity limits." },
+    });
+  });
 });
 
 const makeUsage = (usedPercent: number): ServerProviderAccountUsage => ({
@@ -1038,6 +1229,123 @@ describe("isProviderUsageNearLimit", () => {
       ],
     };
     expect(isProviderUsageNearLimit(deriveProviderAccountUsagePresentation(usage))).toBe(true);
+  });
+});
+
+describe("a model's own usage limit", () => {
+  const NOW = 1_800_000_000_000;
+  /** Claude this week: the account at `weekly`%, Fable's own week at `fable`%. */
+  const claude = (weekly: number, fable: number) =>
+    deriveProviderAccountUsagePresentation(
+      {
+        source: "claude-oauth-usage",
+        checkedAt: "2026-07-03T00:00:00.000Z",
+        primaryLimitId: "claude",
+        limits: [
+          {
+            limitId: "claude",
+            secondary: {
+              usedPercent: weekly,
+              remainingPercent: 100 - weekly,
+              resetsAt: NOW + 3 * 86_400_000 + 16 * 3_600_000,
+              windowDurationMins: 10_080,
+            },
+            scoped: [
+              {
+                scopeLabel: "Fable",
+                usedPercent: fable,
+                remainingPercent: 100 - fable,
+                resetsAt: NOW + 3 * 86_400_000 + 16 * 3_600_000,
+                windowDurationMins: 10_080,
+              },
+            ],
+          },
+        ],
+      },
+      NOW,
+    );
+
+  it("matches every model named after the limit, as whole words only", () => {
+    const usage = claude(40, 64);
+    expect(modelOwnUsageLimit(usage, "Claude Fable 5.2")?.usedPercent).toBe(64);
+    expect(modelOwnUsageLimit(usage, "Claude Fable 5.1")?.usedPercent).toBe(64);
+    expect(modelOwnUsageLimit(usage, "Claude Opus 5.5")).toBeNull();
+    expect(modelOwnUsageLimit(usage, "Fablesque 1")).toBeNull();
+  });
+
+  it("reads grey, then amber, then red with when it resets", () => {
+    const label = (fable: number) =>
+      modelUsageLimitLabel(modelOwnUsageLimit(claude(40, fable), "Claude Fable 5.2")!);
+    expect(label(64)).toMatchObject({ text: "64% of week", tone: "normal" });
+    expect(label(82)).toMatchObject({ text: "82% of week", tone: "warning" });
+    expect(label(100)).toMatchObject({ text: "Limit · resets in 3d 16h", tone: "reached" });
+  });
+
+  const antigravity = deriveProviderAccountUsagePresentation(
+    {
+      source: "grok-billing",
+      checkedAt: "2026-07-03T00:00:00.000Z",
+      primaryLimitId: "antigravity",
+      limits: [
+        {
+          limitId: "antigravity",
+          limitName: "Antigravity usage",
+          scoped: [
+            ["Gemini", ["Gemini"], 300, 20],
+            ["Gemini", ["Gemini"], 10_080, 35],
+            ["Gemini 4 Argon", ["Argon"], 10_080, 90],
+            ["Claude & GPT", ["Claude", "GPT"], 300, 60],
+          ].map(([scopeLabel, scopeModels, windowDurationMins, usedPercent]) => ({
+            scopeLabel: scopeLabel as string,
+            scopeModels: scopeModels as string[],
+            ...(scopeLabel === "Gemini" ? { scopeExcludes: ["Argon"] } : {}),
+            usedPercent: usedPercent as number,
+            remainingPercent: 100 - (usedPercent as number),
+            windowDurationMins: windowDurationMins as number,
+          })),
+        },
+      ],
+    },
+    NOW,
+  );
+
+  it("gives each Antigravity model its own family's limit", () => {
+    expect(modelOwnUsageLimit(antigravity, "Gemini 3.1 Pro")?.usedPercent).toBe(35);
+    expect(modelOwnUsageLimit(antigravity, "Gemini 4 Argon")?.usedPercent).toBe(90);
+    expect(modelOwnUsageLimit(antigravity, "Claude Sonnet 5.5")?.label).toBe("Claude & GPT (5h)");
+    expect(modelOwnUsageLimit(antigravity, "GPT-OSS 120B")?.usedPercent).toBe(60);
+  });
+
+  it("keeps the period on short labels two windows share", () => {
+    expect(compactUsageMeters(antigravity!, 10).map((line) => line.label)).toEqual([
+      "Gemini (5h)",
+      "Gemini (weekly)",
+      "Gemini 4 Argon",
+      "Claude & GPT",
+    ]);
+  });
+
+  it("leaves a model's own limit out of the account's near-limit mark", () => {
+    // Fable's week is used up, the account's is not: only Fable's row says so.
+    expect(isProviderUsageNearLimit(claude(40, 100), { modelLimits: false })).toBe(false);
+    expect(isProviderUsageNearLimit(claude(40, 100))).toBe(true);
+    expect(isProviderUsageNearLimit(claude(84, 10), { modelLimits: false })).toBe(true);
+    // An account out of its plan, with no windows to say so.
+    const outOfPlan = deriveProviderAccountUsagePresentation(
+      {
+        source: "codex-rate-limits",
+        checkedAt: "2026-07-03T00:00:00.000Z",
+        limits: [
+          {
+            limitId: "codex",
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 40, remainingPercent: 60 },
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(isProviderUsageNearLimit(outOfPlan, { modelLimits: false })).toBe(true);
   });
 });
 

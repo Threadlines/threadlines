@@ -1,5 +1,5 @@
 import type { APIRoute } from "astro";
-import { getCollection } from "astro:content";
+import { getPublishedChangelog } from "../lib/publishedChangelog";
 
 import { agentPath, AGENTS } from "../lib/agents";
 import { changelogEntryPath } from "../lib/changelog";
@@ -23,7 +23,7 @@ function urlEntry(path: string, lastModified?: Date): string {
 }
 
 export const GET: APIRoute = async () => {
-  const changelogEntries = await getCollection("changelog");
+  const changelogEntries = await getPublishedChangelog();
   const urls = [
     urlEntry("/"),
     urlEntry("/download"),

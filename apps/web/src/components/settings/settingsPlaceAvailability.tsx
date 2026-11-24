@@ -18,12 +18,14 @@ import {
 import { useSavedEnvironmentRegistryStore } from "../../environments/runtime";
 import { isElectron } from "../../env";
 import { usePrimarySessionAccess } from "../../hooks/useAuthAccess";
+import { useSettings } from "../../hooks/useSettings";
 import { pushAlertsSupport, relayLinkOf, usePushAlertsStore } from "../../pushAlerts/pushAlerts";
 import {
   canSetDesktopBackgroundOptions,
   useDesktopBackgroundOptions,
 } from "./desktopBackgroundOptions";
 import { isRemotelyReachable } from "./connections/serverReach";
+import { deriveMaintainedProviderRows, isProviderRowEnabled } from "./providerEnablement";
 import { selectSettingsSearchActive, useSettingsSearchStore } from "./settingsSearchStore";
 
 /**
@@ -63,19 +65,30 @@ export const SettingsSurfaceContext = createContext<SettingsSurface>("full");
 export const useSettingsSurface = (): SettingsSurface => useContext(SettingsSurfaceContext);
 
 /** What the rules below read: how Settings is shown, and live facts some rows depend on. */
-interface PlaceSignals {
+export interface PlaceSignals {
   readonly phone: boolean;
   readonly desktopApp: boolean;
   readonly keepAwakeForTasks: boolean;
   readonly runInBackground: boolean;
   readonly dictationSupported: boolean;
   readonly dictationModelsDownloaded: boolean;
+  /** Phone alerts work here and a paired computer can send them. */
   readonly alertsShown: boolean;
   readonly alertKindsShown: boolean;
   readonly owner: boolean;
   readonly outsideAgents: boolean;
   /** Other devices can reach this computer directly (the one-time link needs it). */
   readonly remotelyReachable: boolean;
+  /** This computer keeps project briefs and notes. */
+  readonly projectContext: boolean;
+  /** This computer's server has devices (capability `devices`). */
+  readonly devices: boolean;
+  /** At least one Claude Code instance is turned on. */
+  readonly claudeEnabled: boolean;
+  /** At least one Codex instance is turned on. */
+  readonly codexEnabled: boolean;
+  /** At least one Antigravity instance is turned on. */
+  readonly antigravityEnabled: boolean;
 }
 
 /**
@@ -84,7 +97,7 @@ interface PlaceSignals {
  * page draws a place on a condition, it asks `ShownPlace`, so the two agree.
  */
 const SHOWN_WHEN: Partial<Record<SettingsPlaceSearchId, (signals: PlaceSignals) => boolean>> = {
-  "general.alerts": (s) => s.alertsShown,
+  // The section always shows (Play a sound is on every device); phone alerts only where they work.
   "general.alertsOnThisDevice": (s) => s.alertsShown,
   "general.alertNeedsYou": (s) => s.alertKindsShown,
   "general.alertFinished": (s) => s.alertKindsShown,
@@ -119,6 +132,18 @@ const SHOWN_WHEN: Partial<Record<SettingsPlaceSearchId, (signals: PlaceSignals) 
   "connections.sameNetwork": (s) => !s.phone && s.owner,
   "connections.tailscale": (s) => !s.phone && s.owner,
   "connections.oneTimeLink": (s) => !s.phone && s.owner && s.remotelyReachable,
+  "instructions.notesMode": (s) => s.projectContext,
+  // The phone app has no Devices page; a server without devices draws only a note there.
+  "settings.devices": (s) => !s.phone && s.devices,
+  "devices.simulators": (s) => !s.phone && s.devices,
+  "devices.enable": (s) => !s.phone && s.devices,
+  "devices.agentAccess": (s) => !s.phone && s.devices,
+  "devices.tools": (s) => !s.phone && s.devices,
+  // Providers › Suggestions: only providers the user currently has turned on.
+  "providers.suggestions": (s) => s.claudeEnabled || s.codexEnabled || s.antigravityEnabled,
+  "providers.claudeSuggestions": (s) => s.claudeEnabled,
+  "providers.codexSuggestions": (s) => s.codexEnabled,
+  "providers.antigravitySuggestions": (s) => s.antigravityEnabled,
 };
 
 /**
@@ -138,6 +163,11 @@ const STATIC_SIGNALS: PlaceSignals = {
   owner: true,
   outsideAgents: true,
   remotelyReachable: true,
+  projectContext: true,
+  devices: true,
+  claudeEnabled: true,
+  codexEnabled: true,
+  antigravityEnabled: true,
 };
 
 const PlaceSignalsContext = createContext<PlaceSignals | null>(null);
@@ -146,9 +176,10 @@ const PlaceSignalsContext = createContext<PlaceSignals | null>(null);
  * Whether the desktop app's computer is reachable from other devices, read
  * from the desktop app each time a search starts (Connections can change it
  * in between). Unknown, so not offered, until this search's read answers.
+ * `search` numbers the host's searches: Settings counts them, the palette
+ * uses its opening.
  */
-function useDesktopReach(enabled: boolean): boolean {
-  const search = useSettingsSearchStore((state) => state.searchesStarted);
+function useDesktopReach(enabled: boolean, search: number): boolean {
   const [answer, setAnswer] = useState<{
     readonly search: number;
     readonly reachable: boolean;
@@ -176,8 +207,32 @@ function useDesktopReach(enabled: boolean): boolean {
   return enabled && answer?.search === search && answer.reachable;
 }
 
-function usePlaceSignals(): PlaceSignals {
-  const phone = useSettingsSurface() === "phone";
+/** What a host of the settings search tells the rules: is a search showing, and which one. */
+export interface SettingsSearchHost {
+  readonly searchActive: boolean;
+  /** Changes for each new search, so facts read per search are read again. */
+  readonly searchSession: number;
+}
+
+function useEnabledSuggestionProviders() {
+  const providers = useSettings((settings) => settings.providers);
+  const providerInstances = useSettings((settings) => settings.providerInstances);
+  return useMemo(() => {
+    const rows = deriveMaintainedProviderRows({ providers, providerInstances });
+    let claudeEnabled = false;
+    let codexEnabled = false;
+    let antigravityEnabled = false;
+    for (const row of rows) {
+      if (!isProviderRowEnabled(row)) continue;
+      if (row.driver === "claudeAgent") claudeEnabled = true;
+      else if (row.driver === "codex") codexEnabled = true;
+      else if (row.driver === "antigravity") antigravityEnabled = true;
+    }
+    return { claudeEnabled, codexEnabled, antigravityEnabled };
+  }, [providerInstances, providers]);
+}
+
+function usePlaceSignals(phone: boolean, host: SettingsSearchHost): PlaceSignals {
   const background = useDesktopBackgroundOptions();
   const dictation = useDictationStatus(usePrimaryEnvironmentId());
   const alertsEnabled = usePushAlertsStore((state) => state.enabled);
@@ -186,12 +241,18 @@ function usePlaceSignals(): PlaceSignals {
     (state) => Object.values(state.byId).filter((record) => relayLinkOf(record) !== null).length,
   );
   const { role, authPolicy } = usePrimarySessionAccess(!phone);
-  const searching = useSettingsSearchStore(selectSettingsSearchActive);
-  const desktopReach = useDesktopReach(isElectron && !phone && role === "owner" && searching);
-  const outsideAgents = usePrimaryEnvironmentDescriptor()?.capabilities.outsideAgents === true;
+  const desktopReach = useDesktopReach(
+    isElectron && !phone && role === "owner" && host.searchActive,
+    host.searchSession,
+  );
+  const primaryCapabilities = usePrimaryEnvironmentDescriptor()?.capabilities;
+  const outsideAgents = primaryCapabilities?.outsideAgents === true;
+  const projectContext = primaryCapabilities?.projectContext === true;
+  const devices = primaryCapabilities?.devices === true;
   const alertsSupport = pushAlertsSupport();
   const alertsShown = alertsSupport !== "unsupported" && alertComputers > 0;
   const canSetBackground = background !== null && canSetDesktopBackgroundOptions();
+  const { claudeEnabled, codexEnabled, antigravityEnabled } = useEnabledSuggestionProviders();
   return useMemo(
     () => ({
       phone,
@@ -209,52 +270,98 @@ function usePlaceSignals(): PlaceSignals {
       owner: role === "owner",
       outsideAgents,
       remotelyReachable: isElectron ? desktopReach : authPolicy === "remote-reachable",
+      projectContext,
+      devices,
+      claudeEnabled,
+      codexEnabled,
+      antigravityEnabled,
     }),
     [
       alertsEnabled,
       alertsPermission,
       alertsShown,
       alertsSupport,
+      antigravityEnabled,
       authPolicy,
       background,
       canSetBackground,
+      claudeEnabled,
+      codexEnabled,
       desktopReach,
+      devices,
       dictation,
       outsideAgents,
       phone,
+      projectContext,
       role,
     ],
   );
 }
 
+/** Whether a place is on screen under these facts. */
+function placeShown(signals: PlaceSignals, id: SettingsPlaceSearchId): boolean {
+  const place = placeById(id);
+  if ("appliesWhen" in place && place.appliesWhen === "desktop" && !signals.desktopApp) {
+    return false;
+  }
+  return SHOWN_WHEN[id]?.(signals) ?? true;
+}
+
 /**
- * Gathers the live facts once for all of Settings (the layout mounts it), so
- * a page full of places doesn't ask the server once per row.
+ * Which settings places exist here, for a host of the settings search:
+ * Settings (through SettingsAvailabilityProvider) and the command palette,
+ * which asks with the same inputs so it never offers a row Settings hides.
  */
-export function SettingsPlaceSignalsProvider({ children }: { readonly children: ReactNode }) {
-  const signals = usePlaceSignals();
-  return <PlaceSignalsContext.Provider value={signals}>{children}</PlaceSignalsContext.Provider>;
+export function useSettingsAvailability(
+  surface: SettingsSurface,
+  host: SettingsSearchHost,
+): { readonly signals: PlaceSignals; readonly shown: (id: SettingsPlaceSearchId) => boolean } {
+  const signals = usePlaceSignals(surface === "phone", host);
+  const shown = useCallback((id: SettingsPlaceSearchId) => placeShown(signals, id), [signals]);
+  return { signals, shown };
+}
+
+/** The settings search as Settings hosts it: its own store says what is being searched. */
+export function useSettingsStoreSearchHost(): SettingsSearchHost {
+  const searchActive = useSettingsSearchStore(selectSettingsSearchActive);
+  const searchSession = useSettingsSearchStore((state) => state.searchesStarted);
+  return useMemo(() => ({ searchActive, searchSession }), [searchActive, searchSession]);
+}
+
+/**
+ * How Settings is shown and the live facts its places depend on, gathered
+ * once for everything inside (the settings layout mounts it), so a page full
+ * of places doesn't ask the server once per row.
+ */
+export function SettingsAvailabilityProvider({
+  surface,
+  host,
+  children,
+}: {
+  readonly surface: SettingsSurface;
+  readonly host: SettingsSearchHost;
+  readonly children: ReactNode;
+}) {
+  const { signals } = useSettingsAvailability(surface, host);
+  return (
+    <SettingsSurfaceContext.Provider value={surface}>
+      <PlaceSignalsContext.Provider value={signals}>{children}</PlaceSignalsContext.Provider>
+    </SettingsSurfaceContext.Provider>
+  );
 }
 
 /** Answers whether a settings place is on screen here; follows the live facts. */
 export function useSettingsPlaceShown(): (id: SettingsPlaceSearchId) => boolean {
-  const gathered = useContext(PlaceSignalsContext) ?? STATIC_SIGNALS;
+  const fromProvider = useContext(PlaceSignalsContext);
+  const fallbackProviders = useEnabledSuggestionProviders();
   // The nearest surface wins: a page drawn as the phone's says so itself.
   const phone = useSettingsSurface() === "phone";
-  const signals = useMemo(
-    () => (gathered.phone === phone ? gathered : { ...gathered, phone }),
-    [gathered, phone],
-  );
-  return useCallback(
-    (id) => {
-      const place = placeById(id);
-      if ("appliesWhen" in place && place.appliesWhen === "desktop" && !signals.desktopApp) {
-        return false;
-      }
-      return SHOWN_WHEN[id]?.(signals) ?? true;
-    },
-    [signals],
-  );
+  const signals = useMemo(() => {
+    const base =
+      fromProvider ?? ({ ...STATIC_SIGNALS, ...fallbackProviders } satisfies PlaceSignals);
+    return base.phone === phone ? base : { ...base, phone };
+  }, [fallbackProviders, fromProvider, phone]);
+  return useCallback((id) => placeShown(signals, id), [signals]);
 }
 
 /** Draws its children only where `place` is on screen (see SHOWN_WHEN). */

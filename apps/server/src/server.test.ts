@@ -37,6 +37,7 @@ import {
   EMPTY_CHILD_REQUEST_STATE,
   RelayHostId,
   RelayInviteId,
+  RELAY_DEVICE_SESSION_SUBJECT,
 } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
@@ -44,6 +45,7 @@ import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -101,6 +103,7 @@ import {
   RelayDeviceRepository,
   type RelayDeviceRepositoryShape,
 } from "./relay/RelayDeviceRepository.ts";
+import { ComputerLinkClient } from "./links/ComputerLinkClient.ts";
 import { ComputerLinks, type ComputerLinksShape } from "./links/ComputerLinks.ts";
 import { ScheduledTasks, type ScheduledTasksShape } from "./scheduled/ScheduledTasks.ts";
 import { ThemeLibrary, type ThemeLibraryShape } from "./themes/ThemeLibrary.ts";
@@ -108,8 +111,10 @@ import { ThemeShowcase } from "./themes/ThemeShowcase.ts";
 import { ThemeVsCode } from "./themes/ThemeVsCode.ts";
 import { LinkMoves } from "./links/LinkMoves.ts";
 import { LinkRequests, type LinkRequestsShape } from "./links/LinkRequests.ts";
+import { MoveQueue } from "./moves/MoveQueue.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
+import { ProjectContext } from "./projectContext/ProjectContext.ts";
 import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
@@ -180,7 +185,11 @@ import * as PreviewTunnel from "./preview/PreviewTunnel.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
 import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
+import { DeviceChannels } from "./device/DeviceChannels.ts";
+import { DeviceService } from "./device/DeviceService.ts";
 import { AgentSettingsChanges } from "./settingsChanges/AgentSettingsChanges.ts";
+import { AgentSecretRequests } from "./secrets/AgentSecretRequests.ts";
+import { layer as SecretScrubberLive } from "./secrets/SecretScrubber.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -191,8 +200,10 @@ import * as PullRequestObservations from "./pullRequest/PullRequestObservations.
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
+import { SessionCredentialService } from "./auth/Services/SessionCredentialService.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as ThreadCpuUsage from "./diagnostics/ThreadCpuUsage.ts";
 import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as Data from "effect/Data";
@@ -343,6 +354,7 @@ const makeDefaultOrchestrationThreadShell = (
     awaitedChildThreadCount: 0,
     pendingChildApproval: false,
     pendingSettingsChange: false,
+    pendingSecretRequest: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
@@ -788,6 +800,13 @@ const buildAppUnderTest = (options?: {
           // and the tool endpoint need something to call.
           // Agents' settings changes are tested on their own (AgentSettingsChanges.test.ts).
           Layer.mock(AgentSettingsChanges)({}),
+          // So are agents' requests for keys (AgentSecretRequests.test.ts).
+          Layer.mock(AgentSecretRequests)({ destinations: {} as never }),
+          // Devices are tested on their own (device/*.test.ts); the routes only need them built.
+          Layer.mock(DeviceService)({}),
+          Layer.mock(DeviceChannels)({ releaseConnection: () => Effect.void }),
+          // The watched keys' registry, empty: the routes' doors read it.
+          SecretScrubberLive,
           Layer.mock(CommandRuns)({
             request: () => Effect.succeed({ outcome: "off" as const, detail: "off in this test" }),
             start: () => Effect.fail(new CommandRunError({ message: "No runs in this test." })),
@@ -887,7 +906,16 @@ const buildAppUnderTest = (options?: {
             pendingChanges: Stream.empty,
           }),
           Layer.mock(ThreadMoves)({}),
+          Layer.mock(MoveQueue)({}),
+          Layer.mock(ComputerLinkClient)({
+            cachedDescribe: () => null,
+            noteRemoteLabel: () => undefined,
+            remoteLabelChanges: Stream.empty,
+          }),
           Layer.mock(ProjectSetups)({}),
+          Layer.mock(ProjectContext)({
+            changes: Stream.make({ briefs: [], notes: [], suggestions: [] }),
+          }),
           Layer.mock(ProjectSetupSource)({}),
           Layer.mock(OutsideAgentSignIn)({ bootId: "test-boot" }),
           Layer.mock(AssistantAlerts)({ targets: Stream.make([]) }),
@@ -940,6 +968,16 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(StallMonitor.StallMonitor)({ stalls: Stream.empty }),
+          Layer.mock(ThreadCpuUsage.ThreadCpuUsage)({
+            read: Effect.succeed({
+              readAt: TEST_EPOCH,
+              windowMs: 60_000,
+              coreCount: 1,
+              machineCpuPercent: null,
+              groups: [],
+              error: Option.none(),
+            }),
+          }),
           Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
             readCurrent: Effect.succeed({
               serverPid: process.pid,
@@ -1061,6 +1099,8 @@ const buildAppUnderTest = (options?: {
           getProjectShellById: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getTurnActivities: () => Effect.succeed([]),
+          getThreadMessage: () => Effect.succeed(Option.none()),
+          hasAssistantMessageForTurn: () => Effect.succeed(false),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
@@ -1161,8 +1201,10 @@ const buildAppUnderTest = (options?: {
       Layer.provide(layerConfig),
     );
 
-    yield* Layer.build(appLayer);
-    return config;
+    const app = yield* Layer.build(appLayer);
+    // The app's own sign-ins, for a case that needs one no HTTP route makes
+    // (a relay device's).
+    return { ...config, sessions: Context.get(app, SessionCredentialService) };
   });
 
 const parseSessionCookieFromWsUrl = (
@@ -4615,6 +4657,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           projectionSnapshotQuery: {
             getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 600 }),
             getTurnActivities: () => Effect.succeed([]),
+            getThreadMessage: () => Effect.succeed(Option.none()),
+            hasAssistantMessageForTurn: () => Effect.succeed(false),
             getThreadDetailById: () =>
               Effect.sync(() => {
                 threadDetailReads += 1;
@@ -5665,6 +5709,93 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             ["thread.side-turn.start", phone],
             ["thread.user-input.respond", phone],
             ["thread.turn.interrupt", undefined],
+          ],
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "stamps a browser paired through the relay as a computer, and no sign-in a script made",
+    () =>
+      Effect.gen(function* () {
+        const dispatchedCommands: Array<OrchestrationCommand> = [];
+        const { sessions } = yield* buildAppUnderTest({
+          config: { host: "0.0.0.0" },
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatchedCommands.push(command);
+                  return { sequence: dispatchedCommands.length };
+                }),
+              readEvents: () => Stream.empty,
+            },
+          },
+        });
+        const baseUrl = yield* getWsServerUrl("/ws", { authenticated: false });
+        const withToken = (client: Parameters<typeof sessions.issue>[0]) =>
+          sessions.issue(client).pipe(
+            Effect.flatMap((issued) => sessions.issueWebSocketToken(issued.sessionId)),
+            Effect.map(({ token }) => `${baseUrl}?wsToken=${encodeURIComponent(token)}`),
+          );
+        // As RelayHost signs in a browser whose pairing the user approved.
+        const relayBrowserUrl = yield* withToken({
+          subject: RELAY_DEVICE_SESSION_SUBJECT,
+          method: "bearer-session-token",
+          role: "client",
+          client: { label: "Chrome on macOS", deviceType: "unknown", os: "macOS" },
+        });
+        // As `threadlines auth session issue` makes a token for a script or an agent.
+        const cliTokenUrl = yield* withToken({
+          subject: "cli-issued-session",
+          method: "bearer-session-token",
+          role: "owner",
+          client: { label: "deploy", deviceType: "bot" },
+        });
+        // A pairing link spent from curl.
+        const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+        const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+          headers: { cookie: ownerCookie, "content-type": "application/json" },
+          body: HttpBody.text("{}", "application/json"),
+        });
+        const pairing = (yield* pairingResponse.json) as { readonly credential: string };
+        const curlBootstrap = yield* bootstrapBrowserSession(pairing.credential, {
+          headers: { "user-agent": "curl/8.7.1" },
+        });
+        const curlUrl = appendSessionCookieToWsUrl(
+          baseUrl,
+          curlBootstrap.cookie?.split(";")[0] ?? "",
+        );
+
+        for (const [index, url] of [relayBrowserUrl, cliTokenUrl, curlUrl].entries()) {
+          yield* Effect.scoped(
+            withWsRpcClient(url, (client) =>
+              client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                type: "thread.turn.start",
+                commandId: CommandId.make(`cmd-signed-in-${index}`),
+                threadId: ThreadId.make("thread-signed-in"),
+                message: {
+                  messageId: MessageId.make(`message-signed-in-${index}`),
+                  role: "user",
+                  text: "Carry on",
+                  attachments: [],
+                },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt: "2026-01-01T00:00:00.000Z",
+              }),
+            ),
+          );
+        }
+
+        assert.deepEqual(
+          dispatchedCommands.map((command) =>
+            "sentFrom" in command ? command.sentFrom : undefined,
+          ),
+          [
+            { kind: "computer", name: "Chrome on macOS", os: "macOS", place: "elsewhere" },
+            undefined,
+            undefined,
           ],
         );
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),

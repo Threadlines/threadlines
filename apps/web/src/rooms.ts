@@ -7,6 +7,7 @@
  * choice is remembered per thread in memory and defaults to the agent that
  * worked last, so carrying on with the same agent stays one keystroke.
  */
+import { liveSideTurns } from "@threadlines/shared/sideTurns";
 import { scopedThreadKey } from "@threadlines/client-runtime";
 import type {
   MessageAgentModel,
@@ -579,14 +580,14 @@ export function roomSlotRole(
     : (thread.participants?.find((entry) => entry.id === holderId)?.role ?? null);
 }
 
-/** The user's name for the agent answering on the side, if any. */
+/** The user's name for the agent answering on the side (the earliest, if several). */
 export function roomSideRole(
   thread: RoomThreadLike & {
     readonly agentRole?: string | undefined;
-    readonly sideTurn?: OrchestrationSideTurn | null | undefined;
+    readonly sideTurns?: ReadonlyArray<OrchestrationSideTurn> | undefined;
   },
 ): string | null {
-  const sideTurn = thread.sideTurn ?? null;
+  const sideTurn = liveSideTurns(thread)[0] ?? null;
   if (sideTurn === null) {
     return null;
   }
@@ -596,16 +597,16 @@ export function roomSideRole(
 }
 
 /**
- * The model of the agent answering on the side, for the inbox row's
- * "GPT-6 Astra · answering". Null when nobody is.
+ * The model of the agent answering on the side (the earliest, if several),
+ * for the inbox row's "GPT-6 Astra · answering". Null when nobody is.
  */
 export function roomSideModelSelection(
   thread: RoomThreadLike & {
     readonly modelSelection: ModelSelection;
-    readonly sideTurn?: OrchestrationSideTurn | null | undefined;
+    readonly sideTurns?: ReadonlyArray<OrchestrationSideTurn> | undefined;
   },
 ): ModelSelection | null {
-  const sideTurn = thread.sideTurn ?? null;
+  const sideTurn = liveSideTurns(thread)[0] ?? null;
   if (sideTurn === null) {
     return null;
   }
@@ -839,7 +840,7 @@ export function pendingRoomInvite(
 export interface RoomInviteDescription {
   readonly from: string;
   readonly to: string;
-  /** "waiting for you", "review only", "added to the thread", "not now". */
+  /** "waiting for you", "review only", "review only, waiting its turn", "added to the thread", "not now". */
   readonly status: string;
   /** How it ended without its review, when it did. */
   readonly outcomeNote: string | null;
@@ -861,13 +862,15 @@ export function describeRoomInvite(input: {
   const to = nameOf(message.participantId);
   const choice = message.invite?.choice;
   const withoutAsking = message.invite?.automatic === true ? ", without asking" : "";
+  // Accepted while another side answer ran: its review starts after that one.
+  const waiting = input.openStatus === "queued" ? ", waiting its turn" : "";
   const status =
     input.openStatus === "awaiting_user"
       ? "wants a review, waiting for you"
       : choice === "review"
-        ? `review only${withoutAsking}`
+        ? `review only${withoutAsking}${waiting}`
         : choice === "teammate"
-          ? `added to the thread${withoutAsking}`
+          ? `added to the thread${withoutAsking}${waiting}`
           : message.requestOutcome === "declined"
             ? "not now"
             : "wants a review";

@@ -11,6 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   checkBackThreads,
+  customCadencePatch,
   DEFAULT_WEBHOOK_FORM,
   describeNextRun,
   describeScheduleCall,
@@ -23,6 +24,7 @@ import {
   formatWhen,
   githubEventFields,
   parseScheduleCallResult,
+  scheduleSummary,
   taskForm,
   webhookFormWithContext,
 } from "./scheduled.logic";
@@ -217,6 +219,34 @@ describe("the task form", () => {
     } as const;
     expect(formDraft(taskForm(task({ target: forAgent }), ENVIRONMENT))?.target).toEqual(forAgent);
   });
+  it("starts a cron rule from the schedule picked so far, and keeps one the user wrote", () => {
+    const weekly = { ...form(), cadenceKind: "weekly" as const, weekday: 5 };
+    expect(customCadencePatch(weekly)).toEqual({ cadenceKind: "custom", cron: "0 9 * * 5" });
+    // A one-time date would repeat every year as a rule: the rule is left as it was.
+    expect(customCadencePatch({ ...form(), cadenceKind: "once" }).cron).toBe(form().cron);
+    expect(customCadencePatch({ ...weekly, cron: "*/15 * * * *", cronChosen: true }).cron).toBe(
+      "*/15 * * * *",
+    );
+    // A saved cron task opens with its rule as the user's own.
+    expect(
+      taskForm(task({ cadence: { kind: "custom", cron: "5 4 * * *" } }), ENVIRONMENT).cronChosen,
+    ).toBe(true);
+  });
+
+  it("words the schedule button as the task list does, or the kind while half set up", () => {
+    expect(scheduleSummary(form(), "UTC")).toMatch(/^Weekdays at 9:00/);
+    expect(scheduleSummary(form(), "Europe/Madrid")).toMatch(/ · UTC$/);
+    // Times follow the app's clock setting, not only the locale.
+    expect(scheduleSummary({ ...form(), time: { hour: 17, minute: 0 } }, "UTC", false)).toBe(
+      "Weekdays at 17:00",
+    );
+    expect(scheduleSummary({ ...form(), cadenceKind: "custom", cron: " " }, "UTC")).toBe(
+      "Custom cron rule",
+    );
+    expect(scheduleSummary({ ...form(), cadenceKind: "webhook" }, "UTC")).toBe(
+      "When something happens",
+    );
+  });
 });
 
 describe("event tasks", () => {
@@ -393,12 +423,22 @@ describe("check-backs on the Scheduled page", () => {
         archivedAt: "2026-10-21T07:00:00.000Z",
         checkBacks: [checkBack("gone", "2026-10-21T08:30:00.000Z")],
       },
+      {
+        // Its runtime ended: the dormant one is neither the next nor one more.
+        title: "Paused",
+        archivedAt: null,
+        checkBacks: [
+          { ...checkBack("dormant", "2026-10-21T11:00:00.000Z"), dormant: true as const },
+          checkBack("live", "2026-10-21T12:00:00.000Z"),
+        ],
+      },
     ]);
     expect(
       listed.map((entry) => [entry.thread.title, entry.soonest.id, entry.more] as const),
     ).toEqual([
       ["Docs", "docs", 0],
       ["Deploy", "soon", 1],
+      ["Paused", "live", 0],
     ]);
   });
 });

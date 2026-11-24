@@ -7,7 +7,6 @@
  */
 import {
   defaultProjectSetupFolder,
-  isProtectedConnectionUrl,
   listProjectSetupTargets,
   type ProjectSetupComputer,
   type ProjectSetupProjectKey,
@@ -24,14 +23,11 @@ import { useShallow } from "zustand/react/shallow";
 
 import { deriveRepositoryRelativeProjectPath } from "../../logicalProject";
 import { readConnectedComputerCapability } from "../computerCapabilities";
+import { isPrimaryConnectionProtected, isSavedConnectionProtected } from "../connectionProtection";
 import { getServerConfig } from "../../rpc/serverState";
 import { selectProjectsAcrossEnvironments, useStore } from "../../store";
 import type { Project } from "../../types";
-import {
-  getPrimaryKnownEnvironment,
-  readPrimaryEnvironmentDescriptor,
-  usePrimaryEnvironmentDescriptor,
-} from "../primary";
+import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentDescriptor } from "../primary";
 import {
   type SavedEnvironmentRecord,
   type SavedEnvironmentRuntimeState,
@@ -47,34 +43,6 @@ export function projectSetupKeyOf(
   const repositoryKey = project.repositoryIdentity?.canonicalKey;
   if (!repositoryKey) return null;
   return { repositoryKey, subdirectory: deriveRepositoryRelativeProjectPath(project) };
-}
-
-/**
- * Whether this app's connection to its own server is protected on the wire:
- * the address it reaches it by (the desktop app's loopback, a TLS address),
- * resolved against the page for a same-origin server.
- */
-function isPrimaryConnectionProtected(): boolean {
-  try {
-    const wsBaseUrl = getPrimaryKnownEnvironment()?.target.wsBaseUrl;
-    if (!wsBaseUrl) return false;
-    return isProtectedConnectionUrl(new URL(wsBaseUrl, window.location.origin).toString());
-  } catch {
-    // An address it can't tell is not one to send secrets over.
-    return false;
-  }
-}
-
-/**
- * Whether this app's connection to a saved computer is protected: a "Connect
- * a device" computer's end to end encrypted connection (relay v2, over the
- * relay or a direct route), an SSH tunnel, or a TLS or loopback address. An
- * old phone link (relay v1) is readable at the relay, so it is not.
- */
-function isSavedConnectionProtected(record: SavedEnvironmentRecord): boolean {
-  if (record.relay) return "version" in record.relay && record.relay.version === 2;
-  if (record.desktopSsh) return true;
-  return isProtectedConnectionUrl(record.wsBaseUrl);
 }
 
 interface ComputersInput {

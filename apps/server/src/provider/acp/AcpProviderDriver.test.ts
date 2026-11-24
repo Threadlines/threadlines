@@ -7,12 +7,60 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { checkAcpProviderStatus, makeAcpCatalogCache } from "./AcpProvider.ts";
-import { makeAcpProviderMaintenanceResolver, resolveAcpBinaryPath } from "./AcpProviderDriver.ts";
+import { checkAcpProviderStatus, enrichAcpSnapshot, makeAcpCatalogCache } from "./AcpProvider.ts";
+import {
+  groupSessionCommands,
+  withSessionCommands,
+  makeAcpProviderMaintenanceResolver,
+  resolveAcpBinaryPath,
+} from "./AcpProviderDriver.ts";
 import { CURSOR_ACP_DESCRIPTOR } from "./CursorAcpSupport.ts";
 import { FX_ACP_DESCRIPTOR } from "./FxAcpSupport.ts";
+
+describe("groupSessionCommands", () => {
+  it("sends each distinct list once, with the sessions that listed it", () => {
+    const usual = [{ name: "goal" }, { name: "compact" }];
+    expect(
+      groupSessionCommands(
+        new Map([
+          ["thread-a", usual],
+          ["thread-b", [{ name: "goal" }]],
+          ["thread-c", [...usual]],
+        ]),
+      ),
+    ).toEqual([
+      { sessions: ["thread-a", "thread-c"], commands: usual },
+      { sessions: ["thread-b"], commands: [{ name: "goal" }] },
+    ]);
+  });
+});
+
+describe("withSessionCommands", () => {
+  const status = { instanceId: "antigravity", models: [] } as unknown as ServerProvider;
+  const listed = new Map([["thread-a", [{ name: "goal" }]]]);
+
+  it("drops a list the snapshot carried from before the session ended", () => {
+    const stale = withSessionCommands(status, listed);
+    expect(stale.sessionCommands).toBeDefined();
+    expect(withSessionCommands(stale, new Map()).sessionCommands).toBeUndefined();
+  });
+
+  it("keeps the same snapshot when nothing changed, so nothing is published", () => {
+    const current = withSessionCommands(status, listed);
+    expect(withSessionCommands(current, new Map(listed))).toBe(current);
+    expect(withSessionCommands(status, new Map())).toBe(status);
+    expect(withSessionCommands(current, new Map([["thread-a", [{ name: "compact" }]]]))).not.toBe(
+      current,
+    );
+  });
+});
 
 describe("makeAcpCatalogCache", () => {
   const model = (slug: string) => ({
@@ -307,3 +355,62 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
+
+describe("enrichAcpSnapshot", () => {
+  it("preserves out-of-band accountUsage patches when applying version advisory via updateSnapshot", async () => {
+    const initial: ServerProvider = {
+      instanceId: ProviderInstanceId.make("cursor"),
+      driver: ProviderDriverKind.make("cursor"),
+      displayName: "Cursor",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated", type: "oauth-personal" },
+      checkedAt: "2026-11-24T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    };
+    const usage: NonNullable<ServerProvider["accountUsage"]> = {
+      source: "grok-billing",
+      checkedAt: "2026-11-24T00:00:01.000Z",
+      primaryLimitId: "antigravity",
+      limits: [
+        {
+          limitId: "antigravity",
+          limitName: "Antigravity usage",
+          scoped: [
+            {
+              scopeLabel: "Gemini",
+              usedPercent: 12,
+              remainingPercent: 88,
+            },
+          ],
+        },
+      ],
+    };
+    // Out-of-band patch landed on the live snapshot before enrichment finished.
+    let live: ServerProvider = { ...initial, accountUsage: usage };
+    await Effect.runPromise(
+      enrichAcpSnapshot({
+        descriptor: { ...CURSOR_ACP_DESCRIPTOR, modelCapabilitiesVaryByModel: false },
+        settings: { enabled: true, binaryPath: "agent", apiEndpoint: "", customModels: [] },
+        snapshot: initial,
+        maintenanceCapabilities: {
+          ...CURSOR_ACP_DESCRIPTOR.maintenance,
+          packageName: null,
+        },
+        publishSnapshot: () => Effect.die("expected updateSnapshot to be used"),
+        updateSnapshot: (update) =>
+          Effect.sync(() => {
+            live = update(live);
+          }),
+        stampIdentity: (next) => next,
+        httpClient: HttpClient.make(() => Effect.die("no network expected")),
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+    expect(live.accountUsage).toEqual(usage);
+    expect(live.versionAdvisory?.currentVersion).toBe("1.0.0");
+  });
+});

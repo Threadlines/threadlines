@@ -10,10 +10,13 @@ import {
   DeleteProjectionThreadInput,
   GetProjectionThreadInput,
   ListProjectionThreadsByProjectInput,
+  ListProjectionAdoptedChildrenInput,
   ListProjectionThreadsByRemoteLinkInput,
+  ProjectionSideTurnsJson,
   ProjectionThread,
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
+  sideTurnsColumnValue,
 } from "../Services/ProjectionThreads.ts";
 import {
   ModelSelection,
@@ -23,13 +26,17 @@ import {
   OrchestrationThreadLinkedPullRequest,
   OrchestrationThreadParticipant,
   OrchestrationRoomContextCursor,
-  OrchestrationSideTurn,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
   ThreadId,
   OrchestrationThreadMove,
+  ThreadPendingMove,
   ThreadMovedFrom,
+  ThreadMoveOutcome,
+  ThreadMoveRestore,
+  ThreadAdoptedFromLink,
   ThreadRemoteOrigin,
   OrchestrationOutsideWork,
   OutsideAgentRef,
@@ -51,11 +58,14 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     ),
     queuedFollowUps: Schema.fromJsonString(Schema.Array(OrchestrationQueuedFollowUp)),
     participants: Schema.fromJsonString(Schema.Array(OrchestrationThreadParticipant)),
-    sideTurn: Schema.NullOr(Schema.fromJsonString(OrchestrationSideTurn)),
+    sideTurns: Schema.NullOr(ProjectionSideTurnsJson),
     agentRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationAgentRequestState)),
     childRequests: Schema.NullOr(Schema.fromJsonString(OrchestrationChildRequestState)),
     settingsRequests: Schema.optional(
       Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSettingsChangeRequest))),
+    ),
+    secretRequests: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationSecretRequest))),
     ),
     remoteOrigin: Schema.NullOr(Schema.fromJsonString(ThreadRemoteOrigin)),
     scheduledRun: Schema.NullOr(Schema.fromJsonString(ThreadScheduledRun)),
@@ -63,7 +73,11 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     outsideOrigin: Schema.NullOr(Schema.fromJsonString(OutsideAgentRef)),
     outsideWork: Schema.NullOr(Schema.fromJsonString(Schema.Array(OrchestrationOutsideWork))),
     move: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadMove)),
+    pendingMove: Schema.NullOr(Schema.fromJsonString(ThreadPendingMove)),
     movedFrom: Schema.NullOr(Schema.fromJsonString(ThreadMovedFrom)),
+    lastMoveOutcome: Schema.NullOr(Schema.fromJsonString(ThreadMoveOutcome)),
+    moveRestoreOwed: Schema.NullOr(Schema.fromJsonString(ThreadMoveRestore)),
+    adoptedFromLink: Schema.NullOr(Schema.fromJsonString(ThreadAdoptedFromLink)),
     roomContext: Schema.fromJsonString(
       Schema.Record(Schema.String, OrchestrationRoomContextCursor),
     ),
@@ -113,21 +127,28 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           parent_thread_id,
           parent_turn_id,
           attached_to_parent,
+          stops_with_parent,
           parent_attachment_epoch,
           handed_back_at,
           handed_back_turn_id,
           archived_with_parent_at,
           child_requests,
           settings_requests,
+          secret_requests,
           remote_origin_json,
           scheduled_run_json,
           worktree_origin_json,
           outside_origin_json,
           outside_work_json,
           move_json,
+          pending_move_json,
           moved_from_json,
+          last_move_outcome_json,
+          move_restore_owed_json,
+          adopted_from_link_json,
           history_seed_owed,
           history_seed_message_id,
+          native_session,
           done_override,
           done_override_at,
           last_seen_at,
@@ -168,7 +189,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           },
           ${JSON.stringify(row.queuedFollowUps ?? [])},
           ${JSON.stringify(row.participants ?? [])},
-          ${row.sideTurn ? JSON.stringify(row.sideTurn) : null},
+          ${sideTurnsColumnValue(row.sideTurns)},
           ${JSON.stringify(row.roomContext ?? {})},
           ${JSON.stringify(row.sentModels ?? {})},
           ${row.agentRole ?? null},
@@ -176,6 +197,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.parentThreadId ?? null},
           ${row.parentTurnId ?? null},
           ${row.attachedToParent ?? null},
+          ${row.stopsWithParent ?? null},
           ${row.parentAttachmentEpoch ?? null},
           ${row.handedBackAt ?? null},
           ${row.handedBackTurnId ?? null},
@@ -186,15 +208,25 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
               ? JSON.stringify(row.settingsRequests)
               : null
           },
+          ${
+            row.secretRequests && row.secretRequests.length > 0
+              ? JSON.stringify(row.secretRequests)
+              : null
+          },
           ${row.remoteOrigin ? JSON.stringify(row.remoteOrigin) : null},
           ${row.scheduledRun ? JSON.stringify(row.scheduledRun) : null},
           ${row.worktreeOrigin ? JSON.stringify(row.worktreeOrigin) : null},
           ${row.outsideOrigin ? JSON.stringify(row.outsideOrigin) : null},
           ${row.outsideWork && row.outsideWork.length > 0 ? JSON.stringify(row.outsideWork) : null},
           ${row.move ? JSON.stringify(row.move) : null},
+          ${row.pendingMove ? JSON.stringify(row.pendingMove) : null},
           ${row.movedFrom ? JSON.stringify(row.movedFrom) : null},
+          ${row.lastMoveOutcome ? JSON.stringify(row.lastMoveOutcome) : null},
+          ${row.moveRestoreOwed ? JSON.stringify(row.moveRestoreOwed) : null},
+          ${row.adoptedFromLink ? JSON.stringify(row.adoptedFromLink) : null},
           ${row.historySeedOwed ?? 0},
           ${row.historySeedMessageId ?? null},
+          ${row.nativeSession ?? null},
           ${row.doneOverride ?? null},
           ${row.doneOverrideAt ?? null},
           ${row.lastSeenAt ?? null},
@@ -239,21 +271,28 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           parent_thread_id = excluded.parent_thread_id,
           parent_turn_id = excluded.parent_turn_id,
           attached_to_parent = excluded.attached_to_parent,
+          stops_with_parent = excluded.stops_with_parent,
           parent_attachment_epoch = excluded.parent_attachment_epoch,
           handed_back_at = excluded.handed_back_at,
           handed_back_turn_id = excluded.handed_back_turn_id,
           archived_with_parent_at = excluded.archived_with_parent_at,
           child_requests = excluded.child_requests,
           settings_requests = excluded.settings_requests,
+          secret_requests = excluded.secret_requests,
           remote_origin_json = excluded.remote_origin_json,
           scheduled_run_json = excluded.scheduled_run_json,
           worktree_origin_json = excluded.worktree_origin_json,
           outside_origin_json = excluded.outside_origin_json,
           outside_work_json = excluded.outside_work_json,
           move_json = excluded.move_json,
+          pending_move_json = excluded.pending_move_json,
           moved_from_json = excluded.moved_from_json,
+          last_move_outcome_json = excluded.last_move_outcome_json,
+          move_restore_owed_json = excluded.move_restore_owed_json,
+          adopted_from_link_json = excluded.adopted_from_link_json,
           history_seed_owed = excluded.history_seed_owed,
           history_seed_message_id = excluded.history_seed_message_id,
+          native_session = excluded.native_session,
           done_override = excluded.done_override,
           done_override_at = excluded.done_override_at,
           last_seen_at = excluded.last_seen_at,
@@ -297,7 +336,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_role AS "agentRole",
@@ -305,21 +344,28 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -365,7 +411,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           dismissed_pull_requests AS "dismissedPullRequests",
           queued_follow_ups AS "queuedFollowUps",
           participants AS "participants",
-          side_turn AS "sideTurn",
+          side_turn AS "sideTurns",
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_role AS "agentRole",
@@ -373,21 +419,28 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           parent_thread_id AS "parentThreadId",
           parent_turn_id AS "parentTurnId",
           attached_to_parent AS "attachedToParent",
+          stops_with_parent AS "stopsWithParent",
           parent_attachment_epoch AS "parentAttachmentEpoch",
           handed_back_at AS "handedBackAt",
           handed_back_turn_id AS "handedBackTurnId",
           archived_with_parent_at AS "archivedWithParentAt",
           child_requests AS "childRequests",
           settings_requests AS "settingsRequests",
+          secret_requests AS "secretRequests",
           remote_origin_json AS "remoteOrigin",
           scheduled_run_json AS "scheduledRun",
           worktree_origin_json AS "worktreeOrigin",
           outside_origin_json AS "outsideOrigin",
           outside_work_json AS "outsideWork",
           move_json AS "move",
+          pending_move_json AS "pendingMove",
           moved_from_json AS "movedFrom",
+          last_move_outcome_json AS "lastMoveOutcome",
+          move_restore_owed_json AS "moveRestoreOwed",
+          adopted_from_link_json AS "adoptedFromLink",
           history_seed_owed AS "historySeedOwed",
           history_seed_message_id AS "historySeedMessageId",
+          native_session AS "nativeSession",
           done_override AS "doneOverride",
           done_override_at AS "doneOverrideAt",
           last_seen_at AS "lastSeenAt",
@@ -412,6 +465,33 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         FROM projection_threads
         WHERE remote_origin_json IS NOT NULL
           AND json_extract(remote_origin_json, '$.linkDeviceId') = ${linkDeviceId}
+          AND deleted_at IS NULL
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
+  const listAdoptedChildIdsRows = SqlSchema.findAll({
+    Request: ListProjectionAdoptedChildrenInput,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ parentThreadId }) =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE parent_thread_id = ${parentThreadId}
+          AND adopted_from_link_json IS NOT NULL
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
+  const listAttachedChildIdsRows = SqlSchema.findAll({
+    Request: ListProjectionAdoptedChildrenInput,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ parentThreadId }) =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE parent_thread_id = ${parentThreadId}
+          AND attached_to_parent > 0
           AND deleted_at IS NULL
         ORDER BY created_at ASC, thread_id ASC
       `,
@@ -449,6 +529,22 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       ),
     );
 
+  const listAdoptedChildIds: ProjectionThreadRepositoryShape["listAdoptedChildIds"] = (input) =>
+    listAdoptedChildIdsRows(input).pipe(
+      Effect.map((rows) => rows.map((row) => row.threadId)),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadRepository.listAdoptedChildIds:query"),
+      ),
+    );
+
+  const listAttachedChildIds: ProjectionThreadRepositoryShape["listAttachedChildIds"] = (input) =>
+    listAttachedChildIdsRows(input).pipe(
+      Effect.map((rows) => rows.map((row) => row.threadId)),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadRepository.listAttachedChildIds:query"),
+      ),
+    );
+
   const deleteById: ProjectionThreadRepositoryShape["deleteById"] = (input) =>
     deleteProjectionThreadRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.deleteById:query")),
@@ -459,6 +555,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     getById,
     listByProjectId,
     listIdsByRemoteLink,
+    listAdoptedChildIds,
+    listAttachedChildIds,
     deleteById,
   } satisfies ProjectionThreadRepositoryShape;
 });

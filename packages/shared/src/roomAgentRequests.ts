@@ -6,28 +6,27 @@
  */
 import {
   type OrchestrationAgentRequestState,
-  type OrchestrationSideTurn,
   type OrchestrationThreadParticipant,
   type RoomAgentInvite,
   type RoomAgentInviteChoice,
+  type RoomAgentBatchId,
   type RoomAgentRef,
   type RoomAgentRequestKind,
   type RoomAgentRequestOutcome,
-  ROOM_AGENT_REQUEST_LIMIT,
   type ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
 
+import { type SideTurnFields, sideTurnStartRefusal } from "./sideTurns.ts";
 import { activeParticipants } from "./threadParticipants.ts";
 
 /** What the rules read from a thread. */
-export interface AgentRequestThread {
+export interface AgentRequestThread extends SideTurnFields {
   readonly participants?: ReadonlyArray<OrchestrationThreadParticipant> | undefined;
   readonly session: {
     readonly participantId?: ThreadParticipantId | null | undefined;
     readonly activeTurnId: TurnId | null;
   } | null;
-  readonly sideTurn?: OrchestrationSideTurn | null | undefined;
   readonly agentRequests: OrchestrationAgentRequestState;
 }
 
@@ -37,26 +36,21 @@ export interface AgentRequestInput {
   readonly to: RoomAgentRef;
   readonly callerTurnId: TurnId;
   readonly chainEpoch: number;
+  /** A review asked of several agents in one call. */
+  readonly batchId?: RoomAgentBatchId | undefined;
 }
 
 /**
- * Why a request is refused: `busy` (a side answer is already running),
- * `limit` (agents have used their requests until the user writes), or
- * `refused` (anything else, with a reason the calling agent can act on).
+ * Why a request is refused: `busy` (its agent is already answering on the
+ * side, or the most side answers run at once), or `refused` (anything else,
+ * with a reason the calling agent can act on). There is no count: agents make
+ * as many requests of each other as they like, until the user stops them
+ * (docs/design/agent-autonomy-no-limits.md).
  */
 export interface AgentRequestRefusal {
-  readonly outcome: "refused" | "busy" | "limit";
+  readonly outcome: "refused" | "busy";
   readonly detail: string;
 }
-
-/**
- * The room shows no notice when agents reach the limit, so the calling
- * agent's reply is where the user learns a request was not made.
- */
-const LIMIT_REFUSAL: AgentRequestRefusal = {
-  outcome: "limit",
-  detail: `Agents have made ${ROOM_AGENT_REQUEST_LIMIT} requests since the user last wrote, so this one was not made. Say so in your reply, and wait for the user to write before asking again.`,
-};
 
 const sameAgent = (left: RoomAgentRef, right: RoomAgentRef) =>
   (left.participantId ?? null) === (right.participantId ?? null);
@@ -97,14 +91,9 @@ export function agentRequestRefusal(
   if (target !== null && !present.some((participant) => participant.id === target)) {
     return { outcome: "refused", detail: "That agent is not in this room." };
   }
-  if (state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT) {
-    return LIMIT_REFUSAL;
-  }
-  if (input.kind !== "hand_off" && (thread.sideTurn ?? null) !== null) {
-    return {
-      outcome: "busy",
-      detail: "Another agent is already answering on the side. Try again once it finishes.",
-    };
+  if (input.kind !== "hand_off") {
+    const busy = sideTurnStartRefusal(thread, input.to.participantId ?? null);
+    if (busy !== null) return { outcome: "busy", detail: busy };
   }
   return null;
 }
@@ -113,14 +102,13 @@ export interface AgentInviteInput {
   readonly from: RoomAgentRef;
   readonly callerTurnId: TurnId;
   readonly chainEpoch: number;
-  /** The agent is brought in and its review starts at once ("without asking"). */
-  readonly startsNow: boolean;
 }
 
 /**
- * Why an invite is refused, or null. The same holder, turn, Stop and limit
- * rules as other requests; besides those, a declined invite silences invites
+ * Why an invite is refused, or null. The same holder, turn and Stop rules as
+ * other requests; besides those, a declined invite silences invites
  * until the user writes, and only one invite waits for the user at a time.
+ * A side answer running is no reason: an accepted invite waits its turn.
  */
 export function agentInviteRefusal(
   thread: AgentRequestThread & { readonly voiceActive?: boolean | undefined },
@@ -158,25 +146,17 @@ export function agentInviteRefusal(
       detail: "An invite is already waiting for the user. Wait for the user's answer.",
     };
   }
-  if (state.requestsSinceUser >= ROOM_AGENT_REQUEST_LIMIT) {
-    return LIMIT_REFUSAL;
-  }
   if (thread.voiceActive === true) {
     return { outcome: "refused", detail: "Voice is on. Agents cannot invite others while it is." };
-  }
-  if (input.startsNow && (thread.sideTurn ?? null) !== null) {
-    return {
-      outcome: "busy",
-      detail: "Another agent is already answering on the side. Try again once it finishes.",
-    };
   }
   return null;
 }
 
 /**
- * Why the user's answer to an invite cannot be applied now, or null. Checked
- * when the user answers, since the thread may have moved on while they
- * thought it over.
+ * Why an accepted invite's review cannot start, or null. Checked when the
+ * user answers, since the thread may have moved on while they thought it
+ * over, and again when an invite that waited for another side answer gets
+ * its turn.
  */
 export function agentInviteAcceptRefusal(
   thread: AgentRequestThread & { readonly voiceActive?: boolean | undefined },
@@ -187,9 +167,6 @@ export function agentInviteAcceptRefusal(
   }
   if (thread.voiceActive === true) {
     return "Stop voice before bringing in another agent.";
-  }
-  if ((thread.sideTurn ?? null) !== null) {
-    return "Another agent is answering on the side. Try again once it finishes.";
   }
   const caller = request.from.participantId ?? null;
   if (
@@ -222,11 +199,7 @@ export const agentRequestStateOn = {
   ): OrchestrationAgentRequestState =>
     state.open.some((entry) => entry.requestId === request.requestId)
       ? state
-      : {
-          ...state,
-          open: [...state.open, request],
-          requestsSinceUser: state.requestsSinceUser + 1,
-        },
+      : { ...state, open: [...state.open, request] },
   updated: (
     state: OrchestrationAgentRequestState,
     update: {
@@ -269,12 +242,15 @@ export const agentRequestStateOn = {
   held: (
     state: OrchestrationAgentRequestState,
     chainEpoch: number,
-  ): OrchestrationAgentRequestState =>
-    state.hold && state.chainEpoch === chainEpoch ? state : { ...state, hold: true, chainEpoch },
-  reset: (state: OrchestrationAgentRequestState): OrchestrationAgentRequestState =>
-    !state.hold && state.requestsSinceUser === 0 && !state.invitesPaused
+    options?: { readonly keepHold?: boolean | undefined },
+  ): OrchestrationAgentRequestState => {
+    const hold = options?.keepHold === true ? state.hold : true;
+    return state.hold === hold && state.chainEpoch === chainEpoch
       ? state
-      : { ...state, hold: false, requestsSinceUser: 0, invitesPaused: false },
+      : { ...state, hold, chainEpoch };
+  },
+  reset: (state: OrchestrationAgentRequestState): OrchestrationAgentRequestState =>
+    !state.hold && !state.invitesPaused ? state : { ...state, hold: false, invitesPaused: false },
 };
 
 /**
@@ -309,26 +285,41 @@ export const isAgentOrigin = (entry: {
 /**
  * A message an agent queued (a reply, or a child thread's report or request)
  * that was taken back before it was sent: it stays in the chat, marked
- * cancelled, and never started a turn. The projections and the web store all
- * apply it through this.
+ * cancelled, and never started a turn. A lead chat's pass (`fromThread.ceiling`)
+ * taken back is also `notSent`, which keeps it out of every history an agent
+ * is given (`reachedAgent`). The projections and the web store all apply it
+ * through this.
  */
 export const withUnqueuedAgentMessage = <
   Message extends {
     readonly id: string;
     readonly fromAgent?: unknown;
-    readonly fromThread?: unknown;
+    readonly fromThread?: { readonly ceiling?: unknown } | undefined;
+    readonly fromOutside?: unknown;
     readonly requestOutcome?: RoomAgentRequestOutcome | undefined;
+    readonly notSent?: true | undefined;
   },
 >(
   message: Message,
   unqueued: { readonly messageId: string; readonly reason: "sent" | "cancelled" },
-): Message =>
-  unqueued.reason === "cancelled" &&
-  message.id === unqueued.messageId &&
-  isAgentOrigin(message) &&
-  message.requestOutcome === undefined
-    ? { ...message, requestOutcome: "cancelled" }
+): Message => {
+  if (
+    unqueued.reason !== "cancelled" ||
+    message.id !== unqueued.messageId ||
+    !isAgentOrigin(message)
+  ) {
+    return message;
+  }
+  const outcome = message.requestOutcome === undefined;
+  const notSent = message.fromThread?.ceiling !== undefined && message.notSent !== true;
+  return outcome || notSent
+    ? {
+        ...message,
+        ...(outcome ? { requestOutcome: "cancelled" as const } : {}),
+        ...(notSent ? { notSent: true as const } : {}),
+      }
     : message;
+};
 
 /**
  * Whether the user wrote a message. In a room, an agent can write a user-role

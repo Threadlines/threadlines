@@ -3,7 +3,8 @@ import { type PlaceId, placePage } from "@threadlines/shared/appPlaces";
 import { useRouter } from "@tanstack/react-router";
 import { type ComponentType, createElement, type ReactNode } from "react";
 
-import { nextPlaceArrivalHash, placeArrivalHash, resolvePlaceLink } from "../../appPlaceLinks";
+import { resolvePlaceLink } from "../../appPlaceLinks";
+import { nextPlaceArrivalHash, placeArrivalHash } from "../../placeArrival";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { isElectron } from "../../env";
 import { selectEnvironmentState, useStore } from "../../store";
@@ -30,7 +31,12 @@ function placePageIcon(
   return (
     SETTINGS_NAV_ITEMS.find((item) => item.to === pathname)?.icon ??
     NAVIGATION_DESTINATION_ICONS[
-      resolveSelectedDestination({ pathname, openThreadIsGeneralChat: false })
+      // A link to General Chats keeps their own icon wherever they are listed.
+      resolveSelectedDestination({
+        pathname,
+        openThreadIsGeneralChat: false,
+        generalChatsInThreads: false,
+      })
     ]
   );
 }

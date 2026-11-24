@@ -141,3 +141,44 @@ export function resolveRestorableThreadRoute(input: {
     ? { kind: "draft", draftId: input.entry.draftId as DraftId }
     : null;
 }
+
+/**
+ * The threads opened on this device, newest first, for the command palette's
+ * Recent group (docs/design/command-palette.md, section 6). Scoped thread
+ * keys, written when the thread in the route changes; a thread opened again
+ * moves to the front. Never sent anywhere.
+ */
+export const RECENT_THREAD_VISITS_STORAGE_KEY = "threadlines:recent-thread-visits:v1";
+export const RECENT_THREAD_VISITS_LIMIT = 20;
+const RecentThreadVisitsSchema = Schema.Array(Schema.String);
+
+export function readRecentThreadVisits(): ReadonlyArray<string> {
+  try {
+    return (
+      getLocalStorageItemWithLegacyKeys(
+        RECENT_THREAD_VISITS_STORAGE_KEY,
+        [],
+        RecentThreadVisitsSchema,
+      ) ?? []
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function recordRecentThreadVisit(threadKey: string): void {
+  const current = readRecentThreadVisits();
+  if (current[0] === threadKey) return;
+  try {
+    setLocalStorageItem(
+      RECENT_THREAD_VISITS_STORAGE_KEY,
+      [threadKey, ...current.filter((key) => key !== threadKey)].slice(
+        0,
+        RECENT_THREAD_VISITS_LIMIT,
+      ),
+      RecentThreadVisitsSchema,
+    );
+  } catch {
+    // Best-effort, like the last visited route: storage failing must not break routing.
+  }
+}

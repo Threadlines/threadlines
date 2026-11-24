@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -119,6 +121,28 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("retries Electron packaging when Apple's timestamp server drops a signature", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const result = yield* retryTransientElectronPackaging(
+        Effect.suspend(() => {
+          attempts += 1;
+          return attempts < 2
+            ? Effect.fail(
+                new TestFailure({
+                  message:
+                    "Command failed: codesign --sign ... locale.pak\nlocale.pak: A timestamp was expected but was not found.",
+                }),
+              )
+            : Effect.succeed("built");
+        }),
+      );
+
+      assert.equal(result, "built");
+      assert.equal(attempts, 2);
+    }),
+  );
+
   it.effect("does not retry non-network packaging failures", () =>
     Effect.gen(function* () {
       let attempts = 0;
@@ -234,10 +258,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         // The script the staged include is copied from: every channel's scheme,
         // removed only when it still starts this install's exe, never on update.
         const script = yield* fs.readFileString(
-          new URL(
-            `../apps/desktop/resources/${WINDOWS_INSTALLER_INCLUDE_FILE_NAME}`,
-            import.meta.url,
-          ).pathname,
+          fileURLToPath(
+            new URL(
+              `../apps/desktop/resources/${WINDOWS_INSTALLER_INCLUDE_FILE_NAME}`,
+              import.meta.url,
+            ),
+          ),
         );
         assert.include(script, "!macro customUnInstall");
         assert.include(script, "${IfNot} ${isUpdated}");
@@ -276,10 +302,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       // The Electron this repo installs, where its binary is downloaded.
       const fs = yield* FileSystem.FileSystem;
-      const installedPlist = new URL(
-        "../apps/desktop/node_modules/electron/dist/Electron.app/Contents/Info.plist",
-        import.meta.url,
-      ).pathname;
+      const installedPlist = fileURLToPath(
+        new URL(
+          "../apps/desktop/node_modules/electron/dist/Electron.app/Contents/Info.plist",
+          import.meta.url,
+        ),
+      );
       if (yield* fs.exists(installedPlist)) {
         assert.isNull(checkMacMinimumSystemVersion(yield* fs.readFileString(installedPlist)));
       }

@@ -43,10 +43,53 @@ function resolveChatGroup(activityAt: string, nowMs: number): ChatGroupId {
 
 /**
  * Every connected computer's general chats, newest first, and a way to start
- * one. The General Chats list beside the rail, the phone's chats page and
- * previous/next read the same order.
+ * one. The General Chats list beside the rail, the phone's chats page, the
+ * General chats section of Threads and previous/next read the same order.
+ * `environmentId` narrows both to one computer, as the Threads list's
+ * computer filter does: only its chats, and new ones start there.
  */
-export function useGeneralChats(): {
+/**
+ * Starts a new general chat (`initialPrompt` opens it with words to finish),
+ * or null while no computer has a General Chats project to start one in. It
+ * reads no threads, so a streamed reply doesn't re-render its caller.
+ */
+export function useStartGeneralChat(options?: {
+  readonly environmentId: string | null;
+}): ((initialPrompt?: string) => void) | null {
+  const { handleNewThread } = useHandleNewThread();
+  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
+  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+
+  const onlyEnvironmentId = options?.environmentId ?? null;
+  const generalChatsProjectRef = useMemo(() => {
+    if (onlyEnvironmentId !== null) {
+      const project = projects.find(
+        (candidate) =>
+          candidate.kind === "general-chat" && candidate.environmentId === onlyEnvironmentId,
+      );
+      return project ? scopeProjectRef(project.environmentId, project.id) : null;
+    }
+    return resolveGeneralChatsProjectRef({
+      generalChatsProject,
+      activeEnvironmentId,
+      primaryEnvironmentId,
+    });
+  }, [activeEnvironmentId, generalChatsProject, onlyEnvironmentId, primaryEnvironmentId, projects]);
+
+  const startChatInProject = useCallback(
+    (initialPrompt?: string) => {
+      if (generalChatsProjectRef) {
+        void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef, initialPrompt);
+      }
+    },
+    [generalChatsProjectRef, handleNewThread],
+  );
+  return generalChatsProjectRef === null ? null : startChatInProject;
+}
+
+export function useGeneralChats(options?: { readonly environmentId: string | null }): {
   readonly chats: readonly SidebarThreadSummary[];
   /**
    * Null while no computer has a General Chats project to start one in.
@@ -54,22 +97,10 @@ export function useGeneralChats(): {
    */
   readonly startChat: ((initialPrompt?: string) => void) | null;
 } {
-  const { handleNewThread } = useHandleNewThread();
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
-  const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
-  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-
-  const generalChatsProjectRef = useMemo(
-    () =>
-      resolveGeneralChatsProjectRef({
-        generalChatsProject,
-        activeEnvironmentId,
-        primaryEnvironmentId,
-      }),
-    [activeEnvironmentId, generalChatsProject, primaryEnvironmentId],
-  );
+  const startChat = useStartGeneralChat(options);
+  const onlyEnvironmentId = options?.environmentId ?? null;
 
   const chats = useMemo(() => {
     const generalChatProjectKeys = new Set(
@@ -81,26 +112,15 @@ export function useGeneralChats(): {
       threads.filter(
         (thread) =>
           thread.archivedAt === null &&
+          (onlyEnvironmentId === null || thread.environmentId === onlyEnvironmentId) &&
           generalChatProjectKeys.has(
             scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
           ),
       ),
     );
-  }, [projects, threads]);
+  }, [onlyEnvironmentId, projects, threads]);
 
-  const startChatInProject = useCallback(
-    (initialPrompt?: string) => {
-      if (generalChatsProjectRef) {
-        void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef, initialPrompt);
-      }
-    },
-    [generalChatsProjectRef, handleNewThread],
-  );
-
-  return {
-    chats,
-    startChat: generalChatsProjectRef === null ? null : startChatInProject,
-  };
+  return { chats, startChat };
 }
 
 /**

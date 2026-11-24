@@ -124,6 +124,53 @@ const BUILT_IN_RATES: RateTable = new Map([
   ],
 ]);
 
+/** A Gemini rate: no cache-write charge (Gemini 4 caches implicitly). */
+const geminiRate = (input: number, output: number, cacheRead: number): ModelRate => ({
+  inputCostPerToken: perMillion(input),
+  outputCostPerToken: perMillion(output),
+  cacheReadCostPerToken: perMillion(cacheRead),
+  cacheCreationCostPerToken: perMillion(input),
+  cacheCreation1hCostPerToken: perMillion(input),
+});
+
+/** Google's Gemini 4 rise of December 1, 2026, taken as midnight UTC. */
+const GEMINI_4_RISE_MS = Date.UTC(2026, 11, 1);
+
+/**
+ * Rates that change on a known day, newest last: each applies from its
+ * `fromMs` on. Gemini 4's Standard tier, from Google's price list
+ * (aistudio.google.com/docs/pricing, read 2026-11-23; no tier above 200k
+ * tokens was listed). Antigravity's Google plans don't bill per token, so
+ * these are the API equivalent, like every figure here.
+ */
+const BUILT_IN_DATED_RATES: ReadonlyMap<
+  string,
+  ReadonlyArray<{ readonly fromMs: number; readonly rate: ModelRate }>
+> = new Map([
+  [
+    "gemini-4-carbon",
+    [
+      { fromMs: 0, rate: geminiRate(2, 10, 0.1) },
+      { fromMs: GEMINI_4_RISE_MS, rate: geminiRate(4, 20, 0.2) },
+    ],
+  ],
+  [
+    "gemini-4-argon",
+    [
+      { fromMs: 0, rate: geminiRate(2, 10, 0.1) },
+      { fromMs: GEMINI_4_RISE_MS, rate: geminiRate(4, 20, 0.2) },
+    ],
+  ],
+  ["gemini-4-neon", [{ fromMs: 0, rate: geminiRate(3, 15, 0.15) }]],
+  ["gemini-4-hydrogen", [{ fromMs: 0, rate: geminiRate(1.5, 7.5, 0.075) }]],
+]);
+
+/**
+ * The Gemini 4 family a model id names, for an agent that adds a reasoning
+ * level or a role to it (Antigravity's `gemini-4-argon-high`).
+ */
+const GEMINI_4_FAMILY = /^(gemini-4-(?:carbon|argon|neon|hydrogen))-[a-z0-9-]+$/u;
+
 /**
  * Canonicalises a model name for lookup.
  *
@@ -153,10 +200,41 @@ const UNPRICEABLE_MODELS = new Set([
   "fable",
 ]);
 
-export function lookupRate(table: RateTable, model: string): ModelRate | null {
+/**
+ * The rate for `model` at `atMs` (the newest when absent): the fetched table's,
+ * then the built-in ones. A model id with a suffix the family doesn't
+ * publish is priced as its family.
+ */
+export function lookupRate(table: RateTable, model: string, atMs?: number): ModelRate | null {
   const normalized = normalizeModelName(model);
   if (normalized.length === 0 || UNPRICEABLE_MODELS.has(normalized)) return null;
-  return table.get(normalized) ?? BUILT_IN_RATES.get(normalized) ?? null;
+  const family = GEMINI_4_FAMILY.exec(normalized)?.[1];
+  const names = family === undefined ? [normalized] : [normalized, family];
+  // Before a known price change, the price history decides: the fetched
+  // table holds only the current rate.
+  for (const name of names) {
+    const earlier = earlierDatedRate(name, atMs);
+    if (earlier !== undefined) return earlier;
+  }
+  for (const name of names) {
+    const rate = table.get(name) ?? BUILT_IN_RATES.get(name) ?? datedRate(name, atMs);
+    if (rate !== undefined) return rate;
+  }
+  return null;
+}
+
+/** The dated rate for a time before the model's last known change, else nothing. */
+function earlierDatedRate(name: string, atMs: number | undefined): ModelRate | undefined {
+  const lastChange = BUILT_IN_DATED_RATES.get(name)?.at(-1)?.fromMs;
+  if (atMs === undefined || lastChange === undefined || atMs >= lastChange) return undefined;
+  return datedRate(name, atMs);
+}
+
+function datedRate(name: string, atMs: number | undefined): ModelRate | undefined {
+  const rates = BUILT_IN_DATED_RATES.get(name);
+  if (rates === undefined) return undefined;
+  if (atMs === undefined) return rates.at(-1)?.rate;
+  return rates.findLast((entry) => entry.fromMs <= atMs)?.rate ?? rates[0]?.rate;
 }
 
 export interface PricedUsage {
@@ -171,6 +249,8 @@ export interface PriceableUsage {
   /** Portion of `totals.cacheCreationTokens` written with the 1-hour TTL. */
   readonly cacheCreation1hTokens: number;
   readonly reportedCostUsd: number | null;
+  /** When it was used, for a rate that changed on a known day. */
+  readonly timestampMs?: number;
 }
 
 /**
@@ -184,7 +264,7 @@ export function priceUsage(table: RateTable, usage: PriceableUsage): PricedUsage
     return { costUsd: usage.reportedCostUsd, costSource: "providerReported" };
   }
 
-  const rate = lookupRate(table, usage.model);
+  const rate = lookupRate(table, usage.model, usage.timestampMs);
   if (rate === null) return { costUsd: 0, costSource: "unpriced" };
 
   const { totals } = usage;
@@ -204,8 +284,13 @@ export function priceUsage(table: RateTable, usage: PriceableUsage): PricedUsage
  * What the cached input would have cost at full input rates, minus what it
  * actually cost. Drives the "cache savings" figure.
  */
-export function cacheSavingsUsd(table: RateTable, model: string, totals: UsageTokenTotals): number {
-  const rate = lookupRate(table, model);
+export function cacheSavingsUsd(
+  table: RateTable,
+  model: string,
+  totals: UsageTokenTotals,
+  atMs?: number,
+): number {
+  const rate = lookupRate(table, model, atMs);
   if (rate === null) return 0;
   return totals.cachedInputTokens * (rate.inputCostPerToken - rate.cacheReadCostPerToken);
 }

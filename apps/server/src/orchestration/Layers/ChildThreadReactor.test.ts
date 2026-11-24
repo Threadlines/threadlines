@@ -132,6 +132,13 @@ function withReactor<A, E>(
   options: {
     readonly setupFails?: boolean;
     readonly completedTurnFor?: MessageId;
+    /** The child's turn rows, in the repository's order; overrides `completedTurnFor`. */
+    readonly turns?: ReadonlyArray<{
+      readonly turnId: TurnId;
+      readonly pendingMessageId: MessageId | null;
+      readonly state: string;
+      readonly requestedAt: string;
+    }>;
     /** "Threads can share a checkout" (default off, as the setting is). */
     readonly shareWorktrees?: boolean;
   },
@@ -165,6 +172,8 @@ function withReactor<A, E>(
             projects: [],
             threads: [...harness.threads.values()].map((entry) => ({
               id: entry.id,
+              parentThreadId: entry.parentThreadId,
+              attachedToParent: entry.attachedToParent,
               queuedFollowUps: entry.queuedFollowUps ?? [],
               session: entry.session,
               awaitedChildThreadCount: entry.childRequests.open.filter(
@@ -197,22 +206,27 @@ function withReactor<A, E>(
       Layer.succeed(ProjectionTurnRepository, {
         listByThreadId: () =>
           Effect.succeed(
-            options.completedTurnFor === undefined
-              ? []
-              : [
-                  {
-                    threadId: CHILD,
-                    turnId: TurnId.make("child-turn-1"),
-                    pendingMessageId: options.completedTurnFor,
-                    state: "completed",
-                  },
-                ],
+            options.turns !== undefined
+              ? options.turns.map((turn) => ({ threadId: CHILD, ...turn }))
+              : options.completedTurnFor === undefined
+                ? []
+                : [
+                    {
+                      threadId: CHILD,
+                      turnId: TurnId.make("child-turn-1"),
+                      pendingMessageId: options.completedTurnFor,
+                      state: "completed",
+                      requestedAt: now,
+                    },
+                  ],
           ),
       } as unknown as ProjectionTurnRepositoryShape),
       ServerSettingsService.layerTest(
         options.shareWorktrees === true ? { agentThreadsShareWorktrees: true } : {},
       ),
     );
+    // This process starts after everything the fixtures wrote.
+    yield* TestClock.setTime(Date.parse(now) + 60_000);
     return yield* Effect.gen(function* () {
       const reactor = yield* makeChildThreadReactor;
       yield* reactor.start();
@@ -292,6 +306,143 @@ describe("ChildThreadReactor", () => {
           expect(settles(harness)[0]?.reply?.text).toBe("Changelog written.");
         }),
     ),
+  );
+
+  it.effect("after a restart, settles each report a child still owed, once", () =>
+    withReactor(
+      [
+        parentWith([]),
+        thread(CHILD, {
+          childRequests: {
+            ...EMPTY_CHILD_REQUEST_STATE,
+            owedReports: [
+              // Its turn completed before the crash: delivered.
+              {
+                turnId: TurnId.make("child-turn-1"),
+                deliveryEpoch: 0,
+                attachmentEpoch: 0,
+                createdAt: now,
+              },
+              // A check-back the restart cut off.
+              {
+                turnId: TurnId.make("child-turn-2"),
+                deliveryEpoch: 0,
+                attachmentEpoch: 0,
+                createdAt: now,
+              },
+            ],
+          },
+          messages: [
+            {
+              id: MessageId.make("answer"),
+              role: "assistant",
+              text: "Release notes checked again: nothing new.",
+              turnId: TurnId.make("child-turn-1"),
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        }),
+      ],
+      { completedTurnFor: CHILD_MESSAGE },
+      (harness) =>
+        Effect.sync(() => {
+          const reports = harness.dispatched.filter(
+            (command) => command.type === "thread.child-report.settle",
+          );
+          expect(reports).toMatchObject([
+            {
+              threadId: CHILD,
+              owed: { turnId: TurnId.make("child-turn-1") },
+              turnId: TurnId.make("child-turn-1"),
+              text: "Release notes checked again: nothing new.",
+            },
+            {
+              threadId: CHILD,
+              owed: { turnId: TurnId.make("child-turn-2") },
+              text: "'Write the changelog' was interrupted by a Threadlines restart. Send it a message with thread_send to continue.",
+            },
+          ]);
+        }),
+    ),
+  );
+
+  it.effect(
+    "after a restart, settles nothing against a message's earlier run for a resend no turn claimed (finding 6)",
+    () =>
+      withReactor(
+        [
+          parentWith([]),
+          thread(CHILD, {
+            childRequests: {
+              ...EMPTY_CHILD_REQUEST_STATE,
+              // The resend's start, cut before any turn took it.
+              owedReports: [
+                {
+                  messageId: CHILD_MESSAGE,
+                  deliveryEpoch: 0,
+                  attachmentEpoch: 0,
+                  createdAt: "2026-10-04T10:00:30.000Z",
+                },
+              ],
+            },
+          }),
+        ],
+        // The message's first run finished and was reported long ago.
+        { completedTurnFor: CHILD_MESSAGE },
+        (harness) =>
+          Effect.sync(() => {
+            const settles = harness.dispatched.filter(
+              (command) => command.type === "thread.child-report.settle",
+            );
+            expect(settles).toHaveLength(1);
+            expect(settles[0]).toMatchObject({ owed: { messageId: CHILD_MESSAGE }, turnId: null });
+            expect(settles[0]).not.toHaveProperty("text");
+          }),
+      ),
+  );
+
+  it.effect(
+    "after a restart, sends nothing for a turn a Stop named before the process stopped (round 3, finding 4)",
+    () =>
+      withReactor(
+        [
+          parentWith([]),
+          thread(CHILD, {
+            session: {
+              threadId: CHILD,
+              status: "interrupted",
+              providerName: "claudeAgent",
+              runtimeMode: "auto-accept-edits",
+              activeTurnId: null,
+              lastError: null,
+              stopRequestedTurnId: TurnId.make("stopped-turn"),
+              updatedAt: now,
+            },
+            childRequests: {
+              ...EMPTY_CHILD_REQUEST_STATE,
+              owedReports: [
+                {
+                  turnId: TurnId.make("stopped-turn"),
+                  deliveryEpoch: 0,
+                  attachmentEpoch: 0,
+                  createdAt: now,
+                },
+              ],
+            },
+          }),
+        ],
+        {},
+        (harness) =>
+          Effect.sync(() => {
+            const settles = harness.dispatched.filter(
+              (command) => command.type === "thread.child-report.settle",
+            );
+            expect(settles).toHaveLength(1);
+            expect(settles[0]).not.toHaveProperty("text");
+          }),
+      ),
   );
 
   it.effect("resumes a setup the previous process left unfinished", () =>
@@ -383,6 +534,264 @@ describe("ChildThreadReactor", () => {
         }),
     ),
   );
+
+  it.effect(
+    "keeps an answer waiting on background work when its runtime errors and then exits without a Stop (finding 9)",
+    () => {
+      const childWith = (status: "error" | "stopped") =>
+        thread(CHILD, {
+          latestTurn: {
+            turnId: TurnId.make("child-turn-1"),
+            state: "completed",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: now,
+            assistantMessageId: null,
+          },
+          session: {
+            threadId: CHILD,
+            status,
+            providerName: "claudeAgent",
+            runtimeMode: "auto-accept-edits",
+            activeTurnId: null,
+            awaitedBackgroundTaskCount: 0,
+            lastError: status === "error" ? "runtime crashed" : null,
+            updatedAt: now,
+          },
+          messages: [
+            {
+              id: MessageId.make("candidate"),
+              role: "assistant",
+              text: "Done; tests still running.",
+              turnId: TurnId.make("child-turn-1"),
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        });
+      return withReactor([parentWith([]), childWith("error")], {}, (harness) =>
+        Effect.gen(function* () {
+          harness.threads.set(
+            PARENT,
+            parentWith([
+              request({
+                status: "awaiting_background",
+                candidateTurnId: TurnId.make("child-turn-1"),
+              }),
+            ]),
+          );
+          yield* PubSub.publish(harness.events, {
+            type: "thread.session-set",
+            payload: { threadId: CHILD },
+          } as unknown as OrchestrationEvent);
+          yield* settle;
+          // The runtime exits before the error's grace is up.
+          harness.threads.set(CHILD, childWith("stopped"));
+          yield* TestClock.adjust(Duration.seconds(6));
+          yield* settle;
+          expect(settles(harness).filter((entry) => entry.outcome === "failed")).toEqual([]);
+          yield* TestClock.adjust(Duration.seconds(10));
+          yield* settle;
+          expect(settles(harness)).toMatchObject([{ outcome: "answered" }]);
+        }),
+      );
+    },
+  );
+
+  it.effect(
+    "says the user stopped a retry when Stop named the retry's turn, whatever order the turns are listed in (finding 6)",
+    () => {
+      const stoppedChild = thread(CHILD, {
+        session: {
+          threadId: CHILD,
+          status: "stopped",
+          providerName: "claudeAgent",
+          runtimeMode: "auto-accept-edits",
+          activeTurnId: null,
+          lastError: null,
+          stopRequestedTurnId: TurnId.make("retry-turn"),
+          updatedAt: now,
+        },
+      });
+      return withReactor(
+        [parentWith([]), stoppedChild],
+        {
+          // The first run (stopped on a usage limit) is listed first.
+          turns: [
+            {
+              turnId: TurnId.make("first-turn"),
+              pendingMessageId: CHILD_MESSAGE,
+              state: "error",
+              requestedAt: "2026-10-04T09:00:00.000Z",
+            },
+            {
+              turnId: TurnId.make("retry-turn"),
+              pendingMessageId: CHILD_MESSAGE,
+              state: "interrupted",
+              requestedAt: "2026-10-04T09:30:00.000Z",
+            },
+          ],
+        },
+        (harness) =>
+          Effect.gen(function* () {
+            harness.threads.set(
+              PARENT,
+              parentWith([
+                request({ status: "running", answeringTurnId: TurnId.make("retry-turn") }),
+              ]),
+            );
+            yield* PubSub.publish(harness.events, {
+              type: "thread.session-set",
+              payload: { threadId: CHILD },
+            } as unknown as OrchestrationEvent);
+            yield* settle;
+            yield* TestClock.adjust(Duration.seconds(6));
+            yield* settle;
+            expect(settles(harness)).toMatchObject([
+              {
+                outcome: "stopped",
+                reply: { text: "The user stopped 'Write the changelog' before it finished." },
+              },
+            ]);
+          }),
+      );
+    },
+  );
+
+  describe("a child errored on a usage limit (docs/design/lead-chat.md, ruling 3)", () => {
+    const erroredTurn = TurnId.make("child-turn-1");
+    const asked = {
+      id: CHILD_MESSAGE,
+      role: "user" as const,
+      text: "Write it.",
+      fromThread: { threadId: PARENT, requestId: REQUEST, kind: "request" as const },
+      turnId: null,
+      streaming: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const errored = (overrides: Partial<OrchestrationThread> = {}) =>
+      thread(CHILD, {
+        messages: [asked],
+        latestTurn: {
+          turnId: erroredTurn,
+          state: "running",
+          requestedAt: now,
+          startedAt: now,
+          completedAt: null,
+          assistantMessageId: null,
+        },
+        session: {
+          threadId: CHILD,
+          status: "error",
+          providerName: "codex",
+          runtimeMode: "auto-accept-edits",
+          activeTurnId: null,
+          lastError: "You've hit your usage limit",
+          updatedAt: now,
+        },
+        ...overrides,
+      });
+    const sessionChanged = (harness: Harness) =>
+      PubSub.publish(harness.events, {
+        type: "thread.session-set",
+        payload: { threadId: CHILD },
+      } as unknown as OrchestrationEvent);
+
+    it.effect("waits for a late turn end that arms the wait, and then holds the request", () =>
+      withReactor([parentWith([]), errored()], {}, (harness) =>
+        Effect.gen(function* () {
+          // The request opens after startup, so no restart pass settles it.
+          harness.threads.set(PARENT, parentWith([request()]));
+          yield* sessionChanged(harness);
+          yield* settle;
+          // Past today's 5 s: its turn hasn't ended, so nothing settles yet.
+          yield* TestClock.adjust(Duration.seconds(6));
+          yield* settle;
+          expect(settles(harness)).toEqual([]);
+          // The turn's end arrives with the reset: the wait is armed.
+          harness.threads.set(
+            CHILD,
+            errored({
+              latestTurn: {
+                turnId: erroredTurn,
+                state: "error",
+                requestedAt: now,
+                startedAt: now,
+                completedAt: now,
+                assistantMessageId: null,
+              },
+              session: {
+                threadId: CHILD,
+                status: "error",
+                providerName: "codex",
+                runtimeMode: "auto-accept-edits",
+                activeTurnId: null,
+                lastError: "You've hit your usage limit",
+                continueAtReset: { resetsAt: now, at: now },
+                updatedAt: now,
+              },
+            }),
+          );
+          yield* TestClock.adjust(Duration.seconds(15));
+          yield* settle;
+          expect(settles(harness)).toEqual([]);
+        }),
+      ),
+    );
+
+    it.effect("settles the request failed at the bound when the turn's end never comes", () =>
+      withReactor([parentWith([]), errored()], {}, (harness) =>
+        Effect.gen(function* () {
+          // The request opens after startup, so no restart pass settles it.
+          harness.threads.set(PARENT, parentWith([request()]));
+          yield* sessionChanged(harness);
+          yield* settle;
+          yield* TestClock.adjust(Duration.seconds(19));
+          yield* settle;
+          expect(settles(harness)).toEqual([]);
+          yield* TestClock.adjust(Duration.seconds(2));
+          yield* settle;
+          expect(settles(harness)).toMatchObject([{ outcome: "failed" }]);
+        }),
+      ),
+    );
+
+    it.effect("keeps a held request across a restart", () =>
+      withReactor(
+        [
+          parentWith([request()]),
+          errored({
+            latestTurn: {
+              turnId: erroredTurn,
+              state: "error",
+              requestedAt: now,
+              startedAt: now,
+              completedAt: now,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId: CHILD,
+              status: "error",
+              providerName: "codex",
+              runtimeMode: "auto-accept-edits",
+              activeTurnId: null,
+              lastError: "You've hit your usage limit",
+              continueAtReset: { resetsAt: now, at: now },
+              updatedAt: now,
+            },
+          }),
+        ],
+        {},
+        (harness) =>
+          Effect.gen(function* () {
+            yield* settle;
+            expect(settles(harness)).toEqual([]);
+          }),
+      ),
+    );
+  });
 
   it.effect("starts a child with no more access than its parent has now", () =>
     withReactor(

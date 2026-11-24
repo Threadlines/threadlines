@@ -1,18 +1,20 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  HOSTED_STATIC_SETTINGS_NAV_ITEMS,
+  SETTINGS_NAV_ITEMS,
+  startsSettingsNavGroup,
+} from "./settingsNavigation";
+import {
   DEFAULT_SETTINGS_SECTION_PATH,
   HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH,
-  HOSTED_STATIC_SETTINGS_NAV_ITEMS,
   HOSTED_STATIC_SETTINGS_SECTION_PATHS,
   rememberVisibleSettingsSection,
   resetRememberedSettingsSectionForTest,
   resolveSettingsEntryPath,
   resolveSettingsEntryRedirect,
-  SETTINGS_NAV_ITEMS,
-  startsSettingsNavGroup,
   VISIBLE_SETTINGS_SECTION_PATHS,
-} from "./settingsNavigation";
+} from "./settingsPaths";
 
 describe("SETTINGS_NAV_ITEMS", () => {
   it("shows settings sections in their intended order, in three clusters", () => {
@@ -30,6 +32,7 @@ describe("SETTINGS_NAV_ITEMS", () => {
       "Agent Instructions",
       "| Source Control",
       "Connections",
+      "Devices",
       "Keybindings",
     ]);
   });

@@ -8,6 +8,7 @@ import type {
   OrchestrationCheckBack,
   OrchestrationCommandRequest,
   OrchestrationCommandRun,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
   PullRequestMergeMethod,
   ChatFileAttachmentKind,
@@ -37,6 +38,8 @@ import type {
   ThreadRemoteOrigin,
   OrchestrationThreadMove,
   ThreadMovedFrom,
+  ThreadPendingMove,
+  ThreadMoveOutcome,
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
@@ -138,7 +141,7 @@ export interface ChatMessage {
   sentFrom?: MessageSentFrom | undefined;
   /** See OrchestrationMessage.trigger: why Threadlines sent it for the user. */
   trigger?: MessageTrigger | undefined;
-  /** See OrchestrationMessage.notSent: the user wrote first, so it never went. */
+  /** See OrchestrationMessage.notSent: it never reached the agent (a continue the user overtook, a pass refused). */
   notSent?: true | undefined;
   /**
    * See OrchestrationMessage.imported: brought over when the thread moved
@@ -146,6 +149,12 @@ export interface ChatMessage {
    * offers a revert.
    */
   imported?: true | undefined;
+  /**
+   * See OrchestrationMessage.afterMove: Threadlines wrote it for the agent
+   * when the thread moved here, or when its move didn't happen. Shown as a
+   * quiet system-written row, never as the user's.
+   */
+  afterMove?: true | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;
@@ -196,6 +205,11 @@ export interface Project {
   scripts: ProjectScript[];
   /** This project's threads send no phone alerts. */
   phoneAlertsMuted?: boolean | undefined;
+  /**
+   * The project's lead chat (docs/design/lead-chat.md). Read it through
+   * `projectLeadThreadId`, which ignores a pointer at an archived thread.
+   */
+  leadThreadId?: ThreadId | null | undefined;
 }
 
 export interface Thread {
@@ -232,8 +246,8 @@ export interface Thread {
   queuedFollowUps?: readonly OrchestrationQueuedFollowUp[];
   /** See ThreadShell.participants. */
   participants?: readonly OrchestrationThreadParticipant[];
-  /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
-  sideTurn?: OrchestrationSideTurn | null;
+  /** See OrchestrationThreadShell.sideTurns: the side answers in progress, oldest first. */
+  sideTurns?: ReadonlyArray<OrchestrationSideTurn>;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
   /**
@@ -254,6 +268,12 @@ export interface Thread {
    */
   settingsRequests?: ReadonlyArray<OrchestrationSettingsChangeRequest>;
   /**
+   * See OrchestrationThread.secretRequests: keys its agents asked the user
+   * for (docs/design/secret-requests.md). Carried by the thread's detail
+   * stream only, so absent until it loads. Never holds a value.
+   */
+  secretRequests?: ReadonlyArray<OrchestrationSecretRequest>;
+  /**
    * Child threads (docs/design/child-threads.md): the thread whose agent
    * started this one, kept after it is separated. Absent or null: none.
    */
@@ -262,6 +282,8 @@ export interface Thread {
   parentTurnId?: TurnId | null;
   /** Still part of its parent's family. Absent means separated or no parent. */
   attachedToParent?: boolean;
+  /** See OrchestrationThreadShell.stopsWithParent: under its parent's Stop though never attached. */
+  stopsWithParent?: true;
   /** When its last answer went back to its parent, and from which turn. */
   handedBackAt?: string | null;
   handedBackTurnId?: TurnId | null;
@@ -279,10 +301,16 @@ export interface Thread {
   pendingChildApproval?: boolean;
   /** A settings change its agent asked for is on its card, or being made. */
   pendingSettingsChange?: boolean;
+  /** A key its agent asked for is on its card, or being saved. */
+  pendingSecretRequest?: boolean;
   /** See ThreadShell.remoteOrigin. */
   remoteOrigin?: ThreadRemoteOrigin | null;
   /** See ThreadShell.move. */
   move?: OrchestrationThreadMove | null;
+  /** See ThreadShell.pendingMove. */
+  pendingMove?: ThreadPendingMove | null;
+  /** See ThreadShell.lastMoveOutcome. */
+  lastMoveOutcome?: ThreadMoveOutcome | null;
   /** See ThreadShell.movedFrom. */
   movedFrom?: ThreadMovedFrom | null;
   /** See ThreadShell.doneOverride. */
@@ -364,8 +392,8 @@ export interface ThreadShell {
    * a room. Absent means none.
    */
   participants?: readonly OrchestrationThreadParticipant[];
-  /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
-  sideTurn?: OrchestrationSideTurn | null;
+  /** See OrchestrationThreadShell.sideTurns: the side answers in progress, oldest first. */
+  sideTurns?: ReadonlyArray<OrchestrationSideTurn>;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
   /**
@@ -377,6 +405,8 @@ export interface ThreadShell {
   parentTurnId?: TurnId | null;
   /** Still part of its parent's family. Absent means separated or no parent. */
   attachedToParent?: boolean;
+  /** See OrchestrationThreadShell.stopsWithParent: under its parent's Stop though never attached. */
+  stopsWithParent?: true;
   /** When its last answer went back to its parent, and from which turn. */
   handedBackAt?: string | null;
   handedBackTurnId?: TurnId | null;
@@ -400,6 +430,8 @@ export interface ThreadShell {
   pendingChildApproval?: boolean;
   /** A settings change its agent asked for is on its card, or being made. */
   pendingSettingsChange?: boolean;
+  /** A key its agent asked for is on its card, or being saved. */
+  pendingSecretRequest?: boolean;
   /**
    * Started by an agent on a linked computer: which computer and thread.
    * Absent or null: started on this thread's own computer.
@@ -417,6 +449,19 @@ export interface ThreadShell {
    * null: neither.
    */
   move?: OrchestrationThreadMove | null;
+  /**
+   * A move waiting for the thread to be free (ThreadPendingMove, Part 3b):
+   * the thread takes no new work until it starts or is cancelled. Absent or
+   * null: none. A thread has this or `move`, never both.
+   */
+  pendingMove?: ThreadPendingMove | null;
+  /**
+   * How its last move went (ThreadMoveOutcome, Part 3c): moved, didn't move
+   * (with why), or sent and waiting for the other computer's Allow. Outlives
+   * `pendingMove` and `move`, so a batch can read every thread's answer.
+   * Absent or null: it never tried to move.
+   */
+  lastMoveOutcome?: ThreadMoveOutcome | null;
   /** Moved here from another computer (ThreadMovedFrom). Absent or null: started here. */
   movedFrom?: ThreadMovedFrom | null;
   /**
@@ -446,8 +491,13 @@ export interface ThreadTurnState {
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
 }
 
-/** A thread moving to a linked computer, or moved there (ThreadShell.move). */
-export type ThreadMoveStatus = "moving" | "moved";
+/**
+ * A thread whose move waits for it to be free (ThreadShell.pendingMove), or
+ * moving to a linked computer (`waiting` while that computer finishes other
+ * moves, `sent` once it has every byte and waits for its user's Allow), or
+ * moved there (ThreadShell.move).
+ */
+export type ThreadMoveStatus = "queued" | "waiting" | "moving" | "sent" | "moved";
 
 export interface SidebarThreadSummary {
   id: ThreadId;
@@ -484,8 +534,8 @@ export interface SidebarThreadSummary {
   linkedPullRequests?: readonly OrchestrationThreadLinkedPullRequest[];
   /** See ThreadShell.participants; the inbox marks rooms and names who is working. */
   participants?: readonly OrchestrationThreadParticipant[];
-  /** See OrchestrationThreadShell.sideTurn: the side answer in progress, if any. */
-  sideTurn?: OrchestrationSideTurn | null;
+  /** See OrchestrationThreadShell.sideTurns: the side answers in progress, oldest first. */
+  sideTurns?: ReadonlyArray<OrchestrationSideTurn>;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
   /** In a room, the model of the agent working or last at work; null otherwise. */
@@ -502,6 +552,8 @@ export interface SidebarThreadSummary {
   parentTurnId?: TurnId | null;
   /** See ThreadShell.attachedToParent: nested under its parent in the inbox. */
   attachedToParent?: boolean;
+  /** See ThreadShell.stopsWithParent: under its parent's Stop though never attached. */
+  stopsWithParent?: true;
   /** See ThreadShell.scheduledRun. */
   scheduledRun?: ThreadScheduledRun | null;
   /** Its worktree is another thread's (ThreadWorktreeOrigin): a guest there, not its owner. */
@@ -518,6 +570,8 @@ export interface SidebarThreadSummary {
   pendingChildApproval?: boolean;
   /** See ThreadShell.pendingSettingsChange. */
   pendingSettingsChange?: boolean;
+  /** See ThreadShell.pendingSecretRequest. */
+  pendingSecretRequest?: boolean;
   /**
    * The thread's agent asked to create or change a scheduled task and a card
    * waits for the user's answer (from that computer's scheduled tasks feed,
@@ -534,7 +588,7 @@ export interface SidebarThreadSummary {
   localChildStarts?: ReadonlyArray<LocalChildStart>;
   /** Messages queued behind the running turn; a child with any is not finished. */
   queuedFollowUpCount?: number;
-  /** See ThreadShell.move: only how far it got, for the row's status word. Absent: neither. */
+  /** See ThreadShell.move and .pendingMove: only how far it got, for the row's status word. Absent: none. */
   moveStatus?: ThreadMoveStatus;
   /** See Thread.checkBacks. */
   checkBacks?: ReadonlyArray<OrchestrationCheckBack>;

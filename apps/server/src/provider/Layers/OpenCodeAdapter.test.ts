@@ -70,7 +70,11 @@ function fakeClient(calls: Array<Call>, overrides: Record<string, (input: any) =
     },
     command: { list: call("command.list", () => ({ data: [] })) },
     permission: { reply: call("permission.reply"), list: call("permission.list", () => []) },
-    shell: { remove: call("shell.remove"), get: call("shell.get") },
+    shell: {
+      remove: call("shell.remove"),
+      get: call("shell.get"),
+      list: call("shell.list", () => ({ location: {}, data: [] })),
+    },
     message: { list: call("message.list", () => ({ data: [], cursor: {} })) },
     session: {
       create: call("session.create", () => ({ id: ROOT, location: { directory: "/" } })),
@@ -109,6 +113,7 @@ const harnessWith = (overrides: Record<string, (input: any) => unknown> = {}) =>
         version: "2.0.22",
         external: false,
         exited: Effect.never,
+        pid: null,
       },
       streamReady: Effect.void,
     };
@@ -118,6 +123,7 @@ const harnessWith = (overrides: Record<string, (input: any) => unknown> = {}) =>
       retire: Effect.void,
       withServer: (use) => Effect.scoped(use(active)),
       signals: Stream.fromPubSub(signals),
+      running: Effect.succeed(active.server),
     };
     const adapter = yield* makeOpenCodeAdapter({
       instanceId: INSTANCE_ID,
@@ -230,6 +236,24 @@ describe("OpenCodeAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.live("ends Threadlines' instructions entry with the project's brief", () =>
+    Effect.gen(function* () {
+      const { adapter, calls, threadId, cwd } = yield* harness;
+      const brief = "Use pnpm here. Never touch the generated folder.";
+      yield* adapter.startSession({
+        threadId,
+        cwd,
+        runtimeMode: "full-access",
+        projectInstructions: brief,
+      });
+      const put = calls.find((call) => call.method === "instructions.put")?.input as
+        | { readonly key: string; readonly value: string }
+        | undefined;
+      expect(put?.key).toBe("threadlines");
+      expect(put?.value.endsWith(`\n\n${brief}`)).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.live("turns an execution nobody asked for into the agent's own turn", () =>
     Effect.gen(function* () {
       const { adapter, send, next, threadId, cwd } = yield* harness;
@@ -327,6 +351,70 @@ describe("OpenCodeAdapter", () => {
           (call) =>
             call.method === "session.update" &&
             (call.input as { sessionID: string }).sessionID === "ses_child",
+        ),
+      ).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("confirms a stopped thread only once OpenCode says its shells ended", () =>
+    Effect.gen(function* () {
+      // The shared server ends the shell a moment after the stop removes it.
+      let shellReads = 0;
+      const { adapter, calls, send, next, threadId, cwd } = yield* harnessWith({
+        "shell.get": () => ({
+          location: {},
+          data: { status: ++shellReads === 1 ? "running" : "killed" },
+        }),
+      });
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, messageId: MessageId.make("m1"), input: "serve" });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* backgroundShell(send, "sh_1");
+      yield* next((event) => event.type === "task.started");
+
+      yield* adapter.stopSession(threadId);
+      expect(yield* adapter.confirmThreadStopped!(threadId, [])).toEqual({ confirmed: true });
+      expect(shellReads).toBe(2);
+      expect(calls.some((call) => call.method === "session.active")).toBe(true);
+      // Proven once, nothing is left to ask about.
+      expect(yield* adapter.confirmThreadStopped!(threadId, [])).toEqual({ confirmed: true });
+      expect(shellReads).toBe(2);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("after a restart, asks the server what still runs before it confirms", () =>
+    Effect.gen(function* () {
+      // This process never ran the thread: what its last stop knew is gone.
+      let active: Record<string, unknown> = { [ROOT]: { type: "running" } };
+      let shells: Array<{ status: string }> = [{ status: "running" }];
+      const { adapter, calls, threadId, cwd } = yield* harnessWith({
+        "session.active": () => active,
+        "session.list": (input: { parentID: string }) => ({
+          data: input.parentID === ROOT ? [{ id: "ses_child" }] : [],
+        }),
+        "shell.list": () => ({ location: {}, data: shells }),
+      });
+      const known = [
+        { sessionKey: threadId, resumeCursor: { schemaVersion: 1, sessionId: ROOT }, cwd },
+      ];
+      expect(yield* adapter.confirmThreadStopped!(threadId, known)).toEqual({
+        confirmed: false,
+        reason: "OpenCode still runs its work; OpenCode still runs 1 shell in its folder",
+      });
+      // Its child counts too.
+      active = { ses_child: { type: "running" } };
+      shells = [];
+      expect(yield* adapter.confirmThreadStopped!(threadId, known)).toEqual({
+        confirmed: false,
+        reason: "OpenCode still runs its work",
+      });
+      active = {};
+      expect(yield* adapter.confirmThreadStopped!(threadId, known)).toEqual({ confirmed: true });
+      expect(
+        calls.some(
+          (call) =>
+            call.method === "shell.list" &&
+            (call.input as { location: { directory: string } }).location.directory === cwd,
         ),
       ).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),

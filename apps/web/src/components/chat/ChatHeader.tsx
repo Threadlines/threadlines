@@ -15,6 +15,7 @@ import {
   CornerDownRightIcon,
   FolderInputIcon,
   FolderOpenIcon,
+  CrownIcon,
   GitForkIcon,
   GlobeIcon,
   MessagesSquareIcon,
@@ -27,6 +28,7 @@ import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScr
 import { Toggle } from "../ui/toggle";
 import { SidebarOpenTrigger } from "../ui/sidebar";
 import { ProjectCrumbMenu } from "./ProjectCrumbMenu";
+import { ThreadTitleMenu } from "./ThreadTitleMenu";
 import { openActiveFileViewer } from "../../fileViewerStore";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
@@ -40,6 +42,7 @@ import { useComputerLabel } from "../sidebar/linkedComputers";
 import { useTitleBarHeaderRef } from "../sidebar/titleBarSlot";
 import { outsideOriginDescription } from "../../environments/outsideAgents/outsideAgents.logic";
 import { OutsideOriginMark } from "../outsideAgents/AssistantMark";
+import { LeadChatCard } from "./LeadChatHints";
 
 export interface ForkHeaderContext {
   readonly sourceThreadId: ThreadId;
@@ -116,11 +119,19 @@ interface ChatHeaderProps {
   forkContext: ForkHeaderContext | null;
   /** Set on a thread another thread's agent started; it stays after separating. */
   parentContext?: ParentThreadHeaderContext | null | undefined;
+  /** The thread is its project's lead chat (docs/design/lead-chat.md). */
+  isLeadChat?: boolean | undefined;
   /** Set on a thread an agent outside Threadlines started (docs/design/outside-agents.md). */
   outsideOrigin?: OutsideAgentRef | null | undefined;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   /** The thread the background runs belong to; where their output is read from. */
   activeThreadRef: ScopedThreadRef | null;
+  /**
+   * The thread whose menu the title opens (the one its sidebar row opens on a
+   * right-click). Null where no row would offer one: a draft, a General Chat,
+   * an archived thread. The title is then plain text.
+   */
+  threadMenuRef?: ScopedThreadRef | null | undefined;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -301,9 +312,11 @@ export const ChatHeader = memo(function ChatHeader({
   taskProgress,
   forkContext,
   parentContext = null,
+  isLeadChat = false,
   outsideOrigin = null,
   backgroundRuns,
   activeThreadRef,
+  threadMenuRef = null,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -384,12 +397,18 @@ export const ChatHeader = memo(function ChatHeader({
             </span>
           </div>
         )}
-        <h2
-          className="min-w-0 shrink truncate text-sm font-medium text-foreground"
-          title={activeThreadTitle}
-        >
-          {activeThreadTitle}
-        </h2>
+        {threadMenuRef ? (
+          <h2 className="flex min-w-0 shrink">
+            <ThreadTitleMenu threadRef={threadMenuRef} title={activeThreadTitle} />
+          </h2>
+        ) : (
+          <h2
+            className="min-w-0 shrink truncate text-sm font-medium text-foreground"
+            title={activeThreadTitle}
+          >
+            {activeThreadTitle}
+          </h2>
+        )}
         {forkContext ? (
           <button
             type="button"
@@ -409,6 +428,24 @@ export const ChatHeader = memo(function ChatHeader({
         ) : null}
         {parentContext ? (
           <StartedByChip parent={parentContext} onOpen={onOpenParentThread} />
+        ) : null}
+        {isLeadChat && activeThreadRef !== null ? (
+          <LeadChatCard
+            threadRef={activeThreadRef}
+            renderTrigger={(showCard) => (
+              <button
+                type="button"
+                data-testid="lead-chat-chip"
+                className={STARTED_BY_CHIP_CLASS}
+                onClick={showCard}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  <CrownIcon aria-hidden="true" className="size-3 shrink-0" />
+                  Lead chat
+                </span>
+              </button>
+            )}
+          />
         ) : null}
         {outsideOrigin ? <OutsideOriginLabel origin={outsideOrigin} /> : null}
         {activeProjectName && !isGitRepo && sourceControlAvailable && (

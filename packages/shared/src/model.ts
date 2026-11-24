@@ -53,13 +53,53 @@ export interface SelectableModelOption {
   aliases?: ReadonlyArray<string> | undefined;
 }
 
+/** Reasoning level names, by option id with case, spaces, `-` and `_` dropped. */
+const REASONING_LEVEL_RANK: ReadonlyMap<string, number> = new Map([
+  ["none", 0],
+  ["off", 0],
+  ["minimal", 1],
+  ["low", 2],
+  ["medium", 3],
+  ["high", 4],
+  ["xhigh", 5],
+  ["extrahigh", 5],
+  ["max", 6],
+  ["ultra", 7],
+]);
+
+const reasoningLevelRank = (id: string) =>
+  REASONING_LEVEL_RANK.get(id.toLowerCase().replace(/[\s_-]+/gu, ""));
+
+/**
+ * A select whose every option is a reasoning level, ordered lowest first.
+ * Providers list levels in either direction (Grok and Antigravity start at
+ * High), and the effort meter fills left to right. A list with any other
+ * option keeps the provider's order.
+ */
+function withReasoningLevelsAscending(
+  descriptor: ProviderOptionDescriptor,
+): ProviderOptionDescriptor {
+  if (descriptor.type !== "select" || descriptor.options.length < 2) return descriptor;
+  const ranks = descriptor.options.map((option) => reasoningLevelRank(option.id));
+  if (ranks.some((rank) => rank === undefined)) return descriptor;
+  return {
+    ...descriptor,
+    options: descriptor.options
+      .map((option, index) => ({ option, rank: ranks[index]! }))
+      .toSorted((a, b) => a.rank - b.rank)
+      .map(({ option }) => option),
+  };
+}
+
 export function createModelCapabilities(input: {
   optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   inputModalities?: ReadonlyArray<ModelInputModality>;
   supportsPersonality?: boolean;
 }): ModelCapabilities {
   return {
-    optionDescriptors: input.optionDescriptors.map(cloneDescriptor),
+    optionDescriptors: input.optionDescriptors.map((descriptor) =>
+      withReasoningLevelsAscending(cloneDescriptor(descriptor)),
+    ),
     ...(input.inputModalities && input.inputModalities.length > 0
       ? { inputModalities: [...input.inputModalities] }
       : {}),
@@ -306,18 +346,22 @@ export function getProviderOptionCurrentLabel(
   return descriptor.options.find((option) => option.id === currentValue)?.label;
 }
 
+/** Canonical option id for reasoning effort when normalizing provider options. */
+export const CANONICAL_REASONING_OPTION_ID = "reasoningEffort";
+
 /** The option each provider keeps its reasoning level in. */
 const REASONING_OPTION_IDS: ReadonlySet<string> = new Set([
   "reasoningEffort",
   "effort",
   "reasoning",
   "variant",
+  "thought_level",
 ]);
 
 /**
  * A model's reasoning setting among its options: Codex calls it
- * `reasoningEffort`, Claude `effort`, OpenCode `variant`. Undefined for a model
- * without one.
+ * `reasoningEffort`, Claude `effort`, OpenCode `variant`, Antigravity
+ * `thought_level`. Undefined for a model without one.
  */
 export function findReasoningOptionDescriptor(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
@@ -326,6 +370,11 @@ export function findReasoningOptionDescriptor(
     (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
       descriptor.type === "select" && REASONING_OPTION_IDS.has(descriptor.id),
   );
+}
+
+/** Whether an option id is one of Threadlines' recognized reasoning level controls. */
+export function isReasoningOptionId(id: string): boolean {
+  return REASONING_OPTION_IDS.has(id);
 }
 
 /** The reasoning level among a selection's options; undefined when its provider picks. */

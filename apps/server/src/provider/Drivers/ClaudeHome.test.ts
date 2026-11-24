@@ -144,6 +144,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("account folders", () => {
     it.effect("moves only Claude's folder: HOME stays, secure-storage override is dropped", () =>
       Effect.gen(function* () {
+        const path = yield* Path.Path;
         const environment = yield* makeClaudeEnvironment(
           { homePath: "", accountFolder: "/tmp/accounts/work" },
           {
@@ -152,7 +153,8 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
             CLAUDE_CONFIG_DIR: "/elsewhere",
           },
         );
-        expect(environment.CLAUDE_CONFIG_DIR).toBe("/tmp/accounts/work");
+        // The folder is resolved on this machine, so on Windows it gains a drive letter.
+        expect(environment.CLAUDE_CONFIG_DIR).toBe(path.resolve("/tmp/accounts/work"));
         expect(environment.HOME).toBe("/Users/me");
         expect("CLAUDE_SECURESTORAGE_CONFIG_DIR" in environment).toBe(false);
       }),
@@ -205,13 +207,13 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         );
         expect(
           yield* makeClaudeContinuationGroupKey(config, {}, { sharesMainHistory: false }),
-        ).toBe("claude:config:/tmp/accounts/work");
+        ).toBe(`claude:config:${path.resolve("/tmp/accounts/work")}`);
         expect(
           yield* makeClaudeContinuationGroupKey(
             { homePath: "", accountFolder: "" },
             { CLAUDE_CONFIG_DIR: "/tmp/other-claude" },
           ),
-        ).toBe("claude:config:/tmp/other-claude");
+        ).toBe(`claude:config:${path.resolve("/tmp/other-claude")}`);
       }),
     );
   });

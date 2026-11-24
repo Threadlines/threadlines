@@ -44,6 +44,17 @@ describe("shouldApplyTerminalEvent", () => {
     ).toBe(false);
   });
 
+  it("applies terminal events for the Terminals page, which no thread backs", () => {
+    expect(
+      shouldApplyTerminalEvent({
+        serverThreadArchivedAt: undefined,
+        hasDraftThread: false,
+        threadsLoaded: true,
+        terminalsPage: true,
+      }),
+    ).toBe(true);
+  });
+
   it("applies terminal events for active server threads", () => {
     expect(
       shouldApplyTerminalEvent({

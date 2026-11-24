@@ -440,6 +440,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           commandRequests: [],
           commandRuns: [],
           settingsRequests: [],
+          secretRequests: [],
           activities: [
             {
               id: asEventId("activity-1"),
@@ -573,6 +574,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           awaitedChildThreadCount: 0,
           pendingChildApproval: false,
           pendingSettingsChange: false,
+          pendingSecretRequest: false,
           hasPendingUserInput: false,
           hasBlockingUserInput: false,
           hasActionableProposedPlan: false,
@@ -995,6 +997,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.deepEqual(counts, {
           projectCount: 2,
           threadCount: 3,
+          leadChatCount: 0,
+          projectsWithBriefCount: 0,
+          projectNoteCount: 0,
         });
 
         const project = yield* snapshotQuery.getActiveProjectByWorkspaceRoot("/tmp/workspace");
@@ -1803,6 +1808,52 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.deepEqual(
         activities.map((activity) => activity.id),
         ["old-1", "old-2", "old-3"].map(asEventId),
+      );
+    }),
+  );
+
+  it.effect("reads one message of a thread and whether a turn has a reply", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_messages`;
+      for (const [messageId, threadId, turnId, role] of [
+        ["one-user", "thread-one", "turn-a", "user"],
+        ["one-reply", "thread-one", "turn-a", "assistant"],
+        ["one-question", "thread-one", "turn-b", "user"],
+        ["other-reply", "thread-other", "turn-b", "assistant"],
+      ]) {
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+          ) VALUES (
+            ${messageId}, ${threadId}, ${turnId}, ${role}, ${`${messageId} text`}, 0,
+            '2026-04-01T00:00:00.000Z', '2026-04-01T00:00:00.000Z'
+          )
+        `;
+      }
+      const threadId = ThreadId.make("thread-one");
+
+      const reply = yield* snapshotQuery.getThreadMessage({
+        threadId,
+        messageId: asMessageId("one-reply"),
+      });
+      assert.equal(reply._tag === "Some" ? reply.value.text : null, "one-reply text");
+      // Another thread's message is not this thread's.
+      const elsewhere = yield* snapshotQuery.getThreadMessage({
+        threadId,
+        messageId: asMessageId("other-reply"),
+      });
+      assert.equal(elsewhere._tag, "None");
+
+      assert.equal(
+        yield* snapshotQuery.hasAssistantMessageForTurn({ threadId, turnId: asTurnId("turn-a") }),
+        true,
+      );
+      assert.equal(
+        yield* snapshotQuery.hasAssistantMessageForTurn({ threadId, turnId: asTurnId("turn-b") }),
+        false,
       );
     }),
   );

@@ -107,6 +107,8 @@ interface LinkedComputer {
   readonly watch?: ReadonlyArray<PeerWatchEvent>;
   /** It says how threads are filed and takes `peer.thread.wrap` (`PeerDescriptor.threadFiling`). */
   readonly threadFiling?: boolean;
+  /** It enforces `PeerSendInput.ceiling` (`PeerDescriptor.enforcesRequestCeiling`). */
+  readonly enforcesRequestCeiling?: boolean;
 }
 
 /**
@@ -265,6 +267,9 @@ const makeComputer = Effect.gen(function* () {
           linked.start ??
             (() => Effect.succeed({ status: "started" as const, threadId: REMOTE_CHILD })),
         ),
+        "peer.request.send": answer("peer.request.send", () =>
+          Effect.succeed({ status: "queued" as const }),
+        ),
       } as unknown as PeerClient;
       const layer = RemoteChildReactorLive.pipe(
         Layer.provide(
@@ -278,6 +283,9 @@ const makeComputer = Effect.gen(function* () {
               describe: () =>
                 Effect.succeed({
                   threadFiling: linked.threadFiling === true,
+                  ...(linked.enforcesRequestCeiling === true
+                    ? { enforcesRequestCeiling: true }
+                    : {}),
                 } as unknown as PeerDescriptor),
               noteRemoteLabel: () => undefined,
             }),
@@ -304,7 +312,7 @@ const makeComputer = Effect.gen(function* () {
     .pipe(Effect.map((row) => Option.getOrThrow(row)));
   const callsTo = (method: string) => calls.filter((call) => call.method === method);
 
-  return { engine, snapshots, askForThread, recordRemote, boot, stored, callsTo };
+  return { engine, snapshots, threadRows, askForThread, recordRemote, boot, stored, callsTo };
 });
 
 const report = (patch: Partial<Extract<PeerWatchEvent, { type: "report" }>>): PeerWatchEvent => ({
@@ -659,5 +667,212 @@ it.layer(NodeServices.layer)("RemoteChildReactor", (it) => {
         cachedStatus: "idle",
       });
     }),
+  );
+
+  it.effect(
+    "a parent frozen for its move takes no answer and acks no report, while the cancels it owes still go",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* computer.askForThread;
+        yield* computer.recordRemote("running", { status: "accepted", threadId: REMOTE_CHILD });
+        // The parent reads as frozen for its move (docs/design/fleet.md, Part
+        // 3f, (g)), a request still open on it.
+        const frozen = {
+          move: {
+            transferId: "transfer-1",
+            target: { environmentId: EnvironmentId.make("env-other"), label: "Other" },
+            agent: MODEL,
+            phase: "exporting",
+            cancelRequested: false,
+            startedAt: AT,
+          },
+        };
+        const asFrozen = {
+          getById: (input: { readonly threadId: ThreadId }) =>
+            computer.threadRows
+              .getById(input)
+              .pipe(Effect.map(Option.map((row) => ({ ...row, ...frozen }) as typeof row))),
+        };
+        yield* computer.boot({ watch: [report({}), { type: "synced" }] }, { threadRows: asFrozen });
+        yield* eventually(
+          Effect.sync(() => computer.callsTo("peer.watch").length > 0),
+          "the watch opens",
+        );
+        yield* wallClockSleep(300);
+        // Its answer would be refused there and lost: it stays with that computer.
+        assert.deepEqual(computer.callsTo("peer.report.ack"), []);
+        assert.lengthOf((yield* computer.stored).childRequests?.open ?? [], 1);
+
+        // Stop (as the move's "Stop and move now" does) owes that computer a
+        // cancel: it still goes out from a frozen parent.
+        yield* computer.engine.dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.make("parent-stop"),
+          threadId: PARENT,
+          createdAt: AT,
+        });
+        yield* computer.boot({}, { threadRows: asFrozen });
+        yield* eventually(
+          Effect.sync(() => computer.callsTo("peer.request.cancel").length > 0),
+          "the cancel goes out",
+        );
+        yield* eventually(
+          Effect.map(
+            computer.stored,
+            (parent) => (parent.childRequests?.remoteCancels ?? []).length === 0,
+          ),
+          "the cancel is recorded as delivered",
+        );
+      }),
+  );
+
+  it.effect(
+    "a parent that moved away acks a report about its thread there as not delivered, never again offered",
+    () =>
+      Effect.gen(function* () {
+        const computer = yield* makeComputer;
+        yield* computer.askForThread;
+        yield* computer.recordRemote("running", { status: "accepted", threadId: REMOTE_CHILD });
+        // Its copy here is read-only: it moved to Mac mini (and may have taken
+        // that thread back as its own there, docs/design/fleet.md, Part 3f, (g)).
+        const movedAway = {
+          move: {
+            transferId: "transfer-1",
+            target: { environmentId: MAC_MINI, label: "Mac mini" },
+            agent: MODEL,
+            phase: "exporting",
+            cancelRequested: false,
+            startedAt: AT,
+            movedAway: { threadId: ThreadId.make("thread-there"), movedAt: AT },
+          },
+        };
+        const asMoved = {
+          getById: (input: { readonly threadId: ThreadId }) =>
+            computer.threadRows
+              .getById(input)
+              .pipe(Effect.map(Option.map((row) => ({ ...row, ...movedAway }) as typeof row))),
+        };
+        yield* computer.boot({ watch: [report({}), { type: "synced" }] }, { threadRows: asMoved });
+        yield* eventually(
+          Effect.sync(() => computer.callsTo("peer.report.ack").length > 0),
+          "the report is acked",
+        );
+        assert.deepEqual(computer.callsTo("peer.report.ack")[0]?.payload, {
+          reportId: `${REQUEST}:report`,
+          delivered: false,
+        });
+        // Nothing was written into the read-only copy.
+        assert.lengthOf((yield* computer.stored).childRequests?.open ?? [], 1);
+      }),
+  );
+
+  it.effect(
+    "carries the sender's ceiling to an updated peer, and refuses a narrower sender to an older peer",
+    () =>
+      Effect.gen(function* () {
+        const submitSend = (
+          computer: Effect.Success<typeof makeComputer>,
+          requestId: ChildRequestId,
+          runtimeMode: "auto-accept-edits" | "full-access",
+        ) =>
+          Effect.gen(function* () {
+            yield* computer.askForThread;
+            yield* computer.recordRemote("running", {
+              status: "accepted",
+              threadId: REMOTE_CHILD,
+            });
+            yield* computer.engine.dispatch({
+              type: "thread.remote-child.update",
+              commandId: CommandId.make(`record-${requestId}`),
+              threadId: PARENT,
+              child: {
+                environmentId: MAC_MINI,
+                label: "Mac mini",
+                threadId: REMOTE_CHILD,
+                title: "Remote worker",
+                handle: "Claude",
+                attachmentEpoch: 0,
+                cachedStatus: "idle",
+                updatedAt: AT,
+              },
+              createdAt: AT,
+            });
+            yield* computer.engine.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make(`mode-${requestId}`),
+              threadId: PARENT,
+              runtimeMode,
+              createdAt: AT,
+            });
+            yield* computer.engine.dispatch({
+              type: "thread.session.set",
+              commandId: CommandId.make(`session-${requestId}`),
+              threadId: PARENT,
+              session: {
+                threadId: PARENT,
+                status: "running",
+                providerName: "claudeAgent",
+                providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+                runtimeMode,
+                activeTurnId: TurnId.make("turn-1"),
+                lastError: null,
+                updatedAt: AT,
+              },
+              createdAt: AT,
+            });
+            yield* computer.engine.dispatch({
+              type: "thread.child.send",
+              commandId: CommandId.make(`send-${requestId}`),
+              threadId: PARENT,
+              requestId,
+              from: { participantId: null },
+              callerTurnId: TurnId.make("turn-1"),
+              childThreadId: REMOTE_CHILD,
+              childMessageId: MessageId.make(`msg-${requestId}`),
+              text: "Check the build.",
+              createdAt: AT,
+            });
+          });
+
+        // Narrow sender -> older peer (no enforcesRequestCeiling): refused and settled failed.
+        const older = yield* makeComputer;
+        yield* submitSend(older, ChildRequestId.make("req-older-narrow"), "auto-accept-edits");
+        yield* older.boot({ enforcesRequestCeiling: false });
+        yield* eventually(
+          Effect.map(
+            older.stored,
+            (parent) =>
+              !(parent.childRequests?.open ?? []).some(
+                (entry) => entry.requestId === ChildRequestId.make("req-older-narrow"),
+              ),
+          ),
+          "narrow send to older peer settles failed",
+        );
+        assert.deepEqual(older.callsTo("peer.request.send"), []);
+
+        // Widest sender -> older peer: allowed, no ceiling can be broken.
+        const widest = yield* makeComputer;
+        yield* submitSend(widest, ChildRequestId.make("req-older-wide"), "full-access");
+        yield* widest.boot({ enforcesRequestCeiling: false });
+        yield* eventually(
+          Effect.sync(() => widest.callsTo("peer.request.send").length === 1),
+          "widest send to older peer goes through",
+        );
+
+        // Narrow sender -> updated peer: carries ceiling.
+        const updated = yield* makeComputer;
+        yield* submitSend(updated, ChildRequestId.make("req-updated-narrow"), "auto-accept-edits");
+        yield* updated.boot({ enforcesRequestCeiling: true });
+        yield* eventually(
+          Effect.sync(() => updated.callsTo("peer.request.send").length === 1),
+          "narrow send to updated peer goes through with ceiling",
+        );
+        assert.deepEqual(
+          (updated.callsTo("peer.request.send")[0]?.payload as { readonly ceiling?: unknown })
+            ?.ceiling,
+          { runtimeMode: "auto-accept-edits", interactionMode: "default" },
+        );
+      }),
   );
 });

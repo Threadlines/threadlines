@@ -13,6 +13,7 @@
  * not listed one by one: their section is the place, and its `about` says what
  * each row holds.
  */
+import { PLACE_HREF_SCHEME } from "./placeHref.ts";
 import type {
   AgentInvitesMode,
   AgentThreadsMode,
@@ -20,9 +21,13 @@ import type {
   ClientSettingsPatch,
   ComputerLinkAccess,
   BrowserSearchEngine,
+  FollowUpDelivery,
+  GeneralChatsPlacement,
   LinkOpenTarget,
   ModelSelection,
   NewWorktreeBaseFrom,
+  ProjectNotesMode,
+  ProviderInteractionMode,
   PushAlertKinds,
   ServerSettings,
   ServerSettingsPatch,
@@ -38,6 +43,7 @@ import {
   RESPONSIVE_PAGE_SIZE_ID,
   RESPONSIVE_PAGE_SIZE_LABEL,
 } from "./browserPageSizes.ts";
+import { RUNTIME_MODE_LABELS } from "./runtimeMode.ts";
 import {
   agentInvitesChoice,
   agentThreadsMode,
@@ -314,6 +320,12 @@ const editableAlert = (alert: keyof PushAlertKinds | "quietAtComputer") =>
 const fetchIntervalSeconds = (settings: ServerSettings): number =>
   Math.round(Duration.toSeconds(settings.automaticGitFetchInterval));
 
+/** "Mode", as its menu words each choice. */
+export const INTERACTION_MODE_LABELS: Readonly<Record<ProviderInteractionMode, string>> = {
+  default: "Build",
+  plan: "Plan",
+};
+
 /** "Start in", as its menu words each choice. */
 export const THREAD_ENV_MODE_LABELS: Readonly<Record<ThreadEnvMode, string>> = {
   local: "Local",
@@ -355,8 +367,20 @@ export const TIMESTAMP_FORMAT_LABELS: Readonly<Record<TimestampFormat, string>> 
   "24-hour": "24-hour",
 };
 
+/** "General chats", as its menu words each choice. */
+export const GENERAL_CHATS_PLACEMENT_LABELS: Readonly<Record<GeneralChatsPlacement, string>> = {
+  page: "Own page",
+  threads: "Section in Threads",
+};
+
 /** "Theme", as its menu words each choice. */
 export const THEME_LABELS = { system: "System", light: "Light", dark: "Dark" } as const;
+
+/** "Sending while an agent works", as its menu words each choice. */
+export const FOLLOW_UP_DELIVERY_LABELS: Readonly<Record<FollowUpDelivery, string>> = {
+  steer: "Steer now",
+  queue: "Send when done",
+};
 
 /** "Motion", as its control words each choice. */
 export const THEME_MOTION_LABELS = { live: "Live", still: "Still" } as const;
@@ -382,6 +406,13 @@ export const AGENT_THREADS_LABELS: Readonly<Record<AgentThreadsMode, string>> = 
   off: "Off",
   ask: "Ask me first",
   auto: "Automatic",
+};
+
+/** "Notes agents write", as its menu words each choice. */
+export const PROJECT_NOTES_MODE_LABELS: Readonly<Record<ProjectNotesMode, string>> = {
+  off: "Off",
+  ask: "Ask me first",
+  auto: "Keep without asking",
 };
 
 /** What a computer link's access is called wherever the user sees or sets it (Fleet). */
@@ -447,10 +478,10 @@ const PAGES = [
     id: "settings.instructions",
     kind: "page",
     title: "Agent Instructions",
-    about: "The instruction files agents read before they start work.",
+    about: "A project's brief and the instruction files agents read before they start work.",
     route: { to: "/settings/instructions" },
     target: "thread",
-    keywords: ["AGENTS.md", "CLAUDE.md", "rules"],
+    keywords: ["AGENTS.md", "CLAUDE.md", "rules", "brief"],
   },
   {
     id: "settings.sourceControl",
@@ -469,6 +500,15 @@ const PAGES = [
     keywords: ["phone", "pair", "remote", "devices"],
   },
   {
+    id: "settings.devices",
+    kind: "page",
+    title: "Devices",
+    about:
+      "iOS Simulators and Android Emulators in the Device tab, and whether agents can use them.",
+    route: { to: "/settings/devices" },
+    keywords: ["simulator", "emulator", "iOS", "Android", "Xcode", "device tab", "agent-device"],
+  },
+  {
     id: "settings.keybindings",
     kind: "page",
     title: "Keybindings",
@@ -480,7 +520,7 @@ const PAGES = [
     id: "settings.diagnostics",
     kind: "page",
     title: "Diagnostics",
-    about: "Slow requests, live processes and recent failures on this computer.",
+    about: "CPU by thread, slow requests, live processes and recent failures on this computer.",
     route: { to: "/settings/diagnostics" },
   },
   {
@@ -515,8 +555,18 @@ const PAGES = [
     id: "generalChats",
     kind: "page",
     title: "General Chats",
-    about: "Chats with an agent that aren't tied to a project.",
+    about:
+      "Chats with an agent that aren't tied to a project. Their own page, or a section at the bottom of Threads, as Settings › Threads › General chats picks.",
     route: { to: "/chats" },
+  },
+  {
+    id: "terminals",
+    kind: "page",
+    title: "Terminals",
+    about:
+      "Terminal tabs and split panes tied to no chat, each starting in the project you pick, one set per computer.",
+    route: { to: "/terminals" },
+    keywords: ["terminal", "shell", "split terminal", "dev server", "console"],
   },
   {
     id: "pullRequests",
@@ -531,15 +581,25 @@ const PAGES = [
 // ----- sections --------------------------------------------------------------------
 
 const SECTIONS = [
+  // Diagnostics
+  {
+    id: "diagnostics.cpuByThread",
+    kind: "section",
+    parent: "settings.diagnostics",
+    title: "CPU by thread",
+    about:
+      "Which threads' agents and terminals are using this computer's CPU now and over the last minute, next to Threadlines itself.",
+    keywords: ["cpu", "battery", "slow", "fan", "hot", "processes", "usage", "energy"],
+  },
   // General
   {
     id: "general.alerts",
     kind: "section",
     parent: "settings.general",
     title: "Alerts",
-    about: "Which alerts this device shows: when a thread needs you, finishes or fails.",
+    about: "How this device tells you a thread needs you, finished or failed.",
     scope: "device",
-    keywords: ["notifications", "push"],
+    keywords: ["notifications", "push", "sound"],
   },
   {
     id: "general.chatAndDiffs",
@@ -633,6 +693,14 @@ const SECTIONS = [
     about: "When threads wrap up on their own, and whether archive and delete ask first.",
     scope: "device",
   },
+  {
+    id: "threads.sidebar",
+    kind: "section",
+    parent: "settings.threads",
+    title: "Sidebar",
+    about: "How this device's thread list is laid out.",
+    scope: "device",
+  },
   // Archives
   {
     id: "archived.cleanup",
@@ -649,6 +717,15 @@ const SECTIONS = [
     about: "Every archived thread, to bring back or delete.",
   },
   // Providers
+  {
+    id: "providers.suggestions",
+    kind: "section",
+    parent: "settings.providers",
+    title: "Suggestions",
+    about:
+      "Suggested next messages in the composer after a reply, for each agent you have turned on.",
+    keywords: ["autocomplete", "prompt suggestions", "tab"],
+  },
   {
     id: "providers.community",
     kind: "section",
@@ -720,6 +797,41 @@ const SECTIONS = [
     parent: "settings.instructions",
     title: "Project",
     about: "Which project's instruction files to show.",
+  },
+  {
+    id: "instructions.brief",
+    kind: "section",
+    parent: "settings.instructions",
+    title: "Brief",
+    about:
+      "Text every thread in that project gets, on any agent. It stays on your computers and is not written to the repository.",
+    keywords: ["project brief", "project instructions", "standing instructions", "rules"],
+    widensAgents: true,
+  },
+  {
+    id: "instructions.notes",
+    kind: "section",
+    parent: "settings.instructions",
+    title: "Notes",
+    about:
+      "Notes agents and the user leave for later threads in that project, on that computer: each with its title, one line and text, who wrote it and when. Suggested notes wait there for Keep or Discard.",
+    keywords: ["project notes", "suggested notes", "suggestions", "project memory", "remember"],
+    widensAgents: true,
+  },
+  {
+    id: "instructions.notesMode",
+    kind: "row",
+    parent: "instructions.notes",
+    title: "Notes agents write",
+    about:
+      "Whether agents may write project notes: Off, Ask me first (each note is a suggestion you keep or discard), or Keep without asking. One setting for every project on this computer.",
+    keywords: ["project notes", "agent notes", "suggestions", "auto keep"],
+    value: {
+      kind: "choice",
+      read: (settings) => settings.projectNotes,
+      options: PROJECT_NOTES_MODE_LABELS,
+    },
+    widensAgents: true,
   },
   {
     id: "instructions.files",
@@ -852,6 +964,24 @@ const SECTIONS = [
     keywords: ["tailscale", "lan", "network"],
     widensAgents: true,
   },
+  // Devices
+  {
+    id: "devices.simulators",
+    kind: "section",
+    parent: "settings.devices",
+    title: "Simulators & emulators",
+    about:
+      "Whether the Device tab shows this computer's iOS Simulators and Android Emulators, and whether agents can use them.",
+  },
+  {
+    id: "devices.tools",
+    kind: "section",
+    parent: "settings.devices",
+    title: "Device tools",
+    about:
+      "The device hub and agent-device that Threadlines installs for devices: each one's version, and Update when a newer one is needed.",
+    keywords: ["expo-device-hub", "agent-device", "version", "update", "install"],
+  },
   // Fleet: a computer's page (/fleet/<computer>)
   {
     id: "fleet.connection",
@@ -891,6 +1021,17 @@ const SECTIONS = [
 
 const ROWS = [
   // General › Alerts
+  {
+    id: "general.alertSound",
+    kind: "row",
+    parent: "general.alerts",
+    title: "Play a sound",
+    about: "A short sound in this app when an agent finishes or needs you.",
+    keywords: ["sound", "chime", "audio", "notifications", "done"],
+    scope: "device",
+    edit: editableDeviceSwitch("alertSound"),
+    editName: "Alerts: Play a sound",
+  },
   {
     id: "general.alertsOnThisDevice",
     kind: "row",
@@ -1050,6 +1191,22 @@ const ROWS = [
     about: "Show the agent's reply while it's being written.",
     keywords: ["streaming"],
     ...editableServerSwitch("enableAssistantStreaming"),
+  },
+  {
+    id: "general.followUpDelivery",
+    kind: "row",
+    parent: "general.chatAndDiffs",
+    title: "Sending while an agent works",
+    about: "Default when sending during a reply. Override per thread in the composer.",
+    keywords: ["steer", "steer now", "send when done", "queue", "follow-up", "composer"],
+    scope: "device",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: FOLLOW_UP_DELIVERY_LABELS },
+      leaves: ["followUpDelivery"],
+      read: (settings) => settings.followUpDelivery,
+      patch: (value) => ({ followUpDelivery: value as FollowUpDelivery }),
+    },
   },
   {
     id: "general.timeFormat",
@@ -1379,6 +1536,39 @@ const ROWS = [
     widensAgents: true,
   },
   {
+    id: "threads.mode",
+    kind: "row",
+    parent: "threads.newThreads",
+    title: "Build or Plan",
+    about: "Whether new threads start in Build or Plan. Agents without Plan start in Build.",
+    keywords: ["build", "plan", "planning"],
+    ...editableServerChoice("newThreadInteractionMode", INTERACTION_MODE_LABELS),
+  },
+  {
+    id: "threads.access",
+    kind: "row",
+    parent: "threads.newThreads",
+    title: "Access",
+    about:
+      "The access level new threads start with. Agents without it use the next safer level they have.",
+    keywords: [
+      "access level",
+      "default access",
+      "full access",
+      "auto",
+      "supervised",
+      "auto-accept edits",
+      "permissions",
+      "sandbox",
+    ],
+    value: {
+      kind: "choice",
+      read: (settings) => settings.newThreadRuntimeMode,
+      options: RUNTIME_MODE_LABELS,
+    },
+    widensAgents: true,
+  },
+  {
     id: "threads.startIn",
     kind: "row",
     parent: "threads.newThreads",
@@ -1470,19 +1660,19 @@ const ROWS = [
     widensAgents: true,
   },
   {
-    id: "threads.claudeSuggestions",
+    id: "providers.claudeSuggestions",
     kind: "row",
-    parent: "threads.newThreads",
+    parent: "providers.suggestions",
     title: "Keep Claude's suggestions when you're using a lot",
     about:
       "Keep Claude suggesting your next message even when you're on track to run out of usage early.",
-    keywords: ["autocomplete", "prompt suggestions"],
+    keywords: ["autocomplete", "prompt suggestions", "claude"],
     ...editableServerSwitch("claudeSuggestionsWhenUsageRunsFast"),
   },
   {
-    id: "threads.codexSuggestions",
+    id: "providers.codexSuggestions",
     kind: "row",
-    parent: "threads.newThreads",
+    parent: "providers.suggestions",
     title: "Codex suggestions",
     about:
       "After a reply to your message, Codex suggests what you might send next. Each suggestion uses a little Codex usage.",
@@ -1490,12 +1680,22 @@ const ROWS = [
     ...editableServerSwitch("codexSuggestions"),
   },
   {
+    id: "providers.antigravitySuggestions",
+    kind: "row",
+    parent: "providers.suggestions",
+    title: "Antigravity suggestions",
+    about:
+      "After a reply to your message, Antigravity suggests what you might send next using a fast Gemini model. Each suggestion uses a little Antigravity usage.",
+    keywords: ["autocomplete", "prompt suggestions", "antigravity", "gemini"],
+    ...editableServerSwitch("antigravitySuggestions"),
+  },
+  {
     id: "threads.continueAfterUsageLimits",
     kind: "row",
     parent: "threads.newThreads",
     title: "Continue after usage limits",
     about:
-      "When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets. Each limit's notice above the composer also has a Continue at reset switch.",
+      "When a Claude or Codex usage limit stops a thread, it continues on its own once the limit resets, including threads an agent started, which answer it after. Each limit's notice above the composer also has a Continue at reset switch.",
     keywords: ["usage limit", "rate limit", "resume", "reset"],
     value: onOff((settings) => settings.continueAfterUsageLimits),
     widensAgents: true,
@@ -1629,6 +1829,24 @@ const ROWS = [
     title: "Confirm delete",
     about: "Ask before deleting a thread and its history.",
     scope: "device",
+  },
+  // Threads › Sidebar
+  {
+    id: "threads.generalChats",
+    kind: "row",
+    parent: "threads.sidebar",
+    title: "General chats",
+    about:
+      "Own page puts General Chats in the left bar. Section in Threads lists them at the bottom of the thread list instead.",
+    keywords: ["general chats", "chats", "rail", "left bar", "section", "shelf"],
+    scope: "device",
+    edit: {
+      lands: "device",
+      control: { kind: "choice", options: GENERAL_CHATS_PLACEMENT_LABELS },
+      leaves: ["generalChatsPlacement"],
+      read: (settings) => settings.generalChatsPlacement,
+      patch: (value) => ({ generalChatsPlacement: value as GeneralChatsPlacement }),
+    },
   },
   // Archives › Thread cleanup
   {
@@ -1852,6 +2070,28 @@ const ROWS = [
     keywords: ["link", "pairing link"],
     widensAgents: true,
   },
+  // Devices › Simulators & emulators
+  {
+    id: "devices.enable",
+    kind: "row",
+    parent: "devices.simulators",
+    title: "Use devices",
+    about:
+      "The Device tab shows the iOS Simulators and Android Emulators on this computer, and the device hub installs the first time the tab or an agent asks.",
+    keywords: ["simulator", "emulator", "iOS", "Android", "device tab", "turn on"],
+    ...editableServerSwitch("enableDevices"),
+  },
+  {
+    id: "devices.agentAccess",
+    kind: "row",
+    parent: "devices.simulators",
+    title: "Agents can use devices",
+    about:
+      "Agents get tools to open, see and tap devices here, in sessions started after you turn it on.",
+    keywords: ["device_open", "agent-device", "simulator", "emulator", "agent tools"],
+    value: onOff((settings) => settings.agentDeviceAccess),
+    widensAgents: true,
+  },
   // Fleet › This app
   {
     id: "fleet.removeFromApp",
@@ -1891,6 +2131,9 @@ const MOVED_PLACES: ReadonlyMap<string, PlaceId> = new Map([
   ["general.theme", "appearance.theme"],
   ["general.themeGlass", "appearance.glass"],
   ["general.themeMotion", "appearance.motion"],
+  // November 2026: provider suggestion toggles moved from Threads to Providers.
+  ["threads.claudeSuggestions", "providers.claudeSuggestions"],
+  ["threads.codexSuggestions", "providers.codexSuggestions"],
 ]);
 
 /** The place an id names now, following moves; null for an id this build doesn't know. */
@@ -1948,7 +2191,7 @@ export function placeRoute(id: PlaceId): AppPlaceRoute {
 }
 
 /** The link scheme for places in chat markdown (the desktop app owns `threadlines://`). */
-export const PLACE_HREF_SCHEME = "threadlines-place:";
+export { PLACE_HREF_SCHEME };
 
 export const placeHref = (id: PlaceId): string => `${PLACE_HREF_SCHEME}${id}`;
 

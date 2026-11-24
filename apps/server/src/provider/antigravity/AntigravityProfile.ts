@@ -2,24 +2,26 @@
  * AntigravityProfile — where one Antigravity provider instance keeps its
  * state, and the environment its agent processes run with.
  *
- * Each instance gets its own `GEMINI_HOME` (credentials, conversations,
- * settings) under Threadlines' state dir, isolated from the user's own
- * `~/.gemini`, and a temp root its processes unpack into. Antigravity's
- * Windows build is a PyInstaller one-file exe that unpacks ~1 GB per launch
- * into `TEMP` and can leave it behind; every process therefore gets a private
- * `run-*` dir that is removed when the process ends, and the instance's temp
- * root is swept on start for dirs whose owner is gone.
+ * Each instance gets its own profile (`agy acp --gemini-dir`: sign-in,
+ * conversations, settings) under Threadlines' state dir, isolated from the
+ * user's own `~/.gemini`, and a temp root its processes unpack into. Every
+ * process gets a private `run-*` dir that is removed when the process ends,
+ * and the instance's temp root is swept on start for dirs whose owner is
+ * gone.
  *
  * @module provider/antigravity/AntigravityProfile
  */
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { resolveCommandPath } from "@threadlines/shared/shell";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import { ProviderSetupError } from "../Errors.ts";
+import { ANTIGRAVITY_APP_DATA_DIR } from "./AntigravityRelease.ts";
+import { shareAntigravityUserConfig } from "./AntigravityUserConfig.ts";
 
 export interface AntigravityInstancePaths {
   /** `GEMINI_HOME` for this instance. */
@@ -42,16 +44,65 @@ export function antigravityInstancePaths(
   };
 }
 
-/** The agent's own state dir inside the profile. */
-export const antigravityAgentDir = (profileDir: string) => join(profileDir, "antigravity-acp");
+/** The Threadlines data folder a profile from `antigravityInstancePaths` sits in. */
+export const antigravityStateDirOf = (profileDir: string) => resolve(profileDir, "..", "..", "..");
 
-/** Written by the agent after a successful Google sign-in (file storage). */
+/** The agent's own state dir inside the profile. */
+export const antigravityAgentDir = (profileDir: string) =>
+  join(profileDir, ANTIGRAVITY_APP_DATA_DIR);
+
+/**
+ * Where the CLI keeps a Google sign-in when it uses file storage (see
+ * `antigravityEnvironment`): `{ token: { access_token, refresh_token, expiry } }`.
+ */
 export const antigravityTokenPath = (profileDir: string) =>
+  join(antigravityAgentDir(profileDir), "antigravity-oauth-token");
+
+/** Where Google's old ACP server kept its sign-in. The CLI doesn't read it. */
+export const antigravityLegacyTokenPath = (profileDir: string) =>
   join(antigravityAgentDir(profileDir), "acp_token.json");
 
-/** Credentials and project settings that would steer the agent away from this profile. */
+/** Credentials, project settings and host-Electron internals that steer or break the child. */
 const STRIPPED_ENV_KEY =
-  /^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|AGY_|ANTIGRAVITY_)|^(BROWSER|PYTHONUNBUFFERED|PYTHONHOME|PYTHONPATH)$/iu;
+  /^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|AGY_|ANTIGRAVITY_)|^(BROWSER|PYTHONUNBUFFERED|PYTHONHOME|PYTHONPATH|ELECTRON_RUN_AS_NODE|CHROME_CRASHPAD_PIPE_NAME)$/iu;
+
+const LINUX_CA_BUNDLE_PATHS = [
+  "/etc/ssl/certs/ca-bundle.crt",
+  "/etc/ssl/certs/ca-certificates.crt",
+  "/etc/pki/tls/certs/ca-bundle.crt",
+  "/etc/ssl/cert.pem",
+] as const;
+
+function resolveLinuxSslCertFile(
+  base: NodeJS.ProcessEnv,
+  exists: (path: string) => boolean,
+): string | undefined {
+  const candidates = [
+    ...(base.NIX_SSL_CERT_FILE?.trim() ? [base.NIX_SSL_CERT_FILE.trim()] : []),
+    ...LINUX_CA_BUNDLE_PATHS,
+  ];
+  return candidates.find((candidate) => exists(candidate));
+}
+
+/**
+ * What the CLI takes for a session over SSH. It then signs in with
+ * `agy acp --login`, which prints a link and reads back a code, and (1.5.14
+ * and 1.5.15 only) keeps a Google sign-in in the profile's own file.
+ */
+const SSH_CONNECTION_STAND_IN = "127.0.0.1 0 127.0.0.1 0";
+
+/**
+ * Keeps a Google sign-in in the profile's own file (`antigravityTokenPath`)
+ * instead of the one OS keyring entry every profile (and the user's own
+ * terminal `agy`) shares. 1.5.16 goes by `AGY_CLI_FORCE_FILE_TOKEN_STORAGE`:
+ * the SSH stand-in alone leaves it on the keyring. 1.5.15 and earlier go by
+ * `SSH_CONNECTION`, and Google's old ACP server by
+ * `AGY_ACP_FORCE_FILE_STORAGE`.
+ */
+const FILE_SIGN_IN_STORAGE_ENV = {
+  AGY_CLI_FORCE_FILE_TOKEN_STORAGE: "1",
+  AGY_ACP_FORCE_FILE_STORAGE: "1",
+} as const;
 
 /**
  * A `BROWSER` that opens nothing: the agent prints its sign-in URL, and the
@@ -65,10 +116,10 @@ function noopBrowser(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string 
 
 /**
  * The complete environment for an Antigravity process: the server's own,
- * minus ambient Google credentials and Python settings, plus the sign-in
- * method's own credentials (`AntigravitySignInMethod`), the profile,
- * file-based credential storage (no shared OS keychain entry) and the
- * process's temp dir.
+ * minus ambient Google credentials, plus the sign-in method's own
+ * credentials (`AntigravitySignInMethod`), the profile, file-based sign-in
+ * storage (no shared OS keyring entry), no self-update, and the process's
+ * temp dir.
  */
 export function antigravityEnvironment(input: {
   readonly base: NodeJS.ProcessEnv;
@@ -76,6 +127,8 @@ export function antigravityEnvironment(input: {
   readonly tempDir: string;
   readonly platform: NodeJS.Platform;
   readonly credentials?: Readonly<Record<string, string>>;
+  /** Test seam for Linux CA bundle discovery. */
+  readonly pathExists?: (path: string) => boolean;
 }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(input.base)) {
@@ -83,9 +136,19 @@ export function antigravityEnvironment(input: {
   }
   Object.assign(env, input.credentials);
   env.GEMINI_HOME = input.profileDir;
-  env.AGY_ACP_FORCE_FILE_STORAGE = "1";
-  env.PYTHONUNBUFFERED = "1";
+  Object.assign(env, FILE_SIGN_IN_STORAGE_ENV);
+  env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
+  env.SSH_CONNECTION = input.base.SSH_CONNECTION?.trim() || SSH_CONNECTION_STAND_IN;
   env.BROWSER = noopBrowser(input.platform, input.base);
+  // Keep subcommands run by the agent non-interactive so pagers and git prompts never hang.
+  env.PAGER = "cat";
+  env.GH_PAGER = "cat";
+  env.GIT_PAGER = "cat";
+  env.GIT_TERMINAL_PROMPT = "0";
+  if (input.platform === "linux" && !env.SSL_CERT_FILE?.trim() && !env.SSL_CERT_DIR?.trim()) {
+    const certFile = resolveLinuxSslCertFile(input.base, input.pathExists ?? existsSync);
+    if (certFile) env.SSL_CERT_FILE = certFile;
+  }
   if (input.platform === "win32") {
     env.TEMP = input.tempDir;
     env.TMP = input.tempDir;
@@ -188,44 +251,108 @@ export const sweepAntigravityTempRoot = (tempRoot: string) =>
     }
   });
 
-/**
- * Whether the profile holds a Google sign-in: a token file with something in
- * it (an interrupted write leaves an empty or cut-off one).
- */
-export const hasAntigravityCredentials = (profileDir: string) =>
-  Effect.promise(async () => {
-    const raw = await fs.readFile(antigravityTokenPath(profileDir), "utf8").catch(() => "");
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      return typeof parsed === "object" && parsed !== null && Object.keys(parsed).length > 0;
-    } catch {
-      return false;
-    }
-  });
+/** Whether a file holds a JSON object with something in it (an interrupted write leaves less). */
+const holdsJsonObject = async (path: string) => {
+  const raw = await fs.readFile(path, "utf8").catch(() => "");
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "object" && parsed !== null && Object.keys(parsed).length > 0;
+  } catch {
+    return false;
+  }
+};
+
+/** What the profile holds of a Google sign-in: the CLI's, the old server's, or neither. */
+export const readAntigravitySavedSignIn = (profileDir: string) =>
+  Effect.promise(async () => ({
+    cli: await holdsJsonObject(antigravityTokenPath(profileDir)),
+    legacy: await holdsJsonObject(antigravityLegacyTokenPath(profileDir)),
+  }));
 
 export interface AntigravityModelChoice {
   readonly value: string;
   readonly name: string;
 }
 
+/** A model's reasoning levels, as the session's `thought_level` option lists them. */
+export interface AntigravityThoughtLevels {
+  /** The session option's id, which a selection is sent back to. */
+  readonly configId: string;
+  readonly name: string;
+  readonly options: ReadonlyArray<AntigravityModelChoice>;
+  readonly currentValue?: string;
+}
+
 export interface AntigravityCatalogCache {
   readonly choices: ReadonlyArray<AntigravityModelChoice>;
   readonly currentValue?: string;
+  /**
+   * Each model's reasoning levels, by model id, as seen when it was the
+   * session's model (the agent lists them for that model only); null when
+   * it had none. Models not seen yet are missing.
+   */
+  readonly thoughtLevels?: Readonly<Record<string, AntigravityThoughtLevels | null>>;
+  /** True once a probe pass has checked every listed model's `thought_level` options. */
+  readonly probed?: boolean;
   /** The sign-in it was listed for (`antigravityCredentialFingerprint`). */
   readonly fingerprint?: string;
+  /** The managed runtime version that listed it; absent for a custom binary. */
+  readonly agentVersion?: string;
 }
 
 const catalogPath = (profileDir: string) => join(profileDir, "threadlines-models.json");
+
+const modelChoicesOf = (raw: unknown): ReadonlyArray<AntigravityModelChoice> =>
+  Array.isArray(raw)
+    ? raw.filter(
+        (choice): choice is AntigravityModelChoice =>
+          typeof choice?.value === "string" && typeof choice?.name === "string",
+      )
+    : [];
+
+/** The saved reasoning levels of listed models; anything malformed is left out. */
+function thoughtLevelsOf(
+  raw: unknown,
+  choices: ReadonlyArray<AntigravityModelChoice>,
+): Record<string, AntigravityThoughtLevels | null> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const levels: Record<string, AntigravityThoughtLevels | null> = {};
+  for (const choice of choices) {
+    const entry = (raw as Record<string, unknown>)[choice.value];
+    if (entry === null) {
+      levels[choice.value] = null;
+      continue;
+    }
+    if (typeof entry !== "object" || entry === undefined) continue;
+    const { configId, name, options, currentValue } = entry as Partial<AntigravityThoughtLevels>;
+    const parsedOptions = modelChoicesOf(options);
+    if (typeof configId !== "string" || typeof name !== "string" || parsedOptions.length === 0) {
+      continue;
+    }
+    levels[choice.value] = {
+      configId,
+      name,
+      options: parsedOptions,
+      ...(typeof currentValue === "string" ? { currentValue } : {}),
+    };
+  }
+  return Object.keys(levels).length > 0 ? levels : undefined;
+}
 
 /**
  * The model list from the last session, so status checks need not start the
  * agent. A list from another sign-in (method, project or key) doesn't count:
  * what a sign-in may use differs. Lists saved before sign-in methods existed
- * count for a Google account.
+ * count for a Google account. A list from another agent version doesn't count
+ * either: each release names its own models, so an update lists them afresh.
  */
 export const readAntigravityCatalog = (
   profileDir: string,
-  sign: { readonly fingerprint: string; readonly isGoogleAccount: boolean },
+  sign: {
+    readonly fingerprint: string;
+    readonly isGoogleAccount: boolean;
+    readonly agentVersion: string | undefined;
+  },
 ) =>
   Effect.promise(async (): Promise<AntigravityCatalogCache | undefined> => {
     const raw = await fs.readFile(catalogPath(profileDir), "utf8").catch(() => undefined);
@@ -236,20 +363,19 @@ export const readAntigravityCatalog = (
         parsed.fingerprint === undefined
           ? sign.isGoogleAccount
           : parsed.fingerprint === sign.fingerprint;
-      if (!matches) return undefined;
-      const choices = Array.isArray(parsed.choices)
-        ? parsed.choices.filter(
-            (choice): choice is AntigravityModelChoice =>
-              typeof choice?.value === "string" && typeof choice?.name === "string",
-          )
-        : [];
+      if (!matches || parsed.agentVersion !== sign.agentVersion) return undefined;
+      const choices = modelChoicesOf(parsed.choices);
+      const thoughtLevels = thoughtLevelsOf(parsed.thoughtLevels, choices);
       return choices.length > 0
         ? {
             choices,
             ...(typeof parsed.currentValue === "string"
               ? { currentValue: parsed.currentValue }
               : {}),
+            ...(thoughtLevels ? { thoughtLevels } : {}),
+            ...(parsed.probed === true ? { probed: true } : {}),
             fingerprint: sign.fingerprint,
+            ...(sign.agentVersion ? { agentVersion: sign.agentVersion } : {}),
           }
         : undefined;
     } catch {
@@ -266,8 +392,55 @@ export const writeAntigravityCatalog = (profileDir: string, catalog: Antigravity
     await fs.rename(temp, target);
   }).pipe(Effect.ignore);
 
-/** Creates the profile dirs the agent expects, private to the user. */
-export const prepareAntigravityProfile = (profileDir: string) =>
+/**
+ * Creates the profile dirs the agent expects, private to the user, and
+ * brings in the user's own global rules and skills from `~/.gemini`
+ * (`AntigravityUserConfig`). Runs before every agent start.
+ */
+export const prepareAntigravityProfile = (
+  profileDir: string,
+  user: { readonly userHome: string; readonly platform: NodeJS.Platform },
+) =>
   Effect.promise(() =>
     fs.mkdir(antigravityAgentDir(profileDir), { recursive: true, mode: 0o700 }),
-  ).pipe(Effect.asVoid);
+  ).pipe(
+    Effect.andThen(
+      shareAntigravityUserConfig({
+        profileDir,
+        userHome: user.userHome,
+        platform: user.platform,
+        threadlinesDir: antigravityStateDirOf(profileDir),
+      }),
+    ),
+  );
+
+const agentRefusalPath = (profileDir: string) => join(profileDir, "threadlines-agent-check.json");
+
+/**
+ * Records why a custom `agy` was refused (or that it wasn't), for the status
+ * to show without starting it again. `tag` names the file as it was then.
+ */
+export const writeAntigravityAgentRefusal = (
+  profileDir: string,
+  check: { readonly tag: string; readonly problem: string | undefined },
+) =>
+  Effect.tryPromise(async () => {
+    await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
+    const target = agentRefusalPath(profileDir);
+    const temp = `${target}.${randomBytes(4).toString("hex")}.tmp`;
+    await fs.writeFile(temp, JSON.stringify(check));
+    await fs.rename(temp, target);
+  }).pipe(Effect.ignore);
+
+/** Why the custom `agy` `tag` names was refused, if it was. */
+export const readAntigravityAgentRefusal = (profileDir: string, tag: string) =>
+  Effect.promise(async () => {
+    const raw = await fs.readFile(agentRefusalPath(profileDir), "utf8").catch(() => undefined);
+    try {
+      const parsed =
+        raw === undefined ? undefined : (JSON.parse(raw) as { tag?: unknown; problem?: unknown });
+      return parsed?.tag === tag && typeof parsed.problem === "string" ? parsed.problem : undefined;
+    } catch {
+      return undefined;
+    }
+  });

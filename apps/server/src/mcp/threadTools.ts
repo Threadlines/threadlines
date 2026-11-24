@@ -14,6 +14,7 @@ import {
   AgentThreadReadResult,
   AgentThreadStatusWord,
   AgentThreadSummary,
+  CHILD_THREADS_PER_CALL,
   RuntimeMode,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
@@ -82,7 +83,6 @@ export const ThreadStartResult = Schema.Struct({
     "started",
     "asked_user",
     "off",
-    "limit",
     "not_allowed",
     "unavailable_agent",
     "refused",
@@ -105,6 +105,11 @@ export const ThreadStartResult = Schema.Struct({
         workspace: Schema.Literals(["worktree", "project_folder", "checkout", "remote"]),
         /** The linked computer it runs on; absent: this one. */
         computer: Schema.optional(Schema.String),
+        /**
+         * The access it runs with: never more than yours, so lower than you
+         * asked for when you asked for more.
+         */
+        access: Schema.optional(RuntimeMode),
       }),
     ),
   ),
@@ -127,7 +132,6 @@ export const ThreadSendResult = Schema.Struct({
     "sent",
     "queued",
     "not_yours",
-    "limit",
     "off",
     "not_allowed",
     "refused",
@@ -135,6 +139,11 @@ export const ThreadSendResult = Schema.Struct({
   ]),
   detail: Schema.optional(Schema.String),
   threadId: Schema.optional(Schema.String),
+  /**
+   * False for a lead chat's pass to a thread it did not start
+   * (docs/design/lead-chat.md): nothing comes back from it.
+   */
+  reportsBack: Schema.optional(Schema.Boolean),
 });
 export type ThreadSendResult = typeof ThreadSendResult.Type;
 
@@ -152,6 +161,30 @@ export const ThreadStopResult = Schema.Struct({
   threadId: Schema.optional(Schema.String),
 });
 export type ThreadStopResult = typeof ThreadStopResult.Type;
+
+export const ThreadWrapResult = Schema.Struct({
+  outcome: Schema.Literals(["ok", "off", "not_allowed", "refused"]),
+  detail: Schema.optional(Schema.String),
+  /** With `ok`: one entry per thread named, in the order given. */
+  threads: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        threadId: Schema.String,
+        /** `working`: it is still at work or waiting for the user, so it stays. */
+        outcome: Schema.Literals(["wrapped", "working", "not_yours", "refused", "failed"]),
+        detail: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+});
+export type ThreadWrapResult = typeof ThreadWrapResult.Type;
+
+export const ThreadMoveResult = Schema.Struct({
+  /** `queued`: it moves once this turn ends. */
+  outcome: Schema.Literals(["queued", "off", "not_allowed", "refused"]),
+  detail: Schema.optional(Schema.String),
+});
+export type ThreadMoveResult = typeof ThreadMoveResult.Type;
 
 const ThreadIdParameter = Schema.String.annotate({
   description: "The thread's id, from thread_start or thread_list.",
@@ -229,7 +262,8 @@ export const ThreadStartTool = loadedOnDemand(
   drivesThreads(
     Tool.make("thread_start", {
       description:
-        "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own model and reasoning. Unless the user asked for a model or reasoning, prefer your own model or one already in this room (thread_agents' `room`), here or on another computer: a thread on a room agent's model runs at the reasoning the user set for that agent. `agent.reasoning` sets a level instead. Threads get your current access and interaction modes, never more; `access` asks for less. `runSetup: false` skips the project's setup script, for quick research. `checkout` puts a thread in a checkout that already exists instead of a new worktree, so it sees the files as they are there, uncommitted changes included (a reviewer for work another thread just finished): no worktree or branch is made and the setup script is not run. It shares that folder with the thread it belongs to, so have only one of them work at a time. `computer` starts them on another linked computer (a name or id from thread_agents' `computers`) in its copy of this project: from your branch when you pushed it, otherwise from that computer's default branch, without your unpushed changes. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes; with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. At most 5 threads per call and 5 per user message.",
+        "Start new threads in this project to work in parallel. Each gets its own agent session and its own git worktree off your current commit (in a project without git they share the project folder). Give each a short `title` and a self-contained `prompt`: the new thread sees none of this conversation, only its prompt. `agent` picks a model from thread_agents; leave it out to use your own model and reasoning. Unless the user asked for a model or reasoning, prefer your own model or one already in this room (thread_agents' `room`), here or on another computer: a thread on a room agent's model runs at the reasoning the user set for that agent. `agent.reasoning` sets a level instead. Threads get your current access and interaction modes, never more; `access` asks for less. `runSetup: false` skips the project's setup script, for quick research. `checkout` puts a thread in a checkout that already exists instead of a new worktree, so it sees the files as they are there, uncommitted changes included (a reviewer for work another thread just finished): no worktree or branch is made and the setup script is not run. It shares that folder with the thread it belongs to, so have only one of them work at a time. `computer` starts them on another linked computer (a name or id from thread_agents' `computers`) in its copy of this project: from your branch when you pushed it, otherwise from that computer's default branch, without your unpushed changes. With `reportBack` (default true) each thread's final reply comes back to you as a message when it finishes and wakes you, and so does the reply ending any later turn it takes on its own (a check-back, say); with false they run on their own and nothing comes back. Returns as soon as they are recorded and does not wait for them, so don't poll: carry on, or end your turn if you have nothing else to do. " +
+        `At most ${CHILD_THREADS_PER_CALL} threads per call; make more calls for more.`,
       parameters: Schema.Struct({
         threads: Schema.Array(
           Schema.Struct({
@@ -267,7 +301,7 @@ export const ThreadListTool = loadedOnDemand(
   readsThreads(
     Tool.make("thread_list", {
       description:
-        'Threads you started (`scope: "mine"`, the default), including ones the user made their own and ones on linked computers (with `computer` set, status as last heard), or this project\'s open threads (`"project"`, most recently active first, at most 30). Each has its id, title, status (working, needs the user, waiting, failed, idle, wrapped), branch, model, whether its replies come back to the thread that started it, and who started it.',
+        'Threads you started (`scope: "mine"`, the default), including ones the user made their own and ones on linked computers (with `computer` set, status as last heard), or this project\'s open threads (`"project"`, most recently active first, at most 30). Each has its id, title, status (working, needs the user, waiting, failed, idle, wrapped), branch, model, whether its replies come back to the thread that started it, and who started it. The project\'s lead chat is marked `lead`; each also has when its work last moved and its pull requests as this computer knows them.',
       parameters: Schema.Struct({
         scope: Schema.optional(Schema.Literals(["mine", "project"])),
       }),
@@ -311,7 +345,8 @@ export const ThreadSendTool = loadedOnDemand(
   drivesThreads(
     Tool.make("thread_send", {
       description:
-        "Send one of your threads a message: more work, a correction or a question. If it is idle it starts on it now; if it is busy it takes it after its current turn. Its reply comes back to you as a message, like a start. Only threads you started whose replies still come back to you. `checkout` first moves an idle thread into another thread's checkout, keeping its conversation, so it reads your message there (a thread that planned the work looks at what another thread built). Don't poll; end your turn if you have nothing else to do.",
+        "Send one of your threads a message: more work, a correction or a question. If it is idle it starts on it now; if it is busy it takes it after its current turn. Its reply comes back to you as a message and wakes you, like a start, and so does the reply ending any later turn it takes on its own. Only threads you started whose replies still come back to you. `checkout` first moves an idle thread into another thread's checkout, keeping its conversation, so it reads your message there (a thread that planned the work looks at what another thread built). The project's lead chat may also pass a message to an open thread in this project that it did not start (not a room, not one another thread owns, not one the user stopped): it works on it there, and nothing comes back. " +
+        "Don't poll; end your turn if you have nothing else to do.",
       parameters: Schema.Struct({
         threadId: ThreadIdParameter,
         message: Schema.String.annotate({ description: "What you want it to do or answer." }),
@@ -328,10 +363,46 @@ export const ThreadStopTool = loadedOnDemand(
   drivesThreads(
     Tool.make("thread_stop", {
       description:
-        "Stop one of your threads: its turn, its background work and its session. What you asked of it ends without an answer, and messages you queued for it are taken back. A later message starts it again. Only threads you started whose replies still come back to you.",
+        "Stop one of your threads: its turn, its background work, its check-backs and its session. What you asked of it ends without an answer, and messages you queued for it are taken back. A later message starts it again. Only threads you started whose replies still come back to you.",
       parameters: Schema.Struct({ threadId: ThreadIdParameter }),
       success: ThreadStopResult,
     }).annotate(Tool.Title, "Stop a thread"),
+  ),
+);
+
+export const ThreadWrapTool = loadedOnDemand(
+  drivesThreads(
+    Tool.make("thread_wrap", {
+      description:
+        "Wrap up finished threads you started, so they leave the user's list of active threads; the user can reopen them. One still working or waiting for the user is left as it is. A wrapped thread comes back on its own if it gets new work. Only threads you started whose replies still come back to you.",
+      parameters: Schema.Struct({
+        threadIds: Schema.Array(ThreadIdParameter),
+      }),
+      success: ThreadWrapResult,
+    }).annotate(Tool.Title, "Wrap up threads"),
+  ),
+);
+
+export const ThreadMoveTool = loadedOnDemand(
+  drivesThreads(
+    Tool.make("thread_move", {
+      description:
+        "Move this thread to another linked computer, to carry on there (the user may be shutting this one down). It moves when your turn ends, with its messages and code changes; you continue there in a fresh session with the conversation so far. Only your own thread. `computer` is a name or id from thread_agents' `computers`; `agent` is one of that computer's agents, left out for the one it suggests when the move starts. The user can cancel it, and that computer may ask its user first. After calling it, finish your reply and don't start more work.",
+      parameters: Schema.Struct({
+        computer: Schema.String.annotate({
+          description: "The linked computer: a name or id from thread_agents' `computers`.",
+        }),
+        agent: Schema.optional(
+          Schema.Struct({
+            instanceId: Schema.String.annotate({
+              description: "From thread_agents' `computers`.",
+            }),
+            model: Schema.String.annotate({ description: "From thread_agents' `computers`." }),
+          }),
+        ),
+      }),
+      success: ThreadMoveResult,
+    }).annotate(Tool.Title, "Move this thread to another computer"),
   ),
 );
 
@@ -342,4 +413,6 @@ export const ThreadToolkit = Toolkit.make(
   ThreadReadTool,
   ThreadSendTool,
   ThreadStopTool,
+  ThreadWrapTool,
+  ThreadMoveTool,
 );

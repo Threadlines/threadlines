@@ -11,8 +11,10 @@ import {
   EnvironmentId,
   PeerRpcError,
   PeerRpcGroup,
+  type PeerAgent,
   type PeerDescriptor,
   type PeerCaller,
+  ProviderInstanceId,
 } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -34,6 +36,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { RepositoryIdentityResolver } from "../project/Services/RepositoryIdentityResolver.ts";
 import { resolveProjectPlace } from "../project/projectPlace.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { RelayDeviceRepository } from "../relay/RelayDeviceRepository.ts";
 import { RelayHost } from "../relay/RelayHost.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -69,6 +72,8 @@ export const makePeerRpcLayer = (input: {
       const relayHost = yield* RelayHost;
       const environment = yield* ServerEnvironment;
       const providers = yield* ProviderRegistry;
+      // What its agents keep of a moved thread; absent in a server built without it.
+      const providerService = yield* Effect.serviceOption(ProviderService);
       const settings = yield* ServerSettingsService;
       const snapshots = yield* ProjectionSnapshotQuery;
       const identities = yield* RepositoryIdentityResolver;
@@ -178,6 +183,26 @@ export const makePeerRpcLayer = (input: {
             }
           }
           const defaultAgent = defaults?.newThreadModelSelection ?? null;
+          // What each agent keeps of a moved thread (docs/design/fleet.md, Part 3e).
+          const agents = yield* Effect.forEach(
+            listThreadAgents(all, { interactionMode: "default" }).agents,
+            (agent): Effect.Effect<PeerAgent> =>
+              Option.isNone(providerService)
+                ? Effect.succeed(agent)
+                : providerService.value
+                    .getCapabilities(ProviderInstanceId.make(agent.instanceId))
+                    .pipe(
+                      Effect.map((capabilities) => ({
+                        ...agent,
+                        threadGoals: capabilities.threadGoals === "supported",
+                        goalBudget:
+                          capabilities.threadGoals === "supported" &&
+                          capabilities.threadGoalBudget !== "unsupported",
+                        checkBacks: capabilities.checkBacks === "supported",
+                      })),
+                      Effect.orElseSucceed(() => agent),
+                    ),
+          );
           return {
             environmentId: descriptor.environmentId,
             label: descriptor.label,
@@ -186,13 +211,23 @@ export const makePeerRpcLayer = (input: {
             directRoutes: yield* relayHost.directRoutes(input.sessionId),
             access: link.access,
             maxRuntimeMode: link.maxRuntimeMode,
-            agents: listThreadAgents(all, { interactionMode: "default" }).agents,
+            agents,
             defaultAgent:
               defaultAgent === null
                 ? null
                 : { instanceId: defaultAgent.instanceId, model: defaultAgent.model },
             projects,
             moves: true,
+            moveStagedApproval: true,
+            moveNativeSession: true,
+            moveThreadState: true,
+            moveGeneralChats: true,
+            moveRooms: true,
+            moveOutsideWork: true,
+            moveFamilies: true,
+            moveLinkLineage: true,
+            enforcesRequestCeiling: true,
+            moveAdoptsChildren: true,
             threadFiling: true,
             outsideAgents: true,
           } satisfies PeerDescriptor;
@@ -256,6 +291,8 @@ export const makePeerRpcLayer = (input: {
           guarded(Effect.flatMap(currentLink, (link) => linkMoves.status(link, payload))),
         "peer.move.abort": (payload) =>
           guarded(Effect.flatMap(currentLink, (link) => linkMoves.abort(link, payload))),
+        "peer.move.readiness": (payload) =>
+          guarded(Effect.flatMap(currentLink, (link) => linkMoves.readiness(link, payload))),
         // Outside agents connected on the asking computer (OutsideAgentLinks).
         "peer.outside.ask": (payload) =>
           guarded(Effect.flatMap(outsideLink, ({ link, links }) => links.ask(link, payload))),

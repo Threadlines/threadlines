@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import * as Fiber from "effect/Fiber";
@@ -28,6 +29,9 @@ import {
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { isProcessRunning } from "../testAgentProcess.ts";
+import { PROJECT_BRIEF_CLEARED_NOTE } from "../projectBriefPreface.ts";
+import { PROJECT_NOTE_WRITE_INSTRUCTION } from "../../projectContext/projectNotesAccess.ts";
 import type { UsageLedgerEntry } from "../../usage/usageLedger.ts";
 import { type AcpAdapterShape, acpDiffFileChanges, makeAcpAdapter } from "./AcpAdapter.ts";
 import { discoverAcpModels } from "./AcpProvider.ts";
@@ -410,7 +414,95 @@ nativeControlsAdapterTestLayer("an agent driven through its own controls", (it) 
   );
 });
 
+it.live.skipIf(isWindows)(
+  "proves an agent, and a shell it left in a process group of its own, are gone after a stop",
+  () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "acp-confirm-")));
+      const shellPidPath = path.join(dir, "shell.pid");
+      // A helper the agent runs in the background starts a shell in a group
+      // of its own, the way Grok's background shells do. It writes the
+      // shell's pid beside the wrapper script, which hands it that path.
+      const helper = `const { spawn } = require("node:child_process"); const shell = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" }); shell.unref(); require("node:fs").writeFileSync(process.argv[1], String(shell.pid)); setInterval(() => {}, 1000);`;
+      const wrapperPath = path.join(dir, "agent-with-shell.sh");
+      yield* Effect.promise(async () => {
+        await writeFile(
+          wrapperPath,
+          `#!/bin/sh\n${JSON.stringify(nodeExe)} -e '${helper}' "$(dirname "$0")/shell.pid" &\nexec ${JSON.stringify(nodeExe)} ${JSON.stringify(mockAgentPath)} "$@"\n`,
+          "utf8",
+        );
+        await chmod(wrapperPath, 0o755);
+      });
+      const settings = yield* ServerSettingsService;
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const adapter = yield* makeAcpAdapter(CURSOR_ACP_DESCRIPTOR, decodeCursorSettings({}), {
+        resolveSettings: yield* makeResolveCursorSettings,
+      });
+      const threadId = ThreadId.make("cursor-confirm-stopped");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      const shellPid = Number(yield* Effect.promise(() => waitForFileContent(shellPidPath, 2_000)));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          try {
+            process.kill(shellPid, "SIGKILL");
+          } catch {}
+        }),
+      );
+
+      // A stop for a move notes what it started first (ProviderService does).
+      yield* adapter.noteBeforeStop!(threadId);
+      yield* adapter.stopSession(threadId);
+      // The stop ended the agent's own process group; the shell lives on.
+      assert.isTrue(isProcessRunning(shellPid));
+
+      assert.deepStrictEqual(yield* adapter.confirmThreadStopped!(threadId), { confirmed: true });
+      assert.isFalse(isProcessRunning(shellPid));
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ServerSettingsService.layerTest(),
+          ServerConfig.layerTest(process.cwd(), { prefix: "threadlines-acp-confirm-test-" }),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
+
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("opens a fresh session when the agent can't reopen the saved one, and says so", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_FAIL_LOAD_SESSION: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const session = yield* adapter.startSession({
+        threadId: ThreadId.make("cursor-resume-refused"),
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        resumeCursor: { schemaVersion: 1, sessionId: "saved-before-an-update" },
+      });
+
+      // The thread's history then goes with its next message
+      // (ProviderCommandReactor's owed history seed).
+      assert.isTrue(session.resumeFailed);
+      assert.notEqual(
+        (session.resumeCursor as { readonly sessionId?: unknown } | undefined)?.sessionId,
+        "saved-before-an-update",
+      );
+    }),
+  );
+
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
@@ -601,75 +693,177 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
-  it.effect("offers the browser and room tools only to agents that speak HTTP MCP", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CursorAdapter;
-      const serverSettings = yield* ServerSettingsService;
-      const sessionNewServers = (advertiseHttpMcp: boolean, roomTools = false) =>
+  it.effect(
+    "offers HTTP MCP tools to agents that advertise HTTP MCP, and bridges over stdio otherwise",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const sessionNewServers = (advertiseHttpMcp: boolean, roomTools = false) =>
+          Effect.gen(function* () {
+            const threadId = ThreadId.make(`acp-browser-mcp-${advertiseHttpMcp}-${roomTools}`);
+            const tempDir = yield* Effect.promise(() =>
+              mkdtemp(path.join(os.tmpdir(), "cursor-acp-")),
+            );
+            const requestLogPath = path.join(tempDir, "requests.ndjson");
+            yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+            const wrapperPath = yield* Effect.promise(() =>
+              makeProbeWrapper(
+                requestLogPath,
+                path.join(tempDir, "argv.txt"),
+                advertiseHttpMcp ? { T3_ACP_ADVERTISE_HTTP_MCP: "1" } : undefined,
+              ),
+            );
+            yield* serverSettings.updateSettings({
+              providers: { cursor: { binaryPath: wrapperPath } },
+            });
+            const session = yield* adapter.startSession({
+              threadId,
+              provider: ProviderDriverKind.make("cursor"),
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+              modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+              ...(roomTools ? { roomTools: true } : {}),
+            });
+            yield* adapter.stopSession(threadId);
+            const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+            const sessionNew = requests.find((entry) => entry.method === "session/new");
+            const servers = (sessionNew?.params as { readonly mcpServers?: ReadonlyArray<unknown> })
+              ?.mcpServers;
+            return Object.assign(servers ?? [], { roomTools: session.roomTools });
+          });
+
+        const offered = yield* sessionNewServers(true);
+        assert.lengthOf(offered ?? [], 1);
+        assert.equal(offered.roomTools, undefined);
+        assert.deepInclude(offered?.[0] as object, { type: "http", name: "threadlines_browser" });
+        const server = offered?.[0] as {
+          readonly url: string;
+          readonly headers: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+        };
+        assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+\//);
+        assert.match(server.headers[0]?.value ?? "", /^Bearer \S+/);
+
+        // Agents that do not advertise HTTP MCP get stdio-to-HTTP bridge entries
+        // with the endpoint URL and Bearer token passed via env, never argv.
+        const bridged = yield* sessionNewServers(false);
+        assert.lengthOf(bridged, 1);
+        const bridgedBrowser = bridged[0] as {
+          readonly type?: string;
+          readonly name: string;
+          readonly command: string;
+          readonly args: ReadonlyArray<string>;
+          readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+        };
+        assert.equal(bridgedBrowser.type, undefined);
+        assert.equal(bridgedBrowser.name, "threadlines_browser");
+        assert.equal(bridgedBrowser.command, process.execPath);
+        const bridgedUrl = bridgedBrowser.env.find((entry) => entry.name === "THREADLINES_MCP_URL");
+        const bridgedAuth = bridgedBrowser.env.find(
+          (entry) => entry.name === "THREADLINES_MCP_AUTHORIZATION",
+        );
+        assert.match(bridgedUrl?.value ?? "", /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+        assert.match(bridgedAuth?.value ?? "", /^Bearer \S+/);
+        assert.notInclude(bridgedBrowser.args.join(" "), bridgedAuth!.value);
+
+        // In a room the room endpoint rides the same credential, which dies
+        // with the session — both directly over HTTP and over the stdio bridge.
+        const inRoom = yield* sessionNewServers(true, true);
+        assert.deepEqual(
+          inRoom.map((entry) => (entry as { readonly name: string }).name),
+          ["threadlines_browser", "threadlines_room"],
+        );
+        assert.equal(inRoom.roomTools, true);
+        const roomServer = inRoom[1] as {
+          readonly url: string;
+          readonly headers: ReadonlyArray<{ readonly value: string }>;
+        };
+        assert.match(roomServer.url, /\/mcp\/room$/);
+        const token = roomServer.headers[0]!.value.replace("Bearer ", "");
+        assert.equal(yield* mcpSessionRegistry.resolve(token), null);
+
+        const inRoomBridged = yield* sessionNewServers(false, true);
+        assert.deepEqual(
+          inRoomBridged.map((entry) => (entry as { readonly name: string }).name),
+          ["threadlines_browser", "threadlines_room"],
+        );
+        assert.equal(inRoomBridged.roomTools, true);
+        const bridgedRoom = inRoomBridged[1] as {
+          readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+        };
+        const bridgedRoomAuth = bridgedRoom.env.find(
+          (entry) => entry.name === "THREADLINES_MCP_AUTHORIZATION",
+        );
+        const bridgedToken = (bridgedRoomAuth?.value ?? "").replace("Bearer ", "");
+        assert.equal(yield* mcpSessionRegistry.resolve(bridgedToken), null);
+      }),
+  );
+
+  it.effect(
+    "marks roomTools false and omits project_note_write when the agent cannot reach host loopback",
+    () => {
+      const noLoopbackAdapterLayer = Layer.effect(
+        CursorAdapter,
         Effect.gen(function* () {
-          const threadId = ThreadId.make(`acp-browser-mcp-${advertiseHttpMcp}-${roomTools}`);
-          const tempDir = yield* Effect.promise(() =>
-            mkdtemp(path.join(os.tmpdir(), "cursor-acp-")),
+          const cursorConfig = decodeCursorSettings({});
+          const resolveSettings = yield* makeResolveCursorSettings;
+          return yield* makeAcpAdapter(
+            { ...CURSOR_ACP_DESCRIPTOR, reachesHostLoopback: () => false },
+            cursorConfig,
+            { resolveSettings },
           );
-          const requestLogPath = path.join(tempDir, "requests.ndjson");
-          yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
-          const wrapperPath = yield* Effect.promise(() =>
-            makeProbeWrapper(
-              requestLogPath,
-              path.join(tempDir, "argv.txt"),
-              advertiseHttpMcp ? { T3_ACP_ADVERTISE_HTTP_MCP: "1" } : undefined,
-            ),
-          );
-          yield* serverSettings.updateSettings({
-            providers: { cursor: { binaryPath: wrapperPath } },
-          });
-          const session = yield* adapter.startSession({
-            threadId,
-            provider: ProviderDriverKind.make("cursor"),
-            cwd: process.cwd(),
-            runtimeMode: "full-access",
-            modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
-            ...(roomTools ? { roomTools: true } : {}),
-          });
-          yield* adapter.stopSession(threadId);
-          const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
-          const sessionNew = requests.find((entry) => entry.method === "session/new");
-          const servers = (sessionNew?.params as { readonly mcpServers?: ReadonlyArray<unknown> })
-            ?.mcpServers;
-          return Object.assign(servers ?? [], { roomTools: session.roomTools });
-        });
-
-      const offered = yield* sessionNewServers(true);
-      assert.lengthOf(offered ?? [], 1);
-      assert.equal(offered.roomTools, undefined);
-      assert.deepInclude(offered?.[0] as object, { type: "http", name: "threadlines_browser" });
-      const server = offered?.[0] as {
-        readonly url: string;
-        readonly headers: ReadonlyArray<{ readonly name: string; readonly value: string }>;
-      };
-      assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+\//);
-      assert.match(server.headers[0]?.value ?? "", /^Bearer \S+/);
-
-      // ACP forbids handing HTTP servers to an agent that did not advertise them.
-      assert.deepEqual([...(yield* sessionNewServers(false))], []);
-
-      // In a room the room endpoint rides the same credential, which dies
-      // with the session; an agent that cannot take it says so.
-      const inRoom = yield* sessionNewServers(true, true);
-      assert.deepEqual(
-        inRoom.map((entry) => (entry as { readonly name: string }).name),
-        ["threadlines_browser", "threadlines_room"],
+        }),
       );
-      assert.equal(inRoom.roomTools, true);
-      const roomServer = inRoom[1] as {
-        readonly url: string;
-        readonly headers: ReadonlyArray<{ readonly value: string }>;
-      };
-      assert.match(roomServer.url, /\/mcp\/room$/);
-      const token = roomServer.headers[0]!.value.replace("Bearer ", "");
-      assert.equal(yield* mcpSessionRegistry.resolve(token), null);
-      assert.equal((yield* sessionNewServers(false, true)).roomTools, false);
-    }),
+      const isolatedLayer = noLoopbackAdapterLayer.pipe(
+        Layer.provideMerge(ServerSettingsService.layerTest()),
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      return Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("acp-no-loopback-notes");
+        const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+        const wrapperPath = yield* Effect.promise(() =>
+          makeProbeWrapper(requestLogPath, path.join(tempDir, "argv.txt")),
+        );
+        yield* serverSettings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
+        const session = yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+          roomTools: true,
+          projectInstructions: `Project brief for "Demo".\n\n${PROJECT_NOTE_WRITE_INSTRUCTION}`,
+        });
+        assert.equal(session.roomTools, false);
+        const completed = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+        yield* adapter.sendTurn({ threadId, input: "hello", attachments: [] });
+        yield* Fiber.join(completed);
+        yield* adapter.stopSession(threadId);
+        const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+        const sessionNew = requests.find((entry) => entry.method === "session/new");
+        assert.deepEqual(
+          (sessionNew?.params as { readonly mcpServers?: ReadonlyArray<unknown> })?.mcpServers,
+          [],
+        );
+        const prompt = requests.find((entry) => entry.method === "session/prompt");
+        const text = (prompt?.params as { prompt: Array<{ text?: string }> }).prompt
+          .map((part) => part.text ?? "")
+          .join("");
+        assert.include(text, 'Project brief for "Demo".');
+        assert.notInclude(text, "project_note_write");
+      }).pipe(Effect.provide(isolatedLayer));
+    },
   );
 
   it.effect("maps app plan mode onto the ACP plan session mode", () =>
@@ -1734,6 +1928,129 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
   );
 
   it.effect(
+    "sends the project's brief again when the agent refused the prompt that carried it",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-project-brief-refused");
+        const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+        const wrapperPath = yield* Effect.promise(() =>
+          makeProbeWrapper(requestLogPath, path.join(tempDir, "argv.txt"), {
+            T3_ACP_FAIL_FIRST_PROMPT: "1",
+          }),
+        );
+        yield* serverSettings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
+        const brief = "Use pnpm here.";
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+          projectInstructions: brief,
+        });
+        const turn = (text: string) =>
+          Effect.gen(function* () {
+            const ended = yield* adapter.streamEvents.pipe(
+              Stream.takeUntil((event) => event.type === "turn.completed"),
+              Stream.runDrain,
+              Effect.forkChild,
+            );
+            yield* adapter.sendTurn({ threadId, input: text, attachments: [] });
+            yield* Fiber.join(ended);
+          });
+        yield* turn("first try");
+        yield* turn("second try");
+        yield* adapter.stopSession(threadId);
+
+        const prompts = (yield* Effect.promise(() => readJsonLines(requestLogPath)))
+          .filter((entry) => entry.method === "session/prompt")
+          .map((entry) =>
+            (entry.params as { prompt: Array<{ text?: string }> }).prompt
+              .map((part) => part.text ?? "")
+              .join(""),
+          );
+        assert.deepEqual(prompts, [`${brief}\n\nfirst try`, `${brief}\n\nsecond try`]);
+      }),
+  );
+
+  it.effect(
+    "sends the project's brief ahead of a new session's first prompt, and on a resume only when it changed",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const serverSettings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-project-brief");
+        const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        yield* Effect.promise(() => writeFile(requestLogPath, "", "utf8"));
+        const wrapperPath = yield* Effect.promise(() =>
+          makeProbeWrapper(requestLogPath, path.join(tempDir, "argv.txt")),
+        );
+        yield* serverSettings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
+        const brief = "Use pnpm here. Never touch the generated folder.";
+
+        /** One runtime start and its first turn; returns what that prompt said and the cursor after it. */
+        const firstTurn = (input: {
+          readonly projectInstructions?: string;
+          readonly resumeCursor?: unknown;
+        }) =>
+          Effect.gen(function* () {
+            yield* adapter.startSession({
+              threadId,
+              provider: ProviderDriverKind.make("cursor"),
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+              modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+              ...input,
+            });
+            const completed = yield* adapter.streamEvents.pipe(
+              Stream.takeUntil((event) => event.type === "turn.completed"),
+              Stream.runDrain,
+              Effect.forkChild,
+            );
+            yield* adapter.sendTurn({ threadId, input: "hello mock", attachments: [] });
+            yield* Fiber.join(completed);
+            const cursor = (yield* adapter.listSessions()).find(
+              (session) => session.threadId === threadId,
+            )?.resumeCursor;
+            yield* adapter.stopSession(threadId);
+            const prompts = (yield* Effect.promise(() => readJsonLines(requestLogPath))).filter(
+              (entry) => entry.method === "session/prompt",
+            );
+            const parts = (prompts.at(-1)!.params as { prompt: Array<{ text?: string }> }).prompt;
+            return { text: parts.map((part) => part.text ?? "").join(""), cursor };
+          });
+
+        const fresh = yield* firstTurn({ projectInstructions: brief });
+        assert.equal(fresh.text, `${brief}\n\nhello mock`);
+
+        const same = yield* firstTurn({ projectInstructions: brief, resumeCursor: fresh.cursor });
+        assert.equal(same.text, "hello mock");
+
+        const changed = yield* firstTurn({
+          projectInstructions: `${brief} Tests run with vp.`,
+          resumeCursor: same.cursor,
+        });
+        assert.equal(changed.text, `${brief} Tests run with vp.\n\nhello mock`);
+
+        const cleared = yield* firstTurn({ resumeCursor: changed.cursor });
+        assert.equal(cleared.text, `${PROJECT_BRIEF_CLEARED_NOTE}\n\nhello mock`);
+
+        // The note is said once.
+        const after = yield* firstTurn({ resumeCursor: cleared.cursor });
+        assert.equal(after.text, "hello mock");
+      }),
+  );
+
+  it.effect(
     "applies fast mode on the first turn when modelSelection uses a non-default instance id",
     () => {
       const customInstanceId = ProviderInstanceId.make("cursor_secondary");
@@ -1845,3 +2162,229 @@ it("names an edit's files relative to the session, whichever way the agent wrote
     { path: "b.ts", kind: "add", additions: 1, deletions: 0 },
   ]);
 });
+
+it.effect(
+  "emits prompt suggestions after completed user turns, skips non-user turns, and drops stale suggestions when a new turn starts",
+  () =>
+    Effect.gen(function* () {
+      const mockBinary = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_PROMPT_RESPONSE_TEXT: "Done! Want me to run the browser suite next?",
+        }),
+      );
+      const sampleStarted = yield* Deferred.make<void>();
+      const releaseBlockedSample = yield* Deferred.make<void>();
+      let blockNextSample = false;
+      const seenBatches: Array<ReadonlyArray<{ readonly role: string; readonly text: string }>> =
+        [];
+
+      const adapter = yield* makeAcpAdapter(
+        CURSOR_ACP_DESCRIPTOR,
+        decodeCursorSettings({ enabled: true, binaryPath: mockBinary }),
+        {
+          promptSuggestions: {
+            shouldSuggest: () => Effect.succeed(true),
+            sample: ({ messages }) =>
+              Effect.gen(function* () {
+                seenBatches.push(messages);
+                if (blockNextSample) {
+                  yield* Deferred.succeed(sampleStarted, undefined);
+                  yield* Deferred.await(releaseBlockedSample);
+                  return "Stale suggestion that must be dropped";
+                }
+                return '  "Run the browser suite."  ';
+              }),
+          },
+        },
+      );
+
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      const allEvents: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          allEvents.push(event);
+        }).pipe(Effect.andThen(Queue.offer(events, event)), Effect.asVoid),
+      ).pipe(Effect.forkScoped);
+
+      const threadId = ThreadId.make("acp-prompt-suggestions-thread");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("cursor"),
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      // 1. User-originated turn completes -> emits sanitized prompt suggestion.
+      const firstTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Fix the sidebar spacing",
+        suggestNextMessage: true,
+      });
+
+      const waitForEvent = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
+        Effect.gen(function* () {
+          while (true) {
+            const next = yield* Queue.take(events);
+            if (predicate(next)) return next;
+          }
+        }).pipe(Effect.timeout("5 seconds"));
+
+      const suggestionEvent = yield* waitForEvent(
+        (event) =>
+          event.type === "turn.prompt-suggestion.updated" && event.turnId === firstTurn.turnId,
+      );
+      assert.equal(suggestionEvent.type, "turn.prompt-suggestion.updated");
+      if (suggestionEvent.type === "turn.prompt-suggestion.updated") {
+        assert.equal(suggestionEvent.payload.suggestion, "Run the browser suite.");
+      }
+      assert.deepEqual(seenBatches[0], [
+        { role: "user", text: "Fix the sidebar spacing" },
+        { role: "assistant", text: "Done! Want me to run the browser suite next?" },
+      ]);
+
+      // 2. Non-user turn (suggestNextMessage omitted) -> no suggestion sampled.
+      const secondTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Background check",
+      });
+      yield* waitForEvent(
+        (event) => event.type === "turn.completed" && event.turnId === secondTurn.turnId,
+      );
+      assert.equal(seenBatches.length, 1);
+
+      // 3. Stale suggestion cancelled when a newer turn starts before it resolves.
+      blockNextSample = true;
+      const thirdTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Check lint too",
+        suggestNextMessage: true,
+      });
+      yield* Deferred.await(sampleStarted).pipe(Effect.timeout("5 seconds"));
+      blockNextSample = false;
+
+      const fourthTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Actually skip lint and ship",
+        suggestNextMessage: true,
+      });
+      yield* Deferred.succeed(releaseBlockedSample, undefined);
+
+      const fourthSuggestion = yield* waitForEvent(
+        (event) =>
+          event.type === "turn.prompt-suggestion.updated" && event.turnId === fourthTurn.turnId,
+      );
+      assert.equal(fourthSuggestion.type, "turn.prompt-suggestion.updated");
+      // Make sure the third turn's blocked suggestion never arrived.
+      assert.equal(
+        allEvents.some(
+          (event) =>
+            event.type === "turn.prompt-suggestion.updated" && event.turnId === thirdTurn.turnId,
+        ),
+        false,
+      );
+
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(eventFiber);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), {
+          prefix: "threadlines-acp-suggestions-test-",
+        }).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
+
+it.effect(
+  "does not sample a prompt suggestion when a turn-machine turn is interrupted while reading its outcome",
+  () =>
+    Effect.gen(function* () {
+      const mockBinary = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_PROMPT_RESPONSE_TEXT: "Finished the refactor.",
+        }),
+      );
+      const outcomeReadReached = yield* Deferred.make<void>();
+      const releaseOutcomeRead = yield* Deferred.make<void>();
+      let sampleCalls = 0;
+
+      const adapter = yield* makeAcpAdapter(
+        {
+          ...CURSOR_ACP_DESCRIPTOR,
+          turnMachine: {
+            workAfterPrompt: () => undefined,
+            steer: false,
+            silentLimit: Duration.minutes(5),
+          },
+        },
+        decodeCursorSettings({ enabled: true, binaryPath: mockBinary }),
+        {
+          turnMachineSeams: (seam) =>
+            seam.point === "outcomeRead"
+              ? Deferred.succeed(outcomeReadReached, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseOutcomeRead)),
+                )
+              : Effect.void,
+          promptSuggestions: {
+            shouldSuggest: () => Effect.succeed(true),
+            sample: () =>
+              Effect.sync(() => {
+                sampleCalls += 1;
+                return "Should not run after interrupt";
+              }),
+          },
+        },
+      );
+
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      const allEvents: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          allEvents.push(event);
+        }).pipe(Effect.andThen(Queue.offer(events, event)), Effect.asVoid),
+      ).pipe(Effect.forkScoped);
+
+      const threadId = ThreadId.make("acp-machine-interrupt-suggestion-thread");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("cursor"),
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Refactor the helper",
+        suggestNextMessage: true,
+      });
+
+      // Hold the turn at outcomeRead, interrupt it, then let the answered
+      // outcome settle as completed. The interrupt must suppress suggestions.
+      yield* Deferred.await(outcomeReadReached).pipe(Effect.timeout("5 seconds"));
+      yield* adapter.interruptTurn(threadId);
+      yield* Deferred.succeed(releaseOutcomeRead, undefined);
+
+      yield* Effect.gen(function* () {
+        while (true) {
+          const next = yield* Queue.take(events);
+          if (next.type === "turn.completed" && next.turnId === turn.turnId) return;
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(eventFiber);
+
+      assert.equal(sampleCalls, 0);
+      assert.equal(
+        allEvents.some((event) => event.type === "turn.prompt-suggestion.updated"),
+        false,
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), {
+          prefix: "threadlines-acp-machine-suggestions-test-",
+        }).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);

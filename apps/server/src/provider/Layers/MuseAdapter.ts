@@ -47,6 +47,12 @@ import {
   type ProviderFailureCategory,
 } from "@threadlines/contracts";
 import { withFailureCategory } from "../providerFailureCategory.ts";
+import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
+import {
+  type ProjectBriefPreface,
+  projectBriefPreface,
+  readProjectBriefHash,
+} from "../projectBriefPreface.ts";
 import {
   MANAGED_WORKTREE_INSTRUCTION,
   renderThreadContextSeed,
@@ -78,6 +84,7 @@ import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpCommandsEndpointUrl,
+  mcpDeviceEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
@@ -86,6 +93,8 @@ import {
   buildCommandRequestInstructions,
   COMMANDS_MCP_SERVER_NAME,
 } from "../../mcp/commandTools.ts";
+import { DEVICE_MCP_SERVER_NAME } from "../../mcp/deviceTools.ts";
+import { buildDeviceInstructions } from "../deviceInstructions.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { buildGuideInstructions } from "../../mcp/guideTools.ts";
@@ -308,6 +317,7 @@ interface SessionContext {
   readonly scheduleTools: boolean;
   readonly agentPageAssetsDir: string | undefined;
   readonly commandRequests: boolean;
+  readonly deviceTools: boolean;
   readonly managedWorktree: boolean;
   readonly mcpToken: string;
   museSessionId: string;
@@ -317,6 +327,10 @@ interface SessionContext {
   pendingSeed: string | undefined;
   /** Threadlines' instructions still have to reach this conversation. */
   instructionsPending: boolean;
+  /** The project's brief for the next turn, and the hash the conversation then holds (projectBriefPreface). */
+  projectBrief: ProjectBriefPreface;
+  /** The brief's hash this conversation holds, kept in the resume cursor. */
+  projectBriefHash: string | undefined;
   activeTurn: ActiveTurn | undefined;
   /** Our `turn/start`s Muse queued instead of starting. */
   readonly queued: Set<string>;
@@ -346,6 +360,16 @@ interface SessionContext {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The session's resume cursor: its Muse conversation, and the brief's hash it holds. */
+const museResumeCursor = (ctx: {
+  readonly museSessionId: string;
+  readonly projectBriefHash: string | undefined;
+}) => ({
+  schemaVersion: RESUME_SCHEMA_VERSION,
+  sessionId: ctx.museSessionId,
+  ...(ctx.projectBriefHash !== undefined ? { projectBriefHash: ctx.projectBriefHash } : {}),
+});
 
 export function parseMuseResumeCursor(raw: unknown): { readonly sessionId: string } | undefined {
   if (!isRecord(raw) || raw.schemaVersion !== RESUME_SCHEMA_VERSION) return undefined;
@@ -433,6 +457,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
     const boundInstanceId = options.instanceId;
     const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, SessionContext>();
+    /** Each host it started, until proven gone (confirmThreadStopped). */
+    const processes = yield* makeAgentProcessLedger();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const stamp = Effect.all({
@@ -1778,6 +1804,9 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           ...(ctx.commandRequests
             ? { [COMMANDS_MCP_SERVER_NAME]: server(mcpCommandsEndpointUrl(serverConfig.port)) }
             : {}),
+          ...(ctx.deviceTools
+            ? { [DEVICE_MCP_SERVER_NAME]: server(mcpDeviceEndpointUrl(serverConfig.port)) }
+            : {}),
         },
       };
     };
@@ -1790,6 +1819,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           : []),
         // Muse's own names for outside tools are not ours to guess; the bare name is unambiguous.
         ...(ctx.commandRequests ? [buildCommandRequestInstructions({ toolPrefix: "" })] : []),
+        ...(ctx.deviceTools ? [buildDeviceInstructions("")] : []),
         ...(ctx.scheduleTools ? [buildScheduleInstructions({ toolPrefix: "" })] : []),
         ...(ctx.roomEndpoint ? [buildGuideInstructions({ toolPrefix: "" })] : []),
         FILE_LINK_INSTRUCTIONS,
@@ -1869,6 +1899,12 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
                 }),
             ),
           );
+          if (host.pid !== undefined) {
+            yield* processes.track(ctx.threadId, {
+              pid: host.pid,
+              exited: Effect.asVoid(host.exited),
+            });
+          }
           yield* checkBilling(host);
           const config = mcpConfig(ctx, host.initialize.grantedCapabilities);
           const permission = profile.permissionProfile
@@ -2184,6 +2220,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           const roomTools = input.roomTools === true;
           const roomGrant = roomEndpointGrant(input, undefined);
           const commandRequests = input.commandRequests === true;
+          const deviceTools = input.deviceTools === true;
           const agentPageAssetsDir =
             input.agentPages === true
               ? yield* ensurePageAssetsDir(parseSessionKey(input.threadId).threadId).pipe(
@@ -2197,6 +2234,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             room: roomGrant.attach,
             pages: agentPageAssetsDir !== undefined,
             commands: commandRequests,
+            device: deviceTools,
             scheduledRun: input.scheduledRunTools === true,
             guideOnly: roomGrant.guideOnly,
           });
@@ -2232,6 +2270,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
             commandRequests,
+            deviceTools,
             managedWorktree,
             mcpToken: credential.token,
             museSessionId: "",
@@ -2240,6 +2279,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             model: boundSelection?.model,
             pendingSeed: undefined,
             instructionsPending: true,
+            projectBrief: { text: undefined, hash: undefined },
+            projectBriefHash: undefined,
             activeTurn: undefined,
             queued: new Set(),
             joined: new Map(),
@@ -2336,9 +2377,21 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             // A resumed or forked conversation already holds Threadlines' instructions.
             ctx.instructionsPending = false;
           }
+          // The brief is sent again whenever it changed, resumed or not: a
+          // fork's copy is taken not to hold this thread's.
+          // Only the thread's own conversation, reopened from its cursor, holds
+          // the brief the cursor names; a fork's copy is taken not to.
+          ctx.projectBriefHash =
+            resumed && ctx.museSessionId === resumeId
+              ? readProjectBriefHash(input.resumeCursor)
+              : undefined;
+          ctx.projectBrief = projectBriefPreface({
+            projectInstructions: input.projectInstructions,
+            sentHash: ctx.projectBriefHash,
+          });
           ctx.session = {
             ...ctx.session,
-            resumeCursor: { schemaVersion: RESUME_SCHEMA_VERSION, sessionId: ctx.museSessionId },
+            resumeCursor: museResumeCursor(ctx),
             providerThreadId: ctx.museSessionId,
             ...(ctx.model ? { model: ctx.model } : {}),
           };
@@ -2465,8 +2518,10 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             const turnId = TurnId.make(host.host.mintCommandId());
             // The device note is a part of its own, so Muse shows only the
             // user's words as theirs (displayText).
+            const projectBrief = ctx.projectBrief;
             const preface = [
               ...(ctx.instructionsPending ? [instructionsFor(ctx)] : []),
+              ...(projectBrief.text !== undefined ? [projectBrief.text] : []),
               ...(plan ? [MUSE_PLAN_MODE_INSTRUCTION] : []),
               ...(input.deviceNote !== undefined ? [input.deviceNote] : []),
             ];
@@ -2500,6 +2555,11 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
               if (Option.isSome(ack) && ack.value.disposition === "queued") ctx.queued.add(turnId);
               ctx.instructionsPending = false;
               ctx.pendingSeed = undefined;
+              if (projectBrief.text !== undefined) {
+                ctx.projectBrief = { text: undefined, hash: projectBrief.hash };
+                ctx.projectBriefHash = projectBrief.hash;
+                ctx.session = { ...ctx.session, resumeCursor: museResumeCursor(ctx) };
+              }
             }
             return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
           }),
@@ -2884,6 +2944,9 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
       rollbackThread,
       readSubagentTranscript,
       stopAll,
+      noteBeforeStop: processes.beforeStop,
+      confirmThreadStopped: processes.confirm,
+      listProcesses: processes.owners,
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies MuseAdapterShape;
   });

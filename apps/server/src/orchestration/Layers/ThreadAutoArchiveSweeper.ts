@@ -9,6 +9,7 @@ import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
@@ -17,6 +18,7 @@ import * as Stream from "effect/Stream";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { threadsArchivedWith } from "../archivedWithParent.ts";
 import {
   ThreadAutoArchiveSweeper,
   type ThreadAutoArchiveSweeperShape,
@@ -79,14 +81,22 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
             (thread) =>
               thread.parentThreadId !== null &&
               thread.attachedToParent &&
-              // At work or waiting on the user (a pin is not work).
-              isAutoArchiveProtectedThread({ ...thread, pinnedAt: null }) &&
+              // At work, waiting on the user or set to check back (a pin is
+              // not work).
+              isAutoArchiveProtectedThread({ ...thread, pinnedAt: null }, nowMs) &&
               thread.archivedAt === null,
           )
           .map((thread) => thread.parentThreadId),
       );
+      const leadThreadIds = new Set(
+        snapshot.projects.flatMap((project) =>
+          project.leadThreadId != null ? [project.leadThreadId] : [],
+        ),
+      );
       const candidates = selectAutoArchiveCandidates({
-        threads: snapshot.threads,
+        threads: snapshot.threads.map((thread) =>
+          leadThreadIds.has(thread.id) ? { ...thread, lead: true } : thread,
+        ),
         inactiveDays,
         nowMs,
         isExcluded: (thread) => liveChildParents.has(thread.id),
@@ -94,6 +104,23 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
       let archivedCount = 0;
 
       for (const thread of candidates) {
+        // Read again right before: since the snapshot it may have started
+        // working or set a check-back. A child that did is the decider's to
+        // keep out of the archive (childArchivePlan).
+        const latest = yield* projectionSnapshotQuery.getThreadShellById(thread.id).pipe(
+          Effect.map(Option.getOrNull),
+          Effect.catch(() => Effect.succeed(null)),
+        );
+        if (
+          latest === null ||
+          selectAutoArchiveCandidates({
+            threads: [leadThreadIds.has(latest.id) ? { ...latest, lead: true } : latest],
+            inactiveDays,
+            nowMs,
+          }).length === 0
+        ) {
+          continue;
+        }
         // `thread.archive` carries no timestamp: the decider stamps
         // `archivedAt` from its own clock when it accepts the command.
         const command = {
@@ -101,30 +128,48 @@ const makeThreadAutoArchiveSweeper = (options?: ThreadAutoArchiveSweeperLiveOpti
           commandId: CommandId.make(`thread-auto-archive:${thread.id}:${randomUUID()}`),
           threadId: thread.id,
         };
+        // Where the event log stood before the archive, so the children it
+        // took along can be read back from what it wrote.
+        const cursor = yield* projectionSnapshotQuery.getSnapshotSequence().pipe(
+          Effect.map(({ snapshotSequence }) => snapshotSequence),
+          Effect.catch(() => Effect.succeed(null)),
+        );
         const archived = yield* orchestrationEngine.dispatch(command).pipe(
-          Effect.as(true),
           Effect.catchCause((cause) =>
             Effect.logWarning("thread.auto-archive.dispatch-failed", {
               threadId: thread.id,
               cause,
-            }).pipe(Effect.as(false)),
+            }).pipe(Effect.as(null)),
           ),
         );
-        if (archived) {
+        if (archived !== null) {
           archivedCount += 1;
           // Archiving stops what the thread had running, as it does from the
-          // sidebar: its runtimes and its settled children's, which the
-          // archive took with it.
-          const family = [
-            thread.id,
-            ...snapshot.threads
-              .filter((entry) => entry.parentThreadId === thread.id && entry.attachedToParent)
-              .map((entry) => entry.id),
-          ];
+          // sidebar: its runtimes and those of the settled children the
+          // archive took with it. A child it separated keeps running.
+          const takenAlong =
+            cursor === null
+              ? []
+              : yield* threadsArchivedWith(orchestrationEngine, {
+                  commandId: command.commandId,
+                  threadId: thread.id,
+                  fromSequenceExclusive: cursor,
+                  throughSequence: archived.sequence,
+                }).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("thread.auto-archive.archived-children-read-failed", {
+                      threadId: thread.id,
+                      cause,
+                    }).pipe(Effect.as([])),
+                  ),
+                );
+          const family = [thread.id, ...takenAlong];
           for (const threadId of family) {
             yield* orchestrationEngine
               .dispatch({
                 type: "thread.session.stop",
+                // Cleanup: the sweeper's stop leaves no Stop hold.
+                cause: "cleanup",
                 commandId: CommandId.make(`thread-auto-archive-stop:${threadId}:${randomUUID()}`),
                 threadId,
                 createdAt: new Date(nowMs).toISOString(),

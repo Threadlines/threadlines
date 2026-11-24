@@ -40,6 +40,12 @@ import type * as CodexClient from "effect-codex-app-server/client";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
+import type { TrackedAgentProcess } from "../agentProcessLedger.ts";
+import {
+  isProcessRunning,
+  startTestAgentProcess,
+  type TestAgentProcess,
+} from "../testAgentProcess.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
@@ -513,6 +519,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   close = Effect.promise(() => this.closeImpl());
 
+  process?: TrackedAgentProcess;
+
   emit(event: ProviderEvent) {
     return Queue.offer(this.eventQueue, event).pipe(Effect.asVoid);
   }
@@ -534,7 +542,11 @@ function makeRuntimeFactory() {
   };
 }
 
-function makeScopedRuntimeFactory(options?: { readonly failConstruction?: boolean }) {
+function makeScopedRuntimeFactory(options?: {
+  readonly failConstruction?: boolean;
+  /** Its app server: closing the runtime stops it, as the real one's scope does. */
+  readonly agent?: TestAgentProcess;
+}) {
   const runtimes: Array<FakeCodexRuntime> = [];
   const releasedThreadIds: Array<ThreadId> = [];
 
@@ -555,6 +567,13 @@ function makeScopedRuntimeFactory(options?: { readonly failConstruction?: boolea
       }
 
       const runtime = new FakeCodexRuntime(runtimeOptions);
+      const agent = options?.agent;
+      if (agent !== undefined) {
+        runtime.process = { pid: agent.pid, exited: agent.exited };
+        runtime.closeImpl.mockImplementation(() =>
+          Effect.runPromise(agent.stop).then(() => undefined),
+        );
+      }
       runtimes.push(runtime);
       return runtime;
     }),
@@ -577,6 +596,7 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   listThreadIds: () => Effect.succeed([]),
   listBindings: () => Effect.succeed([]),
   deleteBinding: () => Effect.void,
+  patchIfSession: () => Effect.succeed(false),
 });
 
 const validationRuntimeFactory = makeRuntimeFactory();
@@ -2410,6 +2430,44 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("shows a config warning once, not again for each thread Codex opens", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.take(adapter.streamEvents, 2).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const stale = "`[features].multi_agent` is deprecated.";
+      const warning = (id: string, method: string, payload: unknown, threadId = "thread-1") =>
+        runtime.emit({
+          id: asEventId(id),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method,
+          payload: { ...(payload as object), threadId },
+        } as ProviderEvent);
+
+      yield* warning("evt-config", "configWarning", { summary: stale, details: null });
+      yield* warning("evt-main", "warning", { message: stale });
+      yield* warning("evt-subagent", "warning", { message: stale }, "child-thread");
+      yield* warning("evt-other", "warning", { message: "Something else went wrong." });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepStrictEqual(
+        events.map((event) =>
+          event.type === "config.warning"
+            ? event.payload.summary
+            : event.type === "runtime.warning"
+              ? event.payload.message
+              : event.type,
+        ),
+        [stale, "Something else went wrong."],
+      );
+    }),
+  );
+
   it.effect("maps realtime started notifications with upstream realtime session ids", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
@@ -3367,6 +3425,41 @@ scopedLifecycleLayer("CodexAdapterLive scoped lifecycle", (it) => {
     }),
   );
 });
+
+it.live.skipIf(process.platform === "win32")(
+  "proves the app server and the shells it started are gone after a stop",
+  () =>
+    Effect.gen(function* () {
+      const agent = yield* startTestAgentProcess;
+      const factory = makeScopedRuntimeFactory({ agent });
+      const adapter = yield* makeCodexAdapter(decodeCodexSettings({}), {
+        makeRuntime: factory.factory,
+      });
+      const threadId = asThreadId("thread-confirm");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      // A stop for a move notes what it started first (ProviderService does).
+      yield* adapter.noteBeforeStop!(threadId);
+      yield* adapter.stopSession(threadId);
+      // The stop ended the app server; a shell it put in a group of its own lives on.
+      assert.equal(isProcessRunning(agent.shellPid), true);
+
+      assert.deepStrictEqual(yield* adapter.confirmThreadStopped!(threadId), { confirmed: true });
+      assert.equal(isProcessRunning(agent.shellPid), false);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), process.cwd()),
+          ServerSettingsService.layerTest(),
+          providerSessionDirectoryTestLayer,
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
 
 const scopedFailureRuntimeFactory = makeScopedRuntimeFactory({ failConstruction: true });
 const scopedFailureLayer = it.layer(

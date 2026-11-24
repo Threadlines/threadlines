@@ -24,6 +24,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
+import { useComposerDraftStore } from "../composerDraftStore";
 import type { SidebarThreadSummary } from "../types";
 import {
   makeBrowserTab,
@@ -36,7 +37,9 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../environmentApi";
 import { getClientSettings, updateSettings } from "../hooks/useSettings";
+import { nextFrames, readAfterEachPaint } from "../lib/frameProbe.browser-harness";
 import { isMacPlatform } from "../lib/utils";
+import { useStore } from "../store";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
 
@@ -44,6 +47,7 @@ import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
 import {
   THREAD_ID,
   THREAD_TITLE,
+  PROJECT_ID,
   SECOND_PROJECT_ID,
   LOCAL_ENVIRONMENT_ID,
   BrowserHostHarness,
@@ -76,11 +80,15 @@ import {
   waitForURL,
   waitForComposerEditor,
   waitForServerConfigToApply,
+  withCodexModels,
+  sendShellThreadUpsert,
   mountChatView,
   fixture,
+  rpcHarness,
+  toShellSnapshot,
   clickProjectMenuItem,
   registerChatViewSuiteHooks,
-  openCommandPaletteFromTrigger,
+  openCommandPaletteCommands,
 } from "./ChatView.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
@@ -234,6 +242,509 @@ describe("ChatView (full app): sidebar", () => {
     } finally {
       await mounted.cleanup();
     }
+  });
+
+  // Scroll memory (threadScrollMemory): a chat left above the end opens there
+  // again, from its first drawn frame; left at the end, or with news, it
+  // opens at the end; a find target wins.
+  const SCROLL_OTHER_THREAD = "thread-scroll-memory-other" as ThreadId;
+  const mountTwoThreads = () =>
+    mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-scroll-memory-target" as MessageId,
+          targetText: "scroll memory target",
+        }),
+        SCROLL_OTHER_THREAD,
+      ),
+    });
+  const chatList = () => document.querySelector<HTMLElement>('[data-chat-messages-list="true"]');
+  const listAtEnd = (list: HTMLElement) =>
+    list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
+  const rowTop = (list: HTMLElement, rowId: string) => {
+    const row = list.querySelector(`[data-timeline-row-id="${rowId}"]`);
+    return row === null ? null : row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+  };
+  const firstRowInView = (list: HTMLElement) => {
+    const listTop = list.getBoundingClientRect().top;
+    return [...list.querySelectorAll<HTMLElement>("[data-timeline-row-id]")].find(
+      (row) => row.getBoundingClientRect().bottom > listTop + 24,
+    )?.dataset.timelineRowId;
+  };
+  const openThread = (
+    mounted: Awaited<ReturnType<typeof mountTwoThreads>>,
+    threadId: ThreadId,
+    search?: Record<string, string>,
+  ) =>
+    mounted.router.navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId },
+      ...(search ? { search } : {}),
+    });
+  /** Opens the long chat at the end, then leaves it scrolled to its middle or its end. */
+  const leaveLongChat = async (
+    mounted: Awaited<ReturnType<typeof mountTwoThreads>>,
+    where: "middle" | "end",
+  ) => {
+    const list = await waitForElement(chatList, "The chat should show its messages.");
+    await vi.waitFor(() => expect(listAtEnd(list)).toBe(true), { timeout: 5_000 });
+    if (where === "middle") {
+      // Scrolled up by the wheel, as a reader leaves the end.
+      for (let step = 0; step < 6; step += 1) {
+        list.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -300 }));
+        list.scrollTop -= 300;
+        await nextFrames(2);
+      }
+      await vi.waitFor(() => expect(listAtEnd(list)).toBe(false));
+      await nextFrames(4);
+    }
+    const rowId = firstRowInView(list)!;
+    const top = rowTop(list, rowId)!;
+    await openThread(mounted, SCROLL_OTHER_THREAD);
+    await vi.waitFor(() => expect(document.querySelector("[data-timeline-row-id]")).toBeNull());
+    return { rowId, top };
+  };
+
+  it("opens a chat where it was left, from the first frame it draws", async () => {
+    const mounted = await mountTwoThreads();
+    try {
+      const left = await leaveLongChat(mounted, "middle");
+      // Every frame the long chat draws on the way back.
+      const frames: { top: number | null; atEnd: boolean }[] = [];
+      const stop = readAfterEachPaint(() => {
+        const list = chatList();
+        if (list?.querySelector("[data-timeline-row-id]")) {
+          frames.push({ top: rowTop(list, left.rowId), atEnd: listAtEnd(list) });
+        }
+      });
+      await openThread(mounted, THREAD_ID);
+      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(5), { timeout: 5_000 });
+      stop();
+      expect(frames.every((frame) => frame.top !== null && !frame.atEnd)).toBe(true);
+      expect(Math.abs(frames.at(-1)!.top! - left.top)).toBeLessThanOrEqual(2);
+      // Above the end, the way back down is offered as usual.
+      await expect.element(page.getByRole("button", { name: "Scroll to bottom" })).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a chat left at its end at the end, and one with news at the end too", async () => {
+    const mounted = await mountTwoThreads();
+    try {
+      await leaveLongChat(mounted, "end");
+      await openThread(mounted, THREAD_ID);
+      await vi.waitFor(() => expect(listAtEnd(chatList()!)).toBe(true), { timeout: 5_000 });
+
+      // Left mid-history, then it came to need the user while away.
+      await leaveLongChat(mounted, "middle");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, THREAD_ID, "needs-you");
+      await openThread(mounted, THREAD_ID);
+      await vi.waitFor(() => expect(listAtEnd(chatList()!)).toBe(true), { timeout: 5_000 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens at a find target rather than where the chat was left", async () => {
+    const mounted = await mountTwoThreads();
+    try {
+      await leaveLongChat(mounted, "middle");
+      await openThread(mounted, THREAD_ID, { focusMessageId: "msg-user-1", focusQuery: "" });
+      await vi.waitFor(
+        () => {
+          const list = chatList()!;
+          const top = rowTop(list, "msg-user-1");
+          expect(top).not.toBeNull();
+          // The target sits about a third of the way down, as find puts it.
+          expect(top! / list.clientHeight).toBeGreaterThan(0.1);
+          expect(top! / list.clientHeight).toBeLessThan(0.6);
+        },
+        { timeout: 5_000 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows the project's lead chat, and its menu stops it or names another thread instead", async () => {
+    const otherThreadId = "thread-lead-other" as ThreadId;
+    const withThreads = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-lead-target" as MessageId,
+        targetText: "lead target",
+      }),
+      otherThreadId,
+    );
+    const capabilities = { repositoryIdentity: true, projectLead: true };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withThreads,
+        projects: withThreads.projects.map((project) => ({ ...project, leadThreadId: THREAD_ID })),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+    });
+    const openRowMenu = async (threadId: ThreadId) => {
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${threadId}"]`),
+        "The thread's sidebar row should be on screen.",
+      );
+      const rect = row.getBoundingClientRect();
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 20,
+          clientY: rect.top + 8,
+        }),
+      );
+    };
+    const leadSets = () =>
+      wsRequests.flatMap((request) =>
+        request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+        request.type === "project.lead.set"
+          ? [request.threadId]
+          : [],
+      );
+
+    try {
+      // The lead's row carries its mark and comes first; the chat says what it is.
+      await expect.element(page.getByTestId(`thread-lead-mark-${THREAD_ID}`)).toBeVisible();
+      await expect.element(page.getByTestId("lead-chat-chip")).toBeVisible();
+      const rowIds = [
+        ...document.querySelectorAll<HTMLElement>('[data-testid^="thread-row-"]'),
+      ].map((row) => row.dataset.testid);
+      expect(rowIds[0]).toBe(`thread-row-${THREAD_ID}`);
+
+      await openRowMenu(otherThreadId);
+      await page
+        .getByRole("button", {
+          name: `Make this the lead chat instead of ${THREAD_TITLE}`,
+          exact: true,
+        })
+        .click();
+      await vi.waitFor(() => expect(leadSets()).toEqual([otherThreadId]));
+
+      await openRowMenu(THREAD_ID);
+      await page.getByRole("button", { name: "Stop using as lead chat", exact: true }).click();
+      await vi.waitFor(() => expect(leadSets()).toEqual([otherThreadId, null]));
+
+      // Another client makes the other thread the lead while this menu is
+      // open: its "Stop using" must not turn into making this one the lead.
+      await openRowMenu(THREAD_ID);
+      const stop = page.getByRole("button", { name: "Stop using as lead chat", exact: true });
+      await expect.element(stop).toBeVisible();
+      const [project] = toShellSnapshot(fixture.snapshot).projects;
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeShell, {
+        kind: "project-upserted",
+        sequence: fixture.snapshot.snapshotSequence + 1,
+        project: { ...project!, leadThreadId: otherThreadId },
+      });
+      await vi.waitFor(() =>
+        expect(
+          useStore.getState().environmentStateById[LOCAL_ENVIRONMENT_ID]?.projectById[PROJECT_ID]
+            ?.leadThreadId,
+        ).toBe(otherThreadId),
+      );
+      await stop.click();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(leadSets()).toEqual([otherThreadId, null]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  /**
+   * The open thread with one thread it started, on a computer that keeps a
+   * lead chat, and no lead yet (or `lead` as the lead).
+   */
+  const mountFamily = async (lead: ThreadId | null) => {
+    window.localStorage.removeItem(
+      `threadlines:lead-chat-suggestion-dismissed:v1:${LOCAL_ENVIRONMENT_ID}:${PROJECT_ID}`,
+    );
+    const childId = "thread-lead-child" as ThreadId;
+    const withChild = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-lead-family" as MessageId,
+        targetText: "lead family",
+      }),
+      childId,
+    );
+    const capabilities = { repositoryIdentity: true, projectLead: true };
+    return mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withChild,
+        projects: withChild.projects.map((project) => ({ ...project, leadThreadId: lead })),
+        threads: withChild.threads.map((thread) =>
+          thread.id === childId
+            ? { ...thread, title: "Fix tests", parentThreadId: THREAD_ID, attachedToParent: true }
+            : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+    });
+  };
+  const leadSetsSent = () =>
+    wsRequests.flatMap((request) =>
+      request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+      request.type === "project.lead.set"
+        ? [request.threadId]
+        : [],
+    );
+
+  it("offers a thread running other threads as the lead, once, and says what a lead is", async () => {
+    const mounted = await mountFamily(null);
+    try {
+      const suggestion = page.getByTestId("lead-chat-suggestion");
+      await expect
+        .element(suggestion)
+        .toMatchTextContent(/This thread is running other threads\. Make it the lead chat/u);
+      await page.getByTestId("lead-chat-suggestion-make").click();
+      await vi.waitFor(() => expect(leadSetsSent()).toEqual([THREAD_ID]));
+      await expect.element(suggestion).not.toBeInTheDocument();
+
+      // Once it leads, its tab is the crown, and a press on it says what that means.
+      const [project] = toShellSnapshot(fixture.snapshot).projects;
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeShell, {
+        kind: "project-upserted",
+        sequence: fixture.snapshot.snapshotSequence + 1,
+        project: { ...project!, leadThreadId: THREAD_ID },
+      });
+      const leadTab = page.getByRole("tab", { name: `Lead: ${THREAD_TITLE}` });
+      await expect.element(leadTab).toBeVisible();
+      await leadTab.click();
+      const card = page.getByTestId("lead-chat-card");
+      await expect.element(card).toMatchTextContent(/Drop work here\./u);
+      await card.getByTestId("lead-chat-card-stop").click();
+      await vi.waitFor(() => expect(leadSetsSent()).toEqual([THREAD_ID, null]));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("deleting a thread with its threads leaves a child's terminal and draft to the server's answer", async () => {
+    const childId = "thread-lead-child" as ThreadId;
+    const childRef = scopeThreadRef(LOCAL_ENVIRONMENT_ID, childId);
+    const mounted = await mountFamily(null);
+    try {
+      useComposerDraftStore.getState().setPrompt(childRef, "half-written reply");
+      // The child is open while its parent is deleted from the sidebar.
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: childId },
+      });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${childId}`),
+        "The child should be open.",
+      );
+      const row = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "The parent's sidebar row should be on screen.",
+      );
+      const rect = row.getBoundingClientRect();
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 20,
+          clientY: rect.top + 8,
+        }),
+      );
+      await page.getByRole("button", { name: "Delete", exact: true }).click();
+      await page.getByTestId("thread-delete-with-children").click();
+      await page.getByTestId("thread-delete-confirm").click();
+      // It names the threads the dialog counted, so the server deletes those
+      // and keeps one started since; withChildren stays for an older server.
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.filter(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.delete",
+          ),
+        ).toEqual([
+          expect.objectContaining({
+            threadId: THREAD_ID,
+            withChildren: true,
+            alsoDelete: [childId],
+          }),
+        ]);
+      });
+
+      // The server decides which children go. This one is still here (it was
+      // separated in the meantime), so nothing of it may be wiped locally.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(
+        wsRequests.filter(
+          (request) =>
+            request.threadId === childId &&
+            (request._tag === WS_METHODS.terminalClose ||
+              (request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.session.stop")),
+        ),
+      ).toEqual([]);
+      expect(useComposerDraftStore.getState().getComposerDraft(childRef)?.prompt).toBe(
+        "half-written reply",
+      );
+      // Nor is its chat left: only the thread's real removal does that.
+      expect(mounted.router.state.location.pathname.endsWith(`/${childId}`)).toBe(true);
+      // The thread the user named is wound down here as before.
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === WS_METHODS.terminalClose &&
+            request.threadId === THREAD_ID &&
+            request.deleteHistory === true,
+        ),
+      ).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the lead suggestion away from a project once it is closed", async () => {
+    const mounted = await mountFamily(null);
+    try {
+      await page.getByTestId("lead-chat-suggestion-dismiss").click();
+      await expect.element(page.getByTestId("lead-chat-suggestion")).not.toBeInTheDocument();
+      expect(
+        window.localStorage.getItem(
+          `threadlines:lead-chat-suggestion-dismissed:v1:${LOCAL_ENVIRONMENT_ID}:${PROJECT_ID}`,
+        ),
+      ).toBe("true");
+      expect(leadSetsSent()).toEqual([]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // The server says it made the thread a moment before this app hears of it,
+  // as a real one does: "New lead chat" must open it once it is here, and
+  // stay there (the thread page goes home for a thread it does not know).
+  const startsALeadChatFromTheProjectMenu = async (defaultAgent: "chosen" | "none") => {
+    const capabilities = { repositoryIdentity: true, projectLead: true };
+    const created: { threadId: ThreadId; model: string }[] = [];
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-new-lead-target" as MessageId,
+        targetText: "new lead target",
+      }),
+      configureFixture: (nextFixture) => {
+        withCodexModels(nextFixture);
+        // An old pin from when the project was made: new threads ignore it.
+        nextFixture.snapshot = {
+          ...nextFixture.snapshot,
+          projects: nextFixture.snapshot.projects.map((project) => ({
+            ...project,
+            defaultModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-4.1",
+            },
+          })),
+        };
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+          settings: {
+            ...nextFixture.serverConfig.settings,
+            newThreadModelSelection:
+              defaultAgent === "chosen"
+                ? { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" }
+                : null,
+          },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+      resolveRpc: (body) => {
+        if (
+          body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand ||
+          body.type !== "thread.create"
+        ) {
+          return undefined;
+        }
+        const threadId = body.threadId as ThreadId;
+        created.push({ threadId, model: (body.modelSelection as { model: string }).model });
+        setTimeout(() => {
+          fixture.snapshot = addThreadToSnapshot(fixture.snapshot, threadId);
+          sendShellThreadUpsert(threadId);
+        }, 400);
+        return { sequence: fixture.snapshot.snapshotSequence + 1 };
+      },
+    });
+    const paths: string[] = [];
+    const stop = readAfterEachPaint(() => paths.push(mounted.router.state.location.pathname));
+    try {
+      await page.getByTestId("inbox-scope-label").click();
+      const projectItem = await waitForElement(
+        () => document.querySelector<HTMLElement>('[role="menuitemcheckbox"]:not(:first-child)'),
+        "The project list should name the project.",
+      );
+      const rect = projectItem.getBoundingClientRect();
+      projectItem.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 20,
+          clientY: rect.top + 8,
+        }),
+      );
+      await page.getByRole("button", { name: "New lead chat", exact: true }).click();
+      await vi.waitFor(() => expect(created).toHaveLength(1), { timeout: 5_000 });
+      const leadPath = `/${LOCAL_ENVIRONMENT_ID}/${created[0]!.threadId}`;
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === leadPath,
+        "New lead chat should open the new lead.",
+      );
+      // Still there a while later, never sent home on the way.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      stop();
+      expect(mounted.router.state.location.pathname).toBe(leadPath);
+      expect(paths.indexOf(leadPath)).toBeGreaterThanOrEqual(0);
+      expect(paths.slice(paths.indexOf(leadPath))).not.toContain("/");
+      // The project list closed behind it.
+      expect(document.querySelector('[role="menuitemcheckbox"]')).toBeNull();
+      return created[0]!;
+    } finally {
+      stop();
+      await mounted.cleanup();
+    }
+  };
+
+  it("opens a new lead chat from the project menu once it has arrived, and stays there", async () => {
+    expect((await startsALeadChatFromTheProjectMenu("chosen")).model).toBe("gpt-6-astra");
+  });
+
+  it("starts a lead chat with no default agent chosen, on the agent a new thread would get", async () => {
+    // Codex at the model a fresh draft's composer settles on, not the
+    // project's old pin.
+    expect((await startsALeadChatFromTheProjectMenu("none")).model).toBe("gpt-5.6-sol");
   });
 
   it("narrows the live list to rooms from the View button and marks it while it does", async () => {
@@ -537,7 +1048,7 @@ describe("ChatView (full app): sidebar", () => {
       await userEvent.keyboard("{Escape}");
 
       // The palette's Rename asks in a dialog, and saving sends the new name.
-      await openCommandPaletteFromTrigger();
+      await openCommandPaletteCommands();
       await page.getByTestId("command-palette").getByText("Rename thread", { exact: true }).click();
       const input = page.getByTestId("thread-rename-input");
       await expect.element(input).toHaveValue(THREAD_TITLE);
@@ -683,6 +1194,187 @@ describe("ChatView (full app): sidebar", () => {
         .element(page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }))
         .toHaveAttribute("aria-current", "page");
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("lists general chats in a section of Threads when set to, opens it from the old page's address, and switching back restores the page", async () => {
+    const workingChatId = "thread-general-chat-section-working" as ThreadId;
+    const askingChatId = "thread-general-chat-section-asking" as ThreadId;
+    const withChats = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-general-chat-section" as MessageId,
+          targetText: "general chat section target",
+        }),
+        workingChatId,
+      ),
+      askingChatId,
+    );
+    localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ ...DEFAULT_CLIENT_SETTINGS, generalChatsPlacement: "threads" }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withChats,
+        projects: [
+          ...withChats.projects,
+          {
+            id: GENERAL_CHATS_PROJECT_ID,
+            kind: "general-chat" as const,
+            title: "General Chats",
+            workspaceRoot: "/repo/general-chats",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+            deletedAt: null,
+          },
+        ],
+        threads: withChats.threads.map((thread) =>
+          thread.id === workingChatId
+            ? {
+                ...thread,
+                projectId: GENERAL_CHATS_PROJECT_ID,
+                title: "Best way to store passkeys",
+              }
+            : thread.id === askingChatId
+              ? { ...thread, projectId: GENERAL_CHATS_PROJECT_ID, title: "Draft reply" }
+              : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "thread.next",
+              shortcut: {
+                key: "]",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: true,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: { type: "not", node: { type: "identifier", name: "terminalFocus" } },
+            },
+          ],
+        };
+      },
+    });
+    const useMetaForMod = isMacPlatform(navigator.platform);
+    const pressNext = () =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "}",
+          code: "BracketRight",
+          shiftKey: true,
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+    try {
+      const projectThreadPath = mounted.router.state.location.pathname;
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, workingChatId, "working");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, askingChatId, "needs-you");
+      // No General Chats button: Threads carries what the chats need.
+      const threadsButton = page.getByTestId("rail-threads");
+      await expect
+        .element(threadsButton.getByTestId("rail-needs-you-badge"))
+        .toMatchTextContent("1");
+      expect(document.querySelector('[data-testid="rail-chats"]')).toBeNull();
+
+      // The chats sit open at the foot of the thread list, beside the project's threads.
+      const toggle = page.getByTestId("inbox-chats-toggle");
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeVisible();
+      await expect
+        .element(
+          page
+            .getByTestId("chats-list-row")
+            .filter({ hasText: "Best way to store passkeys" })
+            .getByTestId("chats-list-row-status"),
+        )
+        .toMatchTextContent(/^working/);
+      await expect.element(page.getByTestId("inbox-chats-new-chat")).toBeVisible();
+
+      // Folded, the header says what the hidden chats are doing.
+      await toggle.click();
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(document.querySelector('[data-testid="chats-list-row"]')).toBeNull();
+      await expect
+        .element(page.getByTestId("inbox-chats-folded"))
+        .toMatchTextContent(/1 needs you.*1 working/);
+      // Starting a chat needs no unfolding.
+      await expect.element(page.getByTestId("inbox-chats-new-chat")).toBeVisible();
+
+      // The palette opens the section where the user is, adding no step to Back.
+      const historyLength = window.history.length;
+      await openCommandPaletteCommands();
+      await page
+        .getByTestId("command-palette")
+        .getByText("Open general chats", { exact: true })
+        .click();
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(mounted.router.state.location.pathname).toBe(projectThreadPath);
+      expect(window.history.length).toBe(historyLength);
+      await toggle.click();
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+
+      // The old page's address opens Threads with the section open.
+      await mounted.router.navigate({ to: "/chats" });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname !== "/chats",
+        "The old General Chats address should open Threads.",
+      );
+      await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect.element(threadsButton).toHaveAttribute("aria-current", "page");
+
+      // Next walks the list as it reads: from the last project thread into the chats.
+      pressNext();
+      await waitForURL(
+        mounted.router,
+        (pathname) =>
+          pathname.endsWith(`/${workingChatId}`) || pathname.endsWith(`/${askingChatId}`),
+        "Next should step from the project's thread into the open section.",
+      );
+
+      await page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${askingChatId}`),
+        "A chat row should open its chat.",
+      );
+      // A chat is part of Threads here.
+      await expect.element(threadsButton).toHaveAttribute("aria-current", "page");
+      await expect
+        .element(page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }))
+        .toHaveAttribute("aria-current", "page");
+
+      // Back to its own page: the button returns, selected for the open chat,
+      // and the section leaves the thread list.
+      updateSettings({ generalChatsPlacement: "page" });
+      await expect.element(page.getByTestId("rail-chats")).toHaveAttribute("aria-current", "page");
+      await expect.element(page.getByTestId("inbox-chats-shelf")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByTestId("chats-list-row").filter({ hasText: "Draft reply" }))
+        .toHaveAttribute("aria-current", "page");
+      // Threads goes back to project work, not to the chat opened from it.
+      await threadsButton.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === projectThreadPath,
+        "Threads should return to the last project thread once the chats have their page.",
+      );
+    } finally {
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
       await mounted.cleanup();
     }
   });

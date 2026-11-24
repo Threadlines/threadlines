@@ -969,6 +969,25 @@ describe("connect tools: review fixes", () => {
       expect((yield* racing.handlers.thread_stop(CALLER, { threadId: "racing" })).outcome).toBe(
         "not_allowed",
       );
+
+      // Stopping a parent names any child left running above this connection's access limit.
+      const parent = ownThread("parent-stop", {
+        runtimeMode: "auto-accept-edits",
+        session: { ...running!, threadId: ThreadId.make("parent-stop") },
+      });
+      const raisedChild = ownThread("raised-child", {
+        title: "Deploy prod",
+        parentThreadId: ThreadId.make("parent-stop"),
+        attachedToParent: true,
+        runtimeMode: "full-access",
+        session: { ...running!, threadId: ThreadId.make("raised-child") },
+      });
+      const familyWorld = yield* makeWorld({ threads: [parent, raisedChild] });
+      const stopped = yield* familyWorld.handlers.thread_stop(CALLER, {
+        threadId: "parent-stop",
+      });
+      expect(stopped.outcome).toBe("stopped");
+      expect(stopped.detail).toContain("Deploy prod");
     }),
   );
 });
@@ -1003,6 +1022,31 @@ describe("thread_wait", () => {
         outcome: "done",
         thread: { status: "idle" },
         reply: "Fixed: the test waited on a timer.",
+      });
+    }),
+  );
+
+  it.effect("says a message whose turn never ran was taken back, so the agent can send again", () =>
+    Effect.gen(function* () {
+      const refused = ownThread("refused");
+      const world = yield* makeWorld({
+        threads: [
+          {
+            ...refused,
+            messages: refused.messages.map((message) => ({ ...message, notSent: true as const })),
+          },
+        ],
+      });
+      expect(
+        yield* world.handlers.thread_wait(CALLER, {
+          threadId: "refused",
+          messageId: "refused-first",
+        }),
+      ).toMatchObject({ outcome: "taken_back" });
+      // The agent's read labels it too.
+      const read = yield* world.handlers.thread_read(CALLER, { threadId: "refused" });
+      expect(read.messages.find((message) => message.messageId === "refused-first")).toMatchObject({
+        notSent: true,
       });
     }),
   );

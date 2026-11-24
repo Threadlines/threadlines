@@ -7,6 +7,7 @@ import {
   getSidebarIdlePrewarmThreadIds,
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
+  resolveDoneTimestamp,
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
   hasUnseenCompletion,
@@ -15,6 +16,7 @@ import {
   THREAD_STATUS_DOT_CLASSES,
   resolveSeenThreadStatus,
   resolveThreadStatusPill,
+  threadHasNewsForUser,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
@@ -48,6 +50,8 @@ import {
   moveInInboxCustomOrder,
   trimInboxCustomOrder,
   orderInboxLiveRowsByGroup,
+  appendInboxGroupKeys,
+  inboxDrawnGroupOrder,
   countInboxPinDividers,
   moveInInboxGroupOrder,
   inboxCustomOrderPeers,
@@ -388,6 +392,40 @@ describe("isContextMenuPointerDown", () => {
   });
 });
 
+describe("threadHasNewsForUser", () => {
+  const failed = {
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default" as const,
+    latestTurn: null,
+    session: {
+      provider: ProviderDriverKind.make("codex"),
+      status: "error" as const,
+      createdAt: "2026-03-09T10:00:00.000Z",
+      updatedAt: "2026-03-09T11:00:00.000Z",
+      orchestrationStatus: "error" as const,
+      pendingBackgroundTaskCount: 0,
+    },
+  };
+
+  it("counts a failure until it is seen, and a question while it waits", () => {
+    expect(threadHasNewsForUser(failed, "2026-03-09T10:30:00.000Z")).toBe(true);
+    // Seen since it failed: the chat may open where it was left.
+    expect(threadHasNewsForUser(failed, "2026-03-09T11:30:00.000Z")).toBe(false);
+    expect(
+      threadHasNewsForUser(
+        {
+          ...failed,
+          hasPendingUserInput: true,
+          session: { ...failed.session, status: "running", orchestrationStatus: "running" },
+        },
+        "2026-03-09T11:30:00.000Z",
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("resolveThreadStatusPill", () => {
   const baseThread = {
     hasActionableProposedPlan: false,
@@ -590,6 +628,25 @@ describe("resolveThreadStatusPill", () => {
       label: "Checking back",
       checkBackAt: "2026-03-09T12:00:00.000Z",
     });
+    // A dormant one can't fire until its agent runs again: the pill names the
+    // next one that can, and none once every one is dormant.
+    const [later, sooner] = settled.checkBacks;
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...settled, checkBacks: [later!, { ...sooner!, dormant: true as const }] },
+      }),
+    ).toMatchObject({ label: "Checking back", checkBackAt: "2026-03-09T12:30:00.000Z" });
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...settled,
+          checkBacks: settled.checkBacks.map((checkBack) => ({
+            ...checkBack,
+            dormant: true as const,
+          })),
+        },
+      }),
+    ).toBeNull();
     // A result nobody has read comes first.
     expect(
       resolveThreadStatusPill({ thread: { ...settled, lastVisitedAt: undefined } }),
@@ -1269,6 +1326,19 @@ describe("inbox done lifecycle", () => {
     ).toBe(true);
   });
 
+  it("keeps a project's lead chat like a pinned thread: no idle or landing filing", () => {
+    const stale = { ...base, latestUserMessageAt: "2026-07-24T12:00:00.000Z" };
+    const options = {
+      now: NOW,
+      autoDoneAfterDays: 2,
+      pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
+      lead: true,
+    };
+    expect(isThreadDone(stale, null, options)).toBe(false);
+    // The user's own word still files it.
+    expect(isThreadDone(stale, { state: "done", at: NOW }, options)).toBe(true);
+  });
+
   it("files a thread at once when its pull request lands, unless it is pinned", () => {
     // A merged branch is finished work: it does not wait out the idle timer.
     const fresh = { ...base, latestUserMessageAt: "2026-07-28T11:00:00.000Z" };
@@ -1315,6 +1385,26 @@ describe("inbox done lifecycle", () => {
     expect(
       isThreadDone(quietSince, { state: "active", at: "2026-07-28T11:20:00.000Z" }, options),
     ).toBe(true);
+  });
+
+  it("dates a thread that wrapped again by its new work, not an old Wrap up", () => {
+    // Wrapped by hand days ago, used again today, then filed by its pull
+    // request landing: the row says today, not the day of the old mark.
+    const oldMark = { state: "done", at: "2026-07-24T12:00:00.000Z" } as const;
+    const usedAgain = {
+      ...base,
+      latestUserMessageAt: "2026-07-28T11:00:00.000Z",
+      lastVisitedAt: "2026-07-28T11:10:00.000Z",
+    };
+    expect(
+      isThreadDone(usedAgain, oldMark, {
+        now: NOW,
+        pullRequestSettledAt: "2026-07-28T11:30:00.000Z",
+      }),
+    ).toBe(true);
+    expect(resolveDoneTimestamp(usedAgain, oldMark)).toBe("2026-07-28T11:00:00.000Z");
+    // A Wrap up given after the last work still dates the row.
+    expect(resolveDoneTimestamp(usedAgain, doneMark)).toBe(NOW);
   });
 
   it("lets a thread an agent will come back to wrap up, and brings it back when the agent does", () => {
@@ -1651,6 +1741,23 @@ describe("the inbox's sorts", () => {
     ]);
   });
 
+  it("puts a project's lead chat first in every sort, ahead of the pins", () => {
+    const threads = [
+      thread("quiet-lead", 1),
+      thread("busy", 2, { lastMessageDay: 29 }),
+      thread("pinned", 3, { pinned: true }),
+    ];
+    const isLead = (entry: { readonly id: string }) => entry.id === "quiet-lead";
+    expect(ids(sortInboxThreadsBy(threads, "recent", [], isLead))).toEqual([
+      "quiet-lead",
+      "pinned",
+      "busy",
+    ]);
+    expect(
+      ids(sortInboxThreadsBy(threads, "custom", [key("busy"), key("quiet-lead")], isLead)),
+    ).toEqual(["quiet-lead", "pinned", "busy"]);
+  });
+
   it("keeps a custom order through activity, with threads it hasn't placed at the bottom", () => {
     const threads = [
       thread("second", 1, { lastMessageDay: 29 }),
@@ -1736,6 +1843,48 @@ describe("the inbox's sorts", () => {
       "a2",
       "c1",
     ]);
+  });
+
+  it("keeps a custom-sorted group in place when its top row goes, and puts a new group last", () => {
+    const groupOf = (row: { key: string; group: string }) => row.group;
+    const groupsOn = (rows: readonly { key: string; group: string }[]) =>
+      groupInboxLiveRows(rows, groupOf).map((group) => group.key);
+    const draw = (
+      rows: readonly { key: string; group: string }[],
+      sort: "custom" | "recent",
+      draggedOrder: readonly string[],
+      seen: readonly string[],
+    ) =>
+      orderInboxLiveRowsByGroup(
+        rows,
+        groupOf,
+        inboxDrawnGroupOrder({ sort, draggedOrder, customSeenOrder: seen }),
+      ).map((row) => row.key);
+
+    const first = [
+      { key: "a1", group: "project:a" },
+      { key: "b1", group: "project:b" },
+      { key: "a2", group: "project:a" },
+    ];
+    const seen = appendInboxGroupKeys([], groupsOn(first));
+    expect(seen).toEqual(["project:a", "project:b"]);
+    // a1 is wrapped, and a thread in a new project shows up.
+    const later = [
+      { key: "b1", group: "project:b" },
+      { key: "a2", group: "project:a" },
+      { key: "c1", group: "project:c" },
+    ];
+    const seenLater = appendInboxGroupKeys(seen, groupsOn(later));
+    expect(appendInboxGroupKeys(seenLater, groupsOn(later))).toBe(seenLater);
+    // A saved list with a repeat still takes a new group.
+    expect(appendInboxGroupKeys(["project:a", "project:a"], ["project:b"])).toEqual([
+      "project:a",
+      "project:b",
+    ]);
+    expect(draw(later, "custom", [], seenLater)).toEqual(["a2", "b1", "c1"]);
+    // A dragged order still wins, and the other sorts follow each group's first row.
+    expect(draw(later, "custom", ["project:b"], seenLater)).toEqual(["b1", "a2", "c1"]);
+    expect(draw(later, "recent", [], seenLater)).toEqual(["b1", "a2", "c1"]);
   });
 
   it("counts one line for each group that has pinned and unpinned rows", () => {
@@ -1851,10 +2000,15 @@ describe("child thread families", () => {
       deliveredAt?: string;
       seenAt?: string;
       wrappedByUser?: boolean;
+      title?: string;
     } = {},
   ): Entry => ({
     threadKey: id,
-    thread: { id: ThreadId.make(id), createdAt: options.createdAt ?? "2026-10-01T00:00:00.000Z" },
+    thread: {
+      id: ThreadId.make(id),
+      createdAt: options.createdAt ?? "2026-10-01T00:00:00.000Z",
+      title: options.title ?? id,
+    },
     status: options.status ?? null,
     isDone: options.done ?? false,
     settledAt: options.settledAt ?? options.createdAt ?? "2026-10-01T00:00:00.000Z",
@@ -1882,6 +2036,28 @@ describe("child thread families", () => {
       sortLive: (heads) => [...heads],
       sortDone: (heads) => [...heads],
     });
+
+  it("shortens a family's titles over every child, drawn or folded, as the tabs do", () => {
+    const entries = [
+      entry("lead"),
+      entry("android", { parent: "lead", title: "Pull Station: Android toolchain" }),
+      entry("polish", { parent: "lead", title: "Pull Station: UI polish pass" }),
+      entry("notes", { parent: "lead", title: "Write release notes" }),
+    ];
+    // Folded, no child is drawn, but the labels stay what they are when open.
+    const [folded] = sections(entries).live;
+    expect(folded!.shownChildren).toEqual([]);
+    expect(Object.fromEntries(folded!.childShortTitles)).toEqual({
+      android: "Android toolchain",
+      polish: "UI polish pass",
+    });
+
+    // Wrapped with its family: the child open in the chat, drawn under it, reads the same.
+    const wrapped = entries.map((candidate) => ({ ...candidate, isDone: true }));
+    const [done] = sections(wrapped, { active: "android" }).done;
+    expect(done!.openChild?.threadKey).toBe("android");
+    expect(done!.childShortTitles.get("android")).toBe("Android toolchain");
+  });
 
   it("takes one seat per family and lists exactly the rows it draws", () => {
     // Children never stand as live rows of their own while their parent is
@@ -2224,6 +2400,7 @@ describe("families across computers", () => {
     thread: {
       id: ThreadId.make(id),
       createdAt: "2026-10-21T09:00:00.000Z",
+      title: id,
       environmentId,
       parentThreadId: options.childOf === undefined ? null : ThreadId.make(options.childOf),
       attachedToParent: options.childOf !== undefined,
@@ -2791,7 +2968,7 @@ describe("child thread status and wrap-up", () => {
     ).toBe(true);
   });
 
-  it("marks a parent waiting on its threads without blocking its wrap-up", () => {
+  it("holds a parent waiting on its threads out of wrap-up", () => {
     const seenParent = {
       ...base,
       awaitedChildThreadCount: 3,
@@ -2801,10 +2978,19 @@ describe("child thread status and wrap-up", () => {
       label: "Waiting",
       childThreadCount: 3,
     });
-    expect(canMarkThreadDone(seenParent, { now: NOW })).toBe(true);
-    // An unread completion under the wait still holds it, as it would alone.
-    expect(canMarkThreadDone({ ...seenParent, lastVisitedAt: undefined }, { now: NOW })).toBe(
-      false,
+    // Their answers start it up again, so it isn't finished: no Wrap up,
+    // and an earlier wrap doesn't hide it while it waits.
+    expect(canMarkThreadDone(seenParent, { now: NOW })).toBe(false);
+    expect(
+      isThreadDone(
+        { ...seenParent, pinnedAt: null },
+        { state: "done", at: "2026-10-04T12:00:00.000Z" },
+        { now: NOW },
+      ),
+    ).toBe(false);
+    // Once they have all answered, it can be wrapped as before.
+    expect(canMarkThreadDone({ ...seenParent, awaitedChildThreadCount: 0 }, { now: NOW })).toBe(
+      true,
     );
     // Threads waiting for the user's yes block like any approval.
     const asking = { ...seenParent, pendingChildApproval: true };

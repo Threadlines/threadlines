@@ -21,6 +21,9 @@ import { cn } from "~/lib/utils";
 import {
   deriveProviderAccountUsagePresentationForProvider,
   headlineUsageMeter,
+  isProviderUsageNearLimit,
+  modelOwnUsageLimit,
+  modelUsageLimitLabel,
 } from "~/lib/providerUsage";
 import { ModelListRow } from "./ModelListRow";
 import { resolveModelPickerEmptyState } from "./modelPickerEmptyState";
@@ -77,6 +80,8 @@ type ModelPickerTab = {
   usage?: { readonly usedPercent: number; readonly label: string; readonly warning: boolean };
   /** This account's usage has nothing to draw right now: the tab shows no figure and says so on hover. */
   usageUnavailable?: boolean;
+  /** The account is near its plan's limit as a whole: an amber dot on the icon (isProviderUsageNearLimit). */
+  nearLimit?: boolean;
 };
 
 /**
@@ -409,6 +414,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     return grouped;
   }, [eligibleModels]);
 
+  // Each account's usage, for the near-limit dot on its tab and each model's
+  // own limit on its row.
+  const usageByInstance = useMemo(
+    () =>
+      new Map(
+        instanceEntries.map((entry) => [
+          entry.instanceId,
+          deriveProviderAccountUsagePresentationForProvider(entry.snapshot),
+        ]),
+      ),
+    [instanceEntries],
+  );
+
   const providerTabs = useMemo((): ModelPickerTab[] => {
     const tabs: ModelPickerTab[] = [];
     const instanceCountByDriver = new Map<string, number>();
@@ -430,10 +448,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       });
       // With more than one account for an agent, each tab says how much room
       // it has left, the same figure its Settings row shows.
+      const accountUsage = usageByInstance.get(entry.instanceId) ?? null;
       const usagePresentation =
-        (instanceCountByDriver.get(entry.driverKind) ?? 0) > 1
-          ? deriveProviderAccountUsagePresentationForProvider(entry.snapshot)
-          : null;
+        (instanceCountByDriver.get(entry.driverKind) ?? 0) > 1 ? accountUsage : null;
       const usage = usagePresentation ? headlineUsageMeter(usagePresentation) : null;
       tabs.push({
         kind: "instance",
@@ -452,12 +469,15 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             }
           : {}),
         ...(usagePresentation?.notice && !usage ? { usageUnavailable: true } : {}),
+        ...(isProviderUsageNearLimit(accountUsage, { modelLimits: false })
+          ? { nearLimit: true }
+          : {}),
         modelCount: sortedModels.length,
         models: sortedModels,
       });
     }
     return tabs;
-  }, [favoritesSet, instanceEntries, isLocked, modelsByInstance]);
+  }, [favoritesSet, instanceEntries, isLocked, modelsByInstance, usageByInstance]);
 
   const showTabList = !lockedToSingleInstance && (!isLocked || providerTabs.length > 1);
   const tabs = useMemo((): ModelPickerTab[] => {
@@ -574,7 +594,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const tabModelCountLabel = (count: number) => `${count} ${count === 1 ? "model" : "models"}`;
 
-  const renderTabIcon = (tab: ModelPickerTab) => {
+  const renderTabIcon = (tab: ModelPickerTab, iconOnly: boolean) => {
     if (tab.kind === "favorites") {
       return <StarIcon className="size-3.5 fill-current text-yellow-500/80" />;
     }
@@ -590,6 +610,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             aria-hidden
             className="absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-popover"
             style={{ backgroundColor: tab.accentColor }}
+          />
+        ) : null}
+        {/* Near the plan's limit, where no figure says so already. */}
+        {tab.nearLimit && (iconOnly || !tab.usage) ? (
+          <span
+            aria-hidden
+            data-model-picker-near-limit
+            className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-warning ring-1 ring-popover"
           />
         ) : null}
       </>
@@ -724,11 +752,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         return;
       }
 
-      // A dropdown open over the settings rows, or an agent's name being
-      // typed, owns the keys: a jump would change the model underneath it.
+      // A dropdown open over the settings rows, an agent pill's menu, or an
+      // agent's name being typed, owns the keys: a jump would change the model
+      // underneath it.
       if (
         event.target instanceof Element &&
-        event.target.closest("[data-slot='select-popup'], [data-room-agents-bar] input")
+        event.target.closest(
+          "[data-slot='select-popup'], [data-slot='menu-popup'], [data-room-agents-bar] input",
+        )
       ) {
         return;
       }
@@ -758,6 +789,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     };
   }, [handleModelSelect, keybindings, modelJumpModelKeys, modelJumpShortcutContext]);
 
+  /** The model's own limit, as its row says it, when its account reports one. */
+  const ownLimitLabel = (model: ModelPickerItem) => {
+    const limit = modelOwnUsageLimit(usageByInstance.get(model.instanceId), model.name);
+    return limit ? modelUsageLimitLabel(limit) : null;
+  };
+
   const renderModelRow = (model: ModelPickerItem, modelIndex: number) => {
     const modelKey = `${model.instanceId}:${model.slug}`;
     return (
@@ -775,6 +812,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         useProviderScopedLabel
         useTriggerLabel={lockedToSingleInstance}
         jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
+        usageLimit={ownLimitLabel(model)}
         action={props.rowAction ?? null}
         disabledReason={props.rowsDisabledReason ?? null}
         onToggleFavorite={() => toggleFavorite(model.instanceId, model.slug)}
@@ -864,7 +902,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                               ? [`${tab.usage.label} ${tab.usage.usedPercent}% used`]
                               : tab.usageUnavailable
                                 ? ["Usage unavailable"]
-                                : []),
+                                : tab.nearLimit
+                                  ? ["Near its plan's limit"]
+                                  : []),
                           ].join(" · ")}
                           className={cn(
                             "flex max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded-md text-left text-xs font-medium transition-colors",
@@ -882,7 +922,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                           }}
                         >
                           <span className="relative flex size-4 shrink-0 items-center justify-center">
-                            {renderTabIcon(tab)}
+                            {renderTabIcon(tab, iconOnly)}
                           </span>
                           {iconOnly ? null : <span className="min-w-0 truncate">{tab.label}</span>}
                           {iconOnly || !tab.usage ? null : (

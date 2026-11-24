@@ -39,6 +39,9 @@ jobs:
     name: Build and dry-run package
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      version: ${{ steps.smoke_pack.outputs.version }}
+      tarball: ${{ steps.smoke_pack.outputs.tarball }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,6 +54,8 @@ jobs:
           run-install: false
 
       - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: vp install --frozen-lockfile
 
       - name: Align package versions
@@ -68,7 +73,13 @@ jobs:
         run: node scripts/prepare-server-npm-package.ts
 
       - name: Apply brand assets
-        run: node scripts/apply-web-brand-assets.ts production release/npm-server/dist/client
+        shell: bash
+        run: |
+          brand=production
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dist_tag }}" = "nightly" ]; then
+            brand=nightly
+          fi
+          node scripts/apply-web-brand-assets.ts "$brand" release/npm-server/dist/client
 
       - name: Dry-run npm package
         working-directory: release/npm-server
@@ -83,7 +94,8 @@ jobs:
       # 0.3.1 release, where a peer range resolved to a second copy of effect
       # and the server exited 1 before printing anything. Telemetry is off so
       # each throwaway boot doesn't count as a new installation in PostHog.
-      - name: Smoke test packed artifact
+      - id: smoke_pack
+        name: Pack and smoke test artifact
         shell: bash
         env:
           THREADLINES_TELEMETRY_ENABLED: "false"
@@ -91,6 +103,10 @@ jobs:
           set -euo pipefail
           pack_dir="$GITHUB_WORKSPACE/release/npm-server"
           tarball="$(cd "$pack_dir" && npm pack --silent)"
+          version="$(node -p 'require(process.argv[1]).version' "$pack_dir/package.json")"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
           smoke_dir="$(mktemp -d)"
           cd "$smoke_dir"
           npm install --no-audit --no-fund --loglevel=error "$pack_dir/$tarball"
@@ -120,58 +136,47 @@ jobs:
           kill "$server_pid" || true
           exit 1
 
+      - name: Upload tested npm tarball
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-server-tarball
+          path: release/npm-server/${{ steps.smoke_pack.outputs.tarball }}
+          retention-days: 7
+          if-no-files-found: error
+
   publish:
     name: Publish package
     needs: pack
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
     outputs:
-      version: ${{ steps.npm_publish.outputs.version }}
+      version: ${{ needs.pack.outputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Vite+
+      # npm OIDC trusted publishing requires npm 11.5+ (Node 24). Skipping cache
+      # and install keeps this step to a few seconds while keeping the same Node.
+      - name: Setup Node 24
         uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
         with:
           node-version: "24"
-          cache: true
+          cache: false
           run-install: false
 
-      - name: Install dependencies
-        run: vp install --frozen-lockfile
-
-      - name: Align package versions
-        if: ${{ inputs.version != '' }}
-        run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
-
-      - name: Build server package
-        env:
-          THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
-          THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
-          THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
-        run: vp exec vp run --filter @threadlines/server build
-
-      - name: Prepare npm package
-        run: node scripts/prepare-server-npm-package.ts
-
-      - name: Apply brand assets
-        shell: bash
-        run: |
-          brand=production
-          if [ "${{ inputs.dist_tag }}" = "nightly" ]; then brand=nightly; fi
-          node scripts/apply-web-brand-assets.ts "$brand" release/npm-server/dist/client
+      - name: Download tested npm tarball
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-server-tarball
+          path: ${{ runner.temp }}/npm-tarball
 
       - name: Publish to npm
-        id: npm_publish
-        working-directory: release/npm-server
-        run: |
-          npm publish --access public --tag "${{ inputs.dist_tag }}"
-          echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+        env:
+          TARBALL: ${{ needs.pack.outputs.tarball }}
+          DIST_TAG: ${{ inputs.dist_tag }}
+        run: npm publish "${RUNNER_TEMP}/npm-tarball/${TARBALL}" --access public --tag "$DIST_TAG"
 
   docker:
     name: Start the Docker image build

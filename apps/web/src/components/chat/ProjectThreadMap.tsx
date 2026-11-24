@@ -1,4 +1,5 @@
 import {
+  parseScopedThreadKey,
   scopedProjectKey,
   scopedThreadKey,
   scopeProjectRef,
@@ -8,6 +9,7 @@ import { PULL_REQUEST_SETTLED_LIST_LIMIT, type ScopedProjectRef } from "@threadl
 import { useNavigate } from "@tanstack/react-router";
 import { useId, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { CrownIcon } from "lucide-react";
 
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
@@ -16,10 +18,12 @@ import {
 } from "../../lib/pullRequestsReactQuery";
 import { cn } from "../../lib/utils";
 import {
+  selectProjectByRef,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../../store";
+import { projectLeadRef } from "../../leadChat";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
@@ -208,6 +212,15 @@ export function ProjectThreadMap({
 }) {
   const navigate = useNavigate();
   const map = useProjectThreadMap(memberProjectRefs);
+  // The project's lead chat, when one of its copies has one: a link beside the caption.
+  const leadThreadKey = useStore((state) => {
+    for (const projectRef of memberProjectRefs) {
+      const project = selectProjectByRef(state, projectRef);
+      const leadRef = project === undefined ? null : projectLeadRef(state, project);
+      if (leadRef !== null) return scopedThreadKey(leadRef);
+    }
+    return null;
+  });
   const nowMs = useRelativeTimeTick(60_000);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const gradientId = useId().replaceAll(":", "");
@@ -525,6 +538,25 @@ export function ProjectThreadMap({
             {part.text}
           </span>
         ))}
+        {leadThreadKey !== null ? (
+          <button
+            className="inline-flex cursor-pointer items-center gap-1 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-ring"
+            data-testid="project-thread-map-lead"
+            onClick={() => {
+              const leadRef = parseScopedThreadKey(leadThreadKey);
+              if (leadRef !== null) {
+                void navigate({
+                  to: "/$environmentId/$threadId",
+                  params: buildThreadRouteParams(leadRef),
+                });
+              }
+            }}
+            type="button"
+          >
+            <CrownIcon aria-hidden="true" className="size-3" />
+            Lead chat
+          </button>
+        ) : null}
       </p>
     </div>
   );

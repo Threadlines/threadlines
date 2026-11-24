@@ -417,6 +417,14 @@ const SessionExitedPayload = Schema.Struct({
   resendTurn: Schema.optional(
     Schema.Struct({ ...ProviderTurnResend.fields, error: TrimmedNonEmptyStringSchema }),
   ),
+  /**
+   * The agent can't go on with this conversation (a model refused its saved
+   * thinking, say): the server forgets it, so the next start opens a new
+   * one seeded with the thread's history. Names the session by its start
+   * time (ProviderSession.createdAt): only a binding that still holds that
+   * session forgets, so a late exit never touches its replacement.
+   */
+  conversationLost: Schema.optional(Schema.Struct({ sessionCreatedAt: IsoDateTime })),
 });
 export type SessionExitedPayload = typeof SessionExitedPayload.Type;
 
@@ -555,6 +563,10 @@ export const RuntimeCheckBack = Schema.Struct({
   recurring: Schema.Boolean,
   schedule: Schema.optional(TrimmedNonEmptyStringSchema),
   description: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** See OrchestrationCheckBack.prompt. */
+  prompt: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** See OrchestrationCheckBack.cron. */
+  cron: Schema.optional(TrimmedNonEmptyStringSchema),
   durable: Schema.Boolean,
 });
 export type RuntimeCheckBack = typeof RuntimeCheckBack.Type;
@@ -562,11 +574,14 @@ export type RuntimeCheckBack = typeof RuntimeCheckBack.Type;
 /**
  * The session's pending check-backs, whole (an authoritative level signal).
  * `ended`: ones that will not fire because the runtime stopped while they
- * were pending.
+ * were pending. `partial`: the runtime hasn't reported its own list yet, so
+ * jobs saved to the project that it restored may be missing; ones already
+ * listed as saved are kept.
  */
 const SessionCheckBacksUpdatedPayload = Schema.Struct({
   checkBacks: Schema.Array(RuntimeCheckBack),
   ended: Schema.optional(Schema.Array(RuntimeCheckBack)),
+  partial: Schema.optional(Schema.Boolean),
 });
 export type SessionCheckBacksUpdatedPayload = typeof SessionCheckBacksUpdatedPayload.Type;
 

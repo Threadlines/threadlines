@@ -1,6 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off - one GET over node:https
+// @effect-diagnostics nodeBuiltinImport:off - one request over node:https
 /**
- * HttpsFetch — the `fetch` behind downloads of programs Threadlines installs.
+ * HttpsFetch — the `fetch` behind downloads of programs Threadlines installs,
+ * and behind requests that carry a sign-in to a fixed set of hosts.
  *
  * It differs from the global `fetch` where a download needs it to:
  * - it goes through the proxy the environment names (`HTTPS_PROXY`,
@@ -8,7 +9,7 @@
  *   does when the whole server was started for it. Extra certificate
  *   authorities (`NODE_EXTRA_CA_CERTS`) apply to both;
  * - it follows redirects itself, so every hop is https and there are at
- *   most five;
+ *   most five; a request with a body (a POST) never follows one;
  * - it can be held to the public internet (`publicAddressesOnly`) and to
  *   named hosts (`allowedHosts`), on every hop, for addresses that come
  *   from a list Threadlines doesn't write.
@@ -154,7 +155,10 @@ function toResponse(message: http.IncomingMessage): Response {
   return new Response(Readable.toWeb(message) as ReadableStream<Uint8Array>, { status, headers });
 }
 
-/** Builds a `fetch` for GETs. Rejects for anything but https, and for a URL that carries credentials. */
+/**
+ * Builds a `fetch` for GETs and text-body requests. Rejects for anything but
+ * https, and for a URL that carries credentials.
+ */
 export function makeHttpsFetch(options: HttpsFetchOptions = {}): DownloadFetch {
   const proxyEnv = options.proxyEnv ?? process.env;
   const httpsAgent = new https.Agent({ proxyEnv });
@@ -165,17 +169,22 @@ export function makeHttpsFetch(options: HttpsFetchOptions = {}): DownloadFetch {
   const lookup = options.publicAddressesOnly ? publicAddressLookup() : undefined;
   const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
 
-  const get = (url: URL, init: RequestInit) =>
+  const send = (url: URL, init: RequestInit, body: string | undefined) =>
     new Promise<http.IncomingMessage>((resolve, reject) => {
+      const headers = new Headers(init.headers);
+      if (body !== undefined && !headers.has("content-length")) {
+        headers.set("content-length", String(Buffer.byteLength(body)));
+      }
       const requestOptions = {
-        headers: Object.fromEntries(new Headers(init.headers)),
+        method: init.method ?? "GET",
+        headers: Object.fromEntries(headers),
         ...(init.signal ? { signal: init.signal } : {}),
         ...(lookup ? { lookup } : {}),
       };
       const request =
         url.protocol === "https:"
-          ? https.get(url, { ...requestOptions, agent: httpsAgent }, resolve)
-          : http.get(url, { ...requestOptions, agent: httpAgent }, resolve);
+          ? https.request(url, { ...requestOptions, agent: httpsAgent }, resolve)
+          : http.request(url, { ...requestOptions, agent: httpAgent }, resolve);
       request.on("error", reject);
       // Neither of these is a response, and without them the promise would
       // never settle: a server that switches protocols, and a connection
@@ -187,9 +196,14 @@ export function makeHttpsFetch(options: HttpsFetchOptions = {}): DownloadFetch {
       request.on("close", () => {
         reject(new Error(`The connection to ${url.host} closed before it answered.`));
       });
+      request.end(body);
     });
 
   return async (rawUrl, init) => {
+    if (init.body !== undefined && init.body !== null && typeof init.body !== "string") {
+      throw new Error("Only a text body can be sent.");
+    }
+    const body = init.body ?? undefined;
     let url = new URL(rawUrl);
     for (let redirects = 0; ; redirects += 1) {
       if (url.protocol !== "https:" && !(options.allowHttp && url.protocol === "http:")) {
@@ -208,12 +222,15 @@ export function makeHttpsFetch(options: HttpsFetchOptions = {}): DownloadFetch {
           `Refusing to download from ${url.host}: the address is an IP address, not a name.`,
         );
       }
-      const message = await get(url, init);
+      const message = await send(url, init, body);
       const location = message.headers.location;
       if (!REDIRECT_STATUSES.has(message.statusCode ?? 0) || location === undefined) {
         return toResponse(message);
       }
       message.resume();
+      if (body !== undefined) {
+        throw new Error(`Refusing to follow ${url.host}'s redirect of a request with a body.`);
+      }
       if (redirects >= maxRedirects) {
         throw new Error(
           maxRedirects === 0

@@ -45,6 +45,24 @@ const makeProvider = (
 });
 
 it.layer(NodeServices.layer)("providerStatusCache", (it) => {
+  it.effect("never writes running sessions' command lists to disk", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-provider-cache-live-" });
+      const filePath = yield* resolveProviderStatusCachePath({
+        cacheDir: tempDir,
+        instanceId: defaultInstanceIdForDriver(CODEX_DRIVER),
+      });
+      yield* writeProviderStatusCache({
+        filePath,
+        provider: makeProvider(CODEX_DRIVER, {
+          sessionCommands: [{ sessions: ["thread-1"], commands: [{ name: "goal" }] }],
+        }),
+      });
+      assert.notInclude(yield* fs.readFileString(filePath), "sessionCommands");
+    }),
+  );
+
   it.effect(
     "replaces the cache after a temporary Windows file lock without removing the old file",
     () =>

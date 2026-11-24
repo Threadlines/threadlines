@@ -21,6 +21,8 @@ export interface PersistedUiState {
   collapsedProjectCwds?: string[];
   expandedProjectCwds?: string[];
   projectOrderCwds?: string[];
+  /** See `UiProjectState.pinnedProjectCwds`. */
+  pinnedProjectCwds?: string[];
   defaultAdvertisedEndpointKey?: string | null;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
   /**
@@ -43,6 +45,8 @@ export interface PersistedUiState {
   collapsedInboxGroups?: Record<string, boolean>;
   /** See `UiInboxState.inboxWrappedOpen`. */
   inboxWrappedOpen?: boolean;
+  /** See `UiInboxState.inboxGeneralChatsOpen`. */
+  inboxGeneralChatsOpen?: boolean;
   /** See `UiLayoutState.sidebarListOpen`. */
   sidebarListOpen?: boolean;
 }
@@ -50,6 +54,12 @@ export interface PersistedUiState {
 export interface UiProjectState {
   projectExpandedById: Record<string, boolean>;
   projectOrder: string[];
+  /**
+   * The folders of the projects pinned to the top of the project pickers, on
+   * this device. Kept by folder, like the saved order, so a pin outlives the
+   * project's id changing and covers every checkout of the folder.
+   */
+  pinnedProjectCwds: readonly string[];
 }
 
 /**
@@ -140,6 +150,12 @@ export interface UiInboxState {
    * threads still going. Kept on this device, like the folds above.
    */
   inboxWrappedOpen: boolean;
+  /**
+   * Whether the General chats section at the foot of the inbox is open, on a
+   * device that lists the chats there. Open is the default: the chats are
+   * live conversations, not history. Kept on this device, like the folds above.
+   */
+  inboxGeneralChatsOpen: boolean;
 }
 
 export interface UiLayoutState {
@@ -189,6 +205,7 @@ export interface SyncThreadInput {
 const initialState: UiState = {
   projectExpandedById: {},
   projectOrder: [],
+  pinnedProjectCwds: [],
   seenThreadOverlays: {},
   threadSeedVisitedAtById: {},
   threadChangedFilesExpandedById: {},
@@ -199,6 +216,7 @@ const initialState: UiState = {
   inboxEnvironmentScopeId: null,
   collapsedInboxGroups: {},
   inboxWrappedOpen: false,
+  inboxGeneralChatsOpen: true,
   sidebarListOpen: true,
   sidebarListFloats: false,
   sidebarFloatingListOpen: false,
@@ -248,6 +266,15 @@ export function readPersistedState(): UiState {
         parsed.threadChangedFilesExpandedById,
       ),
       inboxProjectScopeKeys: sanitizePersistedProjectScopeKeys(parsed),
+      pinnedProjectCwds: Array.isArray(parsed.pinnedProjectCwds)
+        ? [
+            ...new Set(
+              parsed.pinnedProjectCwds.filter(
+                (cwd): cwd is string => typeof cwd === "string" && cwd.length > 0,
+              ),
+            ),
+          ]
+        : [],
       inboxEnvironmentScopeId:
         typeof parsed.inboxEnvironmentScopeId === "string" &&
         parsed.inboxEnvironmentScopeId.length > 0
@@ -259,6 +286,7 @@ export function readPersistedState(): UiState {
       childThreadFamilyOpenById: sanitizePersistedBooleanRecord(parsed.childThreadFamilyOpenById),
       collapsedInboxGroups: sanitizePersistedBooleanRecord(parsed.collapsedInboxGroups),
       inboxWrappedOpen: parsed.inboxWrappedOpen === true,
+      inboxGeneralChatsOpen: parsed.inboxGeneralChatsOpen !== false,
       sidebarListOpen: parsed.sidebarListOpen !== false,
     };
   } catch {
@@ -456,6 +484,27 @@ export function hydratePersistedProjectState(parsed: PersistedUiState): void {
   }
 }
 
+/**
+ * The saved order, by folder, with the folders of projects that aren't loaded
+ * right now (a computer still connecting, or offline) kept after the folder
+ * they followed when this session loaded. Writing only what is loaded would
+ * forget their places the first time anything is saved.
+ */
+function keepSavedPlacesOfAbsentProjects(orderCwds: readonly string[]): string[] {
+  const result = [...orderCwds];
+  const present = new Set(orderCwds);
+  let previous: string | null = null;
+  for (const cwd of persistedProjectOrderCwds) {
+    if (!present.has(cwd)) {
+      const after = previous === null ? -1 : result.indexOf(previous);
+      result.splice(after + 1, 0, cwd);
+      present.add(cwd);
+    }
+    previous = cwd;
+  }
+  return result;
+}
+
 export function persistState(state: UiState): void {
   if (typeof window === "undefined") {
     return;
@@ -470,10 +519,12 @@ export function persistState(state: UiState): void {
     const expandedProjectCwds = Object.entries(state.projectExpandedById)
       .filter(([, expanded]) => expanded)
       .flatMap(([logicalKey]) => currentProjectCwdsByLogicalKey.get(logicalKey) ?? []);
-    const projectOrderCwds = state.projectOrder.flatMap((projectId) => {
-      const cwd = currentProjectCwdById.get(projectId);
-      return cwd ? [cwd] : [];
-    });
+    const projectOrderCwds = keepSavedPlacesOfAbsentProjects(
+      state.projectOrder.flatMap((projectId) => {
+        const cwd = currentProjectCwdById.get(projectId);
+        return cwd ? [cwd] : [];
+      }),
+    );
     const threadChangedFilesExpandedById = Object.fromEntries(
       Object.entries(state.threadChangedFilesExpandedById).flatMap(([threadId, turns]) => {
         const nextTurns = Object.fromEntries(
@@ -488,6 +539,7 @@ export function persistState(state: UiState): void {
         collapsedProjectCwds,
         expandedProjectCwds,
         projectOrderCwds,
+        pinnedProjectCwds: [...state.pinnedProjectCwds],
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpandedById,
         inboxProjectScopeKeys: [...state.inboxProjectScopeKeys],
@@ -496,6 +548,7 @@ export function persistState(state: UiState): void {
         childThreadFamilyOpenById: state.childThreadFamilyOpenById,
         collapsedInboxGroups: state.collapsedInboxGroups,
         inboxWrappedOpen: state.inboxWrappedOpen,
+        inboxGeneralChatsOpen: state.inboxGeneralChatsOpen,
         sidebarListOpen: state.sidebarListOpen,
       } satisfies PersistedUiState),
     );
@@ -657,11 +710,30 @@ export function syncProjects(state: UiState, projects: readonly SyncProjectInput
             orderedProjectIds.push(matchedProjectId);
           }
 
+          // A project arriving after the order exists, such as one on a computer
+          // that connected after this one, goes back to its saved place: in front
+          // of the first project saved after it. Appending would drop a dragged
+          // order every time computers connect in a different sequence.
+          const cwdByProjectId = new Map(
+            mappedProjects.map((project) => [project.id, project.cwd] as const),
+          );
           for (const project of mappedProjects) {
             if (usedProjectIds.has(project.id)) {
               continue;
             }
-            orderedProjectIds.push(project.id);
+            const savedRank = persistedOrderByCwd.get(project.cwd);
+            const before =
+              savedRank === undefined
+                ? -1
+                : orderedProjectIds.findIndex((id) => {
+                    const rank = persistedOrderByCwd.get(cwdByProjectId.get(id) ?? "");
+                    return rank !== undefined && rank > savedRank;
+                  });
+            if (before === -1) {
+              orderedProjectIds.push(project.id);
+            } else {
+              orderedProjectIds.splice(before, 0, project.id);
+            }
           }
 
           return orderedProjectIds;
@@ -1130,6 +1202,30 @@ export function reorderProjects(
   };
 }
 
+/**
+ * Puts the given checkouts (keys of `projectOrder`) first, in this order, and
+ * keeps the rest after them as they were. The project pickers pass the whole
+ * order they show, rearranged by a drag.
+ */
+export function setProjectOrder(state: UiState, order: readonly string[]): UiState {
+  const placed = new Set(order);
+  const projectOrder = [...order, ...state.projectOrder.filter((id) => !placed.has(id))];
+  return orderedListsEqual(state.projectOrder, projectOrder) ? state : { ...state, projectOrder };
+}
+
+/** Pins or unpins every folder of one project. */
+export function setProjectPinned(
+  state: UiState,
+  cwds: readonly string[],
+  pinned: boolean,
+): UiState {
+  const kept = state.pinnedProjectCwds.filter((cwd) => !cwds.includes(cwd));
+  const next = pinned ? [...kept, ...cwds] : kept;
+  return orderedListsEqual(state.pinnedProjectCwds, next)
+    ? state
+    : { ...state, pinnedProjectCwds: next };
+}
+
 /** Whether the list beside the rail is showing, floating or not. */
 export function selectSidebarListShown(state: UiLayoutState): boolean {
   return state.sidebarListFloats ? state.sidebarFloatingListOpen : state.sidebarListOpen;
@@ -1165,6 +1261,7 @@ interface UiStateStore extends UiState {
   setChildThreadFamilyOpen: (parentThreadKey: string, open: boolean) => void;
   setInboxGroupCollapsed: (groupKey: string, collapsed: boolean) => void;
   setInboxWrappedOpen: (open: boolean) => void;
+  setInboxGeneralChatsOpen: (open: boolean) => void;
   /** Shows or hides the list as it is now: beside the page, or floating over it. */
   setSidebarListShown: (open: boolean) => void;
   toggleSidebarListShown: () => void;
@@ -1182,6 +1279,8 @@ interface UiStateStore extends UiState {
     draggedProjectIds: readonly string[],
     targetProjectIds: readonly string[],
   ) => void;
+  setProjectOrder: (order: readonly string[]) => void;
+  setProjectPinned: (cwds: readonly string[], pinned: boolean) => void;
 }
 
 export const useUiStateStore = create<UiStateStore>((set) => ({
@@ -1218,6 +1317,10 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) =>
       state.inboxWrappedOpen === open ? state : { ...state, inboxWrappedOpen: open },
     ),
+  setInboxGeneralChatsOpen: (open) =>
+    set((state) =>
+      state.inboxGeneralChatsOpen === open ? state : { ...state, inboxGeneralChatsOpen: open },
+    ),
   setSidebarListShown: (open) => set((state) => setSidebarListShown(state, open)),
   toggleSidebarListShown: () =>
     set((state) => setSidebarListShown(state, !selectSidebarListShown(state))),
@@ -1238,6 +1341,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setProjectExpanded(state, projectId, expanded)),
   reorderProjects: (draggedProjectIds, targetProjectIds) =>
     set((state) => reorderProjects(state, draggedProjectIds, targetProjectIds)),
+  setProjectOrder: (order) => set((state) => setProjectOrder(state, order)),
+  setProjectPinned: (cwds, pinned) => set((state) => setProjectPinned(state, cwds, pinned)),
 }));
 
 useUiStateStore.subscribe((state) => debouncedPersistState.maybeExecute(state));

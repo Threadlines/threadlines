@@ -242,7 +242,7 @@ function skillItems(providers: ReadonlyArray<ServerProvider>): ReadonlyArray<Set
 
 /**
  * Settings are what people search Settings for: a shortcut named by the
- * query ("Terminal: Toggle" for "terminal") ranks below the settings of a
+ * query ("Toggle terminal" for "terminal") ranks below the settings of a
  * section the query names, and above settings that only mention it.
  */
 const SHORTCUT_WEIGHT = 0.3;

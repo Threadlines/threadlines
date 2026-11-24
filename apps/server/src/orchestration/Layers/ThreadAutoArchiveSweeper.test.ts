@@ -1,5 +1,8 @@
 import {
+  type CommandId,
+  EventId,
   type OrchestrationCommand,
+  type OrchestrationEvent,
   type OrchestrationSession,
   type OrchestrationThreadShell,
   ProjectId,
@@ -81,6 +84,7 @@ function thread(
     awaitedChildThreadCount: 0,
     pendingChildApproval: false,
     pendingSettingsChange: false,
+    pendingSecretRequest: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     cumulativeDiffStat: null,
@@ -105,10 +109,28 @@ function runningSession(threadId: ThreadId): OrchestrationSession {
 
 function makeSnapshotQuery(
   threads: readonly OrchestrationThreadShell[],
+  leadThreadId?: ThreadId,
+  /** A thread as read right before its archive, when it changed since the snapshot. */
+  latest: Readonly<Record<string, OrchestrationThreadShell>> = {},
 ): ProjectionSnapshotQueryShape {
   const shellSnapshot = {
     snapshotSequence: 1,
-    projects: [],
+    projects:
+      leadThreadId === undefined
+        ? []
+        : [
+            {
+              id: PROJECT_ID,
+              kind: "workspace" as const,
+              title: "Project",
+              workspaceRoot: "/repo/project",
+              defaultModelSelection: null,
+              scripts: [],
+              leadThreadId,
+              createdAt: daysAgo(60),
+              updatedAt: daysAgo(60),
+            },
+          ],
     threads: [...threads],
     updatedAt: new Date(NOW_MS).toISOString(),
   };
@@ -132,9 +154,15 @@ function makeSnapshotQuery(
     listThreadTurnOverlapsSince: () => Effect.succeed([]),
     listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
     listClaimedSettingsChanges: () => Effect.succeed([]),
+    listSecretRequests: () => Effect.succeed([]),
     listThreadShells: () => Effect.succeed([]),
-    getThreadShellById: () => Effect.succeed(Option.none()),
+    getThreadShellById: (threadId) =>
+      Effect.succeed(
+        Option.fromNullishOr(latest[threadId] ?? threads.find((entry) => entry.id === threadId)),
+      ),
     getTurnActivities: () => Effect.succeed([]),
+    getThreadMessage: () => Effect.succeed(Option.none()),
+    hasAssistantMessageForTurn: () => Effect.succeed(false),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };
 }
@@ -152,11 +180,35 @@ describe("ThreadAutoArchiveSweeper", () => {
   async function createHarness(input: {
     readonly inactiveDays: AutoArchiveInactiveThreadsDays;
     readonly threads: readonly OrchestrationThreadShell[];
+    readonly leadThreadId?: ThreadId;
     readonly failingThreadIds?: ReadonlySet<ThreadId>;
     readonly settingsShape?: ServerSettingsShape;
+    /** The children each parent's archive takes along, as the decider would decide. */
+    readonly takesAlong?: Readonly<Record<string, readonly string[]>>;
+    readonly latest?: Readonly<Record<string, OrchestrationThreadShell>>;
   }) {
     const dispatched: Array<Extract<OrchestrationCommand, { type: "thread.archive" }>> = [];
     const stopped: string[] = [];
+    // What the archives wrote: each child taken along gets its own archived event.
+    const written: OrchestrationEvent[] = [];
+    const writeArchived = (commandId: CommandId, threadId: string) =>
+      written.push({
+        sequence: written.length + 2,
+        eventId: EventId.make(`event-${written.length}`),
+        type: "thread.archived",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make(threadId),
+        occurredAt: new Date(NOW_MS).toISOString(),
+        commandId,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make(threadId),
+          archivedAt: new Date(NOW_MS).toISOString(),
+          updatedAt: new Date(NOW_MS).toISOString(),
+        },
+      } as OrchestrationEvent);
     let onDispatch: (() => void) | null = null;
     // Bounded so a regression that never dispatches fails in seconds instead
     // of hanging until the suite-wide timeout.
@@ -169,7 +221,8 @@ describe("ThreadAutoArchiveSweeper", () => {
         };
       });
     const orchestrationEngine: OrchestrationEngineShape = {
-      readEvents: () => Stream.empty,
+      readEvents: (fromSequenceExclusive) =>
+        Stream.fromIterable(written.filter((event) => event.sequence > fromSequenceExclusive)),
       readThreadEvents: () => Effect.succeed([]),
       getCommandReceipt: () => Effect.succeed(Option.none()),
       dispatch: (command) => {
@@ -194,7 +247,13 @@ describe("ThreadAutoArchiveSweeper", () => {
                     detail: "test dispatch failure",
                   }),
                 )
-              : Effect.succeed({ sequence: dispatched.length }),
+              : Effect.sync(() => {
+                  writeArchived(command.commandId, command.threadId);
+                  for (const child of input.takesAlong?.[command.threadId] ?? []) {
+                    writeArchived(command.commandId, child);
+                  }
+                  return { sequence: written.length + 1 };
+                }),
           ),
         );
       },
@@ -209,7 +268,12 @@ describe("ThreadAutoArchiveSweeper", () => {
             })
           : Layer.succeed(ServerSettingsService, input.settingsShape),
       ),
-      Layer.provideMerge(Layer.succeed(ProjectionSnapshotQuery, makeSnapshotQuery(input.threads))),
+      Layer.provideMerge(
+        Layer.succeed(
+          ProjectionSnapshotQuery,
+          makeSnapshotQuery(input.threads, input.leadThreadId, input.latest),
+        ),
+      ),
       Layer.provideMerge(Layer.succeed(OrchestrationEngineService, orchestrationEngine)),
     );
     runtime = ManagedRuntime.make(layer);
@@ -243,9 +307,10 @@ describe("ThreadAutoArchiveSweeper", () => {
     });
   });
 
-  it("stops the sessions of what it archives, and leaves a parent whose child is still at work", async () => {
+  it("stops the sessions of what it archives, and leaves a parent whose child is still at work or owes a check-back", async () => {
     const idleParent = thread("idle-parent");
     const busyParent = thread("busy-parent");
+    const waitingParent = thread("waiting-parent");
     const busyChild = thread("busy-child", {
       parentThreadId: busyParent.id,
       attachedToParent: true,
@@ -255,9 +320,34 @@ describe("ThreadAutoArchiveSweeper", () => {
       threads: [
         idleParent,
         thread("idle-child", { parentThreadId: idleParent.id, attachedToParent: true }),
+        // Its archive separates this one (a command still running in its
+        // terminal), so it keeps running.
+        thread("separated-child", {
+          parentThreadId: idleParent.id,
+          attachedToParent: true,
+          updatedAt: daysAgo(1),
+          latestUserMessageAt: daysAgo(1),
+        }),
         busyParent,
         { ...busyChild, session: runningSession(busyChild.id) },
+        waitingParent,
+        // Idle, but set to come back in its session, which the archive would stop.
+        thread("check-back-child", {
+          parentThreadId: waitingParent.id,
+          attachedToParent: true,
+          checkBacks: [
+            {
+              id: "cb-1",
+              participantId: null,
+              scheduledFor: new Date(NOW_MS + 20 * 60 * 1_000).toISOString(),
+              exact: true,
+              recurring: false,
+              durable: false,
+            },
+          ],
+        }),
       ],
+      takesAlong: { [idleParent.id]: ["idle-child"] },
     });
 
     await runtime!.runPromise(sweeper.sweepNow());
@@ -265,7 +355,51 @@ describe("ThreadAutoArchiveSweeper", () => {
       expect.arrayContaining([idleParent.id]),
     );
     expect(dispatched.map((command) => command.threadId)).not.toContain(busyParent.id);
+    expect(dispatched.map((command) => command.threadId)).not.toContain(waitingParent.id);
     expect(stopped).toEqual(expect.arrayContaining([idleParent.id, "idle-child"]));
+    expect(stopped).not.toContain("separated-child");
+    // Inactive long enough itself, but archiving it would end its check-back.
+    expect(dispatched.map((command) => command.threadId)).not.toContain("check-back-child");
+    expect(stopped).not.toContain("check-back-child");
+  });
+
+  it("stops counting a check-back once its time is long past, and checks again right before archiving", async () => {
+    const checkBack = (scheduledForMs: number) => ({
+      id: "cb-1",
+      participantId: null,
+      scheduledFor: new Date(scheduledForMs).toISOString(),
+      exact: true,
+      recurring: false,
+      durable: false,
+    });
+    const staleParent = thread("stale-parent");
+    const changedSince = thread("changed-since");
+    const { dispatched, sweeper } = await createHarness({
+      inactiveDays: 30,
+      threads: [
+        staleParent,
+        // Its runtime ended without the report landing: the entry is two days old.
+        thread("stale-check-back-child", {
+          parentThreadId: staleParent.id,
+          attachedToParent: true,
+          checkBacks: [checkBack(NOW_MS - 2 * 24 * 60 * 60 * 1_000)],
+        }),
+        changedSince,
+      ],
+      // Set a check-back after the sweep's snapshot was taken.
+      latest: {
+        [changedSince.id]: {
+          ...changedSince,
+          updatedAt: new Date(NOW_MS).toISOString(),
+          checkBacks: [checkBack(NOW_MS + 20 * 60 * 1_000)],
+        },
+      },
+    });
+
+    await runtime!.runPromise(sweeper.sweepNow());
+    const archivedIds = dispatched.map((command) => command.threadId);
+    expect(archivedIds).toContain(staleParent.id);
+    expect(archivedIds).not.toContain(changedSince.id);
   });
 
   it("does not archive protected or recently active threads", async () => {
@@ -274,10 +408,13 @@ describe("ThreadAutoArchiveSweeper", () => {
       inactiveDays: 30,
       threads: [
         thread("pinned", { pinnedAt: daysAgo(40) }),
+        // The project's lead chat: archiving it would end its role.
+        thread("lead"),
         { ...running, session: runningSession(running.id) },
         thread("approval", { hasPendingApprovals: true }),
         thread("recent", { updatedAt: daysAgo(2) }),
       ],
+      leadThreadId: ThreadId.make("lead"),
     });
 
     expect(await runtime!.runPromise(sweeper.sweepNow())).toBe(0);

@@ -30,9 +30,15 @@ import {
   TurnId,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
   OrchestrationThreadMove,
+  ThreadPendingMove,
   ThreadMovedFrom,
+  ThreadNativeSession,
+  ThreadMoveOutcome,
+  ThreadMoveRestore,
+  ThreadAdoptedFromLink,
   ThreadRemoteOrigin,
   OrchestrationOutsideWork,
   OutsideAgentRef,
@@ -41,10 +47,39 @@ import {
 } from "@threadlines/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
+
+const SideTurnList = Schema.Array(OrchestrationSideTurn);
+
+/**
+ * `projection_threads.side_turn`: the live side answers as a JSON array, or
+ * SQL null when none. A row written while a thread ran one side answer at a
+ * time holds a single object; it reads as a list of one, so no row is
+ * rewritten.
+ */
+export const ProjectionSideTurnsJson = Schema.fromJsonString(
+  Schema.Union([SideTurnList, OrchestrationSideTurn]),
+).pipe(
+  Schema.decodeTo(
+    Schema.toType(SideTurnList),
+    SchemaTransformation.transform({
+      decode: (stored) => ("sideTurnId" in stored ? [stored] : stored),
+      encode: (sideTurns) => sideTurns,
+    }),
+  ),
+);
+
+/** The column's value for a list: null when it is empty. */
+export const sideTurnsColumnValue = (
+  sideTurns: ReadonlyArray<typeof OrchestrationSideTurn.Encoded> | null | undefined,
+): string | null =>
+  sideTurns === null || sideTurns === undefined || sideTurns.length === 0
+    ? null
+    : JSON.stringify(sideTurns);
 
 export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
@@ -115,10 +150,11 @@ export const ProjectionThread = Schema.Struct({
    */
   participants: Schema.optional(Schema.Array(OrchestrationThreadParticipant)),
   /**
-   * The side answer in progress; see `OrchestrationThreadShell.sideTurn`.
-   * Optional so rows written before migration 059 decode.
+   * The side answers in progress; see `OrchestrationThreadShell.sideTurns`.
+   * Optional so rows written before migration 059 decode; null or absent:
+   * none. Stored in `side_turn` (ProjectionSideTurnsJson).
    */
-  sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
+  sideTurns: Schema.optional(Schema.NullOr(Schema.Array(OrchestrationSideTurn))),
   /**
    * Per agent, what its conversation has been told; see
    * `OrchestrationThread.roomContext`. Optional so rows written before
@@ -151,12 +187,15 @@ export const ProjectionThread = Schema.Struct({
   parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   parentTurnId: Schema.optional(Schema.NullOr(TurnId)),
   attachedToParent: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  stopsWithParent: Schema.optional(Schema.NullOr(NonNegativeInt)),
   parentAttachmentEpoch: Schema.optional(Schema.NullOr(NonNegativeInt)),
   handedBackAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   handedBackTurnId: Schema.optional(Schema.NullOr(TurnId)),
   archivedWithParentAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** See `OrchestrationThread.remoteOrigin`. Absent or null reads as none. */
   remoteOrigin: Schema.optional(Schema.NullOr(ThreadRemoteOrigin)),
+  /** See `OrchestrationThread.adoptedFromLink`. Absent or null reads as none. */
+  adoptedFromLink: Schema.optional(Schema.NullOr(ThreadAdoptedFromLink)),
   /** See `OrchestrationThread.scheduledRun`. Absent or null reads as none. */
   scheduledRun: Schema.optional(Schema.NullOr(ThreadScheduledRun)),
   /** See `OrchestrationThread.worktreeOrigin`. Absent or null reads as none. */
@@ -167,12 +206,20 @@ export const ProjectionThread = Schema.Struct({
   outsideWork: Schema.optional(Schema.NullOr(Schema.Array(OrchestrationOutsideWork))),
   /** See `OrchestrationThread.move`. Absent or null reads as none. */
   move: Schema.optional(Schema.NullOr(OrchestrationThreadMove)),
+  /** See `OrchestrationThread.pendingMove`. Absent or null reads as none. */
+  pendingMove: Schema.optional(Schema.NullOr(ThreadPendingMove)),
   /** See `OrchestrationThread.movedFrom`. Absent or null reads as none. */
   movedFrom: Schema.optional(Schema.NullOr(ThreadMovedFrom)),
+  /** See `OrchestrationThread.lastMoveOutcome`. Absent or null reads as none. */
+  lastMoveOutcome: Schema.optional(Schema.NullOr(ThreadMoveOutcome)),
+  /** See `OrchestrationThread.moveRestoreOwed`. Absent or null reads as none. */
+  moveRestoreOwed: Schema.optional(Schema.NullOr(ThreadMoveRestore)),
   /** See `OrchestrationThread.historySeedOwed`, as 0 or 1. Absent or null reads as 0. */
   historySeedOwed: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** See `OrchestrationThread.historySeedMessageId`. Absent or null reads as none. */
   historySeedMessageId: Schema.optional(Schema.NullOr(MessageId)),
+  /** See `OrchestrationThread.nativeSession`. Absent or null reads as none. */
+  nativeSession: Schema.optional(Schema.NullOr(ThreadNativeSession)),
   /** On a parent: see `OrchestrationThread.childRequests`. Absent or null reads as none. */
   childRequests: Schema.optional(Schema.NullOr(OrchestrationChildRequestState)),
   /**
@@ -182,6 +229,11 @@ export const ProjectionThread = Schema.Struct({
   settingsRequests: Schema.optional(
     Schema.NullOr(Schema.Array(OrchestrationSettingsChangeRequest)),
   ),
+  /**
+   * See `OrchestrationThread.secretRequests`. Optional so rows written before
+   * migration 121 decode; absent, null or empty reads as none.
+   */
+  secretRequests: Schema.optional(Schema.NullOr(Schema.Array(OrchestrationSecretRequest))),
   /**
    * The user's explicit inbox filing and its stamp. Optional so rows written
    * before migration 042 decode; absent reads as "never filed". Kept as two
@@ -221,6 +273,11 @@ export const ListProjectionThreadsByRemoteLinkInput = Schema.Struct({
 export type ListProjectionThreadsByRemoteLinkInput =
   typeof ListProjectionThreadsByRemoteLinkInput.Type;
 
+export const ListProjectionAdoptedChildrenInput = Schema.Struct({
+  parentThreadId: ThreadId,
+});
+export type ListProjectionAdoptedChildrenInput = typeof ListProjectionAdoptedChildrenInput.Type;
+
 /**
  * ProjectionThreadRepositoryShape - Service API for projected thread records.
  */
@@ -254,6 +311,19 @@ export interface ProjectionThreadRepositoryShape {
    */
   readonly listIdsByRemoteLink: (
     input: ListProjectionThreadsByRemoteLinkInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
+
+  /**
+   * Ids of `parentThreadId`'s children that it took back over a link when it
+   * moved here (`adoptedFromLink`), deleted ones included.
+   */
+  readonly listAdoptedChildIds: (
+    input: ListProjectionAdoptedChildrenInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
+
+  /** Ids of `parentThreadId`'s attached children that aren't deleted. */
+  readonly listAttachedChildIds: (
+    input: ListProjectionAdoptedChildrenInput,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
 
   /**

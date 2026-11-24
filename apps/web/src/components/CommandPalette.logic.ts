@@ -1,10 +1,6 @@
-import {
-  type EnvironmentId,
-  type KeybindingCommand,
-  type FilesystemBrowseEntry,
-  type MessageId,
-} from "@threadlines/contracts";
+import { type EnvironmentId, type KeybindingCommand, type MessageId } from "@threadlines/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
+import type { AppCommandId } from "@threadlines/shared/appCommands";
 import {
   analyzeSearchText,
   parseSearchQuery,
@@ -12,14 +8,13 @@ import {
 } from "@threadlines/shared/searchRanking";
 import { type ReactNode } from "react";
 import { sortThreads } from "../lib/threadSort";
-import {
-  CONNECTIONS_SETTINGS_SECTION_PATH,
-  type SettingsSectionPath,
-} from "./settings/settingsNavigation";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 
-export const RECENT_THREAD_LIMIT = 12;
-export const ITEM_ICON_CLASS = "size-4 text-muted-foreground/80";
+/** The opening list's recent threads. */
+export const RECENT_THREAD_LIMIT = 5;
+/** The opening list's suggested commands. */
+export const SUGGESTED_COMMAND_LIMIT = 4;
+export const ITEM_ICON_CLASS = "size-4 text-muted-foreground";
 export const ADDON_ICON_CLASS = "size-4";
 
 export interface CommandPaletteItem {
@@ -36,14 +31,28 @@ export interface CommandPaletteItem {
   readonly titleLeadingContent?: ReactNode;
   /** Optional content rendered inline after the title text (before the timestamp). */
   readonly titleTrailingContent?: ReactNode;
+  /**
+   * What it belongs to, on the right of the row: a thread's project, a
+   * setting's path ("General › Terminal"), a command's group while searching.
+   * Rows without one show their description there instead.
+   */
+  readonly whereLabel?: string;
+  /** What Enter does, for the footer ("Go to setting"); see `paletteRowVerb`. */
+  readonly verb?: string;
+  /** A row that shows more of a list ("Show all 12 threads"), drawn quieter than a result. */
+  readonly more?: boolean;
   readonly shortcutCommand?: KeybindingCommand;
   readonly threadRef?: Pick<SidebarThreadSummary, "environmentId" | "id">;
   readonly threadContentMatch?: ThreadContentSearchMatch & { readonly query: string };
+  /** A registered command (or one item of a list command), resolved again by id when it runs. */
+  readonly command?: { readonly id: AppCommandId; readonly itemId?: string };
 }
 
 export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly kind: "action";
   readonly keepOpen?: boolean;
+  /** Closes the palette and opens another dialog, which then owns where focus returns. */
+  readonly opensDialog?: boolean;
   readonly run: () => Promise<void>;
 }
 
@@ -69,40 +78,8 @@ export interface CommandPaletteView {
     EnvironmentId,
     ReadonlyArray<Project["id"]>
   >;
-}
-
-export type CommandPaletteMode = "root" | "root-browse" | "submenu" | "submenu-browse";
-
-export function filterBrowseEntries(input: {
-  browseEntries: ReadonlyArray<FilesystemBrowseEntry>;
-  browseFilterQuery: string;
-  highlightedItemValue: string | null;
-}): {
-  filteredEntries: FilesystemBrowseEntry[];
-  highlightedEntry: FilesystemBrowseEntry | null;
-  exactEntry: FilesystemBrowseEntry | null;
-} {
-  const lowerFilter = input.browseFilterQuery.toLowerCase();
-  const showHidden = input.browseFilterQuery.startsWith(".");
-
-  const filteredEntries = input.browseEntries.filter(
-    (entry) =>
-      entry.name.toLowerCase().startsWith(lowerFilter) &&
-      (showHidden || !entry.name.startsWith(".")),
-  );
-
-  let highlightedEntry: FilesystemBrowseEntry | null = null;
-  if (input.highlightedItemValue?.startsWith("browse:")) {
-    const highlightedPath = input.highlightedItemValue.slice("browse:".length);
-    highlightedEntry = filteredEntries.find((entry) => entry.fullPath === highlightedPath) ?? null;
-  }
-
-  const exactEntry =
-    input.browseFilterQuery.length > 0
-      ? (filteredEntries.find((entry) => entry.name === input.browseFilterQuery) ?? null)
-      : null;
-
-  return { filteredEntries, highlightedEntry, exactEntry };
+  /** A list command's page: its rows are drawn from the command's current items. */
+  readonly listCommandId?: AppCommandId;
 }
 
 export function normalizeSearchText(value: string): string {
@@ -184,6 +161,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
         searchTerms: [thread.title, projectTitle ?? ``, thread.branch ?? ``],
         title: thread.title,
         description: descriptionParts.join(` · `),
+        ...(projectTitle ? { whereLabel: projectTitle } : {}),
         timestampAt: thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
         icon: typeof input.icon === "function" ? input.icon(thread) : input.icon,
       },
@@ -274,9 +252,24 @@ function rankCommandPaletteItemMatch(
   // The visible title is always searchable, and outranks the hidden
   // searchTerms: typing exactly what an item says on screen must find it.
   // Titles can be arbitrary nodes; only plain-string ones can be ranked.
-  const terms = [typeof item.title === "string" ? item.title : "", ...item.searchTerms].filter(
-    (term) => term.length > 0,
+  return rankSearchTerms(
+    [typeof item.title === "string" ? item.title : "", ...item.searchTerms],
+    item.threadContentMatch?.score ?? null,
+    query,
   );
+}
+
+/**
+ * How well a row's terms (title first) and its message match, if any, fit a
+ * query with `searchRanking`: higher is better, -Infinity for no match. The
+ * thread search's matcher, shared by the palette's own search.
+ */
+export function rankSearchTerms(
+  rawTerms: ReadonlyArray<string>,
+  messageScore: number | null,
+  query: ParsedSearchQuery,
+): number {
+  const terms = rawTerms.filter((term) => term.length > 0);
   let bestRank = Number.NEGATIVE_INFINITY;
 
   for (const [index, field] of terms.entries()) {
@@ -294,8 +287,8 @@ function rankCommandPaletteItemMatch(
     bestRank = Math.max(bestRank, SEARCH_COMBINED_FIELD_RANK_BASE - combinedAnalysis.score);
   }
 
-  if (item.threadContentMatch) {
-    bestRank = Math.max(bestRank, SEARCH_THREAD_BODY_RANK_BASE - item.threadContentMatch.score);
+  if (messageScore !== null) {
+    bestRank = Math.max(bestRank, SEARCH_THREAD_BODY_RANK_BASE - messageScore);
   }
 
   return bestRank;
@@ -373,118 +366,38 @@ export function filterCommandPaletteGroups(input: {
   });
 }
 
-export function buildBrowseGroups(input: {
-  browseEntries: ReadonlyArray<FilesystemBrowseEntry>;
-  browseQuery: string;
-  canBrowseUp: boolean;
-  upIcon: ReactNode;
-  directoryIcon: ReactNode;
-  browseUp: () => void;
-  browseTo: (name: string) => void;
-}): CommandPaletteGroup[] {
-  const items: CommandPaletteActionItem[] = [];
-
-  if (input.canBrowseUp) {
-    items.push({
-      kind: "action",
-      value: "browse:up",
-      searchTerms: [input.browseQuery, ".."],
-      title: "..",
-      icon: input.upIcon,
-      keepOpen: true,
-      run: async () => {
-        input.browseUp();
-      },
-    });
-  }
-
-  for (const entry of input.browseEntries) {
-    items.push({
-      kind: "action",
-      value: `browse:${entry.fullPath}`,
-      searchTerms: [input.browseQuery, entry.fullPath, entry.name],
-      title: entry.name,
-      icon: input.directoryIcon,
-      keepOpen: true,
-      run: async () => {
-        input.browseTo(entry.name);
-      },
-    });
-  }
-
-  return [{ value: "directories", label: "Directories", items }];
-}
-
-export function getCommandPaletteMode(input: {
-  currentView: CommandPaletteView | null;
-  isBrowsing: boolean;
-}): CommandPaletteMode {
-  if (input.currentView) {
-    return input.isBrowsing ? "submenu-browse" : "submenu";
-  }
-  return input.isBrowsing ? "root-browse" : "root";
-}
-
-export function buildRootGroups(input: {
-  actionItems: ReadonlyArray<CommandPaletteActionItem | CommandPaletteSubmenuItem>;
+/**
+ * What the palette shows before anything is typed: where you'd go (the
+ * threads you were in), then the commands you use most and a way into every
+ * command.
+ */
+export function buildOpeningGroups(input: {
   recentThreadItems: ReadonlyArray<CommandPaletteActionItem>;
+  suggestedItems: ReadonlyArray<CommandPaletteActionItem | CommandPaletteSubmenuItem>;
+  allCommandsItem: CommandPaletteActionItem;
 }): CommandPaletteGroup[] {
   const groups: CommandPaletteGroup[] = [];
-  if (input.actionItems.length > 0) {
-    groups.push({ value: "actions", label: "Actions", items: input.actionItems });
-  }
   if (input.recentThreadItems.length > 0) {
-    groups.push({
-      value: "recent-threads",
-      label: "Recent Threads",
-      items: input.recentThreadItems,
-    });
+    groups.push({ value: "recent-threads", label: "Recent", items: input.recentThreadItems });
   }
+  groups.push({
+    value: "suggested",
+    label: "Suggested",
+    items: [...input.suggestedItems, input.allCommandsItem],
+  });
   return groups;
 }
 
-export function getCommandPaletteInputPlaceholder(mode: CommandPaletteMode): string {
-  switch (mode) {
-    case "root":
-      return "Search commands, projects, and threads...";
-    case "root-browse":
-      return "Enter project path (e.g. ~/projects/my-app)";
-    case "submenu":
-      return "Search...";
-    case "submenu-browse":
-      return "Enter path (e.g. ~/projects/my-app)";
-  }
+export function getCommandPaletteInputPlaceholder(isSubmenu: boolean): string {
+  return isSubmenu ? "Search..." : "Search threads, commands and settings";
 }
 
-/**
- * Copy for the add-project action when there is no environment to browse.
- *
- * In the hosted browser that state is not a failure, it is the setup step the
- * visitor has not done yet: projects live on the paired computer, so there is
- * nothing to browse until one exists. Say that and point at pairing instead of
- * reporting a bare "no environment" error. A desktop session that somehow has
- * no environment is a real fault, so it keeps the error wording.
- */
-export function resolveAddProjectUnavailableGuidance(input: { readonly isHostedStatic: boolean }): {
-  readonly type: "error" | "warning";
-  readonly title: string;
-  readonly description: string;
-  readonly action: { readonly label: string; readonly to: SettingsSectionPath } | null;
-} {
-  if (!input.isHostedStatic) {
-    return {
-      type: "error",
-      title: "Can't browse projects",
-      description: "No computer is available.",
-      action: null,
-    };
-  }
-
-  return {
-    type: "warning",
-    title: "Pair a computer to add projects",
-    description:
-      "Threadlines browses projects on the computer running the desktop app. Pair one from Connections, then add a project.",
-    action: { label: "Open Connections", to: CONNECTIONS_SETTINGS_SECTION_PATH },
-  };
+/** What Enter does with a row, as the footer says it. */
+export function paletteRowVerb(item: CommandPaletteActionItem | CommandPaletteSubmenuItem): string {
+  if (item.verb) return item.verb;
+  if (item.more) return "Show";
+  if (item.threadRef) return "Open thread";
+  if (item.kind === "submenu") return "Show";
+  if (item.command) return "Run";
+  return "Open";
 }

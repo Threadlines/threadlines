@@ -7,10 +7,16 @@
  * "Start in" says (`placeDraftFromSettings` when it is not known yet).
  */
 import {
+  DEFAULT_MODEL,
+  DEFAULT_NEW_THREAD_RUNTIME_MODE,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
   type EnvironmentId,
   type ModelSelection,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ProviderInteractionMode,
   type NewThreadRoomAgent,
-  type ProviderInstanceId,
+  type RuntimeMode,
   type ScopedProjectRef,
   type ServerConfig,
   type ServerProvider,
@@ -18,6 +24,7 @@ import {
   type ThreadEnvMode,
   ThreadParticipantId,
 } from "@threadlines/contracts";
+import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
 import { roomsEnabled } from "@threadlines/shared/serverSettings";
 import { nextRoomAgentName } from "@threadlines/shared/threadParticipants";
 
@@ -39,9 +46,11 @@ import { randomUUID } from "./lib/utils";
 import { deriveLogicalProjectKeyFromSettings } from "./logicalProject";
 import { getClientSettings } from "./hooks/useSettings";
 import { selectProjectByRef, useStore } from "./store";
+import { resolveAppModelSelectionForInstance } from "./modelSelection";
 import {
   deriveDisplayProviderInstanceEntries,
   type ProviderInstanceEntry,
+  resolveComposerProviderSelection,
 } from "./providerInstances";
 import { roomModelName } from "./rooms";
 import { getServerConfig, onServerConfigUpdated, useServerConfig } from "./rpc/serverState";
@@ -74,6 +83,8 @@ export function canRunOnComputer(
 export function resolveNewThreadDefaults(config: ComputerConfig): {
   readonly modelSelection: ModelSelection | null;
   readonly roomAgents: ReadonlyArray<NewThreadRoomAgent>;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
 } {
   const { settings, providers } = config;
   const modelSelection =
@@ -86,7 +97,12 @@ export function resolveNewThreadDefaults(config: ComputerConfig): {
         canRunOnComputer(providers, agent.modelSelection.instanceId),
       )
     : [];
-  return { modelSelection, roomAgents };
+  return {
+    modelSelection,
+    roomAgents,
+    runtimeMode: settings.newThreadRuntimeMode,
+    interactionMode: settings.newThreadInteractionMode,
+  };
 }
 
 /**
@@ -198,8 +214,35 @@ function draftActiveSelection(draftId: DraftId): ModelSelection | null {
   );
 }
 
+/**
+ * The agent a new thread on this computer runs with when no default is chosen
+ * and nothing was picked yet: what a fresh draft's composer settles on. That
+ * is resolveComposerProviderSelection over the composer's own entry order
+ * (Codex when it is on, else the first agent that is) at that agent's default
+ * model; with no providers listed yet (still loading, or no config), the
+ * draft's offline fallback, Codex at DEFAULT_MODEL.
+ */
+export function fallbackNewThreadModelSelection(config: ComputerConfig | null): ModelSelection {
+  const offline = { instanceId: ProviderInstanceId.make("codex"), model: DEFAULT_MODEL };
+  const entries = config === null ? [] : deriveDisplayProviderInstanceEntries(config.providers);
+  if (config === null || entries.length === 0) return offline;
+  const { instanceId } = resolveComposerProviderSelection({
+    entries,
+    candidates: [],
+    lockedProvider: null,
+    fallbackDriverKind: ProviderDriverKind.make("codex"),
+  });
+  const model = resolveAppModelSelectionForInstance(
+    instanceId,
+    { ...config.settings, ...getClientSettings() },
+    config.providers,
+    null,
+  );
+  return { instanceId, model: model ?? DEFAULT_MODEL };
+}
+
 /** The model last picked on this device, if any. */
-function lastUsedSelection(): ModelSelection | null {
+export function lastUsedSelection(): ModelSelection | null {
   const state = useComposerDraftStore.getState();
   const active = state.stickyActiveProvider;
   return active === null ? null : (state.stickyModelSelectionByProvider[active] ?? null);
@@ -211,9 +254,12 @@ function lastUsedSelection(): ModelSelection | null {
  */
 function draftSetup(draftId: DraftId) {
   const state = useComposerDraftStore.getState();
+  const session = state.getDraftSession(draftId);
   return {
     composer: state.getComposerDraft(draftId),
-    room: state.getDraftSession(draftId)?.room,
+    room: session?.room,
+    runtimeMode: session?.runtimeMode,
+    interactionMode: session?.interactionMode,
   };
 }
 
@@ -236,10 +282,21 @@ let lastRequest = 0;
 export async function applyNewThreadDefaultsToDraft(
   draftId: DraftId,
   environmentId: EnvironmentId,
-  options?: { readonly keepModel?: boolean },
+  options?: {
+    readonly keepModel?: boolean;
+    readonly keepRuntimeMode?: boolean;
+    readonly keepInteractionMode?: boolean;
+  },
 ): Promise<void> {
   const request = ++lastRequest;
   latestRequestByDraft.set(draftId, request);
+  const keepModel = options?.keepModel === true;
+  const keepRuntimeMode = options?.keepRuntimeMode === true;
+  const keepInteractionMode = options?.keepInteractionMode === true;
+  // Access and Build/Plan follow the computer's settings without a timeout
+  // (like Start in): typing in the prompt must not stop late settings from
+  // applying the computer's access level, while an explicit pick stands.
+  applyModesFromSettings(draftId, environmentId, { keepRuntimeMode, keepInteractionMode });
   const arrivedLate = readComputerConfig(environmentId) === null;
   if (arrivedLate) {
     // The device's last used model needs no settings: it applies now, so the
@@ -267,8 +324,11 @@ export async function applyNewThreadDefaultsToDraft(
     // Gone, moved, being sent, or worked on while the settings were on their way.
     return;
   }
-  const keepModel = options?.keepModel === true;
-  const applyOptions = keepModel ? { keepModel: true } : undefined;
+  const applyOptions = {
+    ...(keepModel ? { keepModel: true } : {}),
+    keepRuntimeMode: true,
+    keepInteractionMode: true,
+  };
 
   if (config === null) {
     store.applyNewThreadDefaults(draftId, null, applyOptions);
@@ -290,7 +350,10 @@ export async function applyNewThreadDefaultsToDraft(
   }
   store.applyNewThreadDefaults(
     draftId,
-    { modelSelection: defaults.modelSelection, room },
+    {
+      modelSelection: defaults.modelSelection,
+      room,
+    },
     applyOptions,
   );
 }
@@ -304,11 +367,32 @@ interface PendingPlacement {
   readonly placementFor: (startIn: ThreadEnvMode) => NewThreadPlacement;
 }
 
+/** A draft waiting for its computer's default Access and Build/Plan settings. */
+interface PendingModes {
+  readonly environmentId: EnvironmentId;
+  readonly openedRuntimeMode: RuntimeMode;
+  readonly openedInteractionMode: ProviderInteractionMode;
+  readonly keepRuntimeMode: boolean;
+  readonly keepInteractionMode: boolean;
+}
+
 const pendingPlacements = new Map<DraftId, PendingPlacement>();
+const pendingModes = new Map<DraftId, PendingModes>();
 /** Set while any draft waits: one watch on the computers' settings for all. */
 let stopWatchingSettings: (() => void) | null = null;
 
-function settlePendingPlacements(): void {
+function ensureWatchingSettings(): void {
+  if (stopWatchingSettings !== null) return;
+  const stops = [
+    onServerConfigUpdated(settlePendingSettings),
+    useSavedEnvironmentRuntimeStore.subscribe(settlePendingSettings),
+  ];
+  stopWatchingSettings = () => {
+    for (const stop of stops) stop();
+  };
+}
+
+function settlePendingSettings(): void {
   const store = useComposerDraftStore.getState();
   for (const [draftId, pending] of pendingPlacements) {
     const session = store.getDraftSession(draftId);
@@ -334,10 +418,103 @@ function settlePendingPlacements(): void {
       pending.placementFor(config.settings.defaultThreadEnvMode),
     );
   }
-  if (pendingPlacements.size === 0) {
+  for (const [draftId, pending] of pendingModes) {
+    const session = store.getDraftSession(draftId);
+    if (
+      session === null ||
+      session.environmentId !== pending.environmentId ||
+      (session.promotedTo ?? null) !== null
+    ) {
+      pendingModes.delete(draftId);
+      continue;
+    }
+    const composer = store.getComposerDraft(draftId);
+    const keepRuntimeMode =
+      pending.keepRuntimeMode ||
+      composer?.runtimeMode != null ||
+      session.runtimeMode !== pending.openedRuntimeMode;
+    const keepInteractionMode =
+      pending.keepInteractionMode ||
+      composer?.interactionMode != null ||
+      session.interactionMode !== pending.openedInteractionMode;
+    if (keepRuntimeMode && keepInteractionMode) {
+      pendingModes.delete(draftId);
+      continue;
+    }
+    const config = readComputerConfig(pending.environmentId);
+    if (config === null) {
+      continue;
+    }
+    pendingModes.delete(draftId);
+    const defaults = resolveNewThreadDefaults(config);
+    store.applyNewThreadDefaults(
+      draftId,
+      {
+        modelSelection: null,
+        room: session.room ?? null,
+        runtimeMode: defaults.runtimeMode,
+        interactionMode: defaults.interactionMode,
+      },
+      {
+        keepModel: true,
+        keepRuntimeMode,
+        keepInteractionMode,
+      },
+    );
+  }
+  if (pendingPlacements.size === 0 && pendingModes.size === 0) {
     stopWatchingSettings?.();
     stopWatchingSettings = null;
   }
+}
+
+/**
+ * Applies a computer's default Access and Build/Plan settings to a draft: now
+ * when the settings are known, else when they arrive (startup or a connecting
+ * computer). Typing in the prompt never blocks them; an explicit pick does.
+ */
+function applyModesFromSettings(
+  draftId: DraftId,
+  environmentId: EnvironmentId,
+  options: { readonly keepRuntimeMode: boolean; readonly keepInteractionMode: boolean },
+): void {
+  const store = useComposerDraftStore.getState();
+  const session = store.getDraftSession(draftId);
+  if (session === null || (options.keepRuntimeMode && options.keepInteractionMode)) {
+    pendingModes.delete(draftId);
+    settlePendingSettings();
+    return;
+  }
+  const config = readComputerConfig(environmentId);
+  if (config !== null) {
+    pendingModes.delete(draftId);
+    const defaults = resolveNewThreadDefaults(config);
+    store.applyNewThreadDefaults(
+      draftId,
+      {
+        modelSelection: null,
+        room: session.room ?? null,
+        runtimeMode: defaults.runtimeMode,
+        interactionMode: defaults.interactionMode,
+      },
+      {
+        keepModel: true,
+        keepRuntimeMode: options.keepRuntimeMode,
+        keepInteractionMode: options.keepInteractionMode,
+      },
+    );
+    settlePendingSettings();
+    return;
+  }
+  pendingModes.set(draftId, {
+    environmentId,
+    openedRuntimeMode: session.runtimeMode,
+    openedInteractionMode: session.interactionMode,
+    keepRuntimeMode: options.keepRuntimeMode,
+    keepInteractionMode: options.keepInteractionMode,
+  });
+  ensureWatchingSettings();
+  settlePendingSettings();
 }
 
 /**
@@ -367,35 +544,55 @@ export function placeDraftFromSettings(
       },
       placementFor,
     });
-    if (stopWatchingSettings === null) {
-      const stops = [
-        onServerConfigUpdated(settlePendingPlacements),
-        useSavedEnvironmentRuntimeStore.subscribe(settlePendingPlacements),
-      ];
-      stopWatchingSettings = () => {
-        for (const stop of stops) stop();
-      };
-    }
+    ensureWatchingSettings();
   }
-  settlePendingPlacements();
+  settlePendingSettings();
 }
 
 /**
  * A draft moved to another computer before its first message takes that
  * computer's room and "Start in" (the move leaves the old computer's checkout
- * behind), and its model too unless the user picked the model.
+ * behind), and its model, mode and access too unless the user picked them.
  */
 export function applyMovedDraftDefaults(
   draftId: DraftId,
   toEnvironmentId: EnvironmentId,
 ): Promise<void> {
-  const picked = useComposerDraftStore.getState().getComposerDraft(draftId)?.modelPicked === true;
+  const store = useComposerDraftStore.getState();
+  const draft = store.getComposerDraft(draftId);
+  const session = store.getDraftSession(draftId);
+  const pickedModel = draft?.modelPicked === true;
+  const pickedRuntimeMode = draft?.runtimeMode != null;
+  const pickedInteractionMode = draft?.interactionMode != null;
+  // Moving an un-picked draft to a computer whose settings have not arrived yet
+  // must not carry Full access (or an un-picked Plan default) across computers.
+  if (session !== null && readComputerConfig(toEnvironmentId) === null) {
+    const safeRuntimeMode = !pickedRuntimeMode
+      ? saferRuntimeMode(session.runtimeMode, DEFAULT_NEW_THREAD_RUNTIME_MODE)
+      : session.runtimeMode;
+    const safeInteractionMode = !pickedInteractionMode
+      ? DEFAULT_PROVIDER_INTERACTION_MODE
+      : session.interactionMode;
+    if (
+      safeRuntimeMode !== session.runtimeMode ||
+      safeInteractionMode !== session.interactionMode
+    ) {
+      store.setDraftThreadContext(draftId, {
+        runtimeMode: safeRuntimeMode,
+        interactionMode: safeInteractionMode,
+      });
+    }
+  }
   placeDraftFromSettings(draftId, toEnvironmentId, (startIn) => ({
     branch: null,
     worktreePath: null,
     envMode: startIn,
   }));
-  return applyNewThreadDefaultsToDraft(draftId, toEnvironmentId, { keepModel: picked });
+  return applyNewThreadDefaultsToDraft(draftId, toEnvironmentId, {
+    keepModel: pickedModel,
+    keepRuntimeMode: pickedRuntimeMode,
+    keepInteractionMode: pickedInteractionMode,
+  });
 }
 
 /**

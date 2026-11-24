@@ -130,6 +130,21 @@ import Migration0107 from "./Migrations/107_ThemeEntryOffer.ts";
 import Migration0108 from "./Migrations/108_ThemePick.ts";
 import Migration0109 from "./Migrations/109_ThemeShowcaseTakenBack.ts";
 import Migration0110 from "./Migrations/110_ThreadWorktreeOrigin.ts";
+import Migration0111 from "./Migrations/111_ThreadPendingMove.ts";
+import Migration0112 from "./Migrations/112_ThreadMoveBatches.ts";
+import Migration0113 from "./Migrations/113_LinkMoveStagedApproval.ts";
+import Migration0114 from "./Migrations/114_LinkMoveAbortCode.ts";
+import Migration0115 from "./Migrations/115_ThreadNativeSession.ts";
+import Migration0116 from "./Migrations/116_ProjectLeadThread.ts";
+import Migration0117 from "./Migrations/117_ThreadMoveCarry.ts";
+import Migration0118 from "./Migrations/118_SessionStopRequestedTurn.ts";
+import Migration0119 from "./Migrations/119_LinkMoveFamilies.ts";
+import Migration0120 from "./Migrations/120_ThreadAdoptedFromLink.ts";
+import Migration0121 from "./Migrations/121_ProjectionThreadSecretRequests.ts";
+import Migration0122 from "./Migrations/122_ProjectBriefs.ts";
+import Migration0123 from "./Migrations/123_ProjectNotes.ts";
+import Migration0124 from "./Migrations/124_ChildAccessAndStopColumns.ts";
+import Migration0125 from "./Migrations/125_ThemeShowcaseUpdateBaseSha.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -252,6 +267,21 @@ export const migrationEntries = [
   [108, "ThemePick", Migration0108],
   [109, "ThemeShowcaseTakenBack", Migration0109],
   [110, "ThreadWorktreeOrigin", Migration0110],
+  [111, "ThreadPendingMove", Migration0111],
+  [112, "ThreadMoveBatches", Migration0112],
+  [113, "LinkMoveStagedApproval", Migration0113],
+  [114, "LinkMoveAbortCode", Migration0114],
+  [115, "ThreadNativeSession", Migration0115],
+  [116, "ProjectLeadThread", Migration0116],
+  [117, "ThreadMoveCarry", Migration0117],
+  [118, "SessionStopRequestedTurn", Migration0118],
+  [119, "LinkMoveFamilies", Migration0119],
+  [120, "ThreadAdoptedFromLink", Migration0120],
+  [121, "ProjectionThreadSecretRequests", Migration0121],
+  [122, "ProjectBriefs", Migration0122],
+  [123, "ProjectNotes", Migration0123],
+  [124, "ChildAccessAndStopColumns", Migration0124],
+  [125, "ThemeShowcaseUpdateBaseSha", Migration0125],
 ] as const;
 
 /** Highest id in the full registry, so the "n of total" count is the real total. */

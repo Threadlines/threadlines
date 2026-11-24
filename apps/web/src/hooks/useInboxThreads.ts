@@ -42,13 +42,16 @@ import {
   useStore,
 } from "../store";
 import type { Project, SidebarThreadSummary } from "../types";
+import { leadThreadKeysOf } from "../leadChat";
 import { useUiStateStore } from "../uiStateStore";
-import { useRelativeTimeTick } from "./useRelativeTimeTick";
 import { useSettings } from "./useSettings";
+import { useSharedTimeTick } from "./useSharedTimeTick";
 import { useSidebarProjectSnapshots } from "./useSidebarProjectSnapshots";
 
 // The queued-turn grace window is measured in minutes, so a coarse clock is
 // enough to keep "can this be marked done" honest without re-rendering often.
+// It is shared: the sidebar, the family tabs and the rest file threads at the
+// same moment, so a child that leaves its family leaves everywhere at once.
 const INBOX_CLOCK_INTERVAL_MS = 30_000;
 
 /** One inbox row's thread, filed and labelled the way the sidebar draws it. */
@@ -70,6 +73,8 @@ export interface InboxEntry {
   deliveredAt: string | null;
   /** Wrapped by the user's own word rather than a wrap-up rule. */
   wrappedByUser: boolean;
+  /** Its project's lead chat (docs/design/lead-chat.md); see `staysOnTop`. */
+  isLead: boolean;
 }
 
 /** A general chat with its seen-aware status, and when the user last saw it. */
@@ -96,6 +101,8 @@ export interface InboxThreads {
   /** The pull requests each inbox thread's agent opened on other branches, where it has any. */
   readonly linkedPullRequestsByThreadKey: ReadonlyMap<string, readonly ThreadPullRequest[]>;
   readonly nowIso: string;
+  /** Scoped keys of every project's lead chat. */
+  readonly leadThreadKeys: ReadonlySet<string>;
   readonly entries: InboxEntry[];
   readonly generalChatEntries: InboxGeneralChatEntry[];
 }
@@ -139,7 +146,7 @@ export function useInboxThreads(): InboxThreads {
   const wrapUpOnPullRequestSettled = useSettings((s) => s.wrapUpThreadsOnPullRequestSettled);
   const wrapUpChildThreadsOnFinish = useSettings((s) => s.wrapUpChildThreadsOnFinish);
   const wrapUpIdleThreads = useSettings((s) => s.wrapUpIdleThreads);
-  const nowMs = useRelativeTimeTick(INBOX_CLOCK_INTERVAL_MS);
+  const nowMs = useSharedTimeTick(INBOX_CLOCK_INTERVAL_MS);
   const nowIso = useMemo(() => new Date(nowMs).toISOString(), [nowMs]);
 
   const physicalToLogicalKey = useMemo(
@@ -304,9 +311,15 @@ export function useInboxThreads(): InboxThreads {
     settledPullRequestEntries,
   ]);
 
+  const leadThreadKeys = useMemo(
+    () => leadThreadKeysOf(projects, sidebarThreads),
+    [projects, sidebarThreads],
+  );
+
   const entries = useMemo<InboxEntry[]>(
     () =>
       fileInboxThreads({
+        leadThreadKeys,
         threads: inboxThreads,
         seenSources: { seenThreadOverlays, threadSeedVisitedAtById },
         doneOverlays: doneThreadOverlays,
@@ -337,20 +350,23 @@ export function useInboxThreads(): InboxThreads {
           isDone,
           // A pinned row never offers the wrap-up check: the pin says "keep
           // this here", and a hover affordance that files it away contradicts
-          // it. Unpinning brings the action back.
+          // it. Unpinning brings the action back. A lead chat is kept the same way.
           canMarkDone:
             thread.pinnedAt === null &&
+            !leadThreadKeys.has(threadKey) &&
             canMarkThreadDone({ ...thread, lastVisitedAt }, { now: nowIso }),
           doneAt: isDone ? resolveDoneTimestamp(thread, override) : null,
           seenAt,
           settledAt: resolveDoneTimestamp(thread, null),
           deliveredAt: thread.handedBackAt ?? null,
           wrappedByUser: isDone && freshThreadDoneOverride(thread, override)?.state === "done",
+          isLead: leadThreadKeys.has(threadKey),
         };
       }),
     [
       doneThreadOverlays,
       inboxThreads,
+      leadThreadKeys,
       linkedPullRequestsByThreadKey,
       nowIso,
       pullRequestByThreadKey,
@@ -392,6 +408,7 @@ export function useInboxThreads(): InboxThreads {
     pullRequestByThreadKey,
     linkedPullRequestsByThreadKey,
     nowIso,
+    leadThreadKeys,
     entries,
     generalChatEntries,
   };

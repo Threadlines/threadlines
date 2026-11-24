@@ -55,7 +55,13 @@ import {
   type ThreadId,
   TurnId,
 } from "@threadlines/contracts";
-import { remoteChildOf, sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
+import {
+  effectiveRequestCeiling,
+  isWidestMode,
+  olderPeerCeilingRefusal,
+  remoteChildOf,
+  sameRemoteThreadFiling,
+} from "@threadlines/shared/childThreads";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -72,6 +78,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { childReportMessageId } from "../orchestration/childThreadDecisions.ts";
+import { familyWorkStopped } from "../orchestration/threadMoveCarry.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
 import { ComputerLinkClient, type ComputerLinkUnavailableError } from "./ComputerLinkClient.ts";
@@ -97,14 +104,22 @@ export class RemoteChildReactor extends Context.Service<
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 /** What the reactor needs of a parent, read from its stored row. */
-type Parent = Pick<OrchestrationThread, "id" | "title" | "participants" | "childRequests"> & {
-  readonly archivedAt: string | null;
-  readonly deletedAt: string | null;
-};
+type Parent = Pick<
+  OrchestrationThread,
+  "id" | "title" | "runtimeMode" | "interactionMode" | "participants" | "childRequests"
+> &
+  Pick<OrchestrationThread, "move" | "pendingMove"> & {
+    readonly archivedAt: string | null;
+    readonly deletedAt: string | null;
+  };
 
-/** Its children there, while it still shows them: neither archived nor deleted. */
+/**
+ * Its children there, while it still shows them: neither archived nor
+ * deleted, nor stopped for its move (familyWorkStopped, docs/design/fleet.md,
+ * Part 3f, (g)): a parent that moved away no longer knows them.
+ */
 const childrenFollowed = (parent: Parent, environmentId: string) =>
-  parent.deletedAt !== null || parent.archivedAt !== null
+  parent.deletedAt !== null || parent.archivedAt !== null || familyWorkStopped(parent)
     ? []
     : (parent.childRequests.remoteChildren ?? []).filter(
         (child) => child.environmentId === environmentId,
@@ -237,8 +252,12 @@ const make = Effect.gen(function* () {
           : {
               id: found.value.threadId,
               title: found.value.title,
+              runtimeMode: found.value.runtimeMode,
+              interactionMode: found.value.interactionMode,
               participants: found.value.participants ?? [],
               childRequests: found.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+              move: found.value.move ?? null,
+              pendingMove: found.value.pendingMove ?? null,
               archivedAt: found.value.archivedAt,
               deletedAt: found.value.deletedAt,
             },
@@ -522,7 +541,8 @@ const make = Effect.gen(function* () {
           return;
         case "status": {
           const found = yield* findRequest(environmentId, event.requestId);
-          if (found === undefined) return;
+          // A parent whose move stopped its agent is written nothing.
+          if (found === undefined || familyWorkStopped(found.parent)) return;
           const { parent, request } = found;
           if (event.status === "awaiting_approval") {
             yield* updateRequest(parent, request, {
@@ -550,6 +570,7 @@ const make = Effect.gen(function* () {
         }
         case "thread": {
           for (const parent of yield* parentsHolding(environmentId, event.threadId)) {
+            if (familyWorkStopped(parent)) continue;
             const existing = remoteChildOf(parent.childRequests, event.threadId);
             if (existing === undefined || existing.environmentId !== environmentId) continue;
             const filing = event.filing ?? existing.filing;
@@ -583,6 +604,18 @@ const make = Effect.gen(function* () {
         }
         case "report": {
           const found = yield* findRequest(environmentId, event.requestId);
+          // A parent whose move stopped its agent can't take the answer (it
+          // would refuse it, and a refusal reads as settled meanwhile): the
+          // report stays unacked there and comes again with a later watch,
+          // should the move be dropped. Once the parent moved away it never
+          // takes one: the report is acked as not delivered, so that
+          // computer stops offering it.
+          if (found !== undefined && familyWorkStopped(found.parent)) {
+            if (found.parent.move?.movedAway !== undefined) {
+              yield* ackReport(environmentId, event.reportId, false);
+            }
+            return;
+          }
           if (found !== undefined) {
             const { parent, request } = found;
             const silent =
@@ -687,7 +720,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       pendingAcks.delete(environmentId);
       for (const parent of yield* parentsOwing(environmentId)) {
-        for (const request of openRemote(parent, environmentId)) {
+        for (const request of familyWorkStopped(parent) ? [] : openRemote(parent, environmentId)) {
           if (request.remote === undefined) continue;
           yield* settleRequest(parent, request, {
             outcome: "failed",
@@ -835,11 +868,27 @@ const make = Effect.gen(function* () {
         });
         return true;
       }
+      const ceiling = request.requestCeiling ?? effectiveRequestCeiling(parent);
+      // An older peer can't enforce a ceiling: only a sender with the widest
+      // access sends it work (docs/design/agent-autonomy-no-limits.md, "Access").
+      if (!isWidestMode(ceiling)) {
+        const descriptor = yield* client.describe(environmentId as EnvironmentId);
+        if (descriptor.enforcesRequestCeiling !== true) {
+          const reason = olderPeerCeilingRefusal(remote.label);
+          yield* settleRequest(parent, request, {
+            outcome: "failed",
+            text: reason,
+            error: reason,
+          });
+          return true;
+        }
+      }
       const answer = yield* client.withPeer(environmentId as EnvironmentId, (peer) =>
         peer["peer.request.send"]({
           requestId: request.requestId,
           threadId: remote.threadId!,
           text,
+          ceiling,
         }),
       );
       if (answer.status === "queued") {
@@ -867,6 +916,8 @@ const make = Effect.gen(function* () {
     laneOf(requestLanes, environmentId).withPermits(1)(
       Effect.gen(function* () {
         const owed = (yield* parentsOwing(environmentId))
+          // A parent whose move stopped its agent asks nothing new there.
+          .filter((parent) => !familyWorkStopped(parent))
           .flatMap((parent) =>
             openRemote(parent, environmentId)
               .filter(
@@ -1167,9 +1218,18 @@ const make = Effect.gen(function* () {
   const onEvent = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
       if (event.type === "thread.remote-child-updated") {
-        // Followed from its first record; a word the user gave here goes out.
         const child = event.payload.child;
         const environmentId = child.environmentId;
+        // Came home (docs/design/fleet.md, Part 3f, (h)): no longer followed
+        // there, so an open watch starts over without it.
+        if (event.payload.removed === true) {
+          holdersByChild
+            .get(childKey(environmentId, child.threadId))
+            ?.delete(event.payload.threadId);
+          if (watching.has(environmentId)) rewatch.add(environmentId);
+          return;
+        }
+        // Followed from its first record; a word the user gave here goes out.
         follow(environmentId, event.payload.threadId, child.threadId);
         const owed = wrapOwed(child);
         if (owed) addTo(wrapOwers, environmentId, event.payload.threadId);

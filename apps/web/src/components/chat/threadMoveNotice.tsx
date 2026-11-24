@@ -9,11 +9,28 @@
  * finish nor stop, and offers a way to keep working here instead: a new
  * thread forked from this one.
  *
+ * Before that, a move can wait for the thread to be free (Part 3b): its
+ * notice says when it goes, or what holds it, with Cancel (and Try again
+ * when held). One that ended without starting says why ("Didn't move: …")
+ * until the user dismisses it.
+ *
+ * On the computer it lands on, a moved thread's pull request switches arrive
+ * off (Part 3e): a notice says what was on there, with Turn on.
+ *
  * @module threadMoveNotice
  */
-import type { EnvironmentId, OrchestrationThreadMove, ThreadId } from "@threadlines/contracts";
+import {
+  type EnvironmentId,
+  type OrchestrationThreadMove,
+  type ThreadId,
+  ThreadMoveNotStartedPayload,
+  type ThreadMoveRequestId,
+  type ThreadPendingMove,
+} from "@threadlines/contracts";
 import { scopeThreadRef } from "@threadlines/client-runtime";
+import { pullRequestSwitchesWords } from "@threadlines/shared/threadMoveProjection";
 import { useNavigate } from "@tanstack/react-router";
+import * as Schema from "effect/Schema";
 import { useCallback, useMemo, useState } from "react";
 
 import { describeComputerLinkFailure } from "../../environments/links/computerLinks";
@@ -23,8 +40,16 @@ import {
 } from "../../environments/links/threadMoves";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { turnOnMovedPullRequestSwitches } from "../../lib/threadPullRequestCommands";
 import { useStore } from "../../store";
-import { describeThreadMoveProgress, isThreadMoveStalled } from "../../threadMove";
+import {
+  describePendingMove,
+  describeThreadMoveProgress,
+  isThreadMoveSent,
+  isThreadMoveStalled,
+  THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND,
+} from "../../threadMove";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import type { Thread } from "../../types";
 import { Button } from "../ui/button";
@@ -43,11 +68,15 @@ export interface ThreadMoveNoticeActions {
 
 export function buildThreadMoveNotice(input: {
   readonly move: OrchestrationThreadMove;
+  /** The other computer has every byte and waits for its user (isThreadMoveSent). */
+  readonly sent?: boolean;
   /** The link to the other computer is gone or can't reach it (isThreadMoveStalled). */
   readonly stalled: boolean;
+  /** A child moving with its parent: the parent's title while it hasn't moved yet. */
+  readonly withParent?: string | null;
   readonly actions: ThreadMoveNoticeActions;
 }): ComposerNotice {
-  const { move, stalled, actions } = input;
+  const { move, stalled, actions, sent = false, withParent = null } = input;
   const label = move.target.label;
   if (move.movedAway) {
     return {
@@ -82,7 +111,7 @@ export function buildThreadMoveNotice(input: {
   return {
     id: `thread-moving:${move.transferId}`,
     severity: "info",
-    lead: describeThreadMoveProgress(move),
+    lead: describeThreadMoveProgress(move, { sent, withParent }),
     ...(move.cancelRequested
       ? {}
       : {
@@ -115,7 +144,7 @@ function useConnectedNow(environmentId: EnvironmentId | null): boolean {
  * the thread's own computer, Open to the thread on the other one.
  */
 export function useThreadMoveNotice(input: {
-  readonly thread: Pick<Thread, "id" | "environmentId" | "move"> | undefined;
+  readonly thread: Pick<Thread, "id" | "environmentId" | "move" | "lastMoveOutcome"> | undefined;
   readonly computerLabel: string;
   readonly onContinueHere: () => void;
 }): ComposerNotice | null {
@@ -142,6 +171,15 @@ export function useThreadMoveNotice(input: {
         ] !== undefined,
   );
   const canOpen = movedThreadRef !== null && targetConnected && appHasMovedThread;
+  // A child moving with its parent (Part 3f, (g)) lands after it: until the
+  // parent has moved, its notice names the parent.
+  const familyParentId = move?.family?.parentThreadId ?? null;
+  const withParent = useStore((state) => {
+    if (familyParentId === null || thread === undefined) return null;
+    const parent =
+      state.environmentStateById[thread.environmentId]?.sidebarThreadSummaryById[familyParentId];
+    return parent === undefined || parent.moveStatus === "moved" ? null : parent.title;
+  });
 
   const onCancel = useCallback(() => {
     if (!thread) return;
@@ -173,6 +211,7 @@ export function useThreadMoveNotice(input: {
   }, [movedThreadRef, navigate]);
 
   const stalled = isThreadMoveStalled({ move, outbound });
+  const sent = thread !== undefined && isThreadMoveSent(thread);
   const cancelling = thread !== undefined && cancellingThreadId === thread.id;
   return useMemo(
     () =>
@@ -181,6 +220,8 @@ export function useThreadMoveNotice(input: {
         : buildThreadMoveNotice({
             move,
             stalled,
+            sent,
+            withParent,
             actions: {
               onCancel,
               cancelling,
@@ -188,6 +229,301 @@ export function useThreadMoveNotice(input: {
               onContinueHere,
             },
           }),
-    [canOpen, cancelling, move, onCancel, onContinueHere, onOpen, stalled],
+    [canOpen, cancelling, move, onCancel, onContinueHere, onOpen, sent, stalled, withParent],
+  );
+}
+
+export interface PendingMoveNoticeActions {
+  /** Cancels the move the notice shows (its own request id, never a newer one). */
+  readonly onCancel: () => void;
+  readonly cancelling: boolean;
+  /** Asks the server to try a held move again now. */
+  readonly onRetry: () => void;
+  readonly retrying: boolean;
+}
+
+/** The notice for a move that waits for the thread to be free (Part 3b). */
+export function buildPendingMoveNotice(input: {
+  readonly pendingMove: ThreadPendingMove;
+  readonly actions: PendingMoveNoticeActions;
+}): ComposerNotice {
+  const { pendingMove, actions } = input;
+  const words = describePendingMove(pendingMove);
+  return {
+    id: `thread-move-queued:${pendingMove.requestId}`,
+    severity: words.severity,
+    lead: words.lead,
+    // On a phone the words get the row's whole width; they run long.
+    wrapActions: true,
+    actions: (
+      <>
+        {words.retry ? (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={actions.retrying || actions.cancelling}
+            onClick={actions.onRetry}
+          >
+            Try again
+          </Button>
+        ) : null}
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={actions.cancelling}
+          onClick={actions.onCancel}
+          aria-label="Cancel the move"
+        >
+          Cancel
+        </Button>
+      </>
+    ),
+  };
+}
+
+/** A request this app is sending for a thread's waiting move, and which. */
+interface PendingMoveCall {
+  readonly kind: "cancel" | "retry";
+  readonly threadId: ThreadId;
+  readonly requestId: ThreadMoveRequestId;
+}
+
+/**
+ * buildPendingMoveNotice for the open thread, with its actions: Cancel and
+ * Try again go to the thread's own computer, naming the request shown.
+ */
+export function usePendingMoveNotice(input: {
+  readonly thread: Pick<Thread, "id" | "environmentId" | "pendingMove"> | undefined;
+  readonly computerLabel: string;
+}): ComposerNotice | null {
+  const { thread, computerLabel } = input;
+  const pendingMove = thread?.pendingMove ?? null;
+  const environmentId = thread?.environmentId ?? null;
+  const threadId = thread?.id ?? null;
+  const [call, setCall] = useState<PendingMoveCall | null>(null);
+
+  const send = useCallback(
+    (kind: PendingMoveCall["kind"], requestId: ThreadMoveRequestId) => {
+      if (environmentId === null || threadId === null) return;
+      const current = { kind, threadId, requestId };
+      setCall(current);
+      void (async () => {
+        try {
+          const client = requireThreadMovesClient(environmentId, computerLabel);
+          await (kind === "cancel"
+            ? client.unqueue({ threadId, requestId })
+            : client.retry({ threadId, requestId }));
+        } catch (error) {
+          toastManager.add(
+            failureNotice({
+              title: kind === "cancel" ? "Couldn't cancel the move" : "Couldn't try the move again",
+              reason: describeComputerLinkFailure(error, `${computerLabel} didn't answer.`),
+            }),
+          );
+        } finally {
+          setCall((latest) => (latest === current ? null : latest));
+        }
+      })();
+    },
+    [computerLabel, environmentId, threadId],
+  );
+
+  const requestId = pendingMove?.requestId ?? null;
+  const callInFlight = (kind: PendingMoveCall["kind"]) =>
+    call !== null &&
+    call.kind === kind &&
+    call.threadId === threadId &&
+    call.requestId === requestId;
+  const cancelling = callInFlight("cancel");
+  const retrying = callInFlight("retry");
+  return useMemo(
+    () =>
+      pendingMove === null
+        ? null
+        : buildPendingMoveNotice({
+            pendingMove,
+            actions: {
+              onCancel: () => send("cancel", pendingMove.requestId),
+              cancelling,
+              onRetry: () => send("retry", pendingMove.requestId),
+              retrying,
+            },
+          }),
+    [cancelling, pendingMove, retrying, send],
+  );
+}
+
+const isMoveNotStartedPayload = Schema.is(ThreadMoveNotStartedPayload);
+
+const MOVE_NOT_STARTED_DISMISSALS_STORAGE_KEY = "threadlines:move-not-started-dismissals:v1";
+const MoveNotStartedDismissalsSchema = Schema.Struct({ keys: Schema.Array(Schema.String) });
+/** Enough to outlast any notice still on screen; older keys fall off the front. */
+const MAX_MOVE_NOT_STARTED_DISMISSALS = 200;
+
+/** A move that ended without the thread moving, as the "Didn't move" notice says it. */
+interface MoveMiss {
+  /** The queued move it answers, else the transfer: what a dismissal remembers. */
+  readonly key: string;
+  readonly targetLabel: string;
+  readonly words: string;
+}
+
+/**
+ * The thread's last move that ended without it moving ("Didn't move:
+ * <why>"), until dismissed on this device: read from its last outcome
+ * (Part 3c), which also covers a move dropped after it started (a batch's
+ * thread the other computer turned away). One the user cancelled says
+ * nothing, by its code (`reason`); an outcome without one, from a server
+ * before the codes, shows. A server too old for outcomes is read from its
+ * "Didn't move" activity instead. Gone while another move waits or runs, which says more.
+ */
+export function useMoveNotStartedNotice(input: {
+  readonly thread:
+    | Pick<
+        Thread,
+        "id" | "environmentId" | "activities" | "move" | "pendingMove" | "lastMoveOutcome"
+      >
+    | undefined;
+}): ComposerNotice | null {
+  const { thread } = input;
+  const [dismissals, setDismissals] = useLocalStorage(
+    MOVE_NOT_STARTED_DISMISSALS_STORAGE_KEY,
+    { keys: [] },
+    MoveNotStartedDismissalsSchema,
+  );
+  const anotherMove = Boolean(thread?.move || thread?.pendingMove);
+  const activities = thread?.activities;
+  const outcome = thread?.lastMoveOutcome;
+  const latest = useMemo((): MoveMiss | null => {
+    if (outcome !== undefined) {
+      if (outcome === null || outcome.result !== "not_moved" || outcome.reason === "cancelled") {
+        return null;
+      }
+      const key = outcome.requestId ?? outcome.transferId;
+      return key === undefined
+        ? null
+        : {
+            key,
+            targetLabel: outcome.target.label,
+            words: outcome.words ?? "It couldn't move.",
+          };
+    }
+    if (!activities) return null;
+    for (let index = activities.length - 1; index >= 0; index -= 1) {
+      const activity = activities[index];
+      if (activity?.kind !== THREAD_MOVE_NOT_STARTED_ACTIVITY_KIND) continue;
+      return isMoveNotStartedPayload(activity.payload)
+        ? {
+            key: activity.payload.requestId,
+            targetLabel: activity.payload.targetLabel,
+            words: activity.payload.words,
+          }
+        : null;
+    }
+    return null;
+  }, [activities, outcome]);
+  const dismissalKey =
+    thread && latest ? `${thread.environmentId}:${thread.id}:${latest.key}` : null;
+  const dismissed = dismissalKey !== null && dismissals.keys.includes(dismissalKey);
+  const dismiss = useCallback(() => {
+    if (dismissalKey === null) return;
+    setDismissals((current) =>
+      current.keys.includes(dismissalKey)
+        ? current
+        : { keys: [...current.keys, dismissalKey].slice(-MAX_MOVE_NOT_STARTED_DISMISSALS) },
+    );
+  }, [dismissalKey, setDismissals]);
+  return useMemo<ComposerNotice | null>(
+    () =>
+      latest === null || anotherMove || dismissed
+        ? null
+        : {
+            id: `thread-move-not-started:${latest.key}`,
+            severity: "warning",
+            lead: "Didn't move:",
+            detail: latest.words,
+            dismissLabel: `Dismiss why it didn't move to ${latest.targetLabel}`,
+            onDismiss: dismiss,
+          },
+    [anotherMove, dismiss, dismissed, latest],
+  );
+}
+
+const MOVED_SWITCHES_DISMISSALS_STORAGE_KEY = "threadlines:moved-switches-dismissals:v1";
+
+/**
+ * The pull request switches a thread had on before it moved here, which
+ * arrive off (docs/design/fleet.md, Part 3e, (c)): what was on there, with
+ * Turn on, which flips each one here as the user would. Gone once any switch
+ * is set here (the server clears the offer), or dismissed on this device.
+ */
+export function useMovedPullRequestSwitchesNotice(input: {
+  readonly thread: Pick<Thread, "id" | "environmentId" | "movedFrom"> | undefined;
+}): ComposerNotice | null {
+  const { thread } = input;
+  const [dismissals, setDismissals] = useLocalStorage(
+    MOVED_SWITCHES_DISMISSALS_STORAGE_KEY,
+    { keys: [] },
+    MoveNotStartedDismissalsSchema,
+  );
+  const [turningOn, setTurningOn] = useState<ThreadId | null>(null);
+  const movedFrom = thread?.movedFrom ?? null;
+  const switches = movedFrom?.pullRequestSwitches;
+  const on = useMemo(
+    () => (switches === undefined ? null : pullRequestSwitchesWords(switches)),
+    [switches],
+  );
+  const dismissalKey =
+    thread && movedFrom ? `${thread.environmentId}:${thread.id}:${movedFrom.movedAt}` : null;
+  const dismissed = dismissalKey !== null && dismissals.keys.includes(dismissalKey);
+  const dismiss = useCallback(() => {
+    if (dismissalKey === null) return;
+    setDismissals((current) =>
+      current.keys.includes(dismissalKey)
+        ? current
+        : { keys: [...current.keys, dismissalKey].slice(-MAX_MOVE_NOT_STARTED_DISMISSALS) },
+    );
+  }, [dismissalKey, setDismissals]);
+  const environmentId = thread?.environmentId ?? null;
+  const threadId = thread?.id ?? null;
+  const turnOn = useCallback(() => {
+    if (environmentId === null || threadId === null || switches === undefined) return;
+    setTurningOn(threadId);
+    void (async () => {
+      try {
+        await turnOnMovedPullRequestSwitches(scopeThreadRef(environmentId, threadId), switches);
+      } catch (error) {
+        toastManager.add(
+          failureNotice({
+            title: "Couldn't turn them on",
+            reason: error instanceof Error ? error.message : "The server didn't answer.",
+          }),
+        );
+      } finally {
+        setTurningOn((current) => (current === threadId ? null : current));
+      }
+    })();
+  }, [environmentId, switches, threadId]);
+  const busy = threadId !== null && turningOn === threadId;
+  const label = movedFrom?.label ?? null;
+  const movedAt = movedFrom?.movedAt ?? null;
+  return useMemo<ComposerNotice | null>(
+    () =>
+      on === null || label === null || dismissed
+        ? null
+        : {
+            id: `moved-pull-request-switches:${movedAt}`,
+            severity: "info",
+            lead: `${on.words} ${on.plural ? "are" : "is"} off.`,
+            detail: `${on.plural ? "They were" : "It was"} on for ${on.what} on ${label}.`,
+            actions: (
+              <Button size="xs" disabled={busy} onClick={turnOn}>
+                Turn on
+              </Button>
+            ),
+            dismissLabel: on.plural ? "Leave them off" : "Leave it off",
+            onDismiss: dismiss,
+          },
+    [busy, dismiss, dismissed, label, movedAt, on, turnOn],
   );
 }

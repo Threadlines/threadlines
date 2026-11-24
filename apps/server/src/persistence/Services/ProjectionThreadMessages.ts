@@ -17,6 +17,7 @@ import {
   ThreadParticipantId,
   TurnId,
   IsoDateTime,
+  MessageAccessFields,
   MessageAgentModel,
   MessageComposer,
   MessageSentFrom,
@@ -81,6 +82,10 @@ export const ProjectionThreadMessage = Schema.Struct({
   trigger: Schema.optional(MessageTrigger),
   /** See OrchestrationMessage.notSent. Once set, kept. */
   notSent: Schema.optional(Schema.Literal(true)),
+  /** See OrchestrationMessage.afterMove. Once set, kept. */
+  afterMove: Schema.optional(Schema.Literal(true)),
+  /** See MessageAccessFields. Written with the message and kept. */
+  ...MessageAccessFields,
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -112,6 +117,15 @@ export interface ProjectionThreadMessageRepositoryShape {
    * Upserts by `messageId`.
    */
   readonly upsert: (
+    message: ProjectionThreadMessage,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * A streaming message's next words: inserts the row when it is new, else
+   * adds `message.text` to the end of the stored text without reading it.
+   * The stored row keeps its creation time, sequence, media and skills.
+   */
+  readonly appendStreamedText: (
     message: ProjectionThreadMessage,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 

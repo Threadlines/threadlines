@@ -1190,6 +1190,8 @@ export interface ComposerPromptEditorHandle {
   focusAtEnd: () => void;
   /** Whether a suggestion's rest can show after the cursor; see `canShowPromptCompletion`. */
   canShowCompletion: () => boolean;
+  /** Whether words are selected in the editor (a range, not a caret). */
+  hasSelectedText: () => boolean;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -1921,6 +1923,14 @@ function ComposerPromptEditorInner({
     return snapshot;
   }, [editor]);
   const canShowCompletion = useCallback(() => canShowPromptCompletion(editor), [editor]);
+  const hasSelectedText = useCallback(
+    () =>
+      editor.getEditorState().read(() => {
+        const selection = $getSelection();
+        return $isRangeSelection(selection) && !selection.isCollapsed();
+      }),
+    [editor],
+  );
 
   useImperativeHandle(
     editorRef,
@@ -1930,6 +1940,7 @@ function ComposerPromptEditorInner({
       },
       focusAt,
       canShowCompletion,
+      hasSelectedText,
       focusAtEnd: () => {
         focusAt(
           collapseExpandedComposerCursor(
@@ -1940,7 +1951,7 @@ function ComposerPromptEditorInner({
       },
       readSnapshot,
     }),
-    [canShowCompletion, focusAt, readSnapshot],
+    [canShowCompletion, focusAt, hasSelectedText, readSnapshot],
   );
 
   const handleEditorChange = useCallback((editorState: EditorState) => {

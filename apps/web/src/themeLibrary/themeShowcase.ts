@@ -11,7 +11,9 @@ import type {
   ThemeShowcaseListing,
   ThemeShowcasePreparation,
   ThemeShowcaseShareInput,
+  ThemeShowcaseSlug,
   ThemeShowcaseSubmission,
+  ThemeShowcaseSubmitInput,
 } from "@threadlines/contracts";
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
@@ -85,20 +87,26 @@ export function useShowcase(environmentId: EnvironmentId | null) {
 const asked = new Set<string>();
 
 /** A theme's picture, fetched once it's asked for; null until then, "failed" if it couldn't be. */
-export function useShowcasePicture(environmentId: EnvironmentId | null, id: string): string | null {
-  const picture = useShowcaseStore((state) => state.pictures[id] ?? null);
+export function useShowcasePicture(
+  environmentId: EnvironmentId | null,
+  id: string,
+  /** The thumbnail's digest from `index.json`, so an updated theme fetches its new picture. */
+  digest: string,
+): string | null {
+  const key = `${id}:${digest}`;
+  const picture = useShowcaseStore((state) => state.pictures[key] ?? null);
   useEffect(() => {
-    if (environmentId === null || picture !== null || asked.has(id)) return;
-    asked.add(id);
+    if (environmentId === null || picture !== null || asked.has(key)) return;
+    asked.add(key);
     void clientOf(environmentId)
       .picture({ id })
       .then(({ dataUrl }) => dataUrl)
       .catch(() => "failed")
       .then((value) => {
-        if (value === "failed") asked.delete(id);
-        useShowcaseStore.setState((state) => ({ pictures: { ...state.pictures, [id]: value } }));
+        if (value === "failed") asked.delete(key);
+        useShowcaseStore.setState((state) => ({ pictures: { ...state.pictures, [key]: value } }));
       });
-  }, [environmentId, id, picture]);
+  }, [environmentId, id, key, picture]);
   return picture;
 }
 
@@ -126,6 +134,19 @@ export function readShowcaseAccount(
   }));
 }
 
+/** Fresh Showcase entries for matching an existing theme to update; falls back to cached entries offline. */
+export async function readShowcaseEntries(
+  environmentId: EnvironmentId,
+): Promise<ReadonlyArray<ThemeShowcaseEntry>> {
+  try {
+    const listing = await clientOf(environmentId).list({ refresh: true });
+    useShowcaseStore.setState({ listing });
+    return listing.themes;
+  } catch {
+    return useShowcaseStore.getState().listing?.themes ?? [];
+  }
+}
+
 /** What sharing a library theme would publish, worked out on a computer that holds it. */
 export function prepareShowcaseShare(
   environmentId: EnvironmentId,
@@ -134,10 +155,10 @@ export function prepareShowcaseShare(
   return clientOf(environmentId).prepare(input);
 }
 
-/** Shares it: a pull request from the GitHub account the person saw (`login`). */
+/** Shares or updates a theme: a pull request from the GitHub account the person saw (`login`). */
 export async function submitShowcaseShare(
   environmentId: EnvironmentId,
-  input: ThemeShowcaseShareInput & { readonly submissionId: string; readonly login: string },
+  input: ThemeShowcaseSubmitInput,
 ): Promise<ThemeShowcaseSubmission> {
   const submission = await clientOf(environmentId).submit(input);
   useShowcaseStore.setState((state) => ({
@@ -181,6 +202,8 @@ export const newShowcaseSubmissionId = () => randomUUID().replaceAll("-", "").sl
 export interface ShowcaseShare {
   readonly submission: ThemeShowcaseSubmission;
   readonly environmentId: EnvironmentId;
+  /** The folder this theme was previously listed under, if known on any connected computer. */
+  readonly listedSlug?: ThemeShowcaseSlug;
 }
 
 /**
@@ -204,6 +227,10 @@ export function useShowcaseShares(): ReadonlyMap<string, ShowcaseShare> {
   }, [environments]);
   return useMemo(() => {
     const newest = new Map<string, ShowcaseShare>();
+    const listed = new Map<
+      string,
+      { readonly slug: ThemeShowcaseSlug; readonly createdAt: string }
+    >();
     for (const [environmentId, list] of Object.entries(shares)) {
       for (const submission of list) {
         const seen = newest.get(submission.entryId);
@@ -213,6 +240,24 @@ export function useShowcaseShares(): ReadonlyMap<string, ShowcaseShare> {
             environmentId: environmentId as EnvironmentId,
           });
         }
+        if (
+          submission.slug !== undefined &&
+          (submission.state === "listed" || submission.isUpdate === true)
+        ) {
+          const prior = listed.get(submission.entryId);
+          if (prior === undefined || submission.createdAt > prior.createdAt) {
+            listed.set(submission.entryId, {
+              slug: submission.slug,
+              createdAt: submission.createdAt,
+            });
+          }
+        }
+      }
+    }
+    for (const [entryId, share] of newest) {
+      const slug = listed.get(entryId)?.slug;
+      if (slug !== undefined) {
+        newest.set(entryId, { ...share, listedSlug: slug });
       }
     }
     return newest;
@@ -221,14 +266,17 @@ export function useShowcaseShares(): ReadonlyMap<string, ShowcaseShare> {
 
 /** What a shared theme's tile says under its name. */
 export function showcaseShareWords(
-  share: Pick<ThemeShowcaseSubmission, "state" | "takenBack">,
+  share: Pick<ThemeShowcaseSubmission, "state" | "takenBack" | "isUpdate">,
 ): string {
   switch (share.state) {
     case "inReview":
-      return "In review for the Showcase";
+      return share.isUpdate === true ? "Update in review" : "In review for the Showcase";
     case "listed":
       return "In the Showcase";
     case "notAdded":
+      if (share.isUpdate === true) {
+        return share.takenBack === true ? "Update taken back" : "Update not added";
+      }
       return share.takenBack === true
         ? "Taken back from the Showcase"
         : "Not added to the Showcase";

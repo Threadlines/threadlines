@@ -29,7 +29,9 @@ on them.
   - Stop ends a chain for good.
   - The user's messages go ahead of agent requests, including ones that
     arrive later.
-  - Agents get 3 requests of each other before they have to wait for the user.
+  - Agents make as many requests of each other as they like. The limit of 3
+    per user message was removed in Nov 2026
+    (docs/design/agent-autonomy-no-limits.md).
 - Identity is explicit. Every side answer and every agent request has a stable
   id that travels with its events. Nothing is matched by "the next event from
   that agent" or "whoever holds the slot now".
@@ -421,8 +423,14 @@ Inputs name an agent by participant id or by an unambiguous name ("astra 2",
 
 - Targets: not yourself, not an agent that left, and only an agent that can
   answer on the side.
-- One side answer per thread stays. If one is running, the call returns
-  `busy` and starts nothing.
+- Up to `MAX_LIVE_SIDE_TURNS` (3) side answers run at once, one per agent
+  (`@threadlines/shared/sideTurns`). Asking an agent that is already
+  answering, or a fourth, returns `busy` and starts nothing.
+- `room_review` takes `agents` (two or three) instead of `agent`: the basis
+  is captured once, each agent gets its own request sharing a `batchId`,
+  they run side by side, and the call lists each result in `reviews`. A batch
+  counts once toward the request limit (`batchesSinceUser`, cleared when the
+  user writes), however its members settle.
 - The call waits for the settle inside the MCP request handler, never in the
   reactor's worker. It subscribes to domain events before dispatching the
   start, and matches `thread.side-turn-settled` by `sideTurnId`.
@@ -634,19 +642,13 @@ every request has a durable record from submission to its final outcome.
   goes away, that waiter detaches; the request is cancelled only when its
   last waiter leaves. To verify at build time; if the handler is not
   interrupted, the caller's turn ending covers it.
-- **Limit: 3 agent requests (asks, reviews and hand-offs) since the user last
-  wrote.**
-  - The decider counts accepted requests in `agentRequestsSinceUser` at
-    submission, queued hand-offs included. The decider is sequential, so
-    parallel calls cannot slip past it.
-  - A routed reply never counts, so the return half of an accepted hand-off
-    always arrives.
-  - A fourth request returns `limit` to the calling agent, which tells the
-    user in its reply. The room shows no notice of its own: reaching the
-    limit does not mean anyone is waiting, and a standing line for it read
-    as nagging in normal use.
+- **No request limit.** There was one (3 asks, reviews and hand-offs since the
+  user last wrote); it was removed in Nov 2026 so agents can work together for
+  hours without the user (docs/design/agent-autonomy-no-limits.md).
+  `requestsSinceUser` and `batchesSinceUser` stay in the schema for older
+  clients and are no longer counted.
   - The user's next submission (a message, a queued message or a side
-    question) resets the count and lifts the hold.
+    question) lifts the hold.
 
 ### Chat
 
@@ -928,8 +930,8 @@ Room tools (PR 2):
     included); `tools/list` on each endpoint shows only its own tools.
 24. `room_diff` rejects a revision or path shaped like an option
     (`--output=...`), and never runs a text conversion or external diff.
-25. The limit counts queued hand-offs: four hand-offs in one turn leave the
-    fourth refused.
+25. (Removed Nov 2026 with the request limit: four hand-offs in one turn
+    are all accepted.)
 26. A hand-off's reply is the target's final text, not a partial buffer; a
     crash between the target finishing and routing still routes exactly once
     after restart.
@@ -954,7 +956,12 @@ Room tools (PR 2):
   arrival instead (see "Who may call").
 - **Independent review** (rev 4): its own tool, tagged in the chat. Room
   context is shared by default.
-- **One side answer per thread**: kept.
+- **One side answer per thread**: lifted. A thread keeps its live side
+  answers as `sideTurns` (oldest first; `sideTurn` stays as the first, for
+  clients older than the list) and stores them as a JSON array in
+  `projection_threads.side_turn`, where an older single object still reads as
+  a list of one. An older client sees only the first live answer: the others
+  read as stopped until they settle, and the thread's Stop still stops them.
 - **Catch-up cursor**: delivered-context, not inferred.
 - **Blocking `room_ask`**: kept, with a Threadlines deadline, exact
   cancellation, idempotent request ids, and structured outcomes.

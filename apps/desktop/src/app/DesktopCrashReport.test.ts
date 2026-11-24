@@ -125,12 +125,20 @@ describe("resolveTelemetryConsent", () => {
     );
   });
 
-  it("keeps the default when settings are unreadable", () => {
-    assert.isTrue(
+  it("fails closed when an existing settings file is malformed or unreadable", () => {
+    assert.isFalse(
       resolveTelemetryConsent({
         envOverride: undefined,
         throwawayRun: false,
         rawSettingsJson: "not json",
+      }),
+    );
+    assert.isFalse(
+      resolveTelemetryConsent({
+        envOverride: undefined,
+        throwawayRun: false,
+        rawSettingsJson: undefined,
+        settingsReadFailed: true,
       }),
     );
   });

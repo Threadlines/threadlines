@@ -5,6 +5,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  RoomAgentBatchId,
   RoomAgentRequestId,
   SIDE_ANSWER_OUTCOME_ACTIVITY_KIND,
   SideTurnId,
@@ -22,6 +23,8 @@ import {
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vite-plus/test";
+
+import { liveSideTurns } from "@threadlines/shared/sideTurns";
 
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
@@ -811,13 +814,6 @@ describe("decider rooms", () => {
           agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, hold: true },
         }),
       ).toBe(true);
-      // Three requests since the user wrote, hand-offs included.
-      expect(
-        await refused(request("hand_off"), {
-          session: working(),
-          agentRequests: { ...EMPTY_AGENT_REQUEST_STATE, requestsSinceUser: 3 },
-        }),
-      ).toBe(true);
       // Someone is already answering on the side.
       expect(
         await refused(request("ask"), {
@@ -830,6 +826,101 @@ describe("decider rooms", () => {
             startedAt: now,
           },
         }),
+      ).toBe(true);
+    });
+
+    it("runs a council: several agents review at once, each settling on its own", async () => {
+      const solId = ThreadParticipantId.make("9c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f");
+      const grokId = ThreadParticipantId.make("0d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a");
+      let model = readModel({
+        session: working(),
+        participants: [
+          astra,
+          { ...astra, id: solId, handle: "sol" },
+          { ...astra, id: grokId, handle: "grok" },
+        ],
+      });
+      const batchId = RoomAgentBatchId.make("batch-council");
+      const reviewOf = (participantId: ThreadParticipantId) =>
+        request("review", { to: { participantId }, batchId });
+      const live = () => liveSideTurns(threadOf(model)).map((entry) => entry.participantId);
+
+      const first = reviewOf(astraId);
+      model = await apply(model, await decideEvents(first, model));
+      // The first review finishes before the others are even asked.
+      model = await apply(
+        model,
+        await decideEvents(
+          {
+            type: "thread.side-turn.settle",
+            commandId: CommandId.make("cmd-settle-first"),
+            threadId,
+            sideTurnId: first.sideTurnId!,
+            outcome: "failed",
+            error: "It stopped.",
+            createdAt: now,
+          },
+          model,
+        ),
+      );
+      expect(live()).toEqual([]);
+      for (const participantId of [solId, grokId]) {
+        model = await apply(model, await decideEvents(reviewOf(participantId), model));
+      }
+      expect(live()).toEqual([solId, grokId]);
+      // Agents keep asking each other without the user writing in between.
+      expect(Exit.isSuccess(await decide(request("ask"), model))).toBe(true);
+
+      // One answer settling leaves the other running.
+      const [solTurn] = liveSideTurns(threadOf(model));
+      model = await apply(
+        model,
+        await decideEvents(
+          {
+            type: "thread.side-turn.settle",
+            commandId: CommandId.make("cmd-settle-sol"),
+            threadId,
+            sideTurnId: solTurn!.sideTurnId,
+            outcome: "completed",
+            createdAt: now,
+          },
+          model,
+        ),
+      );
+      expect(live()).toEqual([grokId]);
+    });
+
+    it("lets agents answer on the side side by side, one answer each and three at most", async () => {
+      const sideTurnOf = (n: number, participantId: ThreadParticipantId | null) => ({
+        sideTurnId: SideTurnId.make(`0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f${80 + n}`),
+        participantId,
+        messageId: MessageId.make(`other-question-${n}`),
+        status: "running" as const,
+        startedAt: now,
+      });
+      const solId = ThreadParticipantId.make("9c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f");
+      const refused = async (sideTurns: ReadonlyArray<ReturnType<typeof sideTurnOf>>) =>
+        Exit.isFailure(
+          await decide(
+            request("ask"),
+            readModel({
+              session: working(),
+              participants: [astra, { ...astra, id: solId, handle: "sol" }],
+              sideTurns,
+            }),
+          ),
+        );
+      // Another agent answering does not hold astra back.
+      expect(await refused([sideTurnOf(1, solId)])).toBe(false);
+      // Astra answering already does.
+      expect(await refused([sideTurnOf(1, astraId)])).toBe(true);
+      // Three answering already is the most.
+      expect(
+        await refused([
+          sideTurnOf(1, solId),
+          sideTurnOf(2, null),
+          sideTurnOf(3, ThreadParticipantId.make("1e4f5a6b-7c8d-4e9f-8a1b-2c3d4e5f6a7b")),
+        ]),
       ).toBe(true);
     });
 
@@ -847,7 +938,6 @@ describe("decider rooms", () => {
         threadOf(model).messages.find((message) => message.id === handOff.message.messageId)
           ?.agentModels,
       ).toEqual(handOffStamps);
-      expect(threadOf(model).agentRequests.requestsSinceUser).toBe(1);
 
       // The calling turn completed (the reactor's call): the target's turn joins the queue.
       model = await apply(
@@ -1123,7 +1213,6 @@ describe("decider rooms", () => {
           ...threadOf(model),
           session: working(),
           queuedFollowUps: [],
-          agentRequests: { ...threadOf(model).agentRequests, requestsSinceUser: 0 },
         });
 
       // The user stops it, and its answer lands before the stop does.
@@ -1307,10 +1396,16 @@ describe("decider rooms", () => {
         turnCount: 0,
         createdAt: now,
       };
-      /** The guest's review finished with this text. */
-      const answered = async (model: OrchestrationReadModel, text: string) => {
+      /** A guest's review (the oldest, or `participantId`'s) finished with this text. */
+      const answered = async (
+        model: OrchestrationReadModel,
+        text: string,
+        participantId?: ThreadParticipantId,
+      ) => {
         const thread = threadOf(model);
-        const sideTurn = thread.sideTurn!;
+        const sideTurn = liveSideTurns(thread).find(
+          (entry) => participantId === undefined || entry.participantId === participantId,
+        )!;
         const withAnswer: OrchestrationReadModel = {
           ...model,
           threads: [
@@ -1338,7 +1433,7 @@ describe("decider rooms", () => {
           await decideEvents(
             {
               type: "thread.side-turn.settle",
-              commandId: CommandId.make("cmd-review-done"),
+              commandId: CommandId.make(`cmd-review-done-${sideTurn.sideTurnId}`),
               threadId,
               sideTurnId: sideTurn.sideTurnId,
               outcome: "completed",
@@ -1429,6 +1524,67 @@ describe("decider rooms", () => {
         expect(thread.participants).toMatchObject([{ id: guestId, leftAt: null }]);
         expect(thread.participants[0]?.guest).toBeUndefined();
         expect(Exit.isFailure(await decide(revert, model))).toBe(true);
+      });
+
+      it("lets the user accept an invite while its agent still reviews, and starts it when that review settles", async () => {
+        let model = plainThread();
+        const secondGuestId = ThreadParticipantId.make("7e6f5a4b-3c2d-4e1f-8a9b-0c1d2e3f4a5b");
+        const opus = (level: string) => ({
+          handle: "Opus 5.5",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-5-5",
+            options: [{ id: "effort", value: level }],
+          },
+        });
+        const opusInvite = (level: string) => ({
+          ...invite({ guest: opus(level) }),
+          to: { participantId: secondGuestId },
+        });
+        const second = opusInvite("high");
+        model = await apply(model, await decideEvents(second, model));
+        model = await apply(model, await decideEvents(respond(second.requestId, "review"), model));
+        // The same agent asked again while it reviews: accepted, it waits.
+        const third = opusInvite("low");
+        model = await apply(model, await decideEvents(third, model));
+        model = await apply(model, await decideEvents(respond(third.requestId, "review"), model));
+        // And again at another level, not yet answered.
+        const fourth = opusInvite("max");
+        model = await apply(model, await decideEvents(fourth, model));
+        let thread = threadOf(model);
+        expect(liveSideTurns(thread).map((entry) => entry.participantId)).toEqual([secondGuestId]);
+        expect(thread.agentRequests.open).toMatchObject([
+          { requestId: second.requestId, status: "running" },
+          { requestId: third.requestId, status: "queued" },
+          { requestId: fourth.requestId, status: "awaiting_user" },
+        ]);
+        expect(
+          thread.messages.find((message) => message.id === third.message.messageId),
+        ).toMatchObject({ invite: { choice: "review", automatic: false } });
+
+        model = await answered(model, "The backoff never caps.", secondGuestId);
+        thread = threadOf(model);
+        // It starts at the level the user accepted, not the later one.
+        const started = liveSideTurns(thread).find(
+          (entry) => entry.participantId === secondGuestId,
+        );
+        expect(started).toMatchObject({
+          kind: "review",
+          requestId: third.requestId,
+          modelSelection: opus("low").modelSelection,
+        });
+        expect(thread.agentRequests.open).toMatchObject([
+          { requestId: third.requestId, status: "running" },
+          { requestId: fourth.requestId, status: "awaiting_user" },
+        ]);
+        expect(thread.messages.find((message) => message.id === started?.messageId)).toMatchObject({
+          requestKind: "review",
+          reviewInput: third.reviewInput,
+        });
+        // The finished review still goes back to the agent that asked.
+        expect(thread.queuedFollowUps).toMatchObject([
+          { text: "The backoff never caps.", requestId: second.requestId },
+        ]);
       });
 
       it("invites an earlier guest again at the reasoning the new invite names", async () => {
@@ -1557,7 +1713,7 @@ describe("decider rooms", () => {
         const first = invite({ autoChoice: "review" });
         model = await apply(model, await decideEvents(first, model));
         // Its review is over; the side answer slot is free again.
-        model = { ...model, threads: [{ ...threadOf(model), sideTurn: null }] };
+        model = { ...model, threads: [{ ...threadOf(model), sideTurn: null, sideTurns: [] }] };
         const again = invite({ autoChoice: "review" });
         const events = await decideEvents(again, model);
         expect(events.some((event) => event.type === "thread.participant-added")).toBe(false);
@@ -1576,7 +1732,7 @@ describe("decider rooms", () => {
                   },
                 },
               }),
-              { ...model, threads: [{ ...threadOf(model), sideTurn: null }] },
+              { ...model, threads: [{ ...threadOf(model), sideTurn: null, sideTurns: [] }] },
             ),
           ),
         ).toBe(true);

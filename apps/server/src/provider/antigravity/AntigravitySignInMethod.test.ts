@@ -3,11 +3,15 @@ import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assert, describe, expect, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { FetchHttpClient } from "effect/http";
 
-import { antigravityEnvironment } from "./AntigravityProfile.ts";
+import {
+  antigravityEnvironment,
+  readAntigravityCatalog,
+  writeAntigravityCatalog,
+} from "./AntigravityProfile.ts";
 import {
   antigravityAdcPath,
   antigravityCredentialEnvironment,
@@ -15,7 +19,6 @@ import {
   antigravitySignInStatus,
   type AntigravitySignInConfig,
   checkGeminiApiKey,
-  classifyAntigravityGoogleToken,
   mergeAntigravityProfileSettings,
   resolveAntigravityAdc,
 } from "./AntigravitySignInMethod.ts";
@@ -88,6 +91,17 @@ describe("antigravity process environment", () => {
     const vertexKey = env(config({ method: "agent-platform", key: "vertex-key" }));
     assert.deepEqual(google(vertexKey), ["GOOGLE_API_KEY"]);
     assert.equal(vertexKey.GOOGLE_API_KEY, "vertex-key");
+  });
+
+  it("keeps the sign-in in the profile's own file and stops the CLI updating itself", () => {
+    const value = env(config({}));
+    // A Google sign-in lives in the profile, never in the OS keyring the
+    // user's own `agy` shares: 1.5.16 goes by its own switch, earlier
+    // versions by what they take for SSH.
+    assert.equal(value.AGY_CLI_FORCE_FILE_TOKEN_STORAGE, "1");
+    assert.equal(value.SSH_CONNECTION, "127.0.0.1 0 127.0.0.1 0");
+    assert.equal(value.AGY_CLI_DISABLE_AUTO_UPDATE, "1");
+    assert.equal(value.GEMINI_HOME, "/state/profile");
   });
 
   it("passes the computer's Google Cloud sign-in only to keyless Vertex AI", () => {
@@ -186,39 +200,6 @@ describe("Application Default Credentials", () => {
   );
 });
 
-describe("classifyAntigravityGoogleToken", () => {
-  it("tells a Google account sign-in from a Gemini Enterprise one by the token alone", () => {
-    // Field shapes of the agent's acp_token.json (values made up).
-    const token = {
-      client_secret: "x",
-      refresh_token: "x",
-      token_uri: "https://oauth2.googleapis.com/token",
-    };
-    expect(
-      classifyAntigravityGoogleToken({
-        ...token,
-        client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
-      }),
-    ).toBe("oauth-personal");
-    expect(
-      classifyAntigravityGoogleToken({
-        ...token,
-        client_id: "884354919052-36trc1jjb3tguiac32ov6cod268c5blh.apps.googleusercontent.com",
-      }),
-    ).toBe("oauth-business");
-    // An unknown client: only a Google account asks for Code Assist.
-    expect(
-      classifyAntigravityGoogleToken({
-        ...token,
-        client_id: "other",
-        scopes: ["https://www.googleapis.com/auth/cloud-platform"],
-      }),
-    ).toBe("oauth-business");
-    expect(classifyAntigravityGoogleToken({})).toBeUndefined();
-    expect(classifyAntigravityGoogleToken(null)).toBeUndefined();
-  });
-});
-
 describe("antigravitySignInStatus", () => {
   const status = (
     signIn: Partial<AntigravitySignInConfig>,
@@ -265,6 +246,20 @@ describe("antigravitySignInStatus", () => {
       assert.equal(result.status, "warning");
     }
     assert.equal(status({ method: "gemini-api-key" }).auth.type, "gemini-api-key");
+  });
+
+  it("asks once to sign in again when only the old server's sign-in is there", () => {
+    for (const method of ["oauth-personal", "oauth-business"] as const) {
+      const result = status(
+        { method, project: "acme", location: "global" },
+        { legacySignIn: true },
+      );
+      assert.equal(result.auth.status, "unauthenticated");
+      assert.equal(
+        result.message,
+        "Antigravity now runs on Google's CLI. Sign in again to keep using it.",
+      );
+    }
   });
 
   it("labels a working sign-in without needing an email, and never shows more than four characters of a key", () => {
@@ -333,6 +328,27 @@ describe("checkGeminiApiKey", () => {
       // The key goes in a header, never the address.
       assert.deepEqual(seen, ["good", "bad", "busy"]);
       yield* Effect.promise(() => new Promise<void>((done) => server.close(() => done())));
+    }),
+  );
+});
+
+describe("readAntigravityCatalog", () => {
+  it.live("drops a model list another sign-in or agent version saved", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => fs.mkdtemp(join(tmpdir(), "agy-catalog-")));
+      const choices = [{ value: "gemini-4-neon", name: "Gemini 4 Neon" }];
+      const sign = { fingerprint: "fp-a", isGoogleAccount: true, agentVersion: "1.5.2" };
+      yield* writeAntigravityCatalog(dir, { choices, fingerprint: "fp-a", agentVersion: "1.5.2" });
+      assert.deepEqual((yield* readAntigravityCatalog(dir, sign))?.choices, choices);
+      assert.isUndefined(yield* readAntigravityCatalog(dir, { ...sign, fingerprint: "fp-b" }));
+      assert.isUndefined(yield* readAntigravityCatalog(dir, { ...sign, agentVersion: "1.6.0" }));
+
+      // A list saved before versions were recorded came from an older agent.
+      yield* Effect.promise(() =>
+        fs.writeFile(join(dir, "threadlines-models.json"), JSON.stringify({ choices })),
+      );
+      assert.isUndefined(yield* readAntigravityCatalog(dir, sign));
+      yield* Effect.promise(() => fs.rm(dir, { recursive: true, force: true }));
     }),
   );
 });

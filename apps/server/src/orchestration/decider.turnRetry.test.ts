@@ -1,4 +1,6 @@
 import {
+  ChildRequestBatchId,
+  ChildRequestId,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
@@ -16,6 +18,7 @@ import {
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
 
+import { childDeliveryForTurnEnd, isHeldByContinueAtReset } from "./childThreadDelivery.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -715,5 +718,407 @@ describe("decider continue at reset", () => {
       threadId,
     });
     expect(archived.session?.continueAtReset).toBeUndefined();
+  });
+});
+
+// docs/design/lead-chat.md, "Usage limits: pause, not failure" and its rulings.
+describe("a usage limit pauses a thread an agent started", () => {
+  const parentId = ThreadId.make("thread-parent");
+  const childId = ThreadId.make("thread-child");
+  const requestId = ChildRequestId.make("request-1");
+  const askId = MessageId.make("message-ask");
+  const turnId = TurnId.make("turn-child-1");
+  const limitText = "You've hit your session limit";
+  const resetsAt = "2026-01-01T05:00:00.000Z";
+  const running: OrchestrationSession = {
+    ...failedSession,
+    threadId: childId,
+    status: "running",
+    activeTurnId: turnId,
+    lastError: null,
+  };
+
+  function model(
+    overrides: {
+      readonly requestStatus?: "running" | "awaiting_background";
+      readonly typed?: boolean;
+    } = {},
+  ): OrchestrationReadModel {
+    const parent = makeThread({
+      id: parentId,
+      title: "Parent",
+      session: null,
+      messages: [],
+      latestTurn: null,
+      childRequests: {
+        ...EMPTY_CHILD_REQUEST_STATE,
+        open: [
+          {
+            requestId,
+            batchId: ChildRequestBatchId.make("batch-1"),
+            kind: "send",
+            from: { participantId: null },
+            callerTurnId: TurnId.make("parent-turn"),
+            deliveryEpoch: 0,
+            status: overrides.requestStatus ?? "running",
+            childThreadId: childId,
+            childMessageId: askId,
+            ...(overrides.requestStatus === "awaiting_background"
+              ? { candidateTurnId: turnId }
+              : {}),
+            createdAt: now,
+          },
+        ],
+      },
+    });
+    const child = makeThread({
+      id: childId,
+      title: "Child",
+      parentThreadId: parentId,
+      attachedToParent: true,
+      session: running,
+      latestTurn: {
+        turnId,
+        state: "running",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        assistantMessageId: null,
+      },
+      messages: [
+        {
+          id: askId,
+          role: "user",
+          text: "Write the changelog.",
+          ...(overrides.typed
+            ? { composer: "typed" as const }
+            : { fromThread: { threadId: parentId, requestId, kind: "request" as const } }),
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    });
+    return { ...makeReadModel(parent), threads: [parent, child] };
+  }
+
+  const run = async (readModel: OrchestrationReadModel, command: OrchestrationCommand) => {
+    const decided = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
+    const events = Array.isArray(decided) ? decided : [decided];
+    let projected = readModel;
+    for (const event of events) {
+      projected = await Effect.runPromise(
+        projectEvent(projected, { ...event, sequence: projected.snapshotSequence + 1 }),
+      );
+      projected = { ...projected, snapshotSequence: projected.snapshotSequence + 1 };
+    }
+    return { events, readModel: projected };
+  };
+  const threadIn = (readModel: OrchestrationReadModel, id: ThreadId) =>
+    readModel.threads.find((entry) => entry.id === id)!;
+  const openRequests = (readModel: OrchestrationReadModel) =>
+    threadIn(readModel, parentId).childRequests.open;
+  const limitHit = (settingOn: boolean, at = "2026-01-01T00:00:04.000Z") =>
+    ({
+      type: "thread.session.set",
+      commandId: CommandId.make(`cmd-limit-${at}`),
+      threadId: childId,
+      session: {
+        ...running,
+        status: "error",
+        activeTurnId: null,
+        lastError: limitText,
+        updatedAt: at,
+      },
+      usageLimit: { window: "session", resetsAt },
+      continueAfterUsageLimits: settingOn,
+      createdAt: at,
+    }) as const;
+  const turnEnded = (readModel: OrchestrationReadModel, pendingMessageId: MessageId) =>
+    childDeliveryForTurnEnd({
+      owned: openRequests(readModel),
+      child: threadIn(readModel, childId),
+      end: { turnId, outcome: "failed", error: limitText },
+      pendingMessageId,
+      awaitedBackgroundTaskCount: 0,
+    });
+
+  it("holds the request through the wait and answers it with the continue", async () => {
+    const off = await run(model(), limitHit(false));
+    expect(threadIn(off.readModel, childId).session?.continueAtReset).toBeUndefined();
+    expect(turnEnded(off.readModel, askId)?.type).toBe("thread.child-request.settle");
+
+    const armed = await run(model(), limitHit(true));
+    expect(threadIn(armed.readModel, childId).session?.continueAtReset).toBeDefined();
+    // The failed turn's end does not settle it: it waits for the continue.
+    expect(turnEnded(armed.readModel, askId)).toBeNull();
+
+    const lastErrorAt = threadIn(armed.readModel, childId).session?.lastErrorAt ?? "";
+    const continueId = MessageId.make("message-continue");
+    const fired = await run(armed.readModel, {
+      type: "thread.continue-at-reset.fire",
+      commandId: CommandId.make("cmd-fire"),
+      threadId: childId,
+      lastErrorAt,
+      messageId: continueId,
+      createdAt: "2026-01-01T05:01:30.000Z",
+    });
+    expect(openRequests(fired.readModel)).toMatchObject([
+      { requestId, status: "running", childMessageId: continueId },
+    ]);
+    // The continue's turn answers it through the normal path.
+    const answered = childDeliveryForTurnEnd({
+      owned: openRequests(fired.readModel),
+      child: threadIn(fired.readModel, childId),
+      end: { turnId: TurnId.make("turn-continue"), outcome: "completed" },
+      pendingMessageId: continueId,
+      awaitedBackgroundTaskCount: 0,
+    });
+    expect(answered).toMatchObject({ type: "thread.child-request.settle", outcome: "answered" });
+  });
+
+  it("never arms for a turn the user stopped, whoever started it", async () => {
+    for (const typed of [false, true]) {
+      const stopped = await run(model({ typed }), {
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make(`cmd-stop-${typed}`),
+        threadId: childId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+      expect(threadIn(stopped.readModel, childId).session?.stopRequestedTurnId).toBe(turnId);
+      const limited = await run(stopped.readModel, limitHit(true));
+      expect(threadIn(limited.readModel, childId).session?.continueAtReset).toBeUndefined();
+    }
+  });
+
+  it("settles the held request when Stop or the user's own turn ends the wait", async () => {
+    const armed = (await run(model(), limitHit(true))).readModel;
+    const stopped = await run(armed, {
+      type: "thread.session.stop",
+      commandId: CommandId.make("cmd-session-stop"),
+      threadId: childId,
+      createdAt: "2026-01-01T00:01:00.000Z",
+    });
+    expect(threadIn(stopped.readModel, childId).session?.continueAtReset).toBeUndefined();
+    expect(openRequests(stopped.readModel)).toEqual([]);
+    expect(
+      stopped.events.some(
+        (event) =>
+          event.type === "thread.child-request-settled" &&
+          (event.payload as { outcome?: string }).outcome === "stopped",
+      ),
+    ).toBe(true);
+
+    const userWrote = await run(armed, {
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-user-turn"),
+      threadId: childId,
+      message: {
+        messageId: MessageId.make("message-user-own"),
+        role: "user",
+        text: "Do something else.",
+        attachments: [],
+      },
+      runtimeMode: "full-access",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: "2026-01-01T00:01:00.000Z",
+    });
+    expect(openRequests(userWrote.readModel)).toEqual([]);
+    expect(
+      userWrote.events.some(
+        (event) =>
+          event.type === "thread.child-request-settled" &&
+          (event.payload as { outcome?: string }).outcome === "failed",
+      ),
+    ).toBe(true);
+  });
+
+  it("fails the request when its continue is overtaken and never runs", async () => {
+    const armed = (await run(model(), limitHit(true))).readModel;
+    const lastErrorAt = threadIn(armed, childId).session?.lastErrorAt ?? "";
+    const continueId = MessageId.make("message-continue");
+    const fired = (
+      await run(armed, {
+        type: "thread.continue-at-reset.fire",
+        commandId: CommandId.make("cmd-fire"),
+        threadId: childId,
+        lastErrorAt,
+        messageId: continueId,
+        createdAt: "2026-01-01T05:01:30.000Z",
+      })
+    ).readModel;
+    const skipped = await run(fired, {
+      type: "thread.continue-at-reset.skip",
+      commandId: CommandId.make("cmd-skip"),
+      threadId: childId,
+      messageId: continueId,
+      createdAt: "2026-01-01T05:01:31.000Z",
+    });
+    expect(openRequests(skipped.readModel)).toEqual([]);
+  });
+
+  it("arms for a report heard in a top-level thread, never for a goal the limit paused", async () => {
+    const reporting = makeThread({
+      session: { ...failedSession, status: "running", activeTurnId: turnId, lastError: null },
+      messages: [
+        {
+          id: MessageId.make("message-report"),
+          role: "user",
+          text: "The changelog is written.",
+          fromThread: { threadId: childId, requestId, kind: "report" },
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    });
+    const reported = await run(makeReadModel(reporting), {
+      ...limitHit(true),
+      threadId,
+      session: { ...limitHit(true).session, threadId },
+    });
+    expect(threadIn(reported.readModel, threadId).session?.continueAtReset).toBeDefined();
+
+    const goalPaused = model();
+    const onGoal = {
+      ...goalPaused,
+      threads: goalPaused.threads.map((entry) =>
+        entry.id === childId
+          ? {
+              ...entry,
+              goal: {
+                objective: "Ship it",
+                status: "usageLimited" as const,
+                createdAt: now,
+                updatedAt: now,
+              } as never,
+            }
+          : entry,
+      ),
+    };
+    const limited = await run(onGoal, limitHit(true));
+    expect(threadIn(limited.readModel, childId).session?.continueAtReset).toBeUndefined();
+  });
+
+  it("keeps the hold past a later message queued in the child, and settles it when that runs", async () => {
+    const armed = (await run(model(), limitHit(true))).readModel;
+    // The parent asks again while the child waits: its message is written when queued.
+    const secondId = MessageId.make("message-ask-2");
+    const queued: OrchestrationReadModel = {
+      ...armed,
+      threads: armed.threads.map((entry) =>
+        entry.id === parentId
+          ? {
+              ...entry,
+              childRequests: {
+                ...entry.childRequests,
+                open: [
+                  ...entry.childRequests.open,
+                  {
+                    ...entry.childRequests.open[0]!,
+                    requestId: ChildRequestId.make("request-2"),
+                    status: "queued" as const,
+                    childMessageId: secondId,
+                  },
+                ],
+              },
+            }
+          : entry.id === childId
+            ? {
+                ...entry,
+                messages: [
+                  ...entry.messages,
+                  {
+                    id: secondId,
+                    role: "user" as const,
+                    text: "Also the release notes.",
+                    fromThread: {
+                      threadId: parentId,
+                      requestId: ChildRequestId.make("request-2"),
+                      kind: "request" as const,
+                    },
+                    turnId: null,
+                    streaming: false,
+                    createdAt: now,
+                    updatedAt: now,
+                  },
+                ],
+                queuedFollowUps: [
+                  {
+                    messageId: secondId,
+                    text: "Also the release notes.",
+                    attachments: [],
+                    fromThread: {
+                      threadId: parentId,
+                      requestId: ChildRequestId.make("request-2"),
+                      kind: "request" as const,
+                    },
+                    runtimeMode: "full-access" as const,
+                    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+                    createdAt: now,
+                  },
+                ],
+              }
+            : entry,
+      ),
+    };
+    expect(isHeldByContinueAtReset(threadIn(queued, childId), openRequests(queued)[0]!)).toBe(true);
+    const sent = await run(queued, {
+      type: "thread.follow-up.send-queued",
+      commandId: CommandId.make("cmd-send-second"),
+      threadId: childId,
+      messageId: secondId,
+      createdAt: "2026-01-01T00:02:00.000Z",
+    });
+    expect(openRequests(sent.readModel).some((entry) => entry.requestId === requestId)).toBe(false);
+  });
+
+  it("fails the held request when the wait ends by resuming a Codex goal", async () => {
+    const armed = (await run(model(), limitHit(true))).readModel;
+    const onGoal = {
+      ...armed,
+      threads: armed.threads.map((entry) =>
+        entry.id === childId
+          ? ({
+              ...entry,
+              goal: {
+                objective: "Ship it",
+                status: "usageLimited",
+                createdAt: now,
+                updatedAt: now,
+              },
+            } as never)
+          : entry,
+      ),
+    };
+    const lastErrorAt = threadIn(onGoal, childId).session?.lastErrorAt ?? "";
+    const fired = await run(onGoal, {
+      type: "thread.continue-at-reset.fire",
+      commandId: CommandId.make("cmd-fire-goal"),
+      threadId: childId,
+      lastErrorAt,
+      messageId: MessageId.make("message-continue-goal"),
+      createdAt: "2026-01-01T05:01:30.000Z",
+    });
+    expect(openRequests(fired.readModel)).toEqual([]);
+  });
+
+  it("arms nothing for a request waiting on background work, which no later turn answers", async () => {
+    const armed = await run(model({ requestStatus: "awaiting_background" }), limitHit(true));
+    expect(threadIn(armed.readModel, childId).session?.continueAtReset).toBeUndefined();
+    expect(turnEnded(armed.readModel, null as unknown as MessageId)).toBeNull();
+    // The follow-up's start settled the waiting request with its answer so
+    // far (rule 4), so its failure answers nothing.
+    expect(
+      childDeliveryForTurnEnd({
+        owned: openRequests(armed.readModel),
+        child: threadIn(armed.readModel, childId),
+        end: { turnId: TurnId.make("turn-follow-up"), outcome: "failed", error: limitText },
+        pendingMessageId: null,
+        awaitedBackgroundTaskCount: 0,
+      }),
+    ).toBeNull();
   });
 });

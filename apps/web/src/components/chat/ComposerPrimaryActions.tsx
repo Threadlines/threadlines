@@ -31,6 +31,11 @@ interface ComposerPrimaryActionsProps {
   isSendBusy: boolean;
   isConnecting: boolean;
   isEnvironmentUnavailable: boolean;
+  /**
+   * Why nothing that starts work can be sent now (a move waits, Part 3b); the
+   * send button says it. Stop still works. Absent or null: nothing blocks.
+   */
+  sendBlockedReason?: string | null;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
@@ -371,6 +376,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isSendBusy,
   isConnecting,
   isEnvironmentUnavailable,
+  sendBlockedReason = null,
   isPreparingWorktree,
   hasSendableContent,
   preserveComposerFocusOnPointerDown = false,
@@ -388,6 +394,13 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const pointerFocusProps = preserveComposerFocusOnPointerDown
     ? { onPointerDown: preventPointerFocus }
     : undefined;
+  const sendUnavailable =
+    isSendBusy || isConnecting || isEnvironmentUnavailable || sendBlockedReason !== null;
+
+  // Something typed that can't go: one send button, saying why on hover.
+  if (sendBlockedReason !== null && hasSendableContent) {
+    return <ComposerBlockedSendButton reason={sendBlockedReason} />;
+  }
 
   // Also while the agent at work only waits on background work, when there
   // is no turn to steer or stop.
@@ -397,7 +410,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         <ComposerRoomSendButton
           roomDelivery={roomDelivery}
           onRoomDeliveryChange={onRoomDeliveryChange}
-          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+          disabled={sendUnavailable}
           preserveComposerFocusOnPointerDown={preserveComposerFocusOnPointerDown}
         />
       </div>
@@ -436,7 +449,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               },
             ]}
             onChange={onFollowUpDeliveryChange}
-            disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+            disabled={sendUnavailable}
             pointerFocusProps={pointerFocusProps}
           />
         ) : (
@@ -466,7 +479,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           size="sm"
           className={cn("rounded-full", compact ? "h-9 px-3 sm:h-8" : "h-9 px-4 sm:h-8")}
           {...pointerFocusProps}
-          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+          disabled={sendUnavailable}
         >
           {isConnecting || isSendBusy ? "Sending..." : "Refine"}
         </Button>
@@ -480,7 +493,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           size="sm"
           className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
           {...pointerFocusProps}
-          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+          disabled={sendUnavailable}
         >
           {isConnecting || isSendBusy ? "Sending..." : "Implement"}
         </Button>
@@ -493,17 +506,14 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                 className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
                 aria-label="Implementation actions"
                 {...pointerFocusProps}
-                disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+                disabled={sendUnavailable}
               />
             }
           >
             <ChevronDownIcon className="size-3.5" />
           </MenuTrigger>
           <MenuPopup align="end" side="top">
-            <MenuItem
-              disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
-              onClick={() => void onImplementPlanInNewThread()}
-            >
+            <MenuItem disabled={sendUnavailable} onClick={() => void onImplementPlanInNewThread()}>
               Implement in a new thread
             </MenuItem>
             {runtimeModeOptions.length > 1 ? (
@@ -560,19 +570,21 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   return (
     <button
       type="submit"
-      className="flex h-9 w-9 enabled:cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors duration-150 hover:bg-primary-hover disabled:pointer-events-none disabled:opacity-30 sm:h-8 sm:w-8"
+      className={SEND_BUTTON_CLASS_NAME}
       {...pointerFocusProps}
-      disabled={isSendBusy || isConnecting || isEnvironmentUnavailable || !hasSendableContent}
+      disabled={sendUnavailable || !hasSendableContent}
       aria-label={
-        isEnvironmentUnavailable
-          ? "Environment disconnected"
-          : isConnecting
-            ? "Connecting"
-            : isPreparingWorktree
-              ? "Preparing worktree"
-              : isSendBusy
-                ? "Sending"
-                : "Send message"
+        sendBlockedReason !== null
+          ? sendBlockedReason
+          : isEnvironmentUnavailable
+            ? "Environment disconnected"
+            : isConnecting
+              ? "Connecting"
+              : isPreparingWorktree
+                ? "Preparing worktree"
+                : isSendBusy
+                  ? "Sending"
+                  : "Send message"
       }
     >
       {isConnecting || isSendBusy ? (
@@ -595,16 +607,48 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           />
         </svg>
       ) : (
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-          <path
-            d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
+        <SendArrowIcon />
       )}
     </button>
   );
 });
+
+const SEND_BUTTON_CLASS_NAME =
+  "flex h-9 w-9 enabled:cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors duration-150 hover:bg-primary-hover disabled:pointer-events-none disabled:opacity-30 sm:h-8 sm:w-8";
+
+function SendArrowIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path
+        d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/**
+ * The send button while nothing new can go (ComposerPrimaryActionsProps.
+ * sendBlockedReason): disabled, named by why, and saying it on hover. The
+ * hover lands on its wrapper, since a disabled button takes no pointer.
+ */
+function ComposerBlockedSendButton({ reason }: { reason: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        delay={0}
+        render={<span className="inline-flex shrink-0" data-testid="composer-send-blocked" />}
+      >
+        <button type="submit" className={SEND_BUTTON_CLASS_NAME} disabled aria-label={reason}>
+          <SendArrowIcon />
+        </button>
+      </TooltipTrigger>
+      <TooltipPopup align="end" side="top" className="max-w-64 whitespace-normal">
+        {reason}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}

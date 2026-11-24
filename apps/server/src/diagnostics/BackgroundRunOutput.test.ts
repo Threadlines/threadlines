@@ -7,6 +7,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { makeSecretScrubber, type SecretScrubberShape } from "../secrets/SecretScrubber.ts";
+import { canMakeSymlinks } from "../testUtils/symlinks.ts";
 import { makeBackgroundRunOutputReader } from "./BackgroundRunOutput.ts";
 
 const THREAD_ID = ThreadId.make("thread-1");
@@ -26,7 +28,10 @@ afterEach(async () => {
 });
 
 /** A thread whose only activity is Claude's reply naming `announcedFile`. */
-function readerForThreadAnnouncing(announcedFile: string) {
+function readerForThreadAnnouncing(
+  announcedFile: string,
+  scrubber: SecretScrubberShape = makeSecretScrubber(),
+) {
   const thread = {
     activities: [
       {
@@ -36,9 +41,10 @@ function readerForThreadAnnouncing(announcedFile: string) {
       },
     ],
   } as unknown as OrchestrationThread;
-  return makeBackgroundRunOutputReader({
-    getThreadDetailById: () => Effect.succeed(Option.some(thread)),
-  });
+  return makeBackgroundRunOutputReader(
+    { getThreadDetailById: () => Effect.succeed(Option.some(thread)) },
+    scrubber,
+  );
 }
 
 describe("readBackgroundRunOutput", () => {
@@ -46,6 +52,20 @@ describe("readBackgroundRunOutput", () => {
     const read = readerForThreadAnnouncing(outputFile);
     const result = await Effect.runPromise(read({ threadId: THREAD_ID, outputFile }));
     expect(result.tail).toContain("http://localhost:5173/");
+  });
+
+  it("hides a saved key whole even when it reaches into the end from before it", async () => {
+    // A key of many lines, long enough that the 8 KB end starts inside it:
+    // cut first, the lines after the cut would show.
+    const key = Array.from({ length: 12 }, (_, line) => `${line}a1b2c3d4`.repeat(8)).join("\n");
+    const scrubber = makeSecretScrubber();
+    scrubber.watch("DEPLOY_KEY", key);
+    await writeFile(outputFile, `${"x".repeat(9_000)}\n${key}\n${"y".repeat(8_000)}\ndone\n`);
+    const read = readerForThreadAnnouncing(outputFile, scrubber);
+    const result = await Effect.runPromise(read({ threadId: THREAD_ID, outputFile }));
+    expect(result.tail).toContain("[DEPLOY_KEY hidden]");
+    expect(result.tail).not.toContain("a1b2c3d4");
+    expect(result.tail).toContain("done");
   });
 
   it("refuses a file the thread never named, even one shaped like Claude's", async () => {
@@ -61,7 +81,8 @@ describe("readBackgroundRunOutput", () => {
     expect(result.tail).toBeNull();
   });
 
-  it("refuses an announced file that is a symlink", async () => {
+  // Links to files need symlink rights, which Windows grants only with Developer Mode.
+  it.skipIf(!canMakeSymlinks)("refuses an announced file that is a symlink", async () => {
     const secret = path.join(directory, "secret.txt");
     await writeFile(secret, "private\n");
     const linked = path.join(directory, "tasks", "linked.output");

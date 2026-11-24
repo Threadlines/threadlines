@@ -63,6 +63,7 @@ const STATIC_KEYBINDING_COMMANDS = [
   "sidebar.toggle",
   "navigate.fleet",
   "navigate.scheduled",
+  "navigate.terminals",
   "navigate.back",
   "navigate.forward",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,

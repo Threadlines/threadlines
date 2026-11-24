@@ -73,10 +73,12 @@ import { createHash } from "node:crypto";
 import * as NodePath from "node:path";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { makeAgentProcessLedger } from "../agentProcessLedger.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpCommandsEndpointUrl,
+  mcpDeviceEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
@@ -85,6 +87,8 @@ import {
   buildCommandRequestInstructions,
   COMMANDS_MCP_SERVER_NAME,
 } from "../../mcp/commandTools.ts";
+import { DEVICE_MCP_SERVER_NAME } from "../../mcp/deviceTools.ts";
+import { buildDeviceInstructions } from "../deviceInstructions.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { buildAgentPageInstructions, PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
 import { ROOM_MCP_SERVER_NAME, roomEndpointGrant } from "../../mcp/roomToolAccess.ts";
@@ -132,6 +136,8 @@ import {
   type PiToolServer,
 } from "../pi/PiLaunch.ts";
 import { PI_PROMPT_REFUSED_PREFIX, piTurnFailure } from "../pi/PiFailure.ts";
+import { piAgentDir } from "../pi/PiBinary.ts";
+import { exportPiNativeSession, importPiNativeSession } from "../pi/PiNativeSession.ts";
 import { removePiSecretsFile, writePiSecretsFile } from "../pi/PiSecrets.ts";
 import {
   decodePi,
@@ -305,6 +311,7 @@ interface SessionContext {
   readonly roomEndpoint: boolean;
   readonly agentPageAssetsDir: string | undefined;
   readonly commandRequests: boolean;
+  readonly deviceTools: boolean;
   readonly managedWorktree: boolean;
   readonly mcpToken: string;
   readonly launchArgs: ReadonlyArray<string>;
@@ -376,7 +383,17 @@ export function makePiAdapter(options: PiAdapterOptions) {
     const boundInstanceId = options.instanceId;
     const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, SessionContext>();
+    /** Each Pi process it started, until proven gone (confirmThreadStopped). */
+    const processes = yield* makeAgentProcessLedger();
     const startRpc = options.startRpc ?? startPiRpc;
+    /** Pi's own folder, from the environment its processes run with. */
+    const instanceAgentDir = () =>
+      piAgentDir(
+        piProcessEnvironment({
+          instanceEnvironment: options.instanceEnvironment,
+          ...(options.baseEnvironment ? { baseEnv: options.baseEnvironment } : {}),
+        }),
+      );
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const stamp = Effect.all({
@@ -478,6 +495,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
     const instructionsFor = (input: {
       readonly agentPageAssetsDir: string | undefined;
       readonly commandRequests: boolean;
+      readonly deviceTools: boolean;
       readonly scheduleTools: boolean;
       readonly roomEndpoint: boolean;
       readonly managedWorktree: boolean;
@@ -490,6 +508,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
         ...(input.commandRequests
           ? [buildCommandRequestInstructions({ toolPrefix: `mcp__${COMMANDS_MCP_SERVER_NAME}__` })]
           : []),
+        ...(input.deviceTools ? [buildDeviceInstructions(`mcp__${DEVICE_MCP_SERVER_NAME}__`)] : []),
         ...(input.scheduleTools
           ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
           : []),
@@ -504,6 +523,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
       readonly roomEndpoint: boolean;
       readonly agentPageAssetsDir: string | undefined;
       readonly commandRequests: boolean;
+      readonly deviceTools: boolean;
     }): ReadonlyArray<PiToolServer> => [
       { name: BROWSER_MCP_SERVER_NAME, url: mcpEndpointUrl(serverConfig.port) },
       ...(ctx.roomEndpoint
@@ -514,6 +534,9 @@ export function makePiAdapter(options: PiAdapterOptions) {
         : []),
       ...(ctx.commandRequests
         ? [{ name: COMMANDS_MCP_SERVER_NAME, url: mcpCommandsEndpointUrl(serverConfig.port) }]
+        : []),
+      ...(ctx.deviceTools
+        ? [{ name: DEVICE_MCP_SERVER_NAME, url: mcpDeviceEndpointUrl(serverConfig.port) }]
         : []),
     ];
 
@@ -1403,6 +1426,12 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 }),
             ),
           );
+          if (rpc.pid !== undefined) {
+            yield* processes.track(ctx.threadId, {
+              pid: rpc.pid,
+              exited: Effect.asVoid(rpc.exited),
+            });
+          }
           // Without its commands a marker would reach the model as text.
           const commands = decodePi(PiCommands)(
             yield* rpc
@@ -1715,6 +1744,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
           const roomTools = input.roomTools === true;
           const roomGrant = roomEndpointGrant(input, undefined);
           const commandRequests = input.commandRequests === true;
+          const deviceTools = input.deviceTools === true;
           const agentPageAssetsDir =
             input.agentPages === true
               ? yield* ensurePageAssetsDir(parseSessionKey(input.threadId).threadId).pipe(
@@ -1728,6 +1758,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
             room: roomGrant.attach,
             pages: agentPageAssetsDir !== undefined,
             commands: commandRequests,
+            device: deviceTools,
             scheduledRun: input.scheduledRunTools === true,
             guideOnly: roomGrant.guideOnly,
           });
@@ -1738,13 +1769,19 @@ export function makePiAdapter(options: PiAdapterOptions) {
           const managedWorktree = yield* isLinkedWorktreeCheckout(directory).pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),
           );
-          const instructions = instructionsFor({
-            agentPageAssetsDir,
-            commandRequests,
-            scheduleTools: roomTools && input.scheduleTools === true,
-            roomEndpoint: roomGrant.attach,
-            managedWorktree,
-          });
+          // The project's brief goes last. The file is named by the hash of
+          // the whole text, so another project's brief is never reused.
+          const instructions = [
+            instructionsFor({
+              agentPageAssetsDir,
+              commandRequests,
+              deviceTools,
+              scheduleTools: roomTools && input.scheduleTools === true,
+              roomEndpoint: roomGrant.attach,
+              managedWorktree,
+            }),
+            ...(input.projectInstructions !== undefined ? [input.projectInstructions] : []),
+          ].join("\n\n");
           const instructionsPath = NodePath.join(
             options.extensionDir,
             "instructions",
@@ -1784,6 +1821,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
             roomEndpoint: roomGrant.attach,
             agentPageAssetsDir,
             commandRequests,
+            deviceTools,
             managedWorktree,
             mcpToken: credential.token,
             launchArgs: launchArgs.args,
@@ -2394,6 +2432,14 @@ export function makePiAdapter(options: PiAdapterOptions) {
         })),
       rollbackThread,
       stopAll,
+      // Pi's own folder for this instance, as its processes find it.
+      exportNativeSession: ({ resumeCursor }) =>
+        exportPiNativeSession({ agentDir: instanceAgentDir(), resumeCursor }),
+      importNativeSession: (input) =>
+        importPiNativeSession({ ...input, agentDir: instanceAgentDir() }),
+      noteBeforeStop: processes.beforeStop,
+      confirmThreadStopped: processes.confirm,
+      listProcesses: processes.owners,
       streamEvents: Stream.fromPubSub(runtimeEvents),
     } satisfies PiAdapterShape;
   });

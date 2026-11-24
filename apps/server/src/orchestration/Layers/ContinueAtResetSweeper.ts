@@ -4,12 +4,14 @@ import { CommandId, MessageId, type ServerProvider, type ThreadId } from "@threa
 import {
   continueAtResetTimeMs,
   listProviderUsageWindows,
+  type ProviderUsageWindowReading,
   readProviderUsageBlock,
 } from "@threadlines/shared/usageLimits";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 
@@ -20,6 +22,7 @@ import {
 import { SystemWake } from "../../power/Services/SystemWake.ts";
 import { freshOrCurrentSnapshot } from "../../provider/freshProviderSnapshot.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
   ContinueAtResetSweeper,
   type ContinueAtResetSweeperShape,
@@ -63,6 +66,7 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
     const providerRegistry = yield* ProviderRegistry;
     const orchestrationEngine = yield* OrchestrationEngineService;
     const systemWake = yield* SystemWake;
+    const analytics = yield* Effect.serviceOption(AnalyticsService);
     // The interval and `sweepNow` must not both continue one thread.
     const sweepSemaphore = yield* Semaphore.make(1);
     /**
@@ -119,9 +123,17 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
         return false;
       }
       if (seen === undefined) return false;
-      // Another spent limit would only stop the thread again.
+      // Another spent limit would only stop the thread again, unless it
+      // covers another family of models than every limit that stopped it
+      // (Antigravity's Claude & GPT pool beside a Gemini thread's).
+      const stoppedFamilies = [...seen.readAtMsByWindow.keys()].map(
+        (key) => windows.find((window) => window.key === key)?.family,
+      );
+      const otherFamily = (window: ProviderUsageWindowReading) =>
+        window.family !== undefined &&
+        stoppedFamilies.every((family) => family !== undefined && family !== window.family);
       if (
-        windows.some((window) => window.spent) ||
+        windows.some((window) => window.spent && !otherFamily(window)) ||
         readProviderUsageBlock(provider, nowMs).state === "blocked"
       ) {
         return false;
@@ -206,6 +218,11 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
         yield* Effect.logInfo("thread.continue-at-reset.continued-early", {
           threadId: entry.threadId,
         });
+        if (Option.isSome(analytics)) {
+          yield* analytics.value.record("provider.turn.usage_limit_continued", {
+            early: true,
+          });
+        }
         return true;
       }).pipe(
         Effect.catchCause((cause) =>
@@ -272,6 +289,11 @@ const makeContinueAtResetSweeper = (options?: ContinueAtResetSweeperLiveOptions)
           createdAt,
         });
         yield* Effect.logInfo("thread.continue-at-reset.continued", { threadId: entry.threadId });
+        if (Option.isSome(analytics)) {
+          yield* analytics.value.record("provider.turn.usage_limit_continued", {
+            early: false,
+          });
+        }
         return true;
       }).pipe(
         Effect.catchCause((cause) =>

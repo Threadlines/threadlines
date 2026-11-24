@@ -8,6 +8,7 @@ import {
   RUNTIME_MODES,
   type ServerProvider,
   type ServerProviderAccountTokenUsage,
+  type ServerProviderAccountUsage,
   type ServerProviderAuthCapabilities,
   type ServerProviderModel,
   type ServerProviderSignInEnds,
@@ -869,6 +870,24 @@ export function claudeChatAndUsageAccountsDiffer(auth: ServerProvider["auth"]): 
   return auth.email !== undefined && auth.usageEmail !== undefined;
 }
 
+export interface ClaudeUsageCarryOptions {
+  /**
+   * Whether this instance reads a local token calendar. An account folder that
+   * shares the main folder's history reads none (the main instance counts it),
+   * so a calendar saved before it became one must not carry over.
+   */
+  readonly keepsTokenCalendar?: boolean;
+}
+
+const usageToCarry = (
+  usage: ServerProviderAccountUsage | undefined,
+  options: ClaudeUsageCarryOptions,
+): ServerProviderAccountUsage | undefined => {
+  if (!usage || options.keepsTokenCalendar !== false || !usage.tokenUsage) return usage;
+  const { tokenUsage: _tokenUsage, ...withoutCalendar } = usage;
+  return withoutCalendar;
+};
+
 /**
  * Folds the usage the previous snapshot knew into a freshly checked one, so
  * one failed check (a rate limit, a slow network, a signed-out normal
@@ -885,6 +904,7 @@ export function claudeChatAndUsageAccountsDiffer(auth: ServerProvider["auth"]): 
 export function carryClaudeUsageAcrossChecks(
   previous: ServerProvider,
   next: ServerProvider,
+  options: ClaudeUsageCarryOptions = {},
 ): ServerProvider {
   if (!next.enabled || next.auth.status === "unauthenticated" || next.auth.type === "apiKey") {
     return next;
@@ -892,15 +912,23 @@ export function carryClaudeUsageAcrossChecks(
   const previousAccount = claudeUsageAccountKey(previous.auth);
   const nextAccount = claudeUsageAccountKey(next.auth);
   if (previousAccount && nextAccount && previousAccount !== nextAccount) return next;
+  const previousUsage = usageToCarry(previous.accountUsage, options);
 
   if (next.auth.capabilities?.usage?.status === "verified") {
-    const accountUsage = preferNewerClaudeUsageReadings(previous.accountUsage, next.accountUsage);
+    const preferred = preferNewerClaudeUsageReadings(previousUsage, next.accountUsage);
+    // A check whose calendar read came back partial keeps the last calendar.
+    const keptTokenUsage =
+      preferred && !preferred.tokenUsage && previousUsage?.source === preferred.source
+        ? previousUsage.tokenUsage
+        : undefined;
+    const accountUsage =
+      preferred && keptTokenUsage ? { ...preferred, tokenUsage: keptTokenUsage } : preferred;
     return accountUsage === next.accountUsage || !accountUsage ? next : { ...next, accountUsage };
   }
 
   const checkedAtMs = Date.parse(next.checkedAt);
   const carried = carryClaudeAccountUsageForward(
-    previous.accountUsage,
+    previousUsage,
     Number.isFinite(checkedAtMs) ? checkedAtMs : Date.now(),
   );
   if (!carried) return next;
@@ -918,29 +946,40 @@ export function carryClaudeUsageAcrossChecks(
 
 /**
  * The pending snapshot an instance starts from, carrying the usage its last
- * run saved to the status cache so a restart does not blank the meters
- * before the first check lands. The cached account identity comes along so
- * `carryClaudeUsageAcrossChecks` can still tell a changed account.
+ * run saved to the status cache so a restart does not blank the meters or
+ * the token calendar before the first check lands. The cached account
+ * identity comes along so `carryClaudeUsageAcrossChecks` can still tell a
+ * changed account.
  */
 export function seedClaudeProviderUsage(
   pending: ServerProvider,
   cached: ServerProvider | undefined,
+  options: ClaudeUsageCarryOptions = {},
 ): ServerProvider {
   if (
     !cached ||
     !pending.enabled ||
     cached.instanceId !== pending.instanceId ||
-    cached.driver !== pending.driver ||
-    cached.auth.type === "apiKey"
+    cached.driver !== pending.driver
   ) {
     return pending;
   }
-  const carried = carryClaudeAccountUsageForward(
-    cached.accountUsage,
-    Date.parse(pending.checkedAt),
-  );
+  const savedUsage = usageToCarry(cached.accountUsage, options);
+  if (cached.auth.type === "apiKey") {
+    // An API key has no subscription meters, but it still reads the calendar.
+    if (savedUsage?.source !== "claude-oauth-usage" || !savedUsage.tokenUsage) return pending;
+    return {
+      ...pending,
+      accountUsage: {
+        source: savedUsage.source,
+        checkedAt: savedUsage.checkedAt,
+        limits: [],
+        tokenUsage: savedUsage.tokenUsage,
+      },
+    };
+  }
+  const carried = carryClaudeAccountUsageForward(savedUsage, Date.parse(pending.checkedAt));
   if (!carried) return pending;
-  const { tokenUsage: _tokenUsage, ...limits } = carried;
   return {
     ...pending,
     auth: {
@@ -948,7 +987,7 @@ export function seedClaudeProviderUsage(
       ...(cached.auth.email ? { email: cached.auth.email } : {}),
       ...(cached.auth.usageEmail ? { usageEmail: cached.auth.usageEmail } : {}),
     },
-    accountUsage: limits,
+    accountUsage: carried,
   };
 }
 

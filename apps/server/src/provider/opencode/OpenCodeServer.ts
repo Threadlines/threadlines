@@ -59,6 +59,8 @@ export interface OpenCodeServer {
   readonly external: boolean;
   /** Resolves when an owned server process exits, for any reason. Never resolves for external servers. */
   readonly exited: Effect.Effect<void>;
+  /** The server process, when Threadlines started it; null for an external server. */
+  readonly pid: number | null;
 }
 
 /**
@@ -285,6 +287,7 @@ export const startOpenCodeServer = (input: {
       version,
       external: false,
       exited: Deferred.await(exited).pipe(Effect.asVoid),
+      pid: Number(child.pid),
     } satisfies OpenCodeServer;
   });
 
@@ -318,7 +321,7 @@ export const connectOpenCodeServer = (input: {
       ),
     );
     yield* requireSupportedVersion(version, operation);
-    return { url: input.url, client, version, external: true, exited: Effect.never };
+    return { url: input.url, client, version, external: true, exited: Effect.never, pid: null };
   });
 
 /** `opencode --version`, without starting a server. */

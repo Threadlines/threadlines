@@ -333,23 +333,33 @@ export const makeComputer = Effect.gen(function* () {
     repo.listRuns({ taskId, limit: 50 }).pipe(Effect.map((rows) => rows.toReversed()));
   const events = engine.readEvents(0).pipe(Stream.runCollect);
 
-  /** The thread's agent starts work on `turnId`: the turn binds to the pending message. */
+  /**
+   * The thread's agent starts work on `turnId`: the turn binds to the pending
+   * message, which the update names as the reactor does once the provider
+   * took the turn (the thread's newest user message).
+   */
   const turnRuns = (threadId: ThreadId, turnId: TurnId) =>
-    engine.dispatch({
-      type: "thread.session.set",
-      commandId: CommandId.make(`session-running:${threadId}:${turnId}`),
-      threadId,
-      session: {
+    Effect.gen(function* () {
+      const messageId = (yield* thread(threadId))?.messages.findLast(
+        (message) => message.role === "user",
+      )?.id;
+      return yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`session-running:${threadId}:${turnId}`),
         threadId,
-        status: "running",
-        providerName: "codex",
-        providerInstanceId: CODEX,
-        runtimeMode: "auto",
-        activeTurnId: turnId,
-        lastError: null,
-        updatedAt: AT,
-      },
-      createdAt: AT,
+        ...(messageId !== undefined ? { turnStartedBy: { messageId } } : {}),
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: CODEX,
+          runtimeMode: "auto",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: AT,
+        },
+        createdAt: AT,
+      });
     });
 
   const turnCompletes = (threadId: ThreadId, turnId: TurnId) =>

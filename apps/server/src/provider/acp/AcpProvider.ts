@@ -9,12 +9,14 @@
  *
  * @module provider/acp/AcpProvider
  */
+import { THREADLINES_ACP_CLIENT_INFO } from "./acpClientInfo.ts";
 import type {
   ModelCapabilities,
   ServerProvider,
   ServerProviderAuth,
   ServerProviderDetection,
   ServerProviderModel,
+  ServerProviderSkill,
 } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -260,20 +262,36 @@ export function buildInitialAcpProviderSnapshot<Settings extends AcpProviderSett
 const withAcpProbeRuntime = <Settings extends AcpProviderSettings, A, E, R>(
   descriptor: AcpProviderDescriptor<Settings>,
   settings: Settings,
-  useRuntime: (acp: AcpSessionRuntimeShape) => Effect.Effect<A, E, R>,
+  useRuntime: (
+    acp: AcpSessionRuntimeShape,
+    noteSessionId: (sessionId: string) => void,
+  ) => Effect.Effect<A, E, R>,
   environment: NodeJS.ProcessEnv,
-) =>
-  Effect.gen(function* () {
+) => {
+  let openedSessionId: string | undefined;
+  return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtime = yield* makeAcpProviderRuntime(descriptor, {
       settings,
       environment,
       childProcessSpawner: spawner,
       cwd: process.cwd(),
-      clientInfo: { name: "threadlines-provider-probe", version: "0.0.0" },
+      clientInfo: { ...THREADLINES_ACP_CLIENT_INFO, name: "threadlines-provider-probe" },
     });
-    return yield* useRuntime(runtime);
-  }).pipe(Effect.scoped);
+    return yield* useRuntime(runtime, (sessionId) => {
+      openedSessionId = sessionId;
+    });
+  }).pipe(
+    Effect.scoped,
+    Effect.ensuring(
+      Effect.suspend(() =>
+        openedSessionId !== undefined && descriptor.onEphemeralSessionClosed
+          ? descriptor.onEphemeralSessionClosed(openedSessionId).pipe(Effect.ignore)
+          : Effect.void,
+      ),
+    ),
+  );
+};
 
 /**
  * Starts a probe session and applies the updates the mapping makes with no
@@ -283,11 +301,13 @@ const withAcpProbeRuntime = <Settings extends AcpProviderSettings, A, E, R>(
 const startProbeSession = <Settings extends AcpProviderSettings>(
   descriptor: AcpProviderDescriptor<Settings>,
   acp: AcpSessionRuntimeShape,
+  noteSessionId?: (sessionId: string) => void,
 ) =>
   Effect.gen(function* () {
-    yield* acp
+    const started = yield* acp
       .start()
       .pipe(Effect.timeout(descriptor.modelDiscoveryTimeoutMs ?? ACP_MODEL_DISCOVERY_TIMEOUT_MS));
+    noteSessionId?.(started.sessionId);
     // The runtime's view, not the raw response: for native controls it also
     // holds the stand-ins for the older `modes` / `models` fields.
     let configOptions = yield* acp.getConfigOptions;
@@ -307,24 +327,48 @@ export const discoverAcpModels = <Settings extends AcpProviderSettings>(
   withAcpProbeRuntime(
     descriptor,
     settings,
-    (acp) =>
-      startProbeSession(descriptor, acp).pipe(
+    (acp, noteSessionId) =>
+      Effect.gen(function* () {
+        const configOptions = yield* startProbeSession(descriptor, acp, noteSessionId);
+        // An agent that probes every model's options in this single session
+        // (Antigravity) lists them here rather than spawning a second process.
+        if (descriptor.discoverModelOptions) {
+          const listed = yield* descriptor.discoverModelOptions(acp).pipe(
+            Effect.timeout(descriptor.modelDiscoveryTimeoutMs ?? ACP_MODEL_DISCOVERY_TIMEOUT_MS),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("ACP model option listing failed", {
+                provider: descriptor.driverKind,
+                cause: Cause.pretty(cause),
+              }).pipe(Effect.as(undefined)),
+            ),
+          );
+          if (listed && listed.length > 0) {
+            const mapping = mappingFor(descriptor);
+            const choices = flattenSessionConfigSelectOptions(findModelConfigOption(configOptions));
+            const bySlug = new Map(listed.map((entry) => [entry.slug, entry.configOptions]));
+            return buildAcpDiscoveredModels(
+              choices.map((choice) => ({
+                slug: choice.value,
+                name: choice.name,
+                capabilities: bySlug.has(choice.value)
+                  ? mapping.capabilitiesFromConfigOptions(bySlug.get(choice.value)!)
+                  : EMPTY_ACP_MODEL_CAPABILITIES,
+              })),
+            );
+          }
+        }
         // Agents that cache their catalog (to skip discovery next time) see
         // this session's options like any other's.
-        Effect.tap((configOptions) =>
-          descriptor.onSessionConfigOptions
-            ? descriptor.onSessionConfigOptions(settings, configOptions).pipe(Effect.ignore)
-            : Effect.void,
-        ),
-        Effect.map((configOptions) =>
-          buildAcpModelsFromConfigOptions({
-            configOptions,
-            mapping: mappingFor(descriptor),
-            sharedCapabilities: descriptor.modelCapabilitiesVaryByModel !== true,
-            defaultModelWhenNone: descriptor.sessionControls === "native",
-          }),
-        ),
-      ),
+        if (descriptor.onSessionConfigOptions) {
+          yield* descriptor.onSessionConfigOptions(settings, configOptions).pipe(Effect.ignore);
+        }
+        return buildAcpModelsFromConfigOptions({
+          configOptions,
+          mapping: mappingFor(descriptor),
+          sharedCapabilities: descriptor.modelCapabilitiesVaryByModel !== true,
+          defaultModelWhenNone: descriptor.sessionControls === "native",
+        });
+      }),
     environment,
   );
 
@@ -346,9 +390,9 @@ export const discoverAcpModelCapabilities = <Settings extends AcpProviderSetting
   return withAcpProbeRuntime(
     descriptor,
     settings,
-    (acp) =>
+    (acp, noteSessionId) =>
       Effect.gen(function* () {
-        const initialConfigOptions = yield* startProbeSession(descriptor, acp);
+        const initialConfigOptions = yield* startProbeSession(descriptor, acp, noteSessionId);
         const modelOption = findModelConfigOption(initialConfigOptions);
         const modelChoices = flattenSessionConfigSelectOptions(modelOption);
         if (!modelOption || modelChoices.length === 0) {
@@ -416,9 +460,17 @@ export const discoverAcpModelCapabilities = <Settings extends AcpProviderSetting
         const lanes = Array.from({ length: laneCount }, (_, lane) =>
           pendingSlugs.filter((_, index) => index % laneCount === lane),
         );
-        const probeLane = (probeAcp: AcpSessionRuntimeShape, laneSlugs: ReadonlyArray<string>) =>
+        const probeLane = (
+          probeAcp: AcpSessionRuntimeShape,
+          laneSlugs: ReadonlyArray<string>,
+          laneNoteSessionId?: (sessionId: string) => void,
+        ) =>
           Effect.gen(function* () {
-            const probeConfigOptions = yield* startProbeSession(descriptor, probeAcp);
+            const probeConfigOptions = yield* startProbeSession(
+              descriptor,
+              probeAcp,
+              laneNoteSessionId,
+            );
             const probeModelOptionId =
               findModelConfigOption(probeConfigOptions)?.id ?? modelOption.id;
             const results: Array<readonly [string, ModelCapabilities]> = [];
@@ -461,7 +513,8 @@ export const discoverAcpModelCapabilities = <Settings extends AcpProviderSetting
               : withAcpProbeRuntime(
                   descriptor,
                   settings,
-                  (probeAcp) => probeLane(probeAcp, laneSlugs),
+                  (probeAcp, laneNoteSessionId) =>
+                    probeLane(probeAcp, laneSlugs, laneNoteSessionId),
                   environment,
                 ),
           { concurrency: "unbounded" },
@@ -483,6 +536,7 @@ export function buildAcpProviderSnapshot<Settings extends AcpProviderSettings>(i
   readonly probe: AcpProviderProbeOutcome;
   readonly discoveredModels?: ReadonlyArray<ServerProviderModel>;
   readonly discoveryWarning?: string;
+  readonly skills?: ReadonlyArray<ServerProviderSkill>;
 }): ServerProviderDraft {
   const message = [input.probe.message, input.discoveryWarning]
     .map((part) => part?.trim())
@@ -501,6 +555,7 @@ export function buildAcpProviderSnapshot<Settings extends AcpProviderSettings>(i
       EMPTY_ACP_MODEL_CAPABILITIES,
     ),
     ...(discovered.length > 0 ? { modelCatalogSource: "live" as const } : {}),
+    ...(input.skills ? { skills: input.skills } : {}),
     probe: {
       installed: input.probe.installed,
       version: input.probe.version,
@@ -584,6 +639,11 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
       discoveredModels = yield* descriptor.enrichDiscoveredModels(discoveredModels, environment);
     }
 
+    const skills =
+      descriptor.listSkills && probe.installed
+        ? yield* descriptor.listSkills(settings, environment)
+        : undefined;
+
     return buildAcpProviderSnapshot({
       descriptor,
       checkedAt,
@@ -591,6 +651,7 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
       probe,
       discoveredModels,
       ...(discoveryWarning ? { discoveryWarning } : {}),
+      ...(skills ? { skills } : {}),
     });
   }).pipe(Effect.withSpan("checkAcpProviderStatus"));
 
@@ -610,6 +671,13 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
   readonly snapshot: ServerProvider;
   readonly maintenanceCapabilities: ProviderMaintenanceCapabilities;
   readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
+  /**
+   * Patches the current live snapshot in place so out-of-band patches
+   * (e.g. background usage readings) that landed while enrichment ran survive.
+   */
+  readonly updateSnapshot?: (
+    update: (current: ServerProvider) => ServerProvider,
+  ) => Effect.Effect<void>;
   readonly stampIdentity: (snapshot: ServerProvider) => ServerProvider;
   readonly httpClient: HttpClient.HttpClient;
   /** The status checks' catalog: its options are probed once per read. */
@@ -617,6 +685,13 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
 }): Effect.Effect<void, never, ChildProcessSpawner.ChildProcessSpawner> => {
   const { descriptor, settings, snapshot, publishSnapshot, stampIdentity } = input;
   const displayName = descriptor.presentation.displayName;
+  const applyUpdate = (
+    fallbackBase: ServerProvider,
+    update: (current: ServerProvider) => ServerProvider,
+  ) =>
+    input.updateSnapshot
+      ? input.updateSnapshot((current) => stampIdentity(update(current)))
+      : publishSnapshot(stampIdentity(update(fallbackBase)));
 
   const enrichVersionAdvisory = enrichProviderSnapshotWithVersionAdvisory(
     snapshot,
@@ -624,7 +699,10 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
   ).pipe(
     Effect.provideService(HttpClient.HttpClient, input.httpClient),
     Effect.flatMap((enriched) =>
-      publishSnapshot(stampIdentity(enriched)).pipe(Effect.as(enriched)),
+      applyUpdate(snapshot, (current) => ({
+        ...current,
+        ...(enriched.versionAdvisory ? { versionAdvisory: enriched.versionAdvisory } : {}),
+      })).pipe(Effect.as(enriched)),
     ),
     Effect.catchCause((cause) =>
       Effect.logWarning(`${displayName} version advisory enrichment failed`, {
@@ -669,17 +747,13 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
             return Effect.void;
           }
           if (claim !== "none") input.catalog?.rememberCapabilities(claim, capabilitiesBySlug);
-          return publishSnapshot(
-            stampIdentity({
-              ...baseSnapshot,
-              models: baseSnapshot.models.map((model) => {
-                const capabilities = model.isCustom
-                  ? undefined
-                  : capabilitiesBySlug.get(model.slug);
-                return capabilities ? { ...model, capabilities } : model;
-              }),
+          return applyUpdate(baseSnapshot, (current) => ({
+            ...current,
+            models: current.models.map((model) => {
+              const capabilities = model.isCustom ? undefined : capabilitiesBySlug.get(model.slug);
+              return capabilities ? { ...model, capabilities } : model;
             }),
-          );
+          }));
         }),
         Effect.catchCause((cause) =>
           Effect.logWarning(`${displayName} ACP background capability enrichment failed`, {

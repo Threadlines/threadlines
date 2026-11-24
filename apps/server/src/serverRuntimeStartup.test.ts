@@ -21,12 +21,14 @@ import {
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ServerSettingsService } from "./serverSettings.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import {
   getAutoBootstrapDefaultModelSelection,
   launchStartupHeartbeat,
   makeCommandGate,
+  recordStartupHeartbeat,
   resolveAutoBootstrapWelcomeTargets,
   resolveWelcomeBase,
   ServerRuntimeStartupError,
@@ -115,9 +117,12 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           listThreadTurnOverlapsSince: () => Effect.succeed([]),
           listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
           listClaimedSettingsChanges: () => Effect.succeed([]),
+          listSecretRequests: () => Effect.succeed([]),
           listThreadShells: () => Effect.succeed([]),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getTurnActivities: () => Effect.succeed([]),
+          getThreadMessage: () => Effect.succeed(Option.none()),
+          hasAssistantMessageForTurn: () => Effect.succeed(false),
           getThreadDetailById: () => Effect.succeed(Option.none()),
         }),
         Effect.provideService(AnalyticsService, {
@@ -128,6 +133,89 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
       );
     }),
   ),
+);
+
+it.effect("recordStartupHeartbeat includes feature adoption counts and flags", () =>
+  Effect.gen(function* () {
+    const recorded: Array<{
+      readonly event: string;
+      readonly properties: Readonly<Record<string, unknown>> | undefined;
+    }> = [];
+
+    yield* recordStartupHeartbeat.pipe(
+      Effect.provideService(ProjectionSnapshotQuery, {
+        getProjectCatalog: () => Effect.die("unused"),
+        getCommandReadModel: () => Effect.die("unused"),
+        getSnapshot: () => Effect.die("unused"),
+        listRunningWorkflowRuns: () => Effect.succeed([]),
+        listArchivedThreadsLiveState: () => Effect.succeed([]),
+        getShellSnapshot: () => Effect.die("unused"),
+        getArchivedShellSnapshot: () => Effect.die("unused"),
+        getSnapshotSequence: () => Effect.die("unused"),
+        getCounts: () =>
+          Effect.succeed({
+            projectCount: 4,
+            threadCount: 12,
+            leadChatCount: 2,
+            projectsWithBriefCount: 3,
+            projectNoteCount: 9,
+          }),
+        getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+        isProjectPhoneAlertsMuted: () => Effect.succeed(false),
+        getProjectShellById: () => Effect.succeed(Option.none()),
+        getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+        getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+        getFullThreadDiffContext: () => Effect.succeed(Option.none()),
+        listThreadDiffStatBaselines: () => Effect.succeed([]),
+        listThreadTurnOverlapsSince: () => Effect.succeed([]),
+        listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
+        listClaimedSettingsChanges: () => Effect.succeed([]),
+        listSecretRequests: () => Effect.succeed([]),
+        listThreadShells: () => Effect.succeed([]),
+        getThreadShellById: () => Effect.succeed(Option.none()),
+        getTurnActivities: () => Effect.succeed([]),
+        getThreadMessage: () => Effect.succeed(Option.none()),
+        hasAssistantMessageForTurn: () => Effect.succeed(false),
+        getThreadDetailById: () => Effect.succeed(Option.none()),
+      }),
+      Effect.provideService(AnalyticsService, {
+        record: (event, properties) => Effect.sync(() => recorded.push({ event, properties })),
+        flush: Effect.void,
+      }),
+      Effect.provide(
+        Layer.mergeAll(
+          ServerSettingsService.layerTest({
+            enableDevices: true,
+            agentDeviceAccess: true,
+            continueAfterRestart: false,
+            providerInstances: {
+              [ProviderInstanceId.make("codex")]: { driver: "codex" as never },
+              [ProviderInstanceId.make("claudeAgent_work")]: { driver: "claudeAgent" as never },
+              [ProviderInstanceId.make("acp_pi-acp")]: { driver: "acpRegistry" as never },
+            },
+          }),
+          Layer.mock(ThemeLibrary)({ snapshot: Effect.succeed({ entries: [] }) }),
+        ),
+      ),
+    );
+
+    assert.equal(recorded.length, 1);
+    assert.deepStrictEqual(recorded[0], {
+      event: "server.boot.heartbeat",
+      properties: {
+        threadCount: 12,
+        projectCount: 4,
+        leadChatCount: 2,
+        projectsWithBriefCount: 3,
+        projectNoteCount: 9,
+        savedThemeCount: 0,
+        extraAccountCount: 1,
+        devicesEnabled: true,
+        agentDeviceAccess: true,
+        continueAfterRestart: false,
+      },
+    });
+  }),
 );
 
 it.effect("resolveWelcomeBase derives cwd and project name from server config", () =>
@@ -189,9 +277,12 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         listThreadTurnOverlapsSince: () => Effect.succeed([]),
         listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
         listClaimedSettingsChanges: () => Effect.succeed([]),
+        listSecretRequests: () => Effect.succeed([]),
         listThreadShells: () => Effect.succeed([]),
         getThreadShellById: () => Effect.die("unused"),
         getTurnActivities: () => Effect.succeed([]),
+        getThreadMessage: () => Effect.succeed(Option.none()),
+        hasAssistantMessageForTurn: () => Effect.succeed(false),
         getThreadDetailById: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
@@ -244,9 +335,12 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
         listThreadTurnOverlapsSince: () => Effect.succeed([]),
         listThreadIdsWithOpenAgentRequests: () => Effect.succeed([]),
         listClaimedSettingsChanges: () => Effect.succeed([]),
+        listSecretRequests: () => Effect.succeed([]),
         listThreadShells: () => Effect.succeed([]),
         getThreadShellById: () => Effect.die("unused"),
         getTurnActivities: () => Effect.succeed([]),
+        getThreadMessage: () => Effect.succeed(Option.none()),
+        hasAssistantMessageForTurn: () => Effect.succeed(false),
         getThreadDetailById: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {

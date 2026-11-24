@@ -1,6 +1,7 @@
 import * as Equal from "effect/Equal";
 import { estimateWorkflowRunCardHeight } from "./workflowRunView";
 import { MCP_APP_CARD_ESTIMATED_PX } from "./mcpAppClient";
+import { nextCheckBack } from "./checkBacks";
 import {
   formatAwaitedTasks,
   formatSoleAwaitedWorkflow,
@@ -29,6 +30,7 @@ import {
   type ThreadParticipantId,
   type TurnId,
   type OrchestrationWorkflowRun,
+  type ProjectNoteSuggestion,
 } from "@threadlines/contracts";
 import { stripCodexInlineVisualizationDirectives } from "../../lib/codexInlineVisualization";
 import { threadMemoOfInput } from "../../lib/derivationMemo";
@@ -265,6 +267,17 @@ export type MessagesTimelineRow = TimelineRowPlacement &
         id: string;
         createdAt: string;
         request: OrchestrationCommandRequest;
+      }
+    | {
+        /** A note an agent suggested in this thread, waiting for Keep or
+         *  Discard (docs/design/project-brief-notes.md). Read from the
+         *  computer's project context, not the thread: it is not an approval
+         *  or an activity, and nothing that decides the thread needs the user
+         *  sees it. Placed after its turn's content (placeNoteSuggestions). */
+        kind: "note-suggestion";
+        id: string;
+        createdAt: string;
+        suggestion: ProjectNoteSuggestion;
       }
     | {
         /** When the thread's agents will come back by themselves, once the
@@ -505,6 +518,8 @@ export function deriveMessagesTimelineRows(input: {
   /** What the room calls each agent, for the name the working row gives the
    *  one a room tool call is aimed at. */
   roomAgentNames?: RoomAgentNames | null | undefined;
+  /** Notes agents suggested in this thread, still waiting for the user. */
+  noteSuggestions?: ReadonlyArray<ProjectNoteSuggestion> | undefined;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const shownPageIds = new Set<string>();
@@ -834,8 +849,9 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
-  // A settled thread an agent will come back to says when, at the tail.
-  if (!input.isWorking && input.checkBacks && input.checkBacks.length > 0) {
+  // A settled thread an agent will come back to says when, at the tail. A
+  // dormant check-back can't fire until its agent runs again, so it says nothing.
+  if (!input.isWorking && input.checkBacks && nextCheckBack(input.checkBacks) !== null) {
     rows.push({
       ...UNPLACED,
       kind: "check-back",
@@ -846,13 +862,85 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return placeRows(
-    placeSideExchanges(foldFinishedStretches(rows, input.isWorking), sidePlans, {
-      roomAgentNames: input.roomAgentNames ?? null,
-      narratedSideTurnId,
-    }),
+    placeNoteSuggestions(
+      placeSideExchanges(foldFinishedStretches(rows, input.isWorking), sidePlans, {
+        roomAgentNames: input.roomAgentNames ?? null,
+        narratedSideTurnId,
+      }),
+      input.noteSuggestions ?? [],
+    ),
     input.isWorking,
     input.workingParticipantId ?? null,
   );
+}
+
+/** The turn a row shows, for placing what belongs after it; null when it names none. */
+function rowTurnId(row: MessagesTimelineRow): TurnId | null {
+  switch (row.kind) {
+    case "message":
+      return row.message.turnId ?? null;
+    case "work":
+      return row.groupedEntries.find((entry) => entry.turnId != null)?.turnId ?? null;
+    case "proposed-plan":
+      return row.proposedPlan.turnId ?? null;
+    case "subagent-result":
+      return row.result.turnId ?? null;
+    case "workflow-run":
+      return row.run.turnId;
+    case "mcp-app":
+      return row.app.turnId;
+    case "page":
+      return row.page.turnId;
+    case "command-request":
+      return row.request.turnId;
+    case "note-suggestion":
+      return row.suggestion.turnId;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Each suggested note after the last row of the turn that wrote it, oldest
+ * first; one written outside a turn, or whose turn isn't shown, goes at the
+ * end, above the working and check-back rows that always close the list.
+ * Not any agent's own row, so it sits on a live stretch's line and below a
+ * settled turn's answer without taking either over.
+ */
+function placeNoteSuggestions(
+  rows: MessagesTimelineRow[],
+  suggestions: ReadonlyArray<ProjectNoteSuggestion>,
+): MessagesTimelineRow[] {
+  if (suggestions.length === 0) {
+    return rows;
+  }
+  const placed = [...rows];
+  const ordered = suggestions.toSorted((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
+  for (const suggestion of ordered) {
+    let at = placed.length;
+    while (
+      at > 0 &&
+      (placed[at - 1]!.kind === "working" || placed[at - 1]!.kind === "check-back")
+    ) {
+      at -= 1;
+    }
+    if (suggestion.turnId !== null) {
+      const last = placed.findLastIndex((row) => rowTurnId(row) === suggestion.turnId);
+      if (last >= 0 && last < at) {
+        at = last + 1;
+      }
+    }
+    placed.splice(at, 0, {
+      ...UNPLACED,
+      kind: "note-suggestion",
+      id: `note-suggestion:${suggestion.id}`,
+      createdAt: suggestion.createdAt,
+      suggestion,
+    });
+  }
+  return placed;
 }
 
 interface TakenTracker {
@@ -2301,6 +2389,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "command-request":
       return a.request === (b as typeof a).request;
 
+    case "note-suggestion":
+      return a.suggestion === (b as typeof a).suggestion;
+
     case "side-status": {
       const bs = b as typeof a;
       return (
@@ -2381,6 +2472,8 @@ export type TimelineMessageView =
   | "assistant"
   | "thread-message"
   | "outside-message"
+  /** Threadlines wrote it for the agent when the thread moved (ChatMessage.afterMove). */
+  | "after-move"
   | "user"
   | "invite"
   | "side-answer-reply"
@@ -2389,7 +2482,7 @@ export type TimelineMessageView =
 export function timelineMessageView(
   message: Pick<
     ChatMessage,
-    "role" | "fromThread" | "fromOutside" | "fromAgent" | "requestKind" | "requestId"
+    "role" | "fromThread" | "fromOutside" | "fromAgent" | "requestKind" | "requestId" | "afterMove"
   >,
   sideAnswerRequests: { has(requestId: NonNullable<ChatMessage["requestId"]>): boolean },
 ): TimelineMessageView | null {
@@ -2397,6 +2490,7 @@ export function timelineMessageView(
   if (message.role !== "user") return null;
   if (message.fromThread !== undefined) return "thread-message";
   if (message.fromOutside !== undefined) return "outside-message";
+  if (message.afterMove === true) return "after-move";
   if (message.fromAgent === undefined) return "user";
   if (message.requestKind === "invite") return "invite";
   if (
@@ -2471,6 +2565,19 @@ const rowHeightEstimates = new WeakMap<
 
 /** The moved-here boundary (MovedInTimelineRow): an 18px line and the row's 16px bottom padding. */
 const MOVED_IN_ROW_ESTIMATED_PX = 34;
+/** Each line under it: what came along, and each thing that didn't. */
+const MOVED_IN_LINE_PX = 18;
+
+/**
+ * What came along with a thread that moved here, as the line under its
+ * boundary says it: "Its goal · 2 queued messages · auto-fix for #212".
+ * Null when nothing did.
+ */
+export function movedInBroughtLine(brought: ReadonlyArray<string>): string | null {
+  if (brought.length === 0) return null;
+  const line = brought.join(" · ");
+  return `${line.charAt(0).toUpperCase()}${line.slice(1)}`;
+}
 
 /** An agent page's panel around its frame (AgentPageRow): padding, and the
  *  title line above the frame with its margin. */
@@ -2511,10 +2618,12 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
         row.message.role === "user" &&
         (row.message.fromAgent !== undefined ||
           row.message.fromThread !== undefined ||
-          row.message.fromOutside !== undefined)
+          row.message.fromOutside !== undefined ||
+          row.message.afterMove === true)
       ) {
-        // An agent's message to another: a meta line over its text, no bubble,
-        // or over its first line while it shows folded.
+        // An agent's message to another, or Threadlines' to the agent after a
+        // move: a meta line over its text, no bubble, or over its first line
+        // while it shows folded.
         return foldsAgentMessage(row.message.text)
           ? 28 + TEXT_LINE_PX
           : 28 + estimateTextLines(row.message.text, column - 24) * TEXT_LINE_PX;
@@ -2561,6 +2670,9 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return row.thought || row.command ? 46 : 30;
     case "check-back":
       return 46;
+    case "note-suggestion":
+      // Its title line and its one line, closed.
+      return 48;
     case "subagent-result":
       // Its name line and its report line, in the block's padding.
       return 54;
@@ -2571,8 +2683,15 @@ function estimateRowContentHeight(row: MessagesTimelineRow, width: number): numb
       return MCP_APP_CARD_ESTIMATED_PX;
     case "fork-context":
       return 90;
-    case "moved-in":
-      return MOVED_IN_ROW_ESTIMATED_PX;
+    case "moved-in": {
+      // Under the rule, inside its 48px side padding, in the line's smaller type.
+      const lineWidth = (column - 48) * (12 / 13);
+      const brought = movedInBroughtLine(row.movedIn.brought);
+      const lines =
+        (brought === null ? 0 : estimateTextLines(brought, lineWidth)) +
+        row.movedIn.left.reduce((sum, sentence) => sum + estimateTextLines(sentence, lineWidth), 0);
+      return MOVED_IN_ROW_ESTIMATED_PX + (lines > 0 ? 2 + lines * MOVED_IN_LINE_PX : 0);
+    }
     case "proposed-plan":
       return 240;
     case "page":

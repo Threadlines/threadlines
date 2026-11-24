@@ -6,7 +6,9 @@ import type { PendingChildThreads } from "~/childThreads";
 import { readEnvironmentApi } from "~/environmentApi";
 import { cn, newCommandId } from "~/lib/utils";
 import { formatChildThreadCount } from "../Sidebar.logic";
+import { readEnvironmentDescriptor } from "~/environments/runtime";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { failureNotice, toastManager } from "../ui/toast";
 import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
@@ -44,6 +46,17 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
   const { request } = props;
   const [responding, setResponding] = useState(false);
   const [showPrompts, setShowPrompts] = useState(false);
+  // Several threads: each can be left out, where the thread's server can
+  // take a partial answer (an older one would start the whole batch).
+  const selectable =
+    request.threads.length > 1 &&
+    readEnvironmentDescriptor(props.threadRef.environmentId)?.capabilities.childStartSelection ===
+      true;
+  const [unchecked, setUnchecked] = useState<ReadonlySet<string>>(() => new Set());
+  const checkedIds = request.threads
+    .map((thread) => thread.requestId)
+    .filter((requestId) => !unchecked.has(requestId));
+  const allChecked = checkedIds.length === request.threads.length;
 
   const respond = async (choice: "start" | "decline") => {
     const api = readEnvironmentApi(props.threadRef.environmentId);
@@ -62,6 +75,7 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
         threadId: props.threadRef.threadId,
         batchId: request.batchId,
         choice,
+        ...(choice === "start" && selectable && !allChecked ? { requestIds: checkedIds } : {}),
         createdAt: new Date().toISOString(),
       });
     } catch (error) {
@@ -98,7 +112,31 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
               )}
               data-testid="child-threads-panel-thread"
             >
-              <span className="min-w-0 truncate text-foreground">{thread.title}</span>
+              {selectable ? (
+                <Checkbox
+                  checked={!unchecked.has(thread.requestId)}
+                  disabled={responding}
+                  aria-label={`Start ${thread.title}`}
+                  onCheckedChange={(next) => {
+                    setUnchecked((current) => {
+                      const updated = new Set(current);
+                      if (next) updated.delete(thread.requestId);
+                      else updated.add(thread.requestId);
+                      return updated;
+                    });
+                  }}
+                />
+              ) : null}
+              <span
+                className={cn(
+                  "min-w-0 truncate",
+                  selectable && unchecked.has(thread.requestId)
+                    ? "text-muted-foreground"
+                    : "text-foreground",
+                )}
+              >
+                {thread.title}
+              </span>
               <span
                 className={cn(
                   "ms-auto flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground",
@@ -179,10 +217,10 @@ export const ComposerChildThreadsPanel = memo(function ComposerChildThreadsPanel
         <Button
           size="sm"
           variant="default"
-          disabled={responding}
+          disabled={responding || checkedIds.length === 0}
           onClick={() => void respond("start")}
         >
-          Start
+          {!selectable ? "Start" : allChecked ? "Start all" : `Start ${checkedIds.length}`}
         </Button>
       </div>
     </div>

@@ -72,12 +72,26 @@ export function describeCheckBack(
   };
 }
 
-/** The soonest check-back, the one the chat and the sidebar name. */
+/**
+ * The check-backs that can still fire. One marked dormant can't: the runtime
+ * that would fire it has ended, until that agent runs again.
+ */
+export function liveCheckBacks(
+  checkBacks: ReadonlyArray<OrchestrationCheckBack> | undefined,
+): ReadonlyArray<OrchestrationCheckBack> {
+  if (!checkBacks || checkBacks.length === 0) return [];
+  return checkBacks.some((checkBack) => checkBack.dormant === true)
+    ? checkBacks.filter((checkBack) => checkBack.dormant !== true)
+    : checkBacks;
+}
+
+/** The soonest check-back that can still fire, the one the chat and the sidebar name. */
 export function nextCheckBack(
   checkBacks: ReadonlyArray<OrchestrationCheckBack> | undefined,
 ): OrchestrationCheckBack | null {
-  if (!checkBacks || checkBacks.length === 0) return null;
-  return checkBacks.reduce((soonest, checkBack) =>
+  const live = liveCheckBacks(checkBacks);
+  if (live.length === 0) return null;
+  return live.reduce((soonest, checkBack) =>
     checkBack.scheduledFor < soonest.scheduledFor ? checkBack : soonest,
   );
 }

@@ -24,12 +24,18 @@ import {
 const RECEIPT_TTL = Duration.days(7);
 
 /**
- * Rows deleted per statement. Each batch runs in its own short transaction
- * so the synchronous driver never blocks the event loop for long, even when
- * the first run on a long-lived database prunes hundreds of thousands of
- * rows.
+ * Rows deleted per transaction. The SQLite driver is synchronous, so each
+ * batch holds the event loop from its DELETE through its COMMIT (and the WAL
+ * checkpoint a COMMIT can trigger), and `deleteAllBatches` gives the loop a
+ * turn after every batch. Old events are scattered across a big database, so
+ * each row costs a few random page reads: on a 9.5 GB one held in the OS
+ * cache, a 25-row batch held the loop under 55 ms, where 5,000-row batches
+ * ran back to back and froze the server for the whole prune (3 to 20
+ * seconds). A cold cache still makes single batches slower.
  */
-const DELETE_BATCH_SIZE = 5_000;
+export const DELETE_BATCH_SIZE = 25;
+/** Diff blobs can each run to megabytes, so fewer go per batch. */
+const DIFF_BLOB_DELETE_BATCH_SIZE = 20;
 
 const INITIAL_DELAY = Duration.minutes(2);
 const RUN_INTERVAL = Duration.hours(6);
@@ -55,13 +61,25 @@ const makeStorageMaintenance = Effect.gen(function* () {
       ),
     );
 
-  const deleteAllBatches = (makeStatement: () => Effect.Effect<unknown, SqlError>) =>
+  /**
+   * Runs `makeStatement` (a DELETE of at most `batchSize` rows) until a batch
+   * comes up short. After every batch the fiber yields, which on Effect's
+   * default scheduler is a `setImmediate`: a full turn of the event loop, so
+   * timers, sockets and other fibers' queries run between batches. Without
+   * it Effect yields only every couple of thousand operations, and the
+   * batches ran back to back.
+   */
+  const deleteAllBatches = (
+    batchSize: number,
+    makeStatement: (limit: number) => Effect.Effect<unknown, SqlError>,
+  ) =>
     Effect.gen(function* () {
       let total = 0;
       for (;;) {
-        const deleted = yield* deleteBatch(makeStatement());
+        const deleted = yield* deleteBatch(makeStatement(batchSize));
         total += deleted;
-        if (deleted < DELETE_BATCH_SIZE) {
+        yield* Effect.yieldNow;
+        if (deleted < batchSize) {
           return total;
         }
       }
@@ -73,13 +91,14 @@ const makeStorageMaintenance = Effect.gen(function* () {
       DateTime.makeUnsafe(nowMillis - Duration.toMillis(RECEIPT_TTL)),
     );
     return yield* deleteAllBatches(
-      () => sql`
+      DELETE_BATCH_SIZE,
+      (limit) => sql`
         DELETE FROM orchestration_command_receipts
         WHERE command_id IN (
           SELECT command_id
           FROM orchestration_command_receipts
           WHERE accepted_at < ${cutoffIso}
-          LIMIT ${DELETE_BATCH_SIZE}
+          LIMIT ${limit}
         )
       `,
     );
@@ -113,7 +132,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
       for (const thread of deletedThreads) {
         deletedEvents += yield* deleteAllBatches(
-          () => sql`
+          DELETE_BATCH_SIZE,
+          (limit) => sql`
             DELETE FROM orchestration_events
             WHERE sequence IN (
               SELECT sequence
@@ -121,12 +141,21 @@ const makeStorageMaintenance = Effect.gen(function* () {
               WHERE aggregate_kind = 'thread'
                 AND stream_id = ${thread.threadId}
                 AND sequence < ${thread.deletedSequence}
-              LIMIT ${DELETE_BATCH_SIZE}
+              LIMIT ${limit}
             )
           `,
         );
-        deletedDiffBlobs += yield* deleteBatch(
-          sql`DELETE FROM checkpoint_diff_blobs WHERE thread_id = ${thread.threadId}`,
+        deletedDiffBlobs += yield* deleteAllBatches(
+          DIFF_BLOB_DELETE_BATCH_SIZE,
+          (limit) => sql`
+            DELETE FROM checkpoint_diff_blobs
+            WHERE rowid IN (
+              SELECT rowid
+              FROM checkpoint_diff_blobs
+              WHERE thread_id = ${thread.threadId}
+              LIMIT ${limit}
+            )
+          `,
         );
       }
 
@@ -169,7 +198,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
         }
 
         deletedEvents += yield* deleteAllBatches(
-          () => sql`
+          DELETE_BATCH_SIZE,
+          (limit) => sql`
             DELETE FROM orchestration_events
             WHERE sequence IN (
               SELECT sequence
@@ -179,7 +209,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 AND event_type = 'thread.activity-appended'
                 AND sequence < ${cutoffSequence}
                 AND sequence <= ${minAppliedSequence}
-              LIMIT ${DELETE_BATCH_SIZE}
+              LIMIT ${limit}
             )
           `,
         );
@@ -222,13 +252,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
       deletedActivityEvents = yield* pruneActivityEventsBeyondCap(minAppliedSequence);
     }
 
+    // No explicit WAL checkpoint: batches this small keep the WAL near
+    // SQLite's 1,000-page autocheckpoint, and `journal_size_limit` (Sqlite.ts)
+    // trims a WAL that a long reader let grow. A TRUNCATE checkpoint here was
+    // one more synchronous call, and one that waits out busy readers.
     const anythingDeleted =
       deletedReceipts + deletedThreadEvents + deletedActivityEvents + deletedDiffBlobs > 0;
-    if (anythingDeleted) {
-      // Fold the (potentially large) WAL back into the main file so a big
-      // prune does not leave a WAL the same size as the pruned data.
-      yield* sql`PRAGMA wal_checkpoint(TRUNCATE);`.pipe(Effect.ignore);
-    }
 
     const pageStats = yield* readPageStats;
     const report: StorageMaintenanceReport = {

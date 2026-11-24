@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   type OpenCodeRule,
   openCodeBrowserServerName,
+  openCodeDeviceServerName,
   openCodePagesServerName,
   openCodeSessionGrantRules,
   openCodeSessionRules,
@@ -112,6 +113,24 @@ describe("openCodeSessionRules", () => {
     ];
     expect(effect(rules, `${openCodePagesServerName(ownKey)}_show_page`, "*")).toBe("allow");
     expect(effect(rules, `${openCodePagesServerName(otherKey)}_show_page`, "*")).toBe("deny");
+  });
+
+  it("lets only a session with devices reach its own thread's device tools", () => {
+    const rulesWith = (deviceTools: boolean) => [
+      ...BUILD_AGENT,
+      ...openCodeSessionRules({
+        runtimeMode: "approval-required",
+        agentRules: BUILD_AGENT,
+        toolKey: ownKey,
+        roomTools: false,
+        deviceTools,
+      }),
+    ];
+    const own = `${openCodeDeviceServerName(ownKey)}_device_open`;
+    const other = `${openCodeDeviceServerName(otherKey)}_device_open`;
+    expect(effect(rulesWith(true), own, "*")).toBe("allow");
+    expect(effect(rulesWith(true), other, "*")).toBe("deny");
+    expect(effect(rulesWith(false), own, "*")).toBe("deny");
   });
 
   it("honours a user's deny of Threadlines' own tools", () => {

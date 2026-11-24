@@ -42,24 +42,31 @@ export const GUIDE_TOPICS: ReadonlyArray<GuideTopic> = [
       "wrap",
       "archive",
       "restart",
+      "general chats",
     ],
-    body: `A thread is one conversation with an agent in a project. Threads are listed in the sidebar; one that needs you, finished or failed says so there. In a narrow window the sidebar floats over the thread instead of sitting beside it: the sidebar button at the top left, or Cmd+B (Ctrl+B on Windows and Linux), opens it, and picking a thread or clicking the thread puts it away.
+    body: `A thread is one conversation with an agent in a project. Threads are listed in the sidebar; one that needs you, finished or failed says so there. In a narrow window the sidebar floats over the thread instead of sitting beside it: the sidebar button at the top left, or Cmd+B (Ctrl+B on Windows and Linux), opens it, and picking a thread or clicking the thread puts it away. A thread you scrolled up in opens where you left it when you come back, until Threadlines reloads; one that finished, failed or needs you since then opens at the end.
 
-The sliders button beside the project picker at the top of the sidebar groups the list by project or computer and sorts it: recent activity, newest, oldest, title, or a custom order. In the custom order you drag rows to arrange them, or use Move up and Move down in a thread's menu, and only you move a row; new threads go to the bottom, and the same button can reset the order. Pinned threads stay above a thin line in every sort. When the list is grouped, drag a group's header to move the whole group, in any sort; its menu has Move up, Move down and Use automatic order. These orders are kept per device, so a phone has its own.
+The sliders button beside the project picker at the top of the sidebar groups the list by project or computer and sorts it: recent activity, newest, oldest, title, or a custom order. In the custom order you drag rows to arrange them, or use Move up and Move down in a thread's menu, and only you move a row; new threads go to the bottom, a group keeps its place when its top thread goes, a new group goes last, and the same button can reset the order. Pinned threads stay above a thin line in every sort, under a project's lead chat, which comes first. When the list is grouped, drag a group's header to move the whole group, in any sort; its menu has Move up, Move down and Use automatic order. These orders are kept per device, so a phone has its own.
 
 A new thread starts either in the project folder as it is, or in a worktree of its own: a separate git checkout on a new branch, so its changes stay apart until you merge them. You pick per thread in the composer; the default is {place:threads.startIn}, and new worktrees branch from {place:threads.worktreesFrom}. A project's setup script runs once in each new worktree.
 
+The project name in "What's next in …?" on the new-thread screen opens the list of projects to start in, and so does the arrow beside New thread on the home screen. A long list has a search box that matches project names and folders. The pin on a row keeps that project at the top. Dragging rows, or Alt+Up and Alt+Down, sets your own order, and Reset to automatic order at the bottom goes back to recent activity. Pins and this order are kept per device.
+
 A repository can already have worktrees that Threadlines did not make (git worktree add, or another app). Right after such a repository is added as a project, the new-thread screen lists them under the message box with a checkbox each, and "Add N threads" makes a thread for every ticked one, named from its branch; nothing runs until you send a message there. After that the screen shows only a count beside the recent threads ("4 worktrees"); opening it lists them with Work here, which points the thread you are about to start at that worktree, Add as threads…, and Hide for this project. The Workspace picker under the message box lists the same worktrees under Existing worktree, and the command palette has Add existing worktrees as threads…, which also brings a hidden count back. A thread in one of these is a guest: no setup script runs, the branch is not renamed, deleting the thread never offers to delete the folder, and undoing a turn only undoes that thread's own edits. Worktrees a thread already works in are left out. The computer's server needs to be on a version that has this; with an older one none of it shows.
 
-The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer, which also holds the agent's effort. Beside it sit Build or Plan (one click switches, as does Shift+Tab in the message box) and the access level; on a narrow window they show just their icons, and on phones both live in the model button's panel instead.
+The agent and model a new thread starts with is {place:threads.agent}. You can switch model or agent at any time from the model button in the composer, which also holds the agent's effort. Beside it sit Build or Plan (one click switches, as does Shift+Tab in the message box; default {place:threads.mode}) and the access level (default {place:threads.access}); on a narrow window they show just their icons, and on phones both live in the model button's panel instead.
 
-While an agent works, the arrow beside the send button picks how a message goes: Steer now adds it to the reply in progress, Send when done holds it for the next one, and the choice sticks. Enter sends that way; Cmd+Enter (Ctrl+Enter on Windows and Linux) sends that one message the other way.
+While an agent works, {place:general.followUpDelivery} sets how a message goes by default (Steer now adds it to the reply in progress, Send when done holds it for the next one), and the arrow beside the send button overrides it for the current thread. Enter sends that way; Cmd+Enter (Ctrl+Enter on Windows and Linux) sends that one message the other way.
 
-After a reply to your message, Claude or Codex can suggest what you might send next: gray text in the empty message box, taken with Tab (Use on a phone), hidden with Escape. Claude makes its own and skips them when you're on track to run out of usage early, unless {place:threads.claudeSuggestions} is on. Codex's are made by Threadlines with one extra Codex answer each, only after messages you sent, never while a usage limit is 90% used, and {place:threads.codexSuggestions} turns them off.
+After a reply to you, Claude, Codex, or Antigravity can suggest what you might send next: gray text in the empty message box, taken with Tab (Use on a phone), hidden with Escape. Claude makes its own and skips them when you're on track to run out of usage early, unless {place:providers.claudeSuggestions} is on. Codex's are made by Threadlines with one extra Codex answer each, after replies to you (including child-thread reports, room replies, and continued turns), never while a usage limit is 90% used, and {place:providers.codexSuggestions} turns them off. Antigravity's are made by Threadlines with a short isolated answer on a fast Gemini model (preferring Gemini Hydrogen, then Flash, at low thinking), after replies to you (including child-thread reports, room replies, and continued turns), never while that model's usage limit is 90% used, and {place:providers.antigravitySuggestions} turns them off.
+
+A goal (type /goal and what to reach in the message box) keeps the agent working toward it across turns; the bar above the message box shows it, with pause, resume and clear. A Codex goal pauses by itself while the thread waits for your answer on a card or for threads it started to report back, so it doesn't spend turns asking whether you answered yet; the bar says why, and it carries on once the wait is over. Pausing, resuming or clearing it yourself in between is yours to keep. Claude's goals have no pause and carry on as before.
 
 When Claude or Codex asks multiple-choice questions, a card takes the place of the message box. Besides answering, you can Skip a question, close the card with its X (the agent goes on without answers), or choose Reply in chat: the message box comes back, and the next message you send, text only, is your answer. The agent is told exactly which you did. Questions from other agents, such as a yes/no confirmation, still need an answer or Stop.
 
-When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. An agent coming back later (a check-back) doesn't keep a thread out of Wrapped: the thread returns to the list when the agent does. Old threads can be archived for you: {place:archived.cleanup}.
+When a thread is done it wraps up and moves to the Wrapped shelf at the bottom of the sidebar; {place:threads.whenDone} says when that happens on its own. A thread waiting on threads its agent started can't be wrapped up until they report back. An agent coming back later (a check-back) doesn't keep a thread out of Wrapped: the thread returns to the list when the agent does. Old threads can be archived for you: {place:archived.cleanup}.
+
+General Chats are chats with an agent that aren't tied to a project. By default they have their own page in the left bar, with a New chat button over the list. With {place:threads.generalChats} set to Section in Threads, that button leaves the left bar and the chats sit in a General chats section at the bottom of the thread list, under Wrapped: its header opens and closes it and has its own New chat button, and the Threads button counts what the chats need and are doing. Old General Chats links then open Threads with the section open. Each device keeps its own choice.
 
 When Threadlines quits, updates or crashes while an agent works on something the user asked for, the agent picks it back up when Threadlines starts again: the chat gets a message marked "Sent after a restart" telling the agent to check before repeating anything. A turn waiting on an approval or a question, or one another thread, a scheduled task or an outside agent started, stops with a note instead, as does a turn restarts cut off three times in five minutes. {place:threads.continueAfterRestart} turns this off.`,
   },
@@ -67,7 +74,7 @@ When Threadlines quits, updates or crashes while an agent works on something the
     id: "access-levels",
     title: "Access levels",
     keywords: ["access", "permissions", "approval", "sandbox", "full access", "auto", "supervised"],
-    body: `Each thread runs at an access level, picked from the access button beside the model button in the composer (on phones, in the model button's panel):
+    body: `Each thread runs at an access level, picked from the access button beside the model button in the composer (on phones, in the model button's panel). {place:threads.access} sets the default for new threads:
 
 - Supervised: asks before commands and file changes.
 - Auto-accept edits: edits run without asking; other actions ask.
@@ -82,35 +89,93 @@ Some agents lack a level; they run at the next safer one they have, and the comp
     keywords: ["room", "multiple agents", "reviewer", "second opinion", "hand off", "teammate"],
     body: `A room is a thread with more than one agent: for example one agent doing the work and another reviewing it. Rooms are turned on with {place:threads.enableRooms}; {place:threads.room} sets which agents new threads start with.
 
-You add and remove agents at the top of the model button's panel in the composer: one pill per agent, the picked one being who your next message goes to (typing @ and picking an agent does the same). The model and effort under the pills are that agent's.
+You add and remove agents at the top of the model button's panel in the composer: one pill per agent, the picked one being who your next message goes to (typing @ and picking an agent does the same). The model and effort under the pills are that agent's. Pointing at a pill turns its icon into ⋯, a menu to rename the agent or remove it; a right-click, or a long press on a touch screen, opens the same menu, and a double-click renames.
 
-Only one agent works at a time, in the same checkout. Agents in a room can ask each other a question on the side, ask for an independent review of the changes, or hand the next turn to another agent.
+Only one agent works at a time, in the same checkout. Agents in a room can ask each other a question on the side, ask for an independent review of the changes, or hand the next turn to another agent. Up to three agents can answer on the side at once, one answer each, so you can ask a second agent while the first is still answering, and an agent can ask two or three for a review of the same changes in one go. Agents can ask and hand off to each other as often as the work needs, without you writing in between; Stop ends the back and forth.
 
 Whether the thread's agent may bring in another model on its own is {place:threads.agentInvites}: Off, Ask me first (a card asks you each time), or Without asking. Bringing in another provider's model spends that provider's quota.`,
   },
   {
     id: "agent-threads",
     title: "Threads agents start",
-    keywords: ["child thread", "subthread", "thread_start", "spawn", "parallel", "delegate"],
-    body: `An agent can start threads of its own to work in parallel, and message, read or stop them. Each started thread shows under its parent in the sidebar; its final reply comes back to the parent as a message, which wakes the parent's agent.
+    keywords: [
+      "child thread",
+      "subthread",
+      "thread_start",
+      "thread_wrap",
+      "spawn",
+      "parallel",
+      "delegate",
+    ],
+    body: `An agent can start threads of its own to work in parallel, and message, read, stop or wrap them up. Each started thread shows under its parent in the sidebar; its final reply comes back to the parent as a message, which wakes the parent's agent. The parent and the threads it started also show as a row of tabs under the chat header, on the parent and on each of its threads: a click opens that thread, with its own message box and draft. When two or more of the threads start their titles with the same topic ("Pull Station: ..."), their tabs and their rows under the parent in the sidebar leave it out, and hovering one shows the full title. The row lists the threads the sidebar shows under the parent; one the user made its own, or whose parent is wrapped, has no row.
 
-{place:threads.agentThreads} decides this: Off, Ask me first (a card in the chat lists the threads and you decide), or Automatic. The same setting covers agents creating or changing scheduled tasks. An agent may start at most 5 threads and send 10 messages to them per message you send.
+Once a thread it started has finished, the agent can wrap it up itself (thread_wrap), so you don't have to. It moves to Wrapped as with your own Wrap up, and its answer counts as seen. You can reopen it, and it comes back by itself when it gets new work. A thread still working or waiting for you isn't wrapped up.
+
+A thread that takes another turn on its own after its answer went back (a check-back woke it, or a reviewer it asked replied) wakes its parent with that reply too, and then wraps up by itself. A thread the agent stops with thread_stop wraps up by itself too, and its check-backs end, as with your Stop.
+
+{place:threads.agentThreads} decides this: Off, Ask me first (a card in the chat lists the threads and you decide), or Automatic. The same setting covers agents creating or changing scheduled tasks. There's no limit on how many threads an agent starts or how many messages it sends them, so an agent can keep a team of threads going for hours without you writing. Stop on a thread stops its agent and every thread under it that is still going (including a thread it started without report back until you write in it, and any thread that only holds a check-back); "Stop N working threads" in the thread's menu and the Stop button on the family tab row stop those threads while leaving the thread itself running. A thread can't be reverted while threads under it are still going.
 
 A started thread works in a worktree of its own; in a project without git it shares the project's folder. With {place:threads.agentThreadsShareWorktrees} on, an agent can instead put a thread in a checkout that already exists: its own, or that of a thread it started. The new thread sees the files as they are there, uncommitted changes included, which suits a reviewer for work another thread just finished. An agent can also move an idle thread into such a checkout with a message, and the thread keeps its conversation. The thread the checkout belongs to must not be working at that moment. No worktree or branch is made and the project's setup script does not run. The two threads then share one set of files, so only one should work at a time. The thread's row under the message box reads Shared worktree. This works on one computer only, and not for threads an outside agent starts.
 
 A started thread gets at most its parent's access level, or a lower one the agent asks for, and the parent's model unless the agent picks another. On a model already in the room it runs at the reasoning you set for that agent there, unless the agent or you name another level; the approval card shows the level. With computers linked in Fleet, an agent can also start a thread on another computer, if that computer allows it ({place:fleet.worksWith}).
 
-A thread on another computer stays under its parent on both computers and shows how it is doing there, even after its answer came back. Once its answer reached the parent it wraps up and moves to Wrapped like any other, unless someone picked it up again there. Its row has Wrap up (and Reopen in Wrapped), which applies on both computers. To open it, connect this app to that computer.`,
+A thread on another computer stays under its parent on both computers and shows how it is doing there, even after its answer came back. Once its answer reached the parent it wraps up and moves to Wrapped like any other, unless someone picked it up again there. Its row has Wrap up (and Reopen in Wrapped), which applies on both computers. Clicking its row or its tab opens it read through the link, even when this app isn't connected to that computer: you see what was asked and what its agent answered, but not its tool steps, and you can't reply there. Connect this app to that computer to work in it.
+
+A project's lead chat is a thread set up to coordinate the project; see the lead chat topic.`,
+  },
+  {
+    id: "lead-chat",
+    title: "Lead chat",
+    keywords: [
+      "lead chat",
+      "lead",
+      "coordinator",
+      "project lead",
+      "orchestrator",
+      "drop work",
+      "threads panel",
+      "project threads",
+      "board",
+    ],
+    body: `Each project can have one lead chat: a thread you drop work into (a bug, a stack trace, a list of tasks). Its agent answers small questions itself and starts threads for new work. Those threads show under the lead in the sidebar and report back to it, and it tells you what finished and what needs you.
+
+Any thread can be the lead. The first time a thread in a project with no lead starts threads of its own, a line under its tabs offers to make it the lead; close it and it doesn't come back for that project. Or use "Make this the lead chat" in a thread's menu (right-click its row, or click the title above the chat), or the command palette. The project's menu in the project picker has Open lead chat, or New lead chat, which starts a thread in the project folder and makes it the lead. "Go to lead chat" in the command palette opens it.
+
+The lead can also pass a message to a thread you started by hand in the project. That is one-way: the thread works on it and answers there, not back in the lead, and it can't start threads of its own for it until you write there (and neither can the threads it messages). The lead can't pass work into a room, a thread another thread still owns, or one you stopped. A pass never runs with more access than the lead had.
+
+When an agent asks to start several threads, the card has a checkbox per thread, so you can start some and leave the rest; the agent is told which.
+
+Only one thread leads a project; making another the lead replaces it. "Stop using as lead chat" turns it back into an ordinary thread, and the threads it started stay with it. Archiving or deleting the lead ends it. A lead can't move to another computer, and each computer keeps its own lead for a project.
+
+The lead's row sits at the top of the sidebar with a crown, says Lead where the project name goes, and never wraps up on its own. {place:archived.autoArchive} leaves it alone, as it does a pinned thread. The chat shows a Lead chat label beside the title, or, once it has started threads, the family tabs with the lead first. Hovering the label or the Lead tab, or tapping it, says what a lead does and offers Stop using as lead chat.
+
+The Threads tab in the right sidebar shows the project's threads on every computer you can see, grouped as Needs you, Ready for review, Working, Landing, Idle and Done. Open it from the sidebar's list of panels or its + menu, on any thread of the project. A thread you wrapped up goes under Done (for 7 days, closed until you open it) unless its pull request is still open, which keeps it under Ready for review or Landing. Ready for review says what the pull request waits on, as the Pull requests page does. Click a row to open the thread, or right-click it for the thread's menu. The top line counts what needs you and what's working, with a Lead chat link when you're on another thread.
+
+The lead's agent is told its role at the start of every turn, and when you give it a goal. It needs {place:threads.agentThreads} to be on, and an agent that can't use the thread tools says so. General chats, a thread another thread still owns, and threads from another computer or an outside agent can't be the lead.`,
   },
   {
     id: "linking-computers",
     title: "Linking computers (Fleet)",
-    keywords: ["fleet", "link", "computer", "pc", "mac", "windows", "remote", "another machine"],
+    keywords: [
+      "fleet",
+      "link",
+      "computer",
+      "pc",
+      "mac",
+      "windows",
+      "remote",
+      "another machine",
+      "move",
+      "transfer",
+      "shut down",
+    ],
     body: `Fleet, in the left bar, lists the computers this app knows. Use + at the top of its Computers list to link another computer running Threadlines. Each computer's page shows its connection, {place:fleet.worksWith}, and its devices.
 
 Linking is two-way, with a permission for each direction: "<A>'s agents can start work on <B>" is Allowed, Ask first or Off, with the most access those threads get ("Up to Auto"). Each direction is stored on the computer the work would run on, so the Mac's setting decides what the PC's agents may do on the Mac, and the other way round. Unlink from the same group.
 
-With a link allowed, an agent can start a thread on the other computer in that computer's copy of the project, read it and message it, and its reply comes back. A computer you only open from this app (Settings › Connections › Computers you use from here) is not a link: you see its threads here, but agents can't work across. This app's sign-in to it renews whenever they connect and ends after 90 days without one, or when that computer removes it. Fleet's All computers page and its own page then say the sign-in ended and offer to connect again with a new code; its threads stay on it.`,
+With a link allowed, an agent can start a thread on the other computer in that computer's copy of the project, read it and message it, and its reply comes back. A computer you only open from this app (Settings › Connections › Computers you use from here) is not a link: you see its threads here, but agents can't work across. This app's sign-in to it renews whenever they connect and ends after 90 days without one, or when that computer removes it. Fleet's All computers page and its own page then say the sign-in ended and offer to connect again with a new code; its threads stay on it.
+
+To carry on a thread on a linked computer, for example before shutting this one down, click its title at the top of the chat or right-click it in the sidebar (or use the command palette), and pick Move to another computer. The thread goes with its messages and its code changes, including files not yet committed; staged changes arrive unstaged. It lands in a new worktree of that computer's copy of the project; the dialog offers to set the project up there when it's missing. When that computer's permission for this one is Ask first, its user allows the move there. The copy left here stays, read-only, with a link to the new one. With Claude, Codex or Pi, and the same kind of agent picked on the other computer, the agent keeps its full memory: its own session moves too (up to 50 MB) and picks up where it was. Otherwise, or if that session can't be resumed there, the agent gets a summary of the conversation; the dialog and the moved thread's timeline say which. Turns from before the move can't be undone there. A working thread can move too: Move when it's done starts the move once its turn and background work finish, and Stop and move now stops its agent first. While it waits, a notice above the message box says what for, with Cancel, and the thread takes no new messages. An agent can move its own thread with thread_move; it goes when that turn ends. To clear a computer before shutting it down, Move threads (on a computer's page in Fleet, or in the command palette) moves several at once, and quitting the desktop app while threads work offers to move them first, quitting once each has gone. When the other computer asks first, it takes each move's files right away and holds them until its user allows them (all the moves from one computer together, or one at a time), so this computer counts them as sent and can shut down; a move that isn't allowed unfreezes here the next time the two connect. What a thread had going comes along when the other computer runs a current Threadlines, and runs there by itself: a goal that was working carries on, the agent is told its check-backs and sets them again, your queued messages are sent in order, its pull requests come along with auto-fix and auto-merge off (a notice there says what was on, with Turn on), and its plans come along, the waiting one with Implement. Until you send the moved thread a message there, its agent can't use other threads, rooms or schedules, and the thread can move only back to the computer it came from. If the link it came over can't confirm which computer sent it, it can't move at all until then. A General Chats thread moves with every file in its folder, up to 100 MB. The dialog says what comes along and what won't work there; the "Moved here" line on the other computer says what arrived and what didn't. If a move doesn't happen, the thread gets back here what the move stopped: its goal and its check-backs, and its queued messages go. A room moves with its agents: the dialog has a row per agent with the matching agent on the other computer picked (same kind and model, else that kind's default), or Leave out. An agent with no match, or left out, arrives as having left, and both ends say which; each agent that comes keeps its own memory or gets the whole conversation once. Move when it's done waits for the agents' hand-offs and replies to finish, and Stop and move now ends them as Stop does. A thread that started other threads moves with them: the dialog lists its threads here, ticked, and one you untick stays here as its own thread, as does one that can't move (the dialog says why). On the other computer the threads that came are still its threads, and its "Moved here" line names the ones that stayed. Threads its agent started on another computer stay there, and the moved thread can't reach them. Moved to the computer one of them is on, when that computer runs a current Threadlines, that thread is its thread again there, nested under it, and its "Moved here" line says so; one that started threads of its own, is archived or moving, or has more access than the moved thread gets there stays separate, and the line says why. The thread taken back has no other threads, rooms or schedules, and can move only back to the computer that started it, until you send it a message there; a message in its parent doesn't count. Move when it's done waits for the threads it started to report back, and Stop and move now ends that wait as Stop does. A thread another thread started can move on its own (Move just this thread) or with its whole family. With its whole family, each thread moves with the agent the other computer suggests for it. On its own it stays that thread's thread on the other computer, which can still send to it, read it and stop it; there, like any thread another computer's agent started, its agent never gets other threads, rooms or schedules. A thread another computer's agent started can move only back to that computer, where it is that thread's thread again. A thread with a message queued by a scheduled task, an assistant or a thread outside its family can't move yet; the dialog says what to finish first.`,
   },
   {
     id: "devices",
@@ -128,6 +193,7 @@ With a link allowed, an agent can start a thread on the other computer in that c
       "alerts",
       "notifications",
       "mute",
+      "sound",
     ],
     body: `{place:settings.connections} is where other devices use this computer. {place:connections.devices} lists every phone, tablet, browser and linked computer paired with it; Connect a phone, tablet, or computer there to pair a new one.
 
@@ -135,7 +201,7 @@ With a link allowed, an agent can start a thread on the other computer in that c
 
 A thread link from an assistant or a phone alert, opened in a computer's browser that isn't paired, offers Open in the Threadlines app: it opens the thread in the desktop app on that computer, no pairing needed. On Linux only the .deb install opens these links; with the AppImage, pair the browser instead.
 
-{place:general.alerts} on a phone turns its alerts on and picks which ones it gets. {place:general.alertsQuietAtComputer} holds them while you're using Threadlines on a computer that's connected to the thread's computer: a request that still needs you comes through once you've stepped away, and finished or failed alerts from that time don't. To stop one project's alerts on every phone, choose Mute phone alerts from that project's menu in the project list at the top of the sidebar.
+{place:general.alertSound} plays a short sound in the open app, on any device, when an agent finishes or needs you; a thread you're looking at stays quiet. {place:general.alerts} on a phone turns its alerts on and picks which ones it gets. {place:general.alertsQuietAtComputer} holds them while you're using Threadlines on a computer that's connected to the thread's computer: a request that still needs you comes through once you've stepped away, and finished or failed alerts from that time don't. To stop one project's alerts on every phone, choose Mute phone alerts from that project's menu in the project list at the top of the sidebar.
 
 {place:connections.thisComputer} is this computer's name as the others see it.`,
   },
@@ -155,11 +221,13 @@ A thread link from an assistant or a phone alert, opened in a computer's browser
     ],
     body: `{place:scheduled} lists tasks that start an agent at set times (once, hourly, daily, weekdays, weekly or a cron rule) or when an event arrives at the task's address (a webhook, or GitHub events like a new issue or failed checks). Each run starts a new thread with the task's instructions, or sends them to one thread as a follow-up.
 
+New task opens an editor laid out like the new-thread screen: "New task in [project]" on top, then a box with the task's name, a schedule button ("Weekdays at 9:00 AM"), the instructions, the model and access buttons, and Create task (Save when editing). The schedule button opens the repeat pattern, the day and time and the next runs; the time zone, a custom cron rule and When something happens sit at the bottom of that panel. A line under the box says where each run goes, with a menu in each part: a new thread or one to continue (and which agent in a room), the local checkout or a new worktree, and the computer. An event task's settings show below that line. Run now, Pause, Resume and Delete are on the task's own page, and each row in the list has a switch to pause or resume it.
+
 Tasks run while Threadlines is running on that computer. A time missed while it was off or asleep gets one catch-up run when it's back, if the missed time was within the last 7 days. A Mac that wakes only briefly for upkeep (screen off) starts nothing; runs wait until it's fully awake. The desktop app can keep the computer awake for them.
 
 Agents can list, create and change scheduled tasks when {place:threads.agentThreads} isn't Off; with Ask me first, a card asks you before a change takes effect. A task an agent sets up on a model already in the room runs at the reasoning you set for that agent, unless the agent or you name another level.
 
-Below the tasks, Check-backs lists the threads an agent set itself to come back to, soonest first, with when and why. A row opens its thread, and Cancel ends the check-back (it stops that agent's session; one saved to the project has no Cancel). A thread with a check-back can still wrap up: in Wrapped its row shows a clock with the time left, and it comes back to the list when the agent does.`,
+Below the tasks, Check-backs lists the threads an agent set itself to come back to, soonest first, with when and why. A row opens its thread, and Cancel ends the check-back (it stops that agent's session; one saved to the project has no Cancel). Stop in the thread ends every check-back its agents set, by stopping each such agent's session, so work it left running in the background stops too. One saved to the project goes quiet but stays listed, and comes back the next time that agent runs; ask the agent to delete it to end it for good. A thread with a check-back can still wrap up: in Wrapped its row shows a clock with the time left, and it comes back to the list when the agent does.`,
   },
   {
     id: "outside-agents",
@@ -245,7 +313,11 @@ While this computer is asleep or Threadlines is closed, assistants are told it's
 
 Claude's models come from Claude Code itself, so a new one shows up without a Threadlines update. A model Threadlines has no settings of its own for starts on Default reasoning: no level is sent and Claude Code picks one. When Claude Code stops listing a model, the picker stops offering it, but a thread, room agent or setting already on it keeps it.
 
-How much of each plan you've used is on {place:usage}.
+Antigravity runs Google's Antigravity CLI (agy), which Threadlines downloads and checks itself; it needs 1.5.14 or newer, for a custom path too. New models arrive with a newer Antigravity: when Google publishes one, the Antigravity card offers Update, and the picker lists the new models after it, with the reasoning level as its own choice. An Antigravity installed before the move to the CLI shows Update, and a Google sign-in from then needs one more sign-in. Signing in with Google opens Google's page on the device you started from; paste the code the Antigravity page shows into the box Threadlines shows. Sign out removes only that account's sign-in; your own agy in a terminal stays signed in. While Antigravity waits on a command, a timer or a subagent it started, its turn stays working with Stop, and its reply when that work ends lands in the same turn; Stop ends the turn and that work. A message sent while it answers waits for the turn to end; one sent while it only waits on that work ends the turn and goes at once. Each subagent Antigravity launches shows like other agents' subagents, with its role, prompt, report and recent steps. Images and audio go to Antigravity inline, PDFs and text files as documents, other files as a path. Its turns count on {place:usage}.
+
+Each Antigravity account brings in your own rules and skills from ~/.gemini at every start (AGENTS.md, GEMINI.md, config/rules, and the config/skills and antigravity-cli/skills folders with skills.json); your sign-in, hooks, plugins and MCP servers stay out. Antigravity runs a skill or one of its own commands (such as /goal or /compact, when it offers them) when a message starts with / and its name, so typing / in the composer lists its skills, and while Antigravity runs in that thread, the commands it offers there. A message whose typed words start with one of those goes to Antigravity alone and as typed, even in plan mode; the context Threadlines would put in front of it waits for the next ordinary message. Editing an earlier message stops anything Antigravity still runs before the files are restored, and starts it over with only the turns before it, since it can't rewind its own conversation.
+
+How much of each plan you've used is on {place:usage}. The ring beside the composer's send button shows the same limits when you hover or tap it; a short upright tick on weekly and longer bars marks how much of that window has passed (hover the tick for the exact share, "55% of the week has passed"), so a bar filled past its tick is on track to run out before the reset, and its line says "ahead of pace" once it is clearly past. The same ticks show on a provider's Usage tab in Settings › Providers. Clicking a limit there opens {place:usage}. An Antigravity account signed in with Google shows a 5-hour and a weekly limit for each group of models Google meters apart (Gemini, each Gemini 4 model with its own limit, and Claude & GPT together), read from Google every few minutes; each model in the picker shows its own group's limit. Google renews that sign-in only while Antigravity runs, so when it has lapsed the last numbers stay, with their age and a line saying a chat refreshes them. API-key and Vertex AI accounts have no plan limits to show.
 
 An agent's row that says Can't start means its program is on this computer but fails to launch, usually because an update stopped partway. It is not a sign-in problem: the sign-in is still saved. The row has Reinstall when Threadlines can put that same copy back: with npm, bun or Homebrew for a copy they installed, or with the agent's own installer for a copy sitting where that installer puts it (Claude, OpenCode, Cursor, fx, Muse Code, and Codex on Windows). For Pi it reinstalls an npm copy, or installs Threadlines' own copy of Pi. There is no Reinstall for a copy from pnpm, Scoop, winget or Nix, for one at a custom path, or for Grok from xAI's installer (it would switch the release channel); reinstall those the way they were installed. An update that leaves an agent unable to start runs that reinstall once on its own before reporting. Community agents are installed by Threadlines itself and have Install again instead. Antigravity is downloaded and checked by Threadlines, so it isn't covered.
 
@@ -261,7 +333,7 @@ When Claude Code refuses to start (a settings file that is not valid JSON, a bad
 
 If Codex's sign-in goes stale in a chat before it has started on your message, Threadlines restarts Codex and sends the message again, once, with a note in the chat. If that fails too, the chat asks you to sign in.
 
-When a Claude or Codex usage limit stops a thread, the notice above the composer says which limit and when it resets. Its Continue at reset switch sends "Continue where you left off." a minute after the reset, from the computer the thread runs on (a Mac that wakes only briefly for upkeep waits until it's fully awake), or within a few minutes of the limit resetting early because the user spent a limit reset, and {place:threads.continueAfterUsageLimits} turns it on for every limit. If you added another account of the same agent that still has room, the notice offers it by name. Threadlines never switches accounts on its own.`,
+When a Claude, Codex or Antigravity usage limit stops a thread, the notice above the composer says which limit and when it resets. Its Continue at reset switch sends "Continue where you left off." a minute after the reset, from the computer the thread runs on (a Mac that wakes only briefly for upkeep waits until it's fully awake), or within a few minutes of the limit resetting early because the user spent a limit reset, and {place:threads.continueAfterUsageLimits} turns it on for every limit. With it on, a thread another thread's agent started on this computer also waits for the reset instead of failing, and its answer goes back once it continues; so does a thread hearing back from one it started. Stop ends the wait, and a turn you stopped never comes back by itself. If you added another account of the same agent that still has room, the notice offers it by name. Threadlines never switches accounts on its own.`,
   },
   {
     id: "plugins-skills-instructions",
@@ -279,6 +351,33 @@ When a Claude or Codex usage limit stops a thread, the notice above the composer
     body: `{place:settings.plugins} manages what agents can use beyond their own tools, per provider, on this computer or one project: {place:plugins.installed}, {place:plugins.apps}, {place:plugins.connections} (MCP servers) and {place:plugins.hooks}. Its Skills tab is {place:plugins.skills}.
 
 {place:settings.instructions} shows the instruction files each provider reads in a project (like AGENTS.md or CLAUDE.md), to open or edit.`,
+  },
+  {
+    id: "project-brief",
+    title: "Project brief and notes",
+    keywords: [
+      "brief",
+      "project brief",
+      "project instructions",
+      "standing instructions",
+      "rules for every thread",
+      "project memory",
+      "project notes",
+      "notes",
+      "suggested note",
+      "keep note",
+    ],
+    body: `A project's brief is text the user writes once. Every thread in the project gets it as the user's standing instructions, on any agent. It is set in {place:instructions.brief}: pick the project at the top, write it, Save. Up to 8,000 characters. Agents can't change it.
+
+New threads get a change at once. A thread that is already open gets it the next time its agent starts: after the app restarts, after a model switch, or after a stop. Threads behind the link fence, or started by an outside agent, don't get it.
+
+Threadlines keeps it on each computer, not in the repository. Save stores it on every connected computer that has the project, and the line under the box says where it went. If the computers hold different briefs, the page shows the picked computer's and offers to copy it to the others. If another device saved first, Save says so and shows the newer text instead of overwriting it. Set up on another computer copies the brief with the project.
+
+Project notes are short notes for later threads in the project: a title, one line and a text. Every thread gets the list of titles and lines when its agent starts and can read a note's text. Notes are what other agents or the user left, not the user's instructions. They stay on the computer whose agents wrote them and are listed in {place:instructions.notes}, where the user can add, edit or remove one.
+
+{place:instructions.notesMode} decides what an agent's note becomes, for every project on that computer. Ask me first, the default: it is a suggestion, shown in the notes list and as a row in the thread that wrote it, with Keep and Discard. No agent sees a suggestion until the user keeps it, and it never marks the thread as needing the user or holds anything up. Keep without asking: it is kept at once, but only threads running with no more access than the agent that wrote it see it, until the user presses Show to all threads. Off: agents don't write notes, and kept notes still reach threads. Only the user can keep a note or change this setting.
+
+The project menu's Project brief and notes, the command palette and the lead chat's crown card (Brief and notes) open the page too.`,
   },
   {
     id: "browser-panel",
@@ -305,6 +404,61 @@ When a Claude or Codex usage limit stops a thread, the notice above the composer
 Show device toolbar, in the browser's options menu (⋮), sets the page's size: Responsive fills the panel, and a Phone, Tablet, Laptop or Desktop size shrinks to fit it. New tabs open at {place:general.browserPageSize}, which the size menu can also set.
 
 Words typed in the browser's address bar are searched for, with the search engine set in {place:general.browserSearchEngine}. An address loads as it always did.`,
+  },
+  {
+    id: "search-and-commands",
+    title: "Search and commands",
+    keywords: ["search", "command palette", "cmd k", "commands", "find", "filter", "quick open"],
+    body: `Search (Cmd+K, Ctrl+K on Windows and Linux, or the Search field at the top of the sidebar) finds threads by title and by what was said in them, every command the app has, settings, and projects, in one list with the best match first. With nothing typed it shows the threads last opened on this device and a few commands you use most.
+
+The filters under the field (All, Threads, Commands, Settings, Projects) narrow it to one kind; while you type each shows how many it holds. Tab and Shift+Tab move between them, and typing > first switches to Commands. In All each kind shows five rows, then Show all for the rest. Escape clears the text, then the filter, then closes.
+
+A setting opens its page with the row lit. A typed folder path offers Add project there. Archived threads aren't searched; the empty result links to {place:settings.archived}.`,
+  },
+  {
+    id: "terminals",
+    title: "Terminals",
+    keywords: ["terminal", "shell", "split", "dev server", "tabs", "command line", "console"],
+    body: `Each thread has a terminal drawer under the chat (Cmd+J, Ctrl+J on Windows and Linux): its tabs start in the thread's folder and belong to that thread.
+
+{place:terminals} (the rail button, or Cmd+Shift+J) holds terminals tied to no chat, for running a web server and an API side by side. "New tabs in" at the top picks the project the next tab or split starts in; each tab names its folder, and picking another project leaves open tabs where they are. Nothing there starts an agent or a chat.
+
+Every computer has its own set: the menu groups projects under each computer's name, and picking one on another computer shows that computer's tabs. Shells run on that computer and keep running while you look at threads; quitting or restarting Threadlines there stops them, and a command that was running is offered again. Killing a tab stops its shell and drops its output. A computer that's offline shows its tabs again once it's back.`,
+  },
+  {
+    id: "device-tab",
+    title: "The Device tab",
+    keywords: [
+      "device",
+      "simulator",
+      "emulator",
+      "ios",
+      "android",
+      "iphone",
+      "xcode",
+      "android sdk",
+      "app preview",
+      "device_open",
+      "agent-device",
+      "iphone duo",
+      "foldable",
+      "accessibility frames",
+      "record",
+      "recording",
+      "float",
+      "floating",
+      "chips",
+      "event log",
+    ],
+    body: `The Device tab in the right panel shows a live iOS Simulator or Android Emulator running on the thread's computer. You tap, swipe and type on its screen as on a phone (touch screens also get a Keyboard button). The screen sits in a drawing of the device's model (an unknown model gets a plain frame). You can open several devices at once in a thread: each open device is a chip across the top (rename from its menu or by double-clicking, + opens the picker), and only the visible one streams. The Float button moves a device into a small draggable, resizable window over the chat while the right panel shows something else; Open in right panel brings it back (floating is hidden in the phone layout).
+
+The toolbar above the screen has Home, the app switcher, Back and Recents on Android, rotate, save screenshot, record a flow, float, accessibility frames, Tools, and a More menu with Close device and Power off. Record a flow captures taps, buttons, Tools actions, key screenshots and a video of the screen (up to 3 minutes or 10 MB) and appends them to the thread's unsent draft; any file the draft cannot save stays available to download in the Device tab. Accessibility frames outline each element on screen and show its label on hover; their Inspect button makes a tap show the label instead of touching the device. An iPhone Duo shows its stance buttons beside the screen (closed, book, open, laptop, tent, and table mode where offered), and an Android foldable shows fold and unfold. The Tools drawer sets appearance, text size, accessibility options, location and permissions, opens a URL, launches or quits an app, shakes an iOS simulator, sends a test push and streams the event log on iOS, and sets the network on Android.
+
+Open it from the right panel's + menu or its launcher, or with Open device in the command palette. It shows in project threads, not General Chats.
+
+iOS needs a Mac with Xcode, and Android needs the Android SDK with the emulator. Opening the tab downloads nothing: {place:devices.enable} has to be on first, and then the device hub installs the first time the tab or an agent asks. {place:devices.tools} shows the installed versions and an Update button when a newer one is needed.
+
+Agents get device tools only while {place:devices.agentAccess} is on, and only in sessions started after it was turned on. An agent that opens a device brings up the Device tab for anyone watching the thread. Closing a device leaves the simulator running; power off shuts it down.`,
   },
   {
     id: "file-viewer",
@@ -400,7 +554,7 @@ The ↓ count is only as fresh as the last fetch, and {place:sourceControl.fetch
     id: "pages-and-command-requests",
     title: "Agent pages and command requests",
     keywords: ["page", "chart", "diagram", "mockup", "run command", "card", "artifact"],
-    body: `With {place:threads.agentPages} on, an agent can show a chart, diagram, mockup or document as a page in its reply. {place:threads.claudeArtifacts} lets Claude also publish one to claude.ai for a link you can share.
+    body: `With {place:threads.agentPages} on, an agent can show a chart, diagram, mockup or document as a page in its reply. Select text in a page to copy it or add a note on it for your next message, as in the chat's own text. {place:threads.claudeArtifacts} lets Claude also publish one to claude.ai for a link you can share.
 
 With {place:threads.commandRequests} on, an agent can ask you to run a command it can't run itself (one that needs your password or sign-in, or a long-running server): a card in the chat with Run, Put in terminal and Skip, and the output comes back to the agent.`,
   },
@@ -435,7 +589,7 @@ System follows the computer's light or dark setting. In {place:appearance.system
 
 An agent makes one with preview_theme (screenshots of the app wearing it, its readability checks and what its art costs) and offers it with show_theme: a row in the chat with Try it. Trying shows a bar at the top of the window, Keep or Undo, and it switches back by itself after 15 seconds (for a new version of a theme already kept from the same offer in that chat, the bar asks to Update that copy, with Keep both to add another); Esc, a reload or closing the window undo it too (while the /theme picker is open, a preview waits for its ✕ or Esc instead). The Settings gallery, the composer's /theme and an imported ${THEME_FILE_EXTENSION} file start the same trial. New theme, in /theme or in Settings, puts the start of a request in the message box ("Make me a Threadlines theme that feels like") with a few ideas to finish it (Settings opens a general chat for it); sending it asks the agent for one. In Settings, the options on a theme's picture rename it, duplicate it to change a copy, export a file to share, copy the request it was made from, or delete it; starters can be duplicated and exported. An exported file never says which thread made the theme and leaves the request out unless the user includes it; its author can add a credit (name, link, CC BY or CC0), which importing shows, and a theme that already has one keeps it.
 
-The Showcase, beside Your themes in {place:settings.appearance}, lists themes people shared, reviewed before they're listed; clicking one starts the same trial. Share to Showcase…, in a theme's options, opens a public pull request to the Threadlines/themes repository from the GitHub account this computer is signed in to with gh, after showing what gets published. It's public the moment it's shared, under that account's name but without its email. It needs a CC BY or CC0 license, fonts that carry their own copyright and license, and no parts this version doesn't know; the theme's picture then says In review, In the Showcase, Taken back or Not added. Until it's added, Take back from Showcase…, in the same options, closes the pull request; GitHub keeps the closed one. Agents can't share or take back for the user.
+The Showcase, beside Your themes in {place:settings.appearance}, lists themes people shared, reviewed before they're listed; clicking one starts the same trial. Share to Showcase…, in a theme's options, opens a public pull request to the Threadlines/themes repository from the GitHub account this computer is signed in to with gh, after showing what gets published. It's public the moment it's shared, under that account's name but without its email. It needs a CC BY or CC0 license, fonts that carry their own copyright and license, and no parts this version doesn't know; the theme's picture then says In review, In the Showcase, Taken back or Not added. For a theme you already shared, Update in Showcase… (or picking it in the share dialog) opens a pull request that updates its folder in place instead of adding a duplicate, leaving its metadata untouched. Until a share or update is merged, Take back from Showcase… (or Take back update…), in the same options, closes the pull request; GitHub keeps the closed one. Agents can't share or take back for the user.
 
 Edit colors…, in a theme's options in {place:settings.appearance} (Light and Dark too) or "Edit theme colors…" in the command palette, opens a panel beside the app with the theme's own colors (background, text, quiet text, accent, text on accent, and the optional borders, status, code background and selected text). Every change shows across the app at once; Cancel or Esc puts back what was there. Each color says where it's hard to read, and Fix for me moves those colors a little until they read. Pick from the app, then a click anywhere, says which of those colors paints that spot. Save updates a theme in the library; any other is saved as a new theme.
 
@@ -468,6 +622,35 @@ The art is walled off: it runs in a worker in a sandboxed frame with no network,
     body: `An agent can change many settings when you ask: the theme, streaming replies, the model new threads start with, the writing model, which alerts you get, where links open and more (the guide says which, place by place). A model it picks starts at that model's default reasoning, and it can't pick a provider billed per use. It puts a card above the message box listing each change, from what to what, and where it lands: this computer's settings, or the app you accept it in, since settings like {place:appearance.theme} are kept by each app. Alert switches change only where alerts are on (a phone or a browser), and {place:general.openLinksIn} only in the desktop app; the card says so if you're somewhere else. Nothing changes until you press Change; Not now changes nothing. The agent hears how it went at its next turn. The theme can also be one from the theme library, by name; a theme new to that device starts as a trial with Keep and Undo (see \`themes\`).
 
 Settings that give agents more reach ({place:threads.agentThreads}, {place:threads.enableRooms}, access levels, linked computers, plugins and sign-ins), that archive or delete threads, or that share data ({place:general.usageAnalytics}) are yours alone: an agent links them for you instead.`,
+  },
+  {
+    id: "secret-requests",
+    title: "Agents ask for keys on a card",
+    keywords: [
+      "api key",
+      "token",
+      "password",
+      "secret",
+      "env file",
+      ".env",
+      "credentials",
+      "paste key",
+    ],
+    body: `When an agent needs an API key, token or password, it asks on a card above the message box instead of in chat. The card shows the name, the agent's reason, and, in Threadlines' own words, where the key goes: a NAME=value line in a git-ignored env file in the thread's folder (like .env.local), or a private file for the agent's commands that is removed after 24 hours. Save sends it to the thread's computer; Not now saves nothing. The agent hears the outcome, never the value.
+
+What this promises: Threadlines doesn't put the key in the chat, its stored events, logs or other apps. What it doesn't: the agent runs as you on that computer, so it can still read the file, and if it prints the key, the model sees it. A key pasted into chat is already in the conversation; replace it if that matters. Answering needs an encrypted connection to that computer. Archiving, moving or deleting the thread removes its private files, and a saved row for a private file has Remove now.
+
+If the agent later prints a saved key, or a tool reads it, Threadlines replaces it with [NAME hidden] before it stores, logs or shows that text, and a row in the thread says so. An agent's message to another agent or thread, a page, or a command it asks you to run is refused while it holds one. The model may still have seen it, and the provider's own transcript keeps it; replace the key if that matters. Keys under 8 characters, or made only of letters or only of digits, aren't hidden. Your terminal, files in the project and voice audio aren't covered, and a key changed by hand in the env file is hidden from the next restart.`,
+  },
+  {
+    id: "cpu-by-thread",
+    title: "Which thread is using the CPU",
+    keywords: ["cpu", "battery", "drain", "slow", "fan", "hot", "processes", "energy", "usage"],
+    body: `{place:diagnostics.cpuByThread} lists, busiest first, where this computer's CPU goes: one row per thread, one for Threadlines itself, and one for a provider whose single process serves all its threads. Its first line says how many of the computer's cores are busy in total.
+
+A thread's row counts its agents, what they started (test runs, browsers, builds, also ones left running after their parent ended) and its terminals. Rows are sorted by the average over the last minute, and CPU reads the way Activity Monitor shows it: 100% is one full core. Clicking a thread's name opens it; the arrow shows its busiest processes.
+
+It measures only while the section is on screen, so it can't show what ran before it was opened. OpenCode runs one shared process for every thread, so its work shows as one OpenCode row, not per thread. On Windows, a process that left its agent's process tree isn't found.`,
   },
   {
     id: "updates",

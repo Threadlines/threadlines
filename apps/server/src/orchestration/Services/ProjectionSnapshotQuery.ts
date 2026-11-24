@@ -8,6 +8,8 @@
  */
 import type {
   CheckpointRef,
+  MessageId,
+  OrchestrationMessage,
   OrchestrationCheckpointSummary,
   OrchestrationProject,
   OrchestrationProjectCatalogSnapshot,
@@ -24,6 +26,7 @@ import type {
   ThreadId,
   TurnId,
   OrchestrationWorkflowRun,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
@@ -35,6 +38,9 @@ import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 export interface ProjectionSnapshotCounts {
   readonly projectCount: number;
   readonly threadCount: number;
+  readonly leadChatCount?: number;
+  readonly projectsWithBriefCount?: number;
+  readonly projectNoteCount?: number;
 }
 
 export interface ProjectionSnapshotSequence {
@@ -145,7 +151,7 @@ export interface ProjectionSnapshotQueryShape {
     ReadonlyArray<{
       readonly threadId: ThreadId;
       readonly session: OrchestrationSession | null;
-      readonly sideTurn: OrchestrationSideTurn | null;
+      readonly sideTurns: ReadonlyArray<OrchestrationSideTurn>;
     }>,
     ProjectionRepositoryError
   >;
@@ -272,8 +278,22 @@ export interface ProjectionSnapshotQueryShape {
   >;
 
   /**
-   * Thread shells picked by id, by project or by the outside agent that
-   * started them (docs/design/outside-agents.md), built from those threads' rows
+   * Every live thread's key requests (docs/design/secret-requests.md). Used
+   * at startup to settle claimed ones and to set saved files' expiry timers
+   * (AgentSecretRequests).
+   */
+  readonly listSecretRequests: () => Effect.Effect<
+    ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly secretRequests: ReadonlyArray<OrchestrationSecretRequest>;
+    }>,
+    ProjectionRepositoryError
+  >;
+
+  /**
+   * Thread shells picked by id, by project, by the thread that started them
+   * (child threads, `parentThreadId`) or by the outside agent that started
+   * them (docs/design/outside-agents.md), built from those threads' rows
    * alone: no other thread, no repository identities and no diff rollups
    * (`cumulativeDiffStat` reads null). For callers that must not rebuild
    * the sidebar's whole snapshot to answer one question. Newest activity
@@ -282,6 +302,7 @@ export interface ProjectionSnapshotQueryShape {
   readonly listThreadShells: (input: {
     readonly threadIds?: ReadonlyArray<ThreadId>;
     readonly projectIds?: ReadonlyArray<ProjectId>;
+    readonly parentThreadId?: ThreadId;
     readonly outsideConnectionId?: OutsideAgentConnectionId;
     readonly includeArchived?: boolean;
   }) => Effect.Effect<ReadonlyArray<OrchestrationThreadShell>, ProjectionRepositoryError>;
@@ -312,6 +333,21 @@ export interface ProjectionSnapshotQueryShape {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
   }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Read one message of a thread, without the rest of its history: for work
+   * that runs on every event of a streaming reply.
+   */
+  readonly getThreadMessage: (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<Option.Option<OrchestrationMessage>, ProjectionRepositoryError>;
+
+  /** Whether a turn has any message from the thread's agent yet. */
+  readonly hasAssistantMessageForTurn: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<boolean, ProjectionRepositoryError>;
 }
 
 /**

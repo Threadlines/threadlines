@@ -1,7 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - streams the download to disk
 /**
- * VerifiedDownload — fetches a pinned release archive to disk: the exact
- * size and sha256 are known up front, and anything else is refused.
+ * VerifiedDownload — fetches a release archive to disk, refusing anything
+ * that isn't it: the hash (sha256 or sha512) is known up front, and so is
+ * the exact size, or for a source that lists none (Antigravity's update
+ * feed) a cap the download may not pass.
  *
  * @module provider/managedRuntime/VerifiedDownload
  */
@@ -14,27 +16,40 @@ import { ManagedRuntimeError, managedRuntimeError } from "./ManagedRuntimeStore.
 /** The part of `fetch` a download uses; tests pass a stub. */
 export type DownloadFetch = (url: string, init: RequestInit) => Promise<Response>;
 
-export interface VerifiedDownloadInput {
-  readonly fetch: DownloadFetch;
-  /** The program's name as users know it, for messages. */
-  readonly label: string;
-  readonly url: string;
-  /** Lowercase or uppercase hex. */
-  readonly sha256: string;
-  readonly bytes: number;
-  /** Must not exist yet. */
-  readonly destination: string;
-  readonly signal: AbortSignal;
-  readonly onReceived: (receivedBytes: number) => void;
-}
+/** The download's hash, in lowercase or uppercase hex. */
+export type VerifiedDownloadDigest =
+  | { readonly sha256: string; readonly sha512?: never }
+  | { readonly sha512: string; readonly sha256?: never };
+
+/** The exact size, or only a cap when the source lists none. */
+export type VerifiedDownloadSize =
+  | { readonly bytes: number; readonly maxBytes?: never }
+  | { readonly maxBytes: number; readonly bytes?: never };
+
+export type VerifiedDownloadInput = VerifiedDownloadDigest &
+  VerifiedDownloadSize & {
+    readonly fetch: DownloadFetch;
+    /** The program's name as users know it, for messages. */
+    readonly label: string;
+    readonly url: string;
+    /** Must not exist yet. */
+    readonly destination: string;
+    readonly signal: AbortSignal;
+    readonly onReceived: (receivedBytes: number) => void;
+  };
 
 /**
  * Streams `url` to `destination`, hashing as it goes and stopping as soon as
- * it runs past the expected size. Throws a `ManagedRuntimeError`: `download`
- * when the transfer fails, `checksum` when what arrived isn't the release.
+ * it runs past the expected size or the cap. Resolves to the number of bytes
+ * written. Throws a `ManagedRuntimeError`: `download` when the transfer
+ * fails, `checksum` when what arrived isn't the release.
  */
-export async function downloadVerified(input: VerifiedDownloadInput): Promise<void> {
+export async function downloadVerified(input: VerifiedDownloadInput): Promise<number> {
   const { label } = input;
+  const algorithm = input.sha512 !== undefined ? "sha512" : "sha256";
+  const expectedDigest = (input.sha512 ?? input.sha256).toLowerCase();
+  const exactBytes = input.bytes;
+  const limit = input.bytes ?? input.maxBytes;
   const unreachable = `Couldn't download ${label}. Check your internet connection and try again.`;
   const mismatch = (detail: string) =>
     managedRuntimeError(
@@ -63,16 +78,23 @@ export async function downloadVerified(input: VerifiedDownloadInput): Promise<vo
   }
   const encoding = response.headers.get("content-encoding");
   const declaredLength = response.headers.get("content-length");
+  const declaredBytes =
+    (encoding === null || encoding === "identity") && declaredLength !== null
+      ? Number(declaredLength)
+      : undefined;
   if (
-    (encoding === null || encoding === "identity") &&
-    declaredLength !== null &&
-    Number(declaredLength) !== input.bytes
+    declaredBytes !== undefined &&
+    (exactBytes !== undefined ? declaredBytes !== exactBytes : declaredBytes > limit)
   ) {
     await response.body.cancel().catch(() => undefined);
-    throw mismatch(`server declared ${declaredLength} bytes, expected ${input.bytes}`);
+    throw mismatch(
+      exactBytes !== undefined
+        ? `server declared ${declaredLength} bytes, expected ${exactBytes}`
+        : `server declared ${declaredLength} bytes, more than the ${limit} allowed`,
+    );
   }
 
-  const hash = createHash("sha256");
+  const hash = createHash(algorithm);
   let received = 0;
   await pipeline(
     response.body,
@@ -80,8 +102,8 @@ export async function downloadVerified(input: VerifiedDownloadInput): Promise<vo
       try {
         for await (const chunk of source) {
           received += chunk.byteLength;
-          if (received > input.bytes) {
-            throw mismatch(`received more than ${input.bytes} bytes`);
+          if (received > limit) {
+            throw mismatch(`received more than ${limit} bytes`);
           }
           hash.update(chunk);
           input.onReceived(received);
@@ -96,7 +118,8 @@ export async function downloadVerified(input: VerifiedDownloadInput): Promise<vo
     { signal: input.signal },
   );
   const digest = hash.digest("hex");
-  if (received !== input.bytes || digest !== input.sha256.toLowerCase()) {
-    throw mismatch(`received ${received} bytes with sha256 ${digest}`);
+  if ((exactBytes !== undefined && received !== exactBytes) || digest !== expectedDigest) {
+    throw mismatch(`received ${received} bytes with ${algorithm} ${digest}`);
   }
+  return received;
 }

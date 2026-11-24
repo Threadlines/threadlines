@@ -1,5 +1,5 @@
 {
-  "claudeSystemAppendBytes": 7052,
+  "claudeSystemAppendBytes": 7992,
   "upFrontTools": [
     "app_guide",
     "ask_user_to_run",
@@ -13,8 +13,9 @@
     "room_ask",
     "room_diff",
     "room_history",
+    "secret_request",
     "show_page"
   ],
-  "upFrontToolDefinitionBytes": 16802,
-  "onDemandToolDefinitionBytes": 46770
+  "upFrontToolDefinitionBytes": 18074,
+  "onDemandToolDefinitionBytes": 50856
 }

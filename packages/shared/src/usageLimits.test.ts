@@ -1,7 +1,12 @@
 import type { ServerProviderAccountUsage } from "@threadlines/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { isAccountUsageNearLimit } from "./usageLimits.ts";
+import {
+  isAccountUsageNearLimit,
+  isModelUsageNearLimit,
+  usageLimitForModel,
+  usageScopeHoldsModel,
+} from "./usageLimits.ts";
 
 const NOW_MS = Date.parse("2026-11-06T12:00:00.000Z");
 const reading = (
@@ -40,5 +45,102 @@ describe("isAccountUsageNearLimit", () => {
   it("takes the backend's word that usage isn't allowed, and goes ahead with no reading", () => {
     expect(isAccountUsageNearLimit(reading({ usedPercent: 10 }, false), NOW_MS, 90)).toBe(true);
     expect(isAccountUsageNearLimit(undefined, NOW_MS, 90)).toBe(false);
+  });
+});
+
+describe("Antigravity's family limits", () => {
+  const gemini = { name: "Gemini", models: ["Gemini"], excludes: ["Argon"] };
+  const shared = { name: "Claude & GPT", models: ["Claude", "GPT"] };
+
+  it("hold the models of their family and leave out those with a pool of their own", () => {
+    expect(usageScopeHoldsModel(gemini, "Gemini 3.1 Pro")).toBe(true);
+    expect(usageScopeHoldsModel(gemini, "Gemini 4 Argon")).toBe(false);
+    expect(
+      usageScopeHoldsModel({ name: "Gemini 4 Argon", models: ["Argon"] }, "Gemini 4 Argon"),
+    ).toBe(true);
+    expect(usageScopeHoldsModel(shared, "Claude Sonnet 5.5")).toBe(true);
+    expect(usageScopeHoldsModel(shared, "GPT-OSS 120B")).toBe(true);
+    expect(usageScopeHoldsModel(shared, "Gemini 3.1 Pro")).toBe(false);
+    // A model's own limit (Claude's) still matches its name as whole words.
+    expect(usageScopeHoldsModel({ name: "Opus 5" }, "Claude Opus 5.5")).toBe(false);
+    expect(usageScopeHoldsModel({ name: "Fable" }, "Claude Fable 5.2")).toBe(true);
+  });
+
+  it("stop a model only on its own family's spent window", () => {
+    const resetsAt = NOW_MS + 3_600_000;
+    const usage: ServerProviderAccountUsage = {
+      source: "grok-billing",
+      checkedAt: "2026-11-06T11:59:00.000Z",
+      limits: [
+        {
+          limitId: "antigravity",
+          scoped: [
+            {
+              scopeLabel: "Gemini",
+              scopeModels: ["Gemini"],
+              usedPercent: 40,
+              remainingPercent: 60,
+            },
+            {
+              scopeLabel: "Claude & GPT",
+              scopeModels: ["Claude", "GPT"],
+              usedPercent: 100,
+              remainingPercent: 0,
+              resetsAt,
+              windowDurationMins: 300,
+            },
+          ],
+        },
+      ],
+    };
+    expect(usageLimitForModel(usage, "Claude Opus 5.5", NOW_MS)).toEqual({
+      window: "session",
+      resetsAt: new Date(resetsAt).toISOString(),
+    });
+    expect(usageLimitForModel(usage, "Gemini 3.1 Pro", NOW_MS)).toBeUndefined();
+    // Past its reset, the reading is older than the window.
+    expect(usageLimitForModel(usage, "Claude Opus 5.5", resetsAt + 1)).toBeUndefined();
+  });
+
+  it("checks near-limit per model pool without blocking unrelated families", () => {
+    const resetsAt = NOW_MS + 3_600_000;
+    const usage: ServerProviderAccountUsage = {
+      source: "grok-billing",
+      checkedAt: "2026-11-06T11:59:00.000Z",
+      limits: [
+        {
+          limitId: "antigravity",
+          scoped: [
+            {
+              scopeLabel: "Gemini",
+              scopeModels: ["Gemini"],
+              scopeExcludes: ["Hydrogen"],
+              usedPercent: 30,
+              remainingPercent: 70,
+              resetsAt,
+            },
+            {
+              scopeLabel: "Gemini Hydrogen",
+              scopeModels: ["Hydrogen"],
+              usedPercent: 90,
+              remainingPercent: 10,
+              resetsAt,
+            },
+            {
+              scopeLabel: "Claude & GPT",
+              scopeModels: ["Claude", "GPT"],
+              usedPercent: 96,
+              remainingPercent: 4,
+              resetsAt,
+            },
+          ],
+        },
+      ],
+    };
+    expect(isModelUsageNearLimit(usage, "Gemini 4 Hydrogen", NOW_MS, 90)).toBe(true);
+    expect(isModelUsageNearLimit(usage, "Gemini 3.8 Flash", NOW_MS, 90)).toBe(false);
+    expect(isModelUsageNearLimit(usage, "Claude Opus 5.5", NOW_MS, 90)).toBe(true);
+    // Past reset, the stale reading no longer blocks.
+    expect(isModelUsageNearLimit(usage, "Gemini 4 Hydrogen", resetsAt + 1, 90)).toBe(false);
   });
 });

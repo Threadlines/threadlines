@@ -72,3 +72,71 @@ it("a check whose only run was cancelled still fails the gate", () => {
   assert.equal(evaluation.failures.length, 1);
   assert.deepEqual(evaluation.pending, []);
 });
+
+it("a skipped newer run yields to an older passing run of the same check", () => {
+  const evaluation = evaluateRequiredChecks(
+    [CHECK],
+    [
+      {
+        name: CHECK,
+        status: "completed",
+        conclusion: "success",
+        completed_at: "2026-09-06T09:11:40Z",
+        html_url: "https://example.test/merge-queue",
+      },
+      {
+        name: CHECK,
+        status: "completed",
+        conclusion: "skipped",
+        completed_at: "2026-09-06T09:14:50Z",
+        html_url: "https://example.test/main-push",
+      },
+    ],
+  );
+
+  assert.deepEqual(evaluation.failures, []);
+  assert.deepEqual(evaluation.pending, []);
+  assert.equal(evaluation.checksByName.get(CHECK)?.html_url, "https://example.test/merge-queue");
+});
+
+it("a check whose only run was skipped still fails the gate", () => {
+  const evaluation = evaluateRequiredChecks(
+    [CHECK],
+    [
+      {
+        name: CHECK,
+        status: "completed",
+        conclusion: "skipped",
+        completed_at: "2026-09-06T09:14:50Z",
+      },
+    ],
+  );
+
+  assert.equal(evaluation.failures.length, 1);
+  assert.deepEqual(evaluation.pending, []);
+});
+
+it("a newer queued run with null timestamps is waited on even when an older run passed", () => {
+  const evaluation = evaluateRequiredChecks(
+    [CHECK],
+    [
+      {
+        id: 100,
+        name: CHECK,
+        status: "completed",
+        conclusion: "success",
+        completed_at: "2026-09-06T09:11:40Z",
+      },
+      {
+        id: 200,
+        name: CHECK,
+        status: "queued",
+        started_at: null,
+        completed_at: null,
+      },
+    ],
+  );
+
+  assert.deepEqual(evaluation.failures, []);
+  assert.equal(evaluation.pending.length, 1);
+});

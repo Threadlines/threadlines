@@ -98,7 +98,11 @@ export const InboundComputerLink = Schema.Struct({
 });
 export type InboundComputerLink = typeof InboundComputerLink.Type;
 
-/** A thread another computer asked to start here, waiting for this computer's user. */
+/**
+ * A thread another computer asked to start here, waiting for this computer's
+ * user. Moves from one computer (same `deviceId`) are shown as one group,
+ * answered together with `moves.respondMany` or one at a time.
+ */
 export const ComputerLinkPendingRequest = Schema.Struct({
   deviceId: TrimmedNonEmptyString,
   /** A start: its request id. A move: its transfer id. */
@@ -117,6 +121,14 @@ export const ComputerLinkPendingRequest = Schema.Struct({
       trackedFiles: Schema.Number,
       untrackedFiles: Schema.Number,
       unpushedCommits: Schema.Number,
+      /**
+       * How much of it is here already, of `totalBytes` (docs/design/fleet.md,
+       * Part 3c): a newer asking computer sends it before Allow, so once every
+       * byte is here Allow sets it up even with that computer off. Absent: an
+       * older asking computer, whose bytes come after Allow.
+       */
+      bytesReceived: Schema.optional(Schema.Number),
+      totalBytes: Schema.optional(Schema.Number),
     }),
   ),
   /** The asking computer's name. */
@@ -244,3 +256,21 @@ export const LinksRespondRequestInput = Schema.Struct({
   allow: Schema.Boolean,
 });
 export type LinksRespondRequestInput = typeof LinksRespondRequestInput.Type;
+
+/**
+ * Reading a thread a parent here started on a linked computer, for a client
+ * that can't see that computer (`links.readThread`). This server asks the
+ * other one through the link (`peer.thread.read`), so only threads its link
+ * started can be read, and only for a parent that holds the child.
+ * `after`, `limit`, `messageId` and `offset` mean what they mean to thread_read.
+ */
+export const LinksReadThreadInput = Schema.Struct({
+  parentThreadId: ThreadId,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  after: Schema.optional(Schema.Number),
+  limit: Schema.optional(Schema.Number),
+  messageId: Schema.optional(Schema.String),
+  offset: Schema.optional(Schema.Number),
+});
+export type LinksReadThreadInput = typeof LinksReadThreadInput.Type;

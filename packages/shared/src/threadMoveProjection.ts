@@ -1,0 +1,314 @@
+/**
+ * A thread's move state after one of its move events: its queued move
+ * (ThreadPendingMove, docs/design/fleet.md, Part 3b), its move under way or
+ * done (OrchestrationThreadMove, Part 3), and how its last move went
+ * (ThreadMoveOutcome, Part 3c). One rule for the in-memory projector and the
+ * SQLite projection on the server, and the web app's live store, so none of
+ * them disagree.
+ *
+ * Every event names the request or transfer it is about; one for another
+ * leaves the state as it is. The outcome is set by the same events that end a
+ * queued move without starting it (cancelled, blocked, gone) or settle a move
+ * (aborted, moved away), and by the progress that says the other computer has
+ * every byte and waits for its user (`staged`). It outlives the queued move
+ * and the move it answers, so a batch can read each thread's answer later.
+ * A move that didn't happen says why as a code (`reason`) beside its words.
+ *
+ * @module threadMoveProjection
+ */
+import type {
+  OrchestrationEvent,
+  OrchestrationThreadMove,
+  ThreadMoveOutcome,
+  ThreadMoveOutcomeReason,
+  ThreadAdoptedFromLink,
+  ThreadMovedFrom,
+  ThreadPendingMove,
+} from "@threadlines/contracts";
+
+export type ThreadMoveEvent = Extract<
+  OrchestrationEvent,
+  {
+    readonly type:
+      | "thread.move-queued"
+      | "thread.move-mode-set"
+      | "thread.move-quiescing"
+      | "thread.move-queue-status-set"
+      | "thread.move-queue-ended"
+      | "thread.move-started"
+      | "thread.move-progressed"
+      | "thread.move-cancel-requested"
+      | "thread.move-aborted"
+      | "thread.moved-away";
+  }
+>;
+
+export interface ThreadMoveState {
+  readonly move: OrchestrationThreadMove | null;
+  readonly pendingMove: ThreadPendingMove | null;
+  readonly lastMoveOutcome: ThreadMoveOutcome | null;
+}
+
+const CANCELLED_WORDS = "You cancelled the move.";
+
+/** The thread's queued move after `event`; the same object when it doesn't change. */
+function nextPendingMove(
+  current: ThreadPendingMove | null,
+  event: ThreadMoveEvent,
+): ThreadPendingMove | null {
+  if (event.type === "thread.move-queued") return event.payload.pendingMove;
+  if (!("requestId" in event.payload)) return current;
+  if (current === null || current.requestId !== event.payload.requestId) return current;
+  switch (event.type) {
+    // "Stop the agents and move now": the sessions end in the same decision,
+    // so the fence holds from here, as for a move queued that way.
+    case "thread.move-mode-set":
+      return {
+        ...current,
+        mode: event.payload.mode,
+        stage: "quiescing",
+        ...(event.payload.interrupted !== undefined
+          ? { interrupted: event.payload.interrupted }
+          : {}),
+      };
+    case "thread.move-quiescing":
+      return {
+        ...current,
+        stage: "quiescing",
+        ...(event.payload.interrupted !== undefined
+          ? { interrupted: event.payload.interrupted }
+          : {}),
+      };
+    case "thread.move-queue-status-set":
+      return { ...current, waitsFor: event.payload.waitsFor, hold: event.payload.hold };
+    case "thread.move-queue-ended":
+      return null;
+    default:
+      return current;
+  }
+}
+
+/** The thread's move after `event`; the same object when it doesn't change. */
+function nextMove(
+  move: OrchestrationThreadMove | null,
+  event: ThreadMoveEvent,
+): OrchestrationThreadMove | null {
+  if (event.type === "thread.move-started") {
+    const payload = event.payload;
+    return {
+      transferId: payload.transferId,
+      target: payload.target,
+      agent: payload.agent,
+      phase: "exporting",
+      cancelRequested: false,
+      startedAt: payload.startedAt,
+      ...(payload.queuedRequestId !== undefined
+        ? { queuedRequestId: payload.queuedRequestId }
+        : {}),
+      ...(payload.batchId !== undefined ? { batchId: payload.batchId } : {}),
+      ...(payload.interrupted !== undefined ? { interrupted: payload.interrupted } : {}),
+      ...(payload.targetTakes !== undefined ? { targetTakes: payload.targetTakes } : {}),
+      ...(payload.roomAgents !== undefined ? { roomAgents: payload.roomAgents } : {}),
+      ...(payload.family !== undefined ? { family: payload.family } : {}),
+    };
+  }
+  if (!("transferId" in event.payload)) return move;
+  if (move === null || move.transferId !== event.payload.transferId) return move;
+  switch (event.type) {
+    case "thread.move-progressed": {
+      const payload = event.payload;
+      // Waiting for the other computer lasts until its next step says otherwise.
+      const { waitingForTarget: _waiting, ...rest } = move;
+      return {
+        ...rest,
+        phase: payload.phase,
+        ...(payload.waitingForTarget === true ? { waitingForTarget: true } : {}),
+        ...(payload.sentBytes !== undefined ? { sentBytes: payload.sentBytes } : {}),
+        ...(payload.totalBytes !== undefined ? { totalBytes: payload.totalBytes } : {}),
+      };
+    }
+    case "thread.move-cancel-requested":
+      return { ...move, cancelRequested: true };
+    case "thread.move-aborted":
+      return null;
+    case "thread.moved-away":
+      return {
+        ...move,
+        movedAway: { threadId: event.payload.movedThreadId, movedAt: event.payload.movedAt },
+      };
+    default:
+      return move;
+  }
+}
+
+/** The outcome a move under way reaches. */
+function moveOutcome(
+  move: OrchestrationThreadMove,
+  result: ThreadMoveOutcome["result"],
+  at: string,
+  why?: { readonly words: string; readonly reason: ThreadMoveOutcomeReason | undefined },
+): ThreadMoveOutcome {
+  return {
+    result,
+    target: move.target,
+    ...(move.queuedRequestId !== undefined ? { requestId: move.queuedRequestId } : {}),
+    transferId: move.transferId,
+    ...(move.batchId !== undefined ? { batchId: move.batchId } : {}),
+    ...(why !== undefined ? { words: why.words } : {}),
+    ...(why?.reason !== undefined ? { reason: why.reason } : {}),
+    at,
+  };
+}
+
+/** How the thread's last move went after `event`, read against the state before it. */
+function nextOutcome(state: ThreadMoveState, event: ThreadMoveEvent): ThreadMoveOutcome | null {
+  const current = state.lastMoveOutcome;
+  switch (event.type) {
+    case "thread.move-queue-ended": {
+      const pending = state.pendingMove;
+      const payload = event.payload;
+      if (pending === null || pending.requestId !== payload.requestId) return current;
+      if (payload.reason === "started") return current;
+      return {
+        result: "not_moved",
+        target: pending.target,
+        requestId: pending.requestId,
+        ...(pending.batchId !== undefined ? { batchId: pending.batchId } : {}),
+        words: payload.words ?? CANCELLED_WORDS,
+        reason: payload.reason,
+        at: payload.endedAt,
+      };
+    }
+    case "thread.move-progressed": {
+      const move = state.move;
+      const payload = event.payload;
+      if (move === null || move.transferId !== payload.transferId) return current;
+      if (payload.phase !== "awaiting_approval" || payload.staged !== true) return current;
+      return moveOutcome(move, "awaiting_approval", payload.updatedAt);
+    }
+    case "thread.move-aborted": {
+      const move = state.move;
+      if (move === null || move.transferId !== event.payload.transferId) return current;
+      return moveOutcome(move, "not_moved", event.payload.updatedAt, {
+        words: event.payload.reason,
+        reason: event.payload.code,
+      });
+    }
+    case "thread.moved-away": {
+      const move = state.move;
+      if (move === null || move.transferId !== event.payload.transferId) return current;
+      if (move.movedAway !== undefined) return current;
+      return moveOutcome(move, "moved", event.payload.movedAt);
+    }
+    default:
+      return current;
+  }
+}
+
+/** The thread's move state after `event`; the same object when nothing changed. */
+export function nextThreadMoveState(
+  state: ThreadMoveState,
+  event: ThreadMoveEvent,
+): ThreadMoveState {
+  const pendingMove = nextPendingMove(state.pendingMove, event);
+  const move = nextMove(state.move, event);
+  const lastMoveOutcome = nextOutcome(state, event);
+  return pendingMove === state.pendingMove &&
+    move === state.move &&
+    lastMoveOutcome === state.lastMoveOutcome
+    ? state
+    : { move, pendingMove, lastMoveOutcome };
+}
+
+/**
+ * Where a moved thread came from, after the user here took it over (the
+ * fence lifts: `liftsMoveFence`) or set one of its pull request switches
+ * (what was on there is no longer offered: `clearsMovedSwitches`). The same
+ * object when neither changes it. Every reader of those events applies it.
+ */
+export function movedFromAfter<T extends ThreadMovedFrom | null | undefined>(
+  movedFrom: T,
+  change: { readonly liftsFence?: boolean; readonly clearsSwitches?: boolean },
+): T {
+  if (movedFrom === null || movedFrom === undefined) return movedFrom;
+  const lift = change.liftsFence === true && movedFrom.fenced !== undefined;
+  const clear = change.clearsSwitches === true && movedFrom.pullRequestSwitches !== undefined;
+  if (!lift && !clear) return movedFrom;
+  const { fenced, pullRequestSwitches, ...rest } = movedFrom;
+  return {
+    ...rest,
+    ...(lift || fenced === undefined ? {} : { fenced }),
+    ...(clear || pullRequestSwitches === undefined ? {} : { pullRequestSwitches }),
+  } as T;
+}
+
+/**
+ * Where an adopted thread was started from (ThreadAdoptedFromLink), after a
+ * message the user sent here lifted the fence (`liftsMoveFence`, the same
+ * event that lifts a moved thread's). The same object when it isn't fenced.
+ */
+export function adoptedFromLinkAfterLift<T extends ThreadAdoptedFromLink | null | undefined>(
+  adopted: T,
+): T {
+  if (adopted === null || adopted === undefined || !adopted.fenced) return adopted;
+  return { ...adopted, fenced: false } as T;
+}
+
+/** A thread's pull request switches, as a move carries them (own switch, then each linked one). */
+export interface MovedPullRequestSwitches {
+  readonly autoFix: boolean;
+  readonly autoMerge: unknown;
+  readonly linked: ReadonlyArray<{
+    readonly number: number;
+    readonly autoFix: boolean;
+    readonly autoMerge: unknown;
+  }>;
+}
+
+/**
+ * Which pull request switches are on, in words: `words` ("Auto-fix",
+ * "Auto-merge", or both), whether that is more than one switch (`plural`),
+ * and what they watch (`what`: "pull request #212", "this thread's pull
+ * request"). Null: none is on.
+ */
+export function pullRequestSwitchesWords(switches: MovedPullRequestSwitches): {
+  readonly words: string;
+  readonly plural: boolean;
+  readonly what: string;
+} | null {
+  const armed = switches.linked.filter((entry) => entry.autoFix || entry.autoMerge !== null);
+  const own = switches.autoFix || switches.autoMerge !== null;
+  const fix = switches.autoFix || armed.some((entry) => entry.autoFix);
+  const merge = switches.autoMerge !== null || armed.some((entry) => entry.autoMerge !== null);
+  if (!fix && !merge) return null;
+  const numbers = armed.map((entry) => `#${entry.number}`);
+  const what =
+    numbers.length === 0
+      ? "this thread's pull request"
+      : own
+        ? `this thread's pull request and ${numbers.join(", ")}`
+        : numbers.length === 1
+          ? `pull request ${numbers[0]}`
+          : `pull requests ${numbers.join(", ")}`;
+  return {
+    words: fix && merge ? "Auto-fix and auto-merge" : fix ? "Auto-fix" : "Auto-merge",
+    plural: fix && merge,
+    what,
+  };
+}
+
+/**
+ * What the "Moved here" line and the moved thread's notice say about the
+ * switches that were on before the move: they arrive off (docs/design/fleet.md,
+ * Part 3e, (c)). Null: none was on.
+ */
+export function movedPullRequestSwitchesWords(
+  switches: MovedPullRequestSwitches,
+  fromLabel: string,
+): string | null {
+  const on = pullRequestSwitchesWords(switches);
+  if (on === null) return null;
+  return on.plural
+    ? `${on.words} were on for ${on.what} on ${fromLabel}. They're off here until you turn them on.`
+    : `${on.words} was on for ${on.what} on ${fromLabel}. It's off here until you turn it on.`;
+}

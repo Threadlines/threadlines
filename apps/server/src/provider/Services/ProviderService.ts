@@ -50,13 +50,25 @@ import type {
   WorkflowRunFileKind,
   WorkflowSaveCommandResult,
   RuntimeTaskId,
+  RuntimeMode,
+  ProviderDriverKind,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderAdapterError, ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities, ProviderAdapterShape } from "./ProviderAdapter.ts";
+import type {
+  NativeSessionExport,
+  NativeSessionImportInput,
+  NativeSessionImportResult,
+} from "../nativeSession.ts";
+import type {
+  ProviderAdapterCapabilities,
+  ProviderAdapterShape,
+  ProviderStopConfirmation,
+} from "./ProviderAdapter.ts";
+import type { ProviderProcessOwner } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -260,7 +272,21 @@ export interface ProviderServiceShape {
     /** The model the goal's work runs on, where the provider starts that
      *  work itself (Claude). */
     readonly modelSelection?: ModelSelection;
+    /** What the agent reads ahead of the goal's work (a lead chat's role).
+     *  See `ProviderSetThreadGoalInput.context`. */
+    readonly context?: string;
+    /** Who asked; the user when absent. See `ProviderSetThreadGoalInput.origin`. */
+    readonly origin?: "user" | "automatic";
   }) => Effect.Effect<RuntimeThreadGoalSnapshot, ProviderServiceError>;
+
+  /**
+   * The goal the thread's live provider session holds, as the provider says
+   * it; null when it holds none, or there is no live goal-capable session.
+   * Never recovers a cold session.
+   */
+  readonly getThreadGoal: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<RuntimeThreadGoalSnapshot | null, ProviderServiceError>;
 
   /**
    * Pause an active goal before stopping its live provider session.
@@ -308,6 +334,73 @@ export interface ProviderServiceShape {
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
 
   /**
+   * Ends every runtime of a thread and proves it gone, before the thread
+   * moves to another computer (docs/design/fleet.md, Part 3b, "The
+   * barrier"): each session whose key belongs to the thread (its own agent,
+   * room agents, side answers, early starts) is stopped, then every driver
+   * confirms its processes, and what they started, exited. `unconfirmed`
+   * when any can't be proven, with why. It doesn't fence the thread: the
+   * caller must already have stopped new sessions (ThreadSessionAdmission).
+   */
+  readonly quiesceThread: (threadId: ThreadId) => Effect.Effect<ProviderStopConfirmation>;
+
+  /**
+   * The thread's own agent session, to carry with the thread to another
+   * computer (docs/design/fleet.md, Part 3d): read from its saved binding
+   * through the driver that wrote it. Null when the thread has none, or its
+   * driver can't carry one. Read while the thread is quiesced and fenced,
+   * so its files no longer change.
+   */
+  readonly exportNativeSession: (threadId: ThreadId) => Effect.Effect<NativeSessionExport | null>;
+
+  /**
+   * Writes a session another computer carried into `instanceId`'s own home
+   * (its driver's `importNativeSession`). Refused when the instance's driver
+   * can't take one.
+   */
+  readonly importNativeSession: (
+    input: NativeSessionImportInput & { readonly instanceId: ProviderInstanceId },
+  ) => Effect.Effect<NativeSessionImportResult>;
+
+  /**
+   * Binds a thread to an imported session: its next start on `instanceId`
+   * resumes `cursor`. No runtime starts now.
+   */
+  readonly adoptNativeSession: (input: {
+    readonly threadId: ThreadId;
+    readonly instanceId: ProviderInstanceId;
+    readonly cursor: unknown;
+    readonly runtimeMode: RuntimeMode;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Takes back the binding `adoptNativeSession` wrote for a thread whose move
+   * didn't land here: the thread never came to exist, so its binding goes.
+   */
+  readonly forgetNativeSession: (threadId: ThreadId) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Ends the thread's own agent session and forgets its resume cursor, so the
+   * next start opens a new conversation: a carried session that can't be
+   * used here (docs/design/fleet.md, Part 3d).
+   */
+  readonly dropResumeCursor: (threadId: ThreadId) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * The thread's history went out to the agent of this session key, in a
+   * prompt the session that started at `sessionCreatedAt`
+   * (ProviderSession.createdAt) wrote to the agent (a send whose result
+   * says neither `contextDeferred` nor `undelivered`). Its
+   * binding stops owing the history (`historyOwed`), so later starts resume
+   * the conversation, but only while the binding still holds that session: a
+   * late word from an older session clears nothing.
+   */
+  readonly noteHistoryDelivered: (input: {
+    readonly threadId: ThreadId;
+    readonly sessionCreatedAt: string;
+  }) => Effect.Effect<void>;
+
+  /**
    * Read capabilities for the adapter bound to a configured provider instance.
    */
   readonly getCapabilities: (
@@ -321,7 +414,13 @@ export interface ProviderServiceShape {
   /**
    * Roll back provider conversation state by a number of turns.
    * `conversationRolledBack` is false when the provider cannot forget turns
-   * (see `ProviderAdapterCapabilities.conversationRollback`).
+   * (see `ProviderAdapterCapabilities.conversationRollback`). An agent that
+   * forgets by starting over (`new-session`) has its running work stopped
+   * (its process ended if a cancel can't) and its saved conversation
+   * forgotten in the thread's binding; nothing is started for it. It fails
+   * when the agent couldn't be found or stopped, so nothing of it can be
+   * known to have stopped writing; it answers false when it stopped but the
+   * binding couldn't be written.
    */
   readonly rollbackConversation: (input: {
     readonly threadId: ThreadId;
@@ -378,12 +477,24 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * Every agent process the drivers run now, and whose it is, with the
+   * driver that runs it (ProviderAdapterShape.listProcesses). A driver that
+   * can't say contributes nothing.
+   */
+  readonly listAgentProcesses: Effect.Effect<ReadonlyArray<ProviderListedProcess>>;
+
+  /**
    * Canonical provider runtime event stream.
    *
    * Fan-out is owned by ProviderService (not by a standalone event-bus service).
    */
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;
 }
+
+/** One process from {@link ProviderServiceShape.listAgentProcesses}. */
+export type ProviderListedProcess = ProviderProcessOwner & {
+  readonly provider: ProviderDriverKind;
+};
 
 /**
  * ProviderService - Service tag for provider orchestration.

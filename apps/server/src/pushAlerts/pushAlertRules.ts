@@ -21,6 +21,7 @@ export type PushAlertReason =
   | "plan"
   | "schedule"
   | "settings"
+  | "secret"
   | "finished"
   | "error"
   | "restart"
@@ -75,6 +76,7 @@ export const turnAlertId = (turnId: string) => `turn:${turnId}`;
 export const sideTurnAlertId = (sideTurnId: string) => `side:${sideTurnId}`;
 export const scheduleRequestAlertId = (requestId: string) => `schedule:${requestId}`;
 export const settingsRequestAlertId = (requestId: string) => `settings:${requestId}`;
+export const secretRequestAlertId = (requestId: string) => `secret:${requestId}`;
 
 const add = (intent: PushAlertIntent): PushAlertAction => ({ type: "add", intent });
 
@@ -236,10 +238,38 @@ export function pushAlertActionsForEvent(
     case "thread.settings-change-claimed":
     case "thread.settings-change-settled":
       return [{ type: "cancel", alertId: settingsRequestAlertId(event.payload.requestId) }];
+    case "thread.secret-request-created": {
+      const { threadId, request, replaces } = event.payload;
+      return [
+        ...(replaces ?? []).map((requestId): PushAlertAction => ({
+          type: "cancel",
+          alertId: secretRequestAlertId(requestId),
+        })),
+        add({
+          occurredAt: event.occurredAt,
+          alertId: secretRequestAlertId(request.requestId),
+          threadId,
+          kind: "needs_you",
+          reason: "secret",
+          subjectId: request.requestId,
+          detail: null,
+          holdMs: 0,
+        }),
+      ];
+    }
+    case "thread.secret-request-claimed":
+    case "thread.secret-request-settled":
+      return [{ type: "cancel", alertId: secretRequestAlertId(event.payload.requestId) }];
     case "thread.child-request-settled":
       // The child's result went to the parent thread, whose agent carries on
       // with it: the parent's own alert is the one that counts.
       return [{ type: "cancel-thread", threadId: event.payload.childThreadId, kinds: DONE_KINDS }];
+    case "thread.handed-back":
+      // A later turn a child took on its own went up to its parent as a
+      // report: the same, and no alert each time a child reports.
+      return event.payload.owedReport === undefined
+        ? []
+        : [{ type: "cancel-thread", threadId: event.payload.threadId, kinds: DONE_KINDS }];
     case "thread.seen-set":
       // Opened somewhere: no need to say it finished.
       return [{ type: "cancel-thread", threadId: event.payload.threadId, kinds: DONE_KINDS }];
@@ -264,6 +294,7 @@ const REASON_TEXT: Record<PushAlertReason, string> = {
   plan: "Has a plan for you to review",
   schedule: "Wants to change a scheduled task",
   settings: "Wants to change your settings",
+  secret: "Wants a key from you",
   finished: "Finished",
   error: "Stopped with an error",
   restart: "Stopped when Threadlines restarted",

@@ -7,32 +7,43 @@
  */
 import {
   CHILD_REQUEST_NOTE_LIMIT,
-  CHILD_THREAD_SEND_LIMIT,
-  CHILD_THREAD_START_LIMIT,
   CHILD_THREADS_PER_CALL,
   type ChildRequestId,
   type ChildRequestNote,
   type ChildRequestStatus,
   type OrchestrationChildRequest,
   type OrchestrationChildRequestState,
+  type OwedChildReport,
+  type OwedReportKey,
   type RemoteChildCancel,
   type RemoteChildRequest,
   type FamilyRemoteChild,
+  type LeadPassCeiling,
   type RemoteChildStart,
   type RemoteChildThread,
   type RemoteThreadFiling,
   type RoomAgentRef,
   type LocalChildStart,
+  type MessageId,
+  type ProviderInteractionMode,
+  type RuntimeMode,
   type ThreadId,
   type ThreadParticipantId,
   type TurnId,
 } from "@threadlines/contracts";
+
+import { hasLiveCheckBack } from "./checkBacks.ts";
+import { hasLiveSideTurn, type SideTurnFields } from "./sideTurns.ts";
+import { exceedsRuntimeMode, saferRuntimeMode } from "./runtimeMode.ts";
+import { isRoomThread } from "./threadParticipants.ts";
 
 /** What the rules read from a thread an agent works in. */
 export interface ChildRequestCaller {
   readonly id: ThreadId;
   readonly parentThreadId: ThreadId | null;
   readonly attachedToParent: boolean;
+  readonly runtimeMode?: RuntimeMode | undefined;
+  readonly interactionMode?: ProviderInteractionMode | undefined;
   readonly session: {
     readonly participantId?: ThreadParticipantId | null | undefined;
     readonly activeTurnId: TurnId | null;
@@ -42,12 +53,13 @@ export interface ChildRequestCaller {
 }
 
 /**
- * Why a call is refused: `limit` (the per-message budget is used up),
- * `not_allowed` (this thread or agent may not do it), or `refused` (anything
- * else, with a reason the calling agent can act on).
+ * Why a call is refused: `not_allowed` (this thread or agent may not do it),
+ * or `refused` (anything else, with a reason the calling agent can act on).
+ * There is no count: agents start and message as many threads as they like,
+ * until the user stops them (docs/design/agent-autonomy-no-limits.md).
  */
 export interface ChildRequestRefusal {
-  readonly outcome: "refused" | "limit" | "not_allowed";
+  readonly outcome: "refused" | "not_allowed";
   readonly detail: string;
 }
 
@@ -98,11 +110,26 @@ function callerRefusal(
 /** Why starting `count` threads is refused, or null when every rule allows it. */
 export function childStartRefusal(
   thread: ChildRequestCaller,
-  input: { readonly from: RoomAgentRef; readonly callerTurnId: TurnId; readonly count: number },
+  input: {
+    readonly from: RoomAgentRef;
+    readonly callerTurnId: TurnId;
+    readonly count: number;
+  },
 ): ChildRequestRefusal | null {
   const caller = callerRefusal(thread, input);
   if (caller !== null) {
     return caller;
+  }
+  // No fan-out (docs/design/lead-chat.md): one message in a lead chat must
+  // not start threads through every thread it is passed to. Messaging this
+  // thread's own children still works, within the pass's ceiling
+  // (childSendRefusal).
+  if (thread.childRequests.passCeiling !== undefined) {
+    return {
+      outcome: "not_allowed",
+      detail:
+        "This thread is working on something the lead chat passed on. Do the work here, or say what should be started.",
+    };
   }
   if (input.count < 1 || input.count > CHILD_THREADS_PER_CALL) {
     return {
@@ -110,26 +137,30 @@ export function childStartRefusal(
       detail: `Start between 1 and ${CHILD_THREADS_PER_CALL} threads at a time.`,
     };
   }
-  const used = thread.childRequests.startsSinceUser;
-  if (used + input.count > CHILD_THREAD_START_LIMIT) {
-    return {
-      outcome: "limit",
-      detail: `Agents can start ${CHILD_THREAD_START_LIMIT} threads per user message, and ${used} were already asked for since the user last wrote, so these were not started. Say so in your reply, and wait for the user before starting more.`,
-    };
-  }
   return null;
 }
 
-/** Why sending a message to `childThreadId` is refused, or null. */
+/**
+ * Why sending a message to `childThreadId` is refused, or null. `child`'s
+ * modes are absent for a thread on another computer, whose access this
+ * computer can't hold to a pass's ceiling.
+ */
 export function childSendRefusal(
   thread: ChildRequestCaller,
   child: {
     readonly id: ThreadId;
+    readonly title?: string | undefined;
     readonly parentThreadId: ThreadId | null;
     readonly attachedToParent: boolean;
     readonly archivedAt: string | null;
+    readonly runtimeMode?: RuntimeMode | undefined;
+    readonly interactionMode?: ProviderInteractionMode | undefined;
+    readonly agentRequests?: { readonly hold: boolean } | undefined;
   } | null,
-  input: { readonly from: RoomAgentRef; readonly callerTurnId: TurnId },
+  input: {
+    readonly from: RoomAgentRef;
+    readonly callerTurnId: TurnId;
+  },
 ): ChildRequestRefusal | null {
   const caller = callerRefusal(thread, input);
   if (caller !== null) {
@@ -139,10 +170,54 @@ export function childSendRefusal(
   if (ownRefusal !== null) {
     return ownRefusal;
   }
-  if (thread.childRequests.sendsSinceUser >= CHILD_THREAD_SEND_LIMIT) {
+  // A child the user stopped holds its queue until the user writes there:
+  // sending it work would sit unseen (docs/design/agent-autonomy-no-limits.md).
+  if (child !== null && child.agentRequests?.hold === true) {
     return {
-      outcome: "limit",
-      detail: `Agents can send ${CHILD_THREAD_SEND_LIMIT} messages to their threads per user message, and that many were sent since the user last wrote, so this one was not. Say so in your reply, and wait for the user before sending more.`,
+      outcome: "refused",
+      detail: "The user stopped that thread. It takes work again once they write there.",
+    };
+  }
+  // Work the lead chat passed on keeps its ceiling when it is handed down:
+  // a pass never reaches a thread with more access than the lead's.
+  const passCeiling = thread.childRequests.passCeiling;
+  if (passCeiling !== undefined && child !== null) {
+    if (child.runtimeMode === undefined || child.interactionMode === undefined) {
+      return {
+        outcome: "not_allowed",
+        detail:
+          "This thread is working on something the lead chat passed on, and that thread is on another computer. Do the work here, or tell the user, who can send it there.",
+      };
+    }
+    if (
+      !withinModeCeiling(
+        { runtimeMode: child.runtimeMode, interactionMode: child.interactionMode },
+        passCeiling,
+      )
+    ) {
+      return {
+        outcome: "not_allowed",
+        detail:
+          "This thread is working on something the lead chat passed on, and that thread has more access than the lead chat. Do the work here, or tell the user, who can send it there.",
+      };
+    }
+  }
+  // A parent's work never runs in a child with more access than the parent
+  // has now (docs/design/agent-autonomy-no-limits.md, "Access").
+  if (
+    child !== null &&
+    thread.runtimeMode !== undefined &&
+    thread.interactionMode !== undefined &&
+    child.runtimeMode !== undefined &&
+    child.interactionMode !== undefined &&
+    !withinModeCeiling(
+      { runtimeMode: child.runtimeMode, interactionMode: child.interactionMode },
+      { runtimeMode: thread.runtimeMode, interactionMode: thread.interactionMode },
+    )
+  ) {
+    return {
+      outcome: "not_allowed",
+      detail: requestCeilingRefusalWords(child.title ?? "That thread"),
     };
   }
   return null;
@@ -212,6 +287,208 @@ export function childAttachRefusal(
     return "This thread has started threads of its own.";
   }
   return null;
+}
+
+/** Whether `child` asks for no more than `ceiling` allows. Plan is narrower than default. */
+export function withinModeCeiling(
+  child: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
+  ceiling: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
+): boolean {
+  return (
+    !exceedsRuntimeMode(child.runtimeMode, ceiling.runtimeMode) &&
+    (ceiling.interactionMode !== "plan" || child.interactionMode === "plan")
+  );
+}
+
+/** The narrower of two ceilings: no more access than either allows. */
+export function narrowerModeCeiling(
+  left: LeadPassCeiling | undefined,
+  right: LeadPassCeiling,
+): LeadPassCeiling {
+  if (left === undefined) return right;
+  const narrower = {
+    runtimeMode: saferRuntimeMode(left.runtimeMode, right.runtimeMode),
+    interactionMode:
+      left.interactionMode === "plan" || right.interactionMode === "plan"
+        ? ("plan" as const)
+        : ("default" as const),
+  };
+  return narrower.runtimeMode === left.runtimeMode &&
+    narrower.interactionMode === left.interactionMode
+    ? left
+    : narrower;
+}
+
+/**
+ * What a `started` record without a ceiling holds the thread to: the least
+ * access there is. Every decision that records one sends the pass's ceiling.
+ */
+const SAFEST_PASS_CEILING: LeadPassCeiling = {
+  runtimeMode: "approval-required",
+  interactionMode: "plan",
+};
+
+/** What the pass rules read from the thread a lead chat passes a message to. */
+export interface LeadPassTarget {
+  readonly id: ThreadId;
+  readonly projectId: string;
+  readonly parentThreadId: ThreadId | null;
+  readonly attachedToParent: boolean;
+  readonly archivedAt: string | null;
+  readonly deletedAt?: string | null | undefined;
+  readonly participants: Parameters<typeof isRoomThread>[0]["participants"];
+  readonly remoteOrigin?: unknown;
+  readonly outsideOrigin?: unknown;
+  readonly move?: unknown;
+  readonly pendingMove?: unknown;
+  readonly agentRequests: { readonly hold: boolean };
+  readonly latestTurn: { readonly state: string } | null;
+}
+
+/**
+ * Why the project's lead chat may not pass a message to `target`, a thread it
+ * did not start (docs/design/lead-chat.md, "Tools"), or null. The caller has
+ * already sent a thread it started down the child path. `isLead` is whether
+ * the caller is its project's lead chat now.
+ */
+export function leadPassRefusal(
+  lead: ChildRequestCaller & { readonly projectId: string },
+  target: LeadPassTarget | null,
+  input: {
+    readonly from: RoomAgentRef;
+    readonly callerTurnId: TurnId;
+    readonly isLead: boolean;
+  },
+): ChildRequestRefusal | null {
+  const caller = callerRefusal(lead, input);
+  if (caller !== null) {
+    return caller;
+  }
+  if (!input.isLead) {
+    return {
+      outcome: "not_allowed",
+      detail: "That is not a thread you started. You can only message or stop your own threads.",
+    };
+  }
+  if (target === null || (target.deletedAt ?? null) !== null) {
+    return { outcome: "refused", detail: "That thread is gone." };
+  }
+  if (target.id === lead.id) {
+    return { outcome: "refused", detail: "That is this thread." };
+  }
+  if (target.projectId !== lead.projectId) {
+    return { outcome: "refused", detail: "That thread is in another project." };
+  }
+  if (target.archivedAt !== null) {
+    return { outcome: "refused", detail: "That thread is archived." };
+  }
+  if (isAttachedChild(target)) {
+    return {
+      outcome: "not_allowed",
+      detail:
+        "Another thread started that one and still owns it. Message the thread that started it.",
+    };
+  }
+  if (isRoomThread(target)) {
+    return { outcome: "not_allowed", detail: "Rooms take work from the user." };
+  }
+  if ((target.remoteOrigin ?? null) !== null || (target.outsideOrigin ?? null) !== null) {
+    return {
+      outcome: "not_allowed",
+      detail: "That thread was started from another computer or by an outside agent.",
+    };
+  }
+  if ((target.move ?? null) !== null || (target.pendingMove ?? null) !== null) {
+    return { outcome: "refused", detail: "That thread is moving to another computer." };
+  }
+  // What it was last told to stop doing, or failed at, holds its queue until
+  // the user writes there: a pass would sit there unseen.
+  if (target.agentRequests.hold || target.latestTurn?.state === "interrupted") {
+    return {
+      outcome: "refused",
+      detail: "The user stopped that thread. It takes work again once they write there.",
+    };
+  }
+  if (target.latestTurn?.state === "error") {
+    return {
+      outcome: "refused",
+      detail: "That thread's last turn failed. It takes work again once the user writes there.",
+    };
+  }
+  return null;
+}
+
+/** The widest access a thread can have: no ceiling can be broken above this. */
+export const WIDEST_MODE_CEILING: LeadPassCeiling = {
+  runtimeMode: "full-access",
+  interactionMode: "default",
+};
+
+/** Whether `modes` is the widest access there is. */
+export function isWidestMode(modes: {
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}): boolean {
+  return withinModeCeiling(WIDEST_MODE_CEILING, modes);
+}
+
+/** The access limit a thread's outgoing requests carry: its own, or its pass's if narrower. */
+export function effectiveRequestCeiling(thread: {
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+  readonly childRequests: { readonly passCeiling?: LeadPassCeiling | undefined };
+}): LeadPassCeiling {
+  return narrowerModeCeiling(thread.childRequests.passCeiling, {
+    runtimeMode: thread.runtimeMode,
+    interactionMode: thread.interactionMode,
+  });
+}
+
+/** Refusal wording when a receiving thread has more access than a parent's request allows. */
+export function requestCeilingRefusalWords(title: string): string {
+  return `'${title}' has more access than this thread has now. Do the work here, or tell the user, who can send it there.`;
+}
+
+/** Refusal wording when a linked computer is too old to enforce a narrower sender's ceiling. */
+export function olderPeerCeilingRefusal(label: string): string {
+  return `${label} runs an older Threadlines that can't hold this thread's access limit. Update it, or send the work yourself.`;
+}
+
+/**
+ * Why a request or its continue can't start a turn in `thread` now: the
+ * thread has more access than `ceiling` allows (docs/design/
+ * agent-autonomy-no-limits.md, "Access").
+ */
+export function requestCeilingRefusal(
+  ceiling: LeadPassCeiling | undefined,
+  thread: {
+    readonly title: string;
+    readonly runtimeMode: RuntimeMode;
+    readonly interactionMode: ProviderInteractionMode;
+  },
+): string | null {
+  return ceiling === undefined || withinModeCeiling(thread, ceiling)
+    ? null
+    : requestCeilingRefusalWords(thread.title);
+}
+
+/**
+ * Why a stored message can't start a turn in `thread` now: it is a pass whose
+ * ceiling is under the thread's access at this moment. Every decision that
+ * starts a turn from a stored message asks (send-queued, retry, resend).
+ */
+export function passCeilingRefusal(
+  message: {
+    readonly fromThread?:
+      | { readonly ceiling?: Parameters<typeof withinModeCeiling>[1] | undefined }
+      | undefined;
+  },
+  thread: Parameters<typeof withinModeCeiling>[0],
+): string | null {
+  const ceiling = message.fromThread?.ceiling;
+  return ceiling === undefined || withinModeCeiling(thread, ceiling)
+    ? null
+    : "Not run: this thread has more access than the lead chat.";
 }
 
 /** Requests whose answers are still owed, as the parent's sidebar row counts them. */
@@ -390,13 +667,7 @@ export const childRequestStateOn = {
   ): OrchestrationChildRequestState =>
     state.open.some((entry) => entry.requestId === request.requestId)
       ? state
-      : {
-          ...state,
-          open: [...state.open, request],
-          ...(request.kind === "start"
-            ? { startsSinceUser: state.startsSinceUser + 1 }
-            : { sendsSinceUser: state.sendsSinceUser + 1 }),
-        },
+      : { ...state, open: [...state.open, request] },
   updated: (
     state: OrchestrationChildRequestState,
     update: {
@@ -404,12 +675,17 @@ export const childRequestStateOn = {
       readonly status: ChildRequestStatus;
       readonly candidateTurnId?: TurnId | undefined;
       readonly remote?: RemoteChildRequest | undefined;
+      readonly childMessageId?: MessageId | undefined;
+      readonly answeringTurnId?: TurnId | undefined;
     },
   ): OrchestrationChildRequestState => {
     const changes = (entry: OrchestrationChildRequest) =>
       entry.requestId === update.requestId &&
       (entry.status !== update.status ||
         entry.candidateTurnId !== update.candidateTurnId ||
+        (update.childMessageId !== undefined && entry.childMessageId !== update.childMessageId) ||
+        (update.answeringTurnId !== undefined &&
+          entry.answeringTurnId !== update.answeringTurnId) ||
         (update.remote !== undefined && !sameRemoteRequest(entry.remote, update.remote)));
     return state.open.some(changes)
       ? {
@@ -424,6 +700,12 @@ export const childRequestStateOn = {
                 ? { candidateTurnId: update.candidateTurnId }
                 : {}),
               ...(update.remote !== undefined ? { remote: update.remote } : {}),
+              ...(update.childMessageId !== undefined
+                ? { childMessageId: update.childMessageId }
+                : {}),
+              ...(update.answeringTurnId !== undefined
+                ? { answeringTurnId: update.answeringTurnId }
+                : {}),
             };
           }),
         }
@@ -458,15 +740,25 @@ export const childRequestStateOn = {
       ? state
       : { ...state, remoteCancels: [...cancels, cancel] };
   },
-  /** A child on a linked computer, new or changed; kept after its requests settle. */
+  /**
+   * A child on a linked computer, new or changed; kept after its requests
+   * settle. `removed`: it came home and is a child here again, so its record goes.
+   */
   remoteChildUpdated: (
     state: OrchestrationChildRequestState,
     child: RemoteChildThread,
+    removed?: boolean,
   ): OrchestrationChildRequestState => {
     const children = state.remoteChildren ?? [];
     const index = children.findIndex(
       (entry) => entry.environmentId === child.environmentId && entry.threadId === child.threadId,
     );
+    if (removed === true) {
+      if (index < 0) return state;
+      const rest = children.filter((_, at) => at !== index);
+      const { remoteChildren: _gone, ...without } = state;
+      return rest.length > 0 ? { ...state, remoteChildren: rest } : without;
+    }
     if (index >= 0 && sameRemoteChild(children[index]!, child)) {
       return state;
     }
@@ -506,11 +798,127 @@ export const childRequestStateOn = {
     deliveryEpoch: number,
   ): OrchestrationChildRequestState =>
     state.deliveryEpoch === deliveryEpoch ? state : { ...state, deliveryEpoch },
-  reset: (state: OrchestrationChildRequestState): OrchestrationChildRequestState =>
-    state.startsSinceUser === 0 && state.sendsSinceUser === 0
-      ? state
-      : { ...state, startsSinceUser: 0, sendsSinceUser: 0 },
+  /**
+   * The user wrote: a pass's block on starting threads lifts. With
+   * `keepsPassBlock` (a turn Threadlines started for them, recorded before
+   * agents could message threads freely) nothing changes.
+   */
+  reset: (
+    state: OrchestrationChildRequestState,
+    options?: { readonly keepsPassBlock?: boolean | undefined },
+  ): OrchestrationChildRequestState => {
+    const liftsBlock = state.passCeiling !== undefined && options?.keepsPassBlock !== true;
+    if (!liftsBlock) {
+      return state;
+    }
+    const { passCeiling: _block, ...rest } = state;
+    return rest;
+  },
+  /** The lead chat's passes (`thread.lead-pass-recorded`); see its payload. */
+  leadPass: (
+    state: OrchestrationChildRequestState,
+    pass: {
+      readonly kind: "sent" | "refused" | "started" | "not-run";
+      readonly note?: ChildRequestNote | undefined;
+      readonly ceiling?: LeadPassCeiling | undefined;
+    },
+  ): OrchestrationChildRequestState => {
+    switch (pass.kind) {
+      // Its mark is on the message, not on the thread's requests.
+      case "sent":
+      case "not-run":
+        return state;
+      case "started": {
+        const passCeiling = narrowerModeCeiling(
+          state.passCeiling,
+          pass.ceiling ?? SAFEST_PASS_CEILING,
+        );
+        return passCeiling === state.passCeiling ? state : { ...state, passCeiling };
+      }
+      case "refused": {
+        const note = pass.note;
+        return note === undefined ||
+          state.pendingNotes.some((entry) => entry.requestId === note.requestId)
+          ? state
+          : {
+              ...state,
+              pendingNotes: [...state.pendingNotes, note].slice(-CHILD_REQUEST_NOTE_LIMIT),
+            };
+      }
+    }
+  },
+  /**
+   * A turn starts that owes the parent a report (docs/design/agent-autonomy-
+   * no-limits.md, rule 3). A message has at most one start no turn has
+   * claimed: a new start for it replaces that entry where it stands.
+   */
+  owedAdded: (
+    state: OrchestrationChildRequestState,
+    entry: OwedChildReport,
+  ): OrchestrationChildRequestState => {
+    const owed = state.owedReports ?? [];
+    const at = owed.findIndex((listed) => isOwedReport(listed, entry));
+    if (at < 0) return { ...state, owedReports: [...owed, entry] };
+    if (sameOwedReport(owed[at]!, entry)) return state;
+    return { ...state, owedReports: owed.map((listed, index) => (index === at ? entry : listed)) };
+  },
+  /**
+   * The turn that took a message claims its owed entry: from now on the
+   * entry is keyed by that turn ("Restart and turn binding", rule B).
+   */
+  owedBound: (
+    state: OrchestrationChildRequestState,
+    messageId: MessageId,
+    turnId: TurnId,
+  ): OrchestrationChildRequestState => {
+    const owed = state.owedReports ?? [];
+    const at = owed.findIndex((listed) => isOwedReport(listed, { messageId }));
+    if (at < 0) return state;
+    const { deliveryEpoch, attachmentEpoch, createdAt } = owed[at]!;
+    const bound = { turnId, deliveryEpoch, attachmentEpoch, createdAt };
+    return {
+      ...state,
+      owedReports: owed
+        .filter((listed, index) => index === at || !isOwedReport(listed, { turnId }))
+        .map((listed) => (isOwedReport(listed, { messageId }) ? bound : listed)),
+    };
+  },
+  /** An owed report was settled, delivered or dropped. */
+  owedRemoved: (
+    state: OrchestrationChildRequestState,
+    key: OwedReportKey,
+  ): OrchestrationChildRequestState => {
+    const owed = state.owedReports ?? [];
+    if (!owed.some((listed) => isOwedReport(listed, key))) return state;
+    const rest = owed.filter((listed) => !isOwedReport(listed, key));
+    if (rest.length > 0) return { ...state, owedReports: rest };
+    const { owedReports: _gone, ...without } = state;
+    return without;
+  },
+  /** The thread's attachment epoch moved: nothing it owed is owed any more. */
+  owedCleared: (state: OrchestrationChildRequestState): OrchestrationChildRequestState => {
+    if (state.owedReports === undefined) return state;
+    const { owedReports: _gone, ...without } = state;
+    return without;
+  },
 };
+
+/** Whether an owed report is the one `key` names: by its message, or by its turn. */
+export function isOwedReport(entry: OwedReportKey, key: OwedReportKey): boolean {
+  return "messageId" in key
+    ? "messageId" in entry && entry.messageId === key.messageId
+    : "turnId" in entry && entry.turnId === key.turnId;
+}
+
+const sameOwedReport = (left: OwedChildReport, right: OwedChildReport) =>
+  isOwedReport(left, right) &&
+  left.deliveryEpoch === right.deliveryEpoch &&
+  left.attachmentEpoch === right.attachmentEpoch &&
+  left.createdAt === right.createdAt;
+
+/** An owed report's key alone, as events name it. */
+export const owedReportKeyOf = (entry: OwedReportKey): OwedReportKey =>
+  "messageId" in entry ? { messageId: entry.messageId } : { turnId: entry.turnId };
 
 /**
  * Whether a child's latest finished work is exactly what went back to its
@@ -526,3 +934,172 @@ export const isHandedBackCompletion = (thread: {
   thread.latestTurn !== null &&
   thread.latestTurn.state !== "running" &&
   thread.latestTurn.turnId === thread.handedBackTurnId;
+
+// ── Families of any depth ────────────────────────────────────────────
+//
+// docs/design/agent-autonomy-no-limits.md. A thread's family is every thread
+// reachable from it down attached links. Stop reaches further: it also takes
+// a thread started without report back (`stopsWithParent`) until the user
+// makes it their own.
+
+/** What the family walks read about a thread. */
+export interface FamilyMember {
+  readonly id: ThreadId;
+  readonly parentThreadId: ThreadId | null;
+  readonly attachedToParent: boolean;
+  readonly stopsWithParent?: true | undefined;
+  readonly deletedAt?: string | null | undefined;
+  readonly createdAt: string;
+}
+
+/** A thread under another, and how many links down from it. */
+export interface FamilyMemberAt<T extends FamilyMember> {
+  readonly thread: T;
+  /** 1 for a direct child, 2 for its child, and so on. */
+  readonly level: number;
+}
+
+function walkDown<T extends FamilyMember>(
+  threads: ReadonlyArray<T>,
+  rootId: ThreadId,
+  follows: (thread: T) => boolean,
+): ReadonlyArray<FamilyMemberAt<T>> {
+  const childrenOf = new Map<ThreadId, T[]>();
+  for (const thread of threads) {
+    if (thread.parentThreadId === null || (thread.deletedAt ?? null) !== null) continue;
+    if (!follows(thread)) continue;
+    const siblings = childrenOf.get(thread.parentThreadId) ?? [];
+    siblings.push(thread);
+    childrenOf.set(thread.parentThreadId, siblings);
+  }
+  const out: FamilyMemberAt<T>[] = [];
+  // Bad data must never loop: a thread is visited once, the root never.
+  const visited = new Set<ThreadId>([rootId]);
+  const visit = (parentId: ThreadId, level: number) => {
+    const children = (childrenOf.get(parentId) ?? []).toSorted((left, right) =>
+      left.createdAt.localeCompare(right.createdAt),
+    );
+    for (const child of children) {
+      if (visited.has(child.id)) continue;
+      visited.add(child.id);
+      out.push({ thread: child, level });
+      visit(child.id, level + 1);
+    }
+  };
+  visit(rootId, 1);
+  return out;
+}
+
+/**
+ * Every thread attached under `rootId`, at any depth, in tree order: each
+ * thread followed by its own threads, oldest first within a level. Reports,
+ * the sidebar family, the tabs, wrap, archive, delete and revert follow this.
+ */
+export function attachedDescendantsOf<T extends FamilyMember>(
+  threads: ReadonlyArray<T>,
+  rootId: ThreadId,
+): ReadonlyArray<FamilyMemberAt<T>> {
+  return walkDown(threads, rootId, (thread) => thread.attachedToParent);
+}
+
+/**
+ * Every thread a Stop on `rootId` reaches, in tree order: the attached ones,
+ * and the ones started without report back that the user has not made their
+ * own, and so on down through both kinds. Only Stop follows this walk.
+ */
+export function stopReachOf<T extends FamilyMember>(
+  threads: ReadonlyArray<T>,
+  rootId: ThreadId,
+): ReadonlyArray<FamilyMemberAt<T>> {
+  return walkDown(
+    threads,
+    rootId,
+    (thread) => thread.attachedToParent || thread.stopsWithParent === true,
+  );
+}
+
+/**
+ * What the "still going" test reads about a thread, as plain facts. The
+ * server builds it from a thread's detail, the client from its shell or its
+ * sidebar summary (each knows its own fields: a summary renames the session's
+ * `starting`, and only the client sees a message no turn has picked up yet),
+ * so both read the same answer from the same facts.
+ */
+export interface StillGoingInput {
+  /** A turn running or starting, or a message about to start one. */
+  readonly turnInFlight: boolean;
+  /** Messages waiting in its queue. */
+  readonly queuedCount: number;
+  /** An approval, a question or a plan waiting on the user. */
+  readonly waitsOnUser: boolean;
+  /** Background work of any kind, awaited or not (a dev server it left running). */
+  readonly backgroundWork: boolean;
+  /** Its own open child requests, starts still waiting for the user included. */
+  readonly openRequestCount: number;
+  /** A wait to continue at a usage limit's reset. */
+  readonly waitsForReset: boolean;
+  /** A room agent answering on the side. */
+  readonly sideAnswerRunning: boolean;
+  readonly checkBacks?: ReadonlyArray<{ readonly dormant?: true | undefined }> | undefined;
+}
+
+/**
+ * Whether a thread is still going (docs/design/agent-autonomy-no-limits.md,
+ * "Stop"): it can start a turn by itself, or is in one. What a stop targets,
+ * what "Stop N working threads" and the tab row's button count, and what
+ * holds a revert all read this, so a refusal never names a remedy that isn't
+ * on screen. An idle session with none of these is not going.
+ */
+export function isStillGoing(thread: StillGoingInput): boolean {
+  return (
+    thread.turnInFlight ||
+    thread.queuedCount > 0 ||
+    thread.waitsOnUser ||
+    thread.backgroundWork ||
+    thread.openRequestCount > 0 ||
+    thread.waitsForReset ||
+    thread.sideAnswerRunning ||
+    hasLiveCheckBack(thread)
+  );
+}
+
+/**
+ * The "still going" facts from a thread's shell as the server sends it. The
+ * client adds a message no turn has picked up yet to `turnInFlight` itself.
+ */
+export function stillGoingInputOfShell(
+  shell: SideTurnFields & {
+    readonly session: {
+      readonly status: string;
+      readonly pendingBackgroundTaskCount?: number | undefined;
+      readonly awaitedBackgroundTaskCount?: number | undefined;
+      readonly continueAtReset?: unknown;
+    } | null;
+    readonly latestTurn: { readonly state: string } | null;
+    readonly queuedFollowUps?: ReadonlyArray<unknown> | undefined;
+    readonly hasPendingApprovals: boolean;
+    readonly hasPendingUserInput: boolean;
+    readonly hasActionableProposedPlan: boolean;
+    readonly awaitedChildThreadCount?: number | undefined;
+    readonly pendingChildApproval?: boolean | undefined;
+    readonly checkBacks?: StillGoingInput["checkBacks"];
+  },
+): StillGoingInput {
+  const session = shell.session;
+  return {
+    turnInFlight:
+      shell.latestTurn?.state === "running" ||
+      session?.status === "running" ||
+      session?.status === "starting",
+    queuedCount: shell.queuedFollowUps?.length ?? 0,
+    waitsOnUser:
+      shell.hasPendingApprovals || shell.hasPendingUserInput || shell.hasActionableProposedPlan,
+    backgroundWork:
+      (session?.pendingBackgroundTaskCount ?? 0) > 0 ||
+      (session?.awaitedBackgroundTaskCount ?? 0) > 0,
+    openRequestCount: (shell.awaitedChildThreadCount ?? 0) + (shell.pendingChildApproval ? 1 : 0),
+    waitsForReset: (session?.continueAtReset ?? null) !== null,
+    sideAnswerRunning: hasLiveSideTurn(shell),
+    checkBacks: shell.checkBacks,
+  };
+}

@@ -31,6 +31,7 @@ import {
   agentThreadsShareWorktrees,
 } from "@threadlines/shared/serverSettings";
 import {
+  FOLLOW_UP_DELIVERY_LABELS,
   OPEN_LINKS_IN_LABELS,
   placeById,
   TIMESTAMP_FORMAT_LABELS,
@@ -76,6 +77,7 @@ import { useShallow } from "zustand/react/shallow";
 import {
   selectBootstrapCompleteForActiveEnvironment,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadSummaryByRef,
   selectSidebarThreadsAcrossEnvironments,
   useStore,
 } from "../../store";
@@ -141,6 +143,7 @@ import {
   ArchivedThreadsSection,
 } from "./ArchivedThreadsSection";
 import { ProviderInstanceCard, type ProviderAddAccountControls } from "./ProviderInstanceCard";
+import { ProviderSuggestionsSection } from "./ProviderSuggestionsSection";
 import { addAccountMenuLabel, isThreadlinesAccountFolder } from "./providerAccounts.logic";
 import { formatProviderInstanceName } from "../../providerInstances";
 import { getDriverOption } from "./providerDriverMeta";
@@ -462,6 +465,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded
         ? ["Changed files in chat"]
         : []),
+      ...(settings.alertSound !== DEFAULT_UNIFIED_SETTINGS.alertSound ? ["Play a sound"] : []),
       ...(settings.autoOpenAgentsPanel !== DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel
         ? ["Agents panel"]
         : []),
@@ -505,12 +509,21 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.wrapUpIdleThreads !== DEFAULT_UNIFIED_SETTINGS.wrapUpIdleThreads
         ? ["Wrap up idle threads"]
         : []),
+      ...(settings.generalChatsPlacement !== DEFAULT_UNIFIED_SETTINGS.generalChatsPlacement
+        ? [placeById("threads.generalChats").title]
+        : []),
       ...(settings.wrapUpThreadsOnPullRequestSettled !==
       DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled
         ? ["Wrap up merged threads"]
         : []),
       ...(settings.newThreadModelSelection !== null ? ["New thread agent"] : []),
       ...(settings.newThreadRoomAgents.length > 0 ? ["New thread room"] : []),
+      ...(settings.newThreadInteractionMode !== DEFAULT_UNIFIED_SETTINGS.newThreadInteractionMode
+        ? ["Build or Plan"]
+        : []),
+      ...(settings.newThreadRuntimeMode !== DEFAULT_UNIFIED_SETTINGS.newThreadRuntimeMode
+        ? ["New thread access"]
+        : []),
       ...(settings.openLinksIn !== DEFAULT_UNIFIED_SETTINGS.openLinksIn ? ["Open links in"] : []),
       ...(settings.browserNewTabSize !== null ? ["Browser page size"] : []),
       ...(settings.browserSearchEngine !== DEFAULT_UNIFIED_SETTINGS.browserSearchEngine
@@ -533,10 +546,13 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.claudeSuggestionsWhenUsageRunsFast !==
       DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast
-        ? ["Keep Claude's suggestions when you're using a lot"]
+        ? [placeById("providers.claudeSuggestions").title]
         : []),
       ...(settings.codexSuggestions !== DEFAULT_UNIFIED_SETTINGS.codexSuggestions
-        ? [placeById("threads.codexSuggestions").title]
+        ? [placeById("providers.codexSuggestions").title]
+        : []),
+      ...(settings.antigravitySuggestions !== DEFAULT_UNIFIED_SETTINGS.antigravitySuggestions
+        ? [placeById("providers.antigravitySuggestions").title]
         : []),
       ...(settings.continueAfterUsageLimits !== DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits
         ? ["Continue after usage limits"]
@@ -569,21 +585,26 @@ export function useSettingsRestore(onRestored?: () => void) {
       isGitWritingModelDirty,
       isSourceControlWriterModelDirty,
       isSourceControlWritingStyleDirty,
+      settings.alertSound,
       settings.autoArchiveInactiveThreadsDays,
       settings.autoOpenAgentsPanel,
       settings.chatChangedFilesDefaultExpanded,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.wrapUpIdleThreads,
+      settings.generalChatsPlacement,
       settings.wrapUpThreadsOnPullRequestSettled,
       settings.newThreadModelSelection,
       settings.newThreadRoomAgents,
+      settings.newThreadInteractionMode,
+      settings.newThreadRuntimeMode,
       settings.enableRooms,
       settings.enableAgentPages,
       settings.enableClaudeArtifacts,
       settings.claudeWorkflowSize,
       settings.claudeSuggestionsWhenUsageRunsFast,
       settings.codexSuggestions,
+      settings.antigravitySuggestions,
       settings.continueAfterUsageLimits,
       settings.continueAfterRestart,
       settings.enableCommandRequests,
@@ -637,6 +658,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       chatChangedFilesDefaultExpanded: DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded,
+      alertSound: DEFAULT_UNIFIED_SETTINGS.alertSound,
       autoOpenAgentsPanel: DEFAULT_UNIFIED_SETTINGS.autoOpenAgentsPanel,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoArchiveInactiveThreadsDays: DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays,
@@ -651,9 +673,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       wrapUpIdleThreads: DEFAULT_UNIFIED_SETTINGS.wrapUpIdleThreads,
+      generalChatsPlacement: DEFAULT_UNIFIED_SETTINGS.generalChatsPlacement,
       wrapUpThreadsOnPullRequestSettled: DEFAULT_UNIFIED_SETTINGS.wrapUpThreadsOnPullRequestSettled,
       newThreadModelSelection: DEFAULT_UNIFIED_SETTINGS.newThreadModelSelection,
       newThreadRoomAgents: DEFAULT_UNIFIED_SETTINGS.newThreadRoomAgents,
+      newThreadInteractionMode: DEFAULT_UNIFIED_SETTINGS.newThreadInteractionMode,
+      newThreadRuntimeMode: DEFAULT_UNIFIED_SETTINGS.newThreadRuntimeMode,
       openLinksIn: DEFAULT_UNIFIED_SETTINGS.openLinksIn,
       browserNewTabSize: DEFAULT_UNIFIED_SETTINGS.browserNewTabSize,
       browserSearchEngine: DEFAULT_UNIFIED_SETTINGS.browserSearchEngine,
@@ -667,6 +692,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       claudeSuggestionsWhenUsageRunsFast:
         DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast,
       codexSuggestions: DEFAULT_UNIFIED_SETTINGS.codexSuggestions,
+      antigravitySuggestions: DEFAULT_UNIFIED_SETTINGS.antigravitySuggestions,
       continueAfterUsageLimits: DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits,
       continueAfterRestart: DEFAULT_UNIFIED_SETTINGS.continueAfterRestart,
       enableCommandRequests: true,
@@ -1211,6 +1237,46 @@ function UnifiedSwitchRow({
   );
 }
 
+export function FollowUpDeliveryRow() {
+  const followUpDelivery = useSettings((settings) => settings.followUpDelivery);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="general.followUpDelivery"
+      resetAction={
+        followUpDelivery !== DEFAULT_UNIFIED_SETTINGS.followUpDelivery ? (
+          <SettingResetButton
+            label="sending while an agent works"
+            onClick={() =>
+              updateSettings({
+                followUpDelivery: DEFAULT_UNIFIED_SETTINGS.followUpDelivery,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={followUpDelivery}
+          onValueChange={(value) => {
+            if (value === "steer" || value === "queue") {
+              updateSettings({ followUpDelivery: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-40" aria-label="Sending while an agent works">
+            <SelectValue>{FOLLOW_UP_DELIVERY_LABELS[followUpDelivery]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="steer">{FOLLOW_UP_DELIVERY_LABELS.steer}</SelectItem>
+            <SelectItem value="queue">{FOLLOW_UP_DELIVERY_LABELS.queue}</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
 export function TimeFormatRow() {
   const timestampFormat = useSettings((settings) => settings.timestampFormat);
   const { updateSettings } = useUpdateSettings();
@@ -1384,6 +1450,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <SettingsSection place="general.chatAndDiffs">
           {/* On a phone this one is the paired computer's: it sits under This Computer. */}
           {!isPhoneSurface ? <AssistantStreamingRow /> : null}
+          <FollowUpDeliveryRow />
           <TimeFormatRow />
           <ChangedFilesInChatRow />
           <ShownPlace place="general.agentsPanel">
@@ -2067,6 +2134,8 @@ export function ProviderSettingsPanel({
         ]}
       </div>
 
+      <ProviderSuggestionsSection />
+
       <CommunityAgentsSection
         addedAgentIds={communityAgentIds}
         computerName={agentComputerName}
@@ -2279,9 +2348,10 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
     () =>
       selectAutoArchiveCandidates({
         threads: sidebarThreads,
+        projects,
         inactiveDays: autoArchivePreviewDays,
       }),
-    [autoArchivePreviewDays, sidebarThreads],
+    [autoArchivePreviewDays, projects, sidebarThreads],
   );
   const inactiveThreadGroups = useMemo(
     () =>
@@ -2348,6 +2418,7 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
       if (nextDays !== 0) {
         const nextCandidates = selectAutoArchiveCandidates({
           threads: sidebarThreads,
+          projects,
           inactiveDays: nextDays,
         });
         if (nextCandidates.length > 0) {
@@ -2394,6 +2465,23 @@ export function ArchivedThreadsPanel({ hostedStatic }: { readonly hostedStatic: 
 
     try {
       for (const thread of inactiveThreadCandidates) {
+        // Checked again as each goes: while the confirmation was open it may
+        // have started working or set a check-back.
+        const state = useStore.getState();
+        const latest = selectSidebarThreadSummaryByRef(
+          state,
+          scopeThreadRef(thread.environmentId, thread.id),
+        );
+        if (
+          latest === undefined ||
+          selectAutoArchiveCandidates({
+            threads: [latest],
+            projects: selectProjectsAcrossEnvironments(state),
+            inactiveDays: autoArchivePreviewDays,
+          }).length === 0
+        ) {
+          continue;
+        }
         const api = readEnvironmentApi(thread.environmentId);
         if (!api) {
           failedCount += 1;

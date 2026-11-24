@@ -30,7 +30,13 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
 import { ServerConfig } from "../../config.ts";
+import {
+  isProcessRunning,
+  startTestAgentProcess,
+  type TestAgentProcess,
+} from "../testAgentProcess.ts";
 import { steerRejectionOf } from "../Errors.ts";
+import { PROJECT_BRIEF_CLEARED_NOTE } from "../projectBriefPreface.ts";
 import {
   type MuseHost,
   MuseHostError,
@@ -64,7 +70,7 @@ interface FakeHost {
 type Responder = (call: Call) => Record<string, unknown> | MuseHostError | undefined;
 
 /** A scripted host factory: each host the adapter starts is recorded in `hosts`. */
-function scriptedHosts(responder: Responder = () => undefined) {
+function scriptedHosts(responder: Responder = () => undefined, agent?: TestAgentProcess) {
   const hosts: Array<FakeHost> = [];
   let commandIds = 0;
   const startHost = (options: MuseHostOptions) =>
@@ -103,7 +109,12 @@ function scriptedHosts(responder: Responder = () => undefined) {
             return {};
         }
       };
-      yield* Effect.addFinalizer(() => Deferred.succeed(exited, { kind: "clean" }));
+      // With a real process behind it, closing the host ends that process first.
+      yield* Effect.addFinalizer(() =>
+        (agent === undefined ? Effect.void : Effect.andThen(agent.stop, agent.exited)).pipe(
+          Effect.andThen(Deferred.succeed(exited, { kind: "clean" })),
+        ),
+      );
       const host: MuseHost = {
         initialize: {
           serverVersion: "1.4.9",
@@ -130,6 +141,7 @@ function scriptedHosts(responder: Responder = () => undefined) {
         exited: Deferred.await(exited),
         hasExited: Deferred.isDone(exited),
         stderrTail: () => "",
+        ...(agent !== undefined ? { pid: agent.pid } : {}),
       };
       hosts.push({
         options,
@@ -156,10 +168,12 @@ const setup = (
   input: {
     readonly responder?: Responder;
     readonly allowApiKeyBilling?: boolean;
+    /** A real process behind each host, for proof it is gone after a stop. */
+    readonly agent?: TestAgentProcess;
   } = {},
 ) =>
   Effect.gen(function* () {
-    const scripted = scriptedHosts(input.responder);
+    const scripted = scriptedHosts(input.responder, input.agent);
     const adapter = yield* makeMuseAdapter({
       instanceId: INSTANCE_ID,
       settings: {
@@ -232,6 +246,24 @@ const shellApproval = (input: {
 });
 
 describe("MuseAdapter", () => {
+  it.live.skipIf(process.platform === "win32")(
+    "proves a stopped host, and what it left in a process group of its own, are gone",
+    () =>
+      Effect.gen(function* () {
+        const agent = yield* startTestAgentProcess;
+        const { adapter, threadId, start } = yield* setup({ agent });
+        yield* start();
+        // A stop for a move notes what the host started first (ProviderService does).
+        yield* adapter.noteBeforeStop!(threadId);
+        yield* adapter.stopSession(threadId);
+        // The host is gone; a shell it put in a group of its own lives on.
+        expect(isProcessRunning(agent.shellPid)).toBe(true);
+
+        expect(yield* adapter.confirmThreadStopped!(threadId)).toEqual({ confirmed: true });
+        expect(isProcessRunning(agent.shellPid)).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("sends the device note as a part of its own, outside the words Muse shows", () =>
     Effect.gen(function* () {
       const { hosts, adapter, threadId, start } = yield* setup();
@@ -888,6 +920,59 @@ describe("MuseAdapter", () => {
         "rate_limit",
       );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "sends the project's brief on a new conversation, and on a resume only when it changed",
+    () =>
+      Effect.gen(function* () {
+        const brief = "Use pnpm here. Never touch the generated folder.";
+        // Each start is a fresh adapter, as after a server restart.
+        const firstTurn = (input: {
+          readonly projectInstructions?: string;
+          readonly resumeCursor?: unknown;
+        }) =>
+          Effect.gen(function* () {
+            const { hosts, adapter, threadId } = yield* setup();
+            yield* adapter.startSession({
+              threadId,
+              cwd: workspace(),
+              runtimeMode: "approval-required",
+              ...input,
+            });
+            const turn = yield* adapter.sendTurn({
+              threadId,
+              messageId: MessageId.make("message-hi"),
+              input: "hi",
+            });
+            const turnStart = hosts.at(-1)!.calls.find((call) => call.method === "turn/start")!;
+            const texts = (turnStart.params.input as ReadonlyArray<{ text?: string }>).map(
+              (part) => part.text,
+            );
+            return { texts, cursor: turn.resumeCursor };
+          });
+
+        // After Threadlines' instructions, ahead of the user's words.
+        const fresh = yield* firstTurn({ projectInstructions: brief });
+        expect(fresh.texts).toHaveLength(3);
+        expect(fresh.texts.slice(1)).toEqual([brief, "hi"]);
+
+        const same = yield* firstTurn({ projectInstructions: brief, resumeCursor: fresh.cursor });
+        expect(same.texts).toEqual(["hi"]);
+
+        const changed = yield* firstTurn({
+          projectInstructions: `${brief} Tests run with vp.`,
+          resumeCursor: same.cursor,
+        });
+        expect(changed.texts).toEqual([`${brief} Tests run with vp.`, "hi"]);
+
+        const cleared = yield* firstTurn({ resumeCursor: changed.cursor });
+        expect(cleared.texts).toEqual([PROJECT_BRIEF_CLEARED_NOTE, "hi"]);
+
+        // The note is said once.
+        const after = yield* firstTurn({ resumeCursor: cleared.cursor });
+        expect(after.texts).toEqual(["hi"]);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("refuses to run on an API key unless per-use billing is allowed", () =>

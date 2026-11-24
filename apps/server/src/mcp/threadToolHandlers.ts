@@ -44,6 +44,9 @@ import {
   type RuntimeMode,
   type ServerProvider,
   ThreadId,
+  type ThreadMoveError,
+  type ThreadMoveQueueInput,
+  type ThreadMoveRequester,
   TurnId,
 } from "@threadlines/contracts";
 import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
@@ -53,19 +56,27 @@ import {
   type ChildRequestRefusal,
   childSendRefusal,
   childStartRefusal,
+  effectiveRequestCeiling,
   isAttachedChild,
+  isWidestMode,
+  leadPassRefusal,
+  olderPeerCeilingRefusal,
   ownChildRefusal,
   remoteChildOf,
+  withinModeCeiling,
 } from "@threadlines/shared/childThreads";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { childRequestCommandId, derivedUuid } from "../orchestration/childRequestIds.ts";
+import { isLinkFenced, linkFenceRefusal } from "../orchestration/linkFence.ts";
 import {
+  agentWrapRefusal,
   checkoutMoveRefusal,
   childHasLiveWork,
   pendingChildRequest,
+  threadIsStillGoing,
 } from "../orchestration/childThreadDecisions.ts";
 import type { ProjectPlace } from "../project/projectPlace.ts";
 import { linkMessageId, linkThreadId } from "../links/linkIds.ts";
@@ -91,6 +102,7 @@ import {
   THREAD_TITLE_CHAR_LIMIT,
 } from "../threads/threadOperations.ts";
 import type { GitVcsDriverShape } from "../vcs/GitVcsDriver.ts";
+import { latchCallerTurn } from "./callerTurn.ts";
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import type { RoomRequestRegistry } from "./roomRequests.ts";
 import type { RoomToolName } from "./roomToolAccess.ts";
@@ -99,16 +111,20 @@ import { roomCheckoutCwd } from "./roomToolHandlers.ts";
 import type {
   ThreadAgentsResult,
   ThreadListResult,
+  ThreadMoveResult,
   ThreadReadResult,
   ThreadSendResult,
   ThreadStartResult,
   ThreadStatusWord,
   ThreadStopResult,
   ThreadSummary,
+  ThreadWrapResult,
 } from "./threadTools.ts";
 
 /** `thread_list` with `scope: "project"` lists at most this many. */
 export const THREAD_LIST_PROJECT_LIMIT = 30;
+/** `thread_wrap` wraps up at most this many threads per call. */
+const THREAD_WRAP_PER_CALL = 20;
 const GIT_TIMEOUT_MS = 15_000;
 
 export interface ThreadToolDeps {
@@ -124,7 +140,28 @@ export interface ThreadToolDeps {
   ) => Effect.Effect<ReadonlyArray<OrchestrationThreadShell>>;
   readonly readProject: (
     projectId: ProjectId,
-  ) => Effect.Effect<Pick<OrchestrationProjectShell, "kind" | "workspaceRoot"> | undefined>;
+  ) => Effect.Effect<
+    | Pick<
+        OrchestrationProjectShell,
+        "kind" | "workspaceRoot" | "leadThreadId" | "repositoryIdentity"
+      >
+    | undefined
+  >;
+  /**
+   * A thread's pull requests as this computer already knows them, with no
+   * call to the host (PullRequestObservations.known). Absent: none listed.
+   */
+  readonly knownPullRequests?: (input: {
+    readonly repositoryKey: string | null;
+    readonly branch: string | null;
+    readonly urls: ReadonlyArray<string>;
+  }) => Effect.Effect<
+    ReadonlyArray<{
+      readonly number: number;
+      readonly url: string;
+      readonly state: "open" | "merged" | "closed";
+    }>
+  >;
   /** The provider snapshots: who a child could run on. */
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>>;
   /** The user's default for new threads (Settings): the last reasoning a child follows. */
@@ -142,6 +179,15 @@ export interface ThreadToolDeps {
    * (docs/design/fleet.md, Part 6); absent on a server without scheduled tasks.
    */
   readonly scheduleAnswerWaiting?: Effect.Effect<ReadonlySet<ThreadId>>;
+  /** Moving a thread to a linked computer (docs/design/fleet.md, Part 3b); absent without links. */
+  readonly moves?: ThreadToolMoves;
+}
+
+/** What `thread_move` needs of the moves (MoveQueue.queue, which checks the target). */
+export interface ThreadToolMoves {
+  readonly queue: (
+    input: ThreadMoveQueueInput & { readonly requestedBy: ThreadMoveRequester },
+  ) => Effect.Effect<unknown, ThreadMoveError>;
 }
 
 /** A computer this one links to, as the thread tools see it. */
@@ -184,6 +230,8 @@ const GONE = "This thread is gone.";
 const REMOTE_ORIGIN_REFUSAL =
   "This thread was started by an agent on another computer, so it has no thread tools. Do the work here; your final reply goes back to it.";
 const NOT_FOUND = "No open thread with that id is in this project. thread_list shows them.";
+const WRAPPED_DETAIL =
+  "Wrapped up: it's off the user's list of active threads until it gets new work or the user reopens it.";
 /** A child its start is still setting up: its thread appears once its worktree is ready. */
 const STILL_SETTING_UP =
   "That thread is still being set up: its worktree is being made. Try again in a moment.";
@@ -285,15 +333,10 @@ const remoteLabel = (thread: OrchestrationThread, environmentId: string) =>
     ?.remote?.label ??
   "the other computer";
 
-/** Whether a child has anything to stop: work in flight, or work its parent still waits on. */
+/** Whether a child has anything to stop: the shared "still going" test, or
+ *  an open request its parent still waits on. */
 const childHasWork = (child: OrchestrationThread, parent: OrchestrationThread) =>
-  child.latestTurn?.state === "running" ||
-  (child.session !== null &&
-    (child.session.activeTurnId !== null ||
-      child.session.status === "running" ||
-      child.session.status === "starting" ||
-      (child.session.pendingBackgroundTaskCount ?? 0) > 0)) ||
-  (child.queuedFollowUps ?? []).some((entry) => entry.fromThread?.threadId === parent.id) ||
+  threadIsStillGoing(child) ||
   parent.childRequests.open.some(
     (request) => request.childThreadId === child.id && request.status !== "awaiting_user",
   );
@@ -313,13 +356,63 @@ const childIsBusy = (child: OrchestrationThread, parent: OrchestrationThread) =>
   );
 
 /** A started thread's access: the caller's, or a lower level the call asked for, never more. */
-const launchAccess = (
+export const launchAccess = (
   spec: { readonly access: RuntimeMode | undefined },
   caller: Pick<OrchestrationThread, "runtimeMode">,
 ): RuntimeMode =>
   spec.access === undefined
     ? caller.runtimeMode
     : saferRuntimeMode(spec.access, caller.runtimeMode);
+
+/**
+ * What thread_start tells the agent happened, and what to do next (end its
+ * turn rather than wait). Shared with the tool-use evals' canned answer.
+ */
+export const startedDetail = (input: {
+  readonly outcome: "started" | "asked_user";
+  readonly count: number;
+  readonly reportBack: boolean;
+  readonly sharedFolder: boolean;
+  /** How many of them work in another thread's checkout (`checkout`). */
+  readonly inCheckouts?: number;
+}) => {
+  const threads = plural(input.count, "thread");
+  const these = input.count === 1 ? "it" : "them";
+  const base =
+    input.outcome === "started"
+      ? input.reportBack
+        ? `Started ${threads}. Each one's final reply comes back to you as a message when it finishes, and you pick up again then. Don't wait or poll: carry on with other work, or end your turn if you have nothing else to do.`
+        : `Started ${threads} on ${input.count === 1 ? "its" : "their"} own. Nothing comes back from ${these}; read ${these} with thread_read if you need to.`
+      : input.reportBack
+        ? `The user decides whether to start ${threads}. If they agree, each one's final reply comes back to you as a message; if they say no, you'll hear at your next turn. Don't ask again, and end your turn if you have nothing else to do.`
+        : `The user decides whether to start ${threads}. If started, ${input.count === 1 ? "it runs" : "they run"} on ${input.count === 1 ? "its" : "their"} own and nothing comes back. Don't ask again.`;
+  const inCheckouts = input.inCheckouts ?? 0;
+  const shared =
+    inCheckouts === 0
+      ? ""
+      : ` ${input.count === 1 ? "It works" : inCheckouts === input.count ? "They work" : `${inCheckouts} of them work`} in a checkout another thread has, with the same files: have only one thread work there at a time.`;
+  return input.sharedFolder
+    ? `${base}${shared} This project has no git repository, so ${input.count === 1 ? "it shares" : "they share"} its folder and can change the same files you do.`
+    : `${base}${shared}`;
+};
+
+/**
+ * Says which threads got less access than the call asked for, so the agent
+ * doesn't tell the user they have it. Empty when every thread got what it asked.
+ */
+export const lowerAccessNote = (
+  specs: ReadonlyArray<{ readonly title: string; readonly access: RuntimeMode | undefined }>,
+  launches: ReadonlyArray<{ readonly runtimeMode: RuntimeMode }>,
+): string => {
+  const lowered = specs.flatMap((spec, index) =>
+    spec.access !== undefined && launches[index]!.runtimeMode !== spec.access
+      ? [`'${spec.title}' runs with ${launches[index]!.runtimeMode}, not ${spec.access}`]
+      : [],
+  );
+  return lowered.length === 0
+    ? ""
+    : ` ${lowered.join("; ")}: a thread never gets more access than yours. If you tell the user about ${lowered.length === 1 ? "it" : "them"}, say the access ${lowered.length === 1 ? "it" : "they"} actually got.`;
+};
 
 /** Whether a thread already works in `checkout`, with its session there too. */
 const isInCheckout = (thread: OrchestrationThread, checkout: ChildThreadCheckout) =>
@@ -392,11 +485,20 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       if (thread === undefined) {
         return { refusal: { outcome: "refused" as const, detail: GONE } };
       }
-      // A thread another computer's agent started here never gets these
+      // A thread another computer's agent started here never gets these, nor
+      // one that moved here until the user here takes it over
       // (docs/design/fleet.md, "Fence"); its runtime has no thread tools, so
-      // this only guards a stale credential.
-      if ((thread.remoteOrigin ?? null) !== null) {
-        return { refusal: { outcome: "not_allowed" as const, detail: REMOTE_ORIGIN_REFUSAL } };
+      // this guards a stale credential, and a runtime from before the move.
+      if (isLinkFenced(thread)) {
+        return {
+          refusal: {
+            outcome: "not_allowed" as const,
+            detail:
+              (thread.remoteOrigin ?? null) !== null
+                ? REMOTE_ORIGIN_REFUSAL
+                : linkFenceRefusal(thread, "thread tools"),
+          },
+        };
       }
       return { mode, thread };
     });
@@ -404,6 +506,16 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
   const from = (scope: McpInvocationScope): RoomAgentRef => ({
     participantId: scope.participantId,
   });
+
+  /**
+   * Whether the calling thread is its project's lead chat, which gets a larger
+   * budget (docs/design/lead-chat.md). The caller is open and working, so the
+   * pointer alone answers it; the decider checks again.
+   */
+  const isLeadThread = (thread: OrchestrationThread) =>
+    deps
+      .readProject(thread.projectId)
+      .pipe(Effect.map((project) => (project?.leadThreadId ?? null) === thread.id));
 
   /** An attached child may not start, message or stop threads: families are one level deep. */
   const depthRefusal = (thread: OrchestrationThread, scope: McpInvocationScope) => ({
@@ -723,34 +835,6 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
     })),
   });
 
-  const startedDetail = (input: {
-    readonly outcome: "started" | "asked_user";
-    readonly count: number;
-    readonly reportBack: boolean;
-    readonly sharedFolder: boolean;
-    /** How many of them work in another thread's checkout (`checkout`). */
-    readonly inCheckouts?: number;
-  }) => {
-    const threads = plural(input.count, "thread");
-    const these = input.count === 1 ? "it" : "them";
-    const base =
-      input.outcome === "started"
-        ? input.reportBack
-          ? `Started ${threads}. Each one's final reply comes back to you as a message when it finishes, and you pick up again then. Don't wait or poll: carry on with other work, or end your turn if you have nothing else to do.`
-          : `Started ${threads} on ${input.count === 1 ? "its" : "their"} own. Nothing comes back from ${these}; read ${these} with thread_read if you need to.`
-        : input.reportBack
-          ? `The user decides whether to start ${threads}. If they agree, each one's final reply comes back to you as a message; if they say no, you'll hear at your next turn. Don't ask again, and end your turn if you have nothing else to do.`
-          : `The user decides whether to start ${threads}. If started, ${input.count === 1 ? "it runs" : "they run"} on ${input.count === 1 ? "its" : "their"} own and nothing comes back. Don't ask again.`;
-    const inCheckouts = input.inCheckouts ?? 0;
-    const shared =
-      inCheckouts === 0
-        ? ""
-        : ` ${input.count === 1 ? "It works" : inCheckouts === input.count ? "They work" : `${inCheckouts} of them work`} in a checkout another thread has, with the same files: have only one thread work there at a time.`;
-    return input.sharedFolder
-      ? `${base}${shared} This project has no git repository, so ${input.count === 1 ? "it shares" : "they share"} its folder and can change the same files you do.`
-      : `${base}${shared}`;
-  };
-
   /**
    * What an earlier identical call already did, if anything: its requests
    * still open, or its threads already made.
@@ -796,6 +880,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               request.launch?.checkout !== undefined
                 ? ("checkout" as const)
                 : (request.launch?.workspace.kind ?? "worktree"),
+            ...(request.launch !== undefined ? { access: request.launch.runtimeMode } : {}),
           })),
         } satisfies ThreadStartResult;
       }
@@ -824,6 +909,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
               : shell.worktreePath !== null
                 ? "worktree"
                 : "project_folder",
+          access: shell.runtimeMode,
         })),
       } satisfies ThreadStartResult;
     });
@@ -1055,13 +1141,13 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           const outcome = mode === "auto" ? ("started" as const) : ("asked_user" as const);
           return {
             outcome,
-            detail: startedDetail({
+            detail: `${startedDetail({
               outcome,
               count: launches.length,
               reportBack,
               sharedFolder,
               inCheckouts: launches.filter((launch) => launch.checkout !== undefined).length,
-            }),
+            })}${lowerAccessNote(specs, launches)}`,
             threads: ids.children.map((child, index) => ({
               threadId: child.childThreadId,
               title: launches[index]!.title,
@@ -1071,6 +1157,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                 launches[index]!.checkout !== undefined
                   ? ("checkout" as const)
                   : launches[index]!.workspace.kind,
+              access: launches[index]!.runtimeMode,
             })),
           } satisfies ThreadStartResult;
         }),
@@ -1081,15 +1168,26 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
   // thread_start on a linked computer
   // ---------------------------------------------------------------------------
 
-  /** The linked computer an agent named, by name or id, or why it can't be used. */
+  /**
+   * The linked computer an agent named, by id or name, or why it can't be
+   * used. Computers choose their own ids and names, so one could take
+   * another's id or name as its own: a computer is picked only when it is the
+   * one computer whose id or name matches. Anything else is refused, never
+   * guessed, so work can't be sent to a computer the agent didn't mean.
+   */
   const resolveComputer = (name: string) =>
     Effect.gen(function* () {
       const computers = deps.links === undefined ? [] : yield* deps.links.computers;
       const wanted = name.toLowerCase();
-      const computer = computers.find(
+      const matches = computers.filter(
         (entry) => entry.environmentId === name || entry.label.toLowerCase() === wanted,
       );
-      if (computer !== undefined) return { computer };
+      if (matches.length === 1) return { computer: matches[0]! };
+      if (matches.length > 1) {
+        return {
+          refused: `"${name}" matches more than one linked computer (${matches.map((entry) => `${entry.label}, id ${entry.environmentId}`).join("; ")}), so nothing was started or moved. Ask the user which one they mean.`,
+        };
+      }
       return {
         refused:
           computers.length === 0
@@ -1459,20 +1557,55 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
             )
           : [];
       const scheduleAnswerWaiting = yield* waitingOnScheduleAnswers;
-      return {
-        outcome: "ok",
-        threads: [
-          ...listed.map((shell) =>
+      // Which thread leads the project, and what each listed thread's pull
+      // requests are as already known here (docs/design/lead-chat.md).
+      const project = yield* deps.readProject(thread.projectId);
+      const repositoryKey = project?.repositoryIdentity?.canonicalKey ?? null;
+      type KnownPullRequest = NonNullable<ThreadSummary["pullRequests"]>[number];
+      const pullRequestsOf = (
+        shell: OrchestrationThreadShell,
+      ): Effect.Effect<ReadonlyArray<KnownPullRequest>> =>
+        (deps.knownPullRequests === undefined
+          ? Effect.succeed([])
+          : deps.knownPullRequests({
+              repositoryKey,
+              branch: shell.branch,
+              urls: shell.linkedPullRequests.map((linked) => linked.url),
+            })
+        ).pipe(
+          Effect.map((known) => {
+            const byUrl = new Map<string, KnownPullRequest>(
+              known.map((entry) => [
+                entry.url,
+                { number: entry.number, url: entry.url, state: entry.state },
+              ]),
+            );
+            // One its agent opened that nobody has read yet: no state to say.
+            for (const linked of shell.linkedPullRequests) {
+              if (!byUrl.has(linked.url)) {
+                byUrl.set(linked.url, { number: linked.number, url: linked.url });
+              }
+            }
+            return [...byUrl.values()];
+          }),
+        );
+      const summaries = yield* Effect.forEach(listed, (shell) =>
+        pullRequestsOf(shell).pipe(
+          Effect.map((pullRequests): ThreadSummary =>
             summarizeThread(shell, {
               caller: thread,
               providers,
               titleOf: (threadId) => titles.get(threadId),
               scheduleAnswerWaiting,
+              leadThreadId: project?.leadThreadId ?? null,
+              pullRequests,
             }),
           ),
-          ...settingUp,
-          ...remote,
-        ],
+        ),
+      );
+      return {
+        outcome: "ok",
+        threads: [...summaries, ...settingUp, ...remote],
       } satisfies ThreadListResult;
     });
 
@@ -1656,6 +1789,15 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       }
       const owned = yield* ownChild(thread, scope, input.threadId);
       if ("refusal" in owned) {
+        // The project's lead chat may pass a message to a thread it did not
+        // start (docs/design/lead-chat.md, "Tools"): one-way, never a move.
+        if (
+          owned.refusal.outcome === "not_yours" &&
+          checkoutReference === undefined &&
+          (yield* isLeadThread(thread))
+        ) {
+          return yield* leadPass(scope, thread, input.threadId, input.message);
+        }
         return owned.refusal satisfies ThreadSendResult;
       }
       const childThreadId = owned.child.id;
@@ -1715,11 +1857,7 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           if (refusal !== null) {
             return {
               outcome:
-                refusal.outcome === "not_allowed"
-                  ? ("not_yours" as const)
-                  : refusal.outcome === "limit"
-                    ? ("limit" as const)
-                    : ("refused" as const),
+                refusal.outcome === "not_allowed" ? ("not_yours" as const) : ("refused" as const),
               detail: refusal.detail,
             } satisfies ThreadSendResult;
           }
@@ -1780,6 +1918,110 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
                       : ""
                   } ${sentDetail[outcome]}`,
             threadId: childThreadId,
+          } satisfies ThreadSendResult;
+        }),
+      );
+    });
+
+  /**
+   * The lead chat passes `message` to a thread it did not start. Nothing is
+   * owed back: the thread answers where the user reads it. The decider checks
+   * the same rules again (leadPassRefusal) and the access ceiling.
+   */
+  const leadPass = (
+    scope: McpInvocationScope,
+    lead: OrchestrationThread,
+    targetReference: string,
+    message: string,
+  ): Effect.Effect<ThreadSendResult> =>
+    Effect.gen(function* () {
+      const targetId = targetReference.trim();
+      const text = message.trim();
+      if (text.length === 0) {
+        return { outcome: "refused", detail: "Say what you want from the thread." };
+      }
+      if (text.length > THREAD_PROMPT_CHAR_LIMIT) {
+        return {
+          outcome: "refused",
+          detail: `Keep the message under ${THREAD_PROMPT_CHAR_LIMIT.toLocaleString("en-US")} characters.`,
+        };
+      }
+      const callerTurnId = lead.session?.activeTurnId ?? NO_TURN;
+      const key = [
+        scope.threadId,
+        scope.participantId ?? "primary",
+        callerTurnId,
+        "thread_send:pass",
+        targetId,
+        text,
+      ].join("\u0000");
+      const requestId = ChildRequestId.make(derivedUuid(key, "request"));
+      const messageId = MessageId.make(derivedUuid(key, "message"));
+      const passedDetail = {
+        sent: "Passed on. That thread works on it where the user reads it; nothing comes back to you. Read it later with thread_read if the user asks.",
+        queued:
+          "Passed on. That thread is busy and takes it after its current turn; nothing comes back to you. Read it later with thread_read if the user asks.",
+      } as const;
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const [caller, target] = yield* Effect.all([
+            deps.readThread(scope.threadId),
+            deps.readThread(ThreadId.make(targetId)),
+          ]);
+          if (caller === undefined) {
+            return { outcome: "refused", detail: GONE } satisfies ThreadSendResult;
+          }
+          // The same pass, already made in this turn: that one stands.
+          if (target?.messages.some((entry) => entry.id === messageId)) {
+            return {
+              outcome: "sent",
+              detail: passedDetail.sent,
+              threadId: targetId,
+              reportsBack: false,
+            } satisfies ThreadSendResult;
+          }
+          const refusal = leadPassRefusal(caller, target ?? null, {
+            from: from(scope),
+            callerTurnId,
+            isLead: yield* isLeadThread(caller),
+          });
+          if (refusal !== null || target === undefined) {
+            return {
+              outcome:
+                refusal?.outcome === "not_allowed" ? ("not_yours" as const) : ("refused" as const),
+              detail: refusal?.detail ?? NOT_FOUND,
+              threadId: targetId,
+            } satisfies ThreadSendResult;
+          }
+          if (!withinModeCeiling(target, caller)) {
+            return {
+              outcome: "refused",
+              detail:
+                "That thread has more access than the lead chat, so it can't take work from it. Tell the user, who can send it there.",
+              threadId: targetId,
+            } satisfies ThreadSendResult;
+          }
+          const outcome = childIsBusy(target, caller) ? ("queued" as const) : ("sent" as const);
+          const rejected = yield* dispatch({
+            type: "thread.lead.pass",
+            commandId: childRequestCommandId(requestId, "pass"),
+            threadId: scope.threadId,
+            from: from(scope),
+            callerTurnId,
+            targetThreadId: target.id,
+            requestId,
+            messageId,
+            text,
+            createdAt: yield* nowIso,
+          });
+          if (rejected !== undefined) {
+            return rejected satisfies ThreadSendResult;
+          }
+          return {
+            outcome,
+            detail: passedDetail[outcome],
+            threadId: target.id,
+            reportsBack: false,
           } satisfies ThreadSendResult;
         }),
       );
@@ -1914,6 +2156,18 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
           detail: `This computer is no longer linked to ${child.label}.`,
         } satisfies ThreadSendResult;
       }
+      // An older peer can't enforce our ceiling; refuse early when we know it.
+      if (
+        computer.descriptor !== null &&
+        computer.descriptor.enforcesRequestCeiling !== true &&
+        !isWidestMode(effectiveRequestCeiling(thread))
+      ) {
+        return {
+          outcome: "not_allowed",
+          detail: olderPeerCeilingRefusal(computer.label),
+          threadId: child.threadId,
+        } satisfies ThreadSendResult;
+      }
       const callerTurnId = thread.session?.activeTurnId ?? NO_TURN;
       const key = [
         scope.threadId,
@@ -1972,6 +2226,8 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       const open = thread.childRequests.open.filter(
         (request) => request.childThreadId === child.threadId,
       );
+      // A check-back there doesn't show in its status here, so a quiet child
+      // with one is not reached (a known limit, docs/design/child-threads.md).
       if (
         open.length === 0 &&
         child.cachedStatus !== "working" &&
@@ -2013,6 +2269,246 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       );
     });
 
+  // ---------------------------------------------------------------------------
+  // thread_wrap (docs/design/child-threads.md, "Wrapped up by the parent's agent")
+  // ---------------------------------------------------------------------------
+
+  type WrapEntry = NonNullable<ThreadWrapResult["threads"]>[number];
+
+  /**
+   * Files away finished threads the caller started: the user's Wrap up, given
+   * by the parent's agent. A child here is wrapped with `byParentAgent`, so
+   * the decider checks the same rules again and marks it seen in the same
+   * step; a child on a linked computer is wrapped on the parent's record of
+   * it and sent on, as the user's Wrap up is.
+   */
+  const threadWrap = (
+    scope: McpInvocationScope,
+    input: { readonly threadIds: ReadonlyArray<string> },
+  ): Effect.Effect<ThreadWrapResult> =>
+    Effect.gen(function* () {
+      const gated = yield* gate(scope, "thread_wrap");
+      if ("refusal" in gated) {
+        return gated.refusal satisfies ThreadWrapResult;
+      }
+      const { thread } = gated;
+      if (isAttachedChild(thread)) {
+        return depthRefusal(thread, scope) satisfies ThreadWrapResult;
+      }
+      const ids = [
+        ...new Set(input.threadIds.map((id) => id.trim()).filter((id) => id.length > 0)),
+      ];
+      if (ids.length === 0) {
+        return {
+          outcome: "refused",
+          detail: "Name the threads to wrap up, by their ids from thread_list.",
+        } satisfies ThreadWrapResult;
+      }
+      if (ids.length > THREAD_WRAP_PER_CALL) {
+        return {
+          outcome: "refused",
+          detail: `Wrap up at most ${THREAD_WRAP_PER_CALL} threads per call.`,
+        } satisfies ThreadWrapResult;
+      }
+      const threads = yield* Effect.forEach(ids, (id) => wrapOne(scope, thread, ThreadId.make(id)));
+      return { outcome: "ok", threads } satisfies ThreadWrapResult;
+    });
+
+  const wrapOne = (
+    scope: McpInvocationScope,
+    parent: OrchestrationThread,
+    childId: ThreadId,
+  ): Effect.Effect<WrapEntry> =>
+    Effect.gen(function* () {
+      const remoteChild = remoteChildOf(parent.childRequests, childId);
+      if (remoteChild !== undefined) {
+        return yield* remoteWrap(scope, parent, remoteChild);
+      }
+      const child = yield* deps.readThread(childId);
+      if (child === undefined) {
+        return pendingChildRequest(parent, childId) !== undefined
+          ? {
+              threadId: childId,
+              outcome: "working",
+              detail: "That thread is still being set up, so it hasn't done its work yet.",
+            }
+          : { threadId: childId, outcome: "not_yours", detail: NOT_FOUND };
+      }
+      const refusal = agentWrapRefusal(parent, child);
+      if (refusal !== null) {
+        return { threadId: child.id, outcome: refusal.kind, detail: refusal.detail };
+      }
+      // Keyed on its newest turn and the word it holds, so a retry wraps it
+      // once and a wrap after new work, or after the user reopened it, is new.
+      const key = [
+        scope.threadId,
+        scope.participantId ?? "primary",
+        parent.session?.activeTurnId ?? NO_TURN,
+        "thread_wrap",
+        child.id,
+        child.latestTurn?.turnId ?? "no-turn",
+        child.doneOverride?.at ?? "no-word",
+      ].join("\u0000");
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const rejected = yield* dispatch({
+            type: "thread.done-override.set",
+            commandId: CommandId.make(`server:child-wrap:${derivedUuid(key)}`),
+            threadId: child.id,
+            state: "done",
+            at: yield* nowIso,
+            byParentAgent: parent.id,
+          });
+          if (rejected !== undefined) {
+            return { threadId: child.id, ...rejected } satisfies WrapEntry;
+          }
+          return {
+            threadId: child.id,
+            outcome: "wrapped",
+            detail: WRAPPED_DETAIL,
+          } satisfies WrapEntry;
+        }),
+      );
+    });
+
+  const remoteWrap = (
+    scope: McpInvocationScope,
+    parent: OrchestrationThread,
+    child: RemoteChild,
+  ): Effect.Effect<WrapEntry> =>
+    Effect.gen(function* () {
+      // Its status as last heard: what this computer knows of it.
+      if (
+        child.cachedStatus === "working" ||
+        child.cachedStatus === "needs the user" ||
+        child.cachedStatus === "waiting" ||
+        parent.childRequests.open.some((request) => request.childThreadId === child.threadId)
+      ) {
+        return {
+          threadId: child.threadId,
+          outcome: "working",
+          detail: `'${child.title}' on ${child.label} is still working or waiting for the user, as last heard. Wait for its reply, or stop it with thread_stop first.`,
+        };
+      }
+      const key = [
+        scope.threadId,
+        scope.participantId ?? "primary",
+        parent.session?.activeTurnId ?? NO_TURN,
+        "thread_wrap",
+        child.threadId,
+        String(child.attachmentEpoch),
+        child.updatedAt,
+        child.override?.at ?? "no-word",
+      ].join("\u0000");
+      return yield* deps.requests.join(key, () =>
+        Effect.gen(function* () {
+          const rejected = yield* dispatch({
+            type: "thread.remote-child.done-override.set",
+            commandId: CommandId.make(`server:child-wrap:${derivedUuid(key)}`),
+            threadId: parent.id,
+            environmentId: child.environmentId,
+            childThreadId: child.threadId,
+            state: "done",
+            at: yield* nowIso,
+          });
+          if (rejected !== undefined) {
+            return { threadId: child.threadId, ...rejected } satisfies WrapEntry;
+          }
+          return {
+            threadId: child.threadId,
+            outcome: "wrapped",
+            detail: `${WRAPPED_DETAIL} ${child.label} is told.`,
+          } satisfies WrapEntry;
+        }),
+      );
+    });
+
+  // ---------------------------------------------------------------------------
+  // thread_move (docs/design/fleet.md, Part 3b)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Queues the caller's own thread to move once its turn ends: the turn is
+   * the live work, so the move waits for the agent's last words. Only the
+   * thread's own agent, never a thread an outside agent or a linked computer
+   * started; the target's own Ask first, Allowed or Off still applies.
+   */
+  const threadMove = (
+    scope: McpInvocationScope,
+    input: {
+      readonly computer: string;
+      readonly agent?: { readonly instanceId: string; readonly model: string } | undefined;
+    },
+  ): Effect.Effect<ThreadMoveResult> =>
+    Effect.gen(function* () {
+      const gated = yield* gate(scope, "thread_move");
+      if ("refusal" in gated) return gated.refusal satisfies ThreadMoveResult;
+      const { thread } = gated;
+      if (scope.participantId !== null) {
+        return {
+          outcome: "not_allowed",
+          detail: "Only the thread's own agent can move it.",
+        } satisfies ThreadMoveResult;
+      }
+      if ((thread.outsideOrigin ?? null) !== null) {
+        return {
+          outcome: "not_allowed",
+          detail:
+            "An outside agent started this thread, so it can't move itself. The user can move it from the thread's menu.",
+        } satisfies ThreadMoveResult;
+      }
+      if (deps.moves === undefined) {
+        return {
+          outcome: "refused",
+          detail: "This computer can't move threads to other computers.",
+        } satisfies ThreadMoveResult;
+      }
+      const resolved = yield* resolveComputer(input.computer.trim());
+      if ("refused" in resolved) {
+        return { outcome: "refused", detail: resolved.refused } satisfies ThreadMoveResult;
+      }
+      const { computer } = resolved;
+      const latched = yield* latchCallerTurn(deps.readThread, scope);
+      if (!("turnId" in latched)) {
+        return {
+          outcome: "refused",
+          detail: "Call thread_move during your turn.",
+        } satisfies ThreadMoveResult;
+      }
+      const queuedDetail = `Queued: this thread moves to ${computer.label} when your turn ends. Finish your reply; don't start more work.`;
+      // A retried call finds the move it queued.
+      const pending = latched.thread.pendingMove ?? null;
+      if (
+        pending !== null &&
+        pending.target.environmentId === computer.environmentId &&
+        pending.requestedBy.kind === "agent" &&
+        pending.requestedBy.turnId === latched.turnId
+      ) {
+        return { outcome: "queued", detail: queuedDetail } satisfies ThreadMoveResult;
+      }
+      // No agent named: the one that computer suggests when the move starts.
+      const agent: ModelSelection | undefined =
+        input.agent !== undefined
+          ? ({
+              instanceId: ProviderInstanceId.make(input.agent.instanceId.trim()),
+              model: input.agent.model.trim(),
+            } as ModelSelection)
+          : undefined;
+      const queued = yield* deps.moves
+        .queue({
+          threadId: thread.id,
+          targetEnvironmentId: computer.environmentId,
+          ...(agent !== undefined ? { agent } : {}),
+          mode: "when-done",
+          requestedBy: { kind: "agent", turnId: latched.turnId },
+        })
+        .pipe(Effect.result);
+      if (queued._tag === "Failure") {
+        return { outcome: "refused", detail: queued.failure.detail } satisfies ThreadMoveResult;
+      }
+      return { outcome: "queued", detail: queuedDetail } satisfies ThreadMoveResult;
+    });
+
   return {
     thread_agents: threadAgents,
     thread_start: threadStart,
@@ -2020,6 +2516,8 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
     thread_read: threadRead,
     thread_send: threadSend,
     thread_stop: threadStop,
+    thread_wrap: threadWrap,
+    thread_move: threadMove,
   };
 }
 

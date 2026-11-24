@@ -1,4 +1,12 @@
+import { liveSideTurn } from "@threadlines/shared/sideTurns";
+import { SecretScrubber } from "../../secrets/SecretScrubber.ts";
 import {
+  type HeldText,
+  SECRET_HIDDEN_DETAIL,
+  SECRET_HIDDEN_WARNING_KIND,
+} from "../../secrets/secretScrubberCore.ts";
+import {
+  type OrchestrationCommand,
   type OrchestrationSessionUsageLimit,
   CHECKPOINT_FILES_ACTIVITY_ID_PREFIX,
   type AssistantDeliveryMode,
@@ -7,6 +15,7 @@ import {
   MessageId,
   type OrchestrationCheckpointFile,
   type OrchestrationEvent,
+  type OrchestrationSession,
   type OrchestrationThreadActivity,
   type OrchestrationMessage,
   type OrchestrationProposedPlanId,
@@ -17,6 +26,7 @@ import {
   type OrchestrationSideTurnOutcome,
   TurnId,
   type TurnTrigger,
+  type TurnStartedBy,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
   type OrchestrationThread,
@@ -35,7 +45,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { countUnifiedDiffStats, type DiffLineStats } from "@threadlines/shared/diffStats";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
-import { sameCheckBacks } from "@threadlines/shared/checkBacks";
+import { markCheckBacksDormant, sameCheckBacks } from "@threadlines/shared/checkBacks";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { ASSISTANT_STREAM_FLUSH_INTERVAL_MS } from "@threadlines/shared/threadLimits";
 import {
@@ -53,6 +63,7 @@ import {
 import { resolveThreadProviderCwd } from "../generalChats.ts";
 import { withoutLaunchMark } from "../sessionLaunches.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { isCarriedSessionRejection } from "../../provider/nativeSession.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { checkoutEndsTurnsWithCheckpoints, turnEndStateFromRuntime } from "../turnEnd.ts";
@@ -72,10 +83,16 @@ import {
   type ProviderActivityStreamSnapshot,
 } from "./ProviderActivityProjection.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
-import { childDeliveryForTurnEnd } from "../childThreadDelivery.ts";
+import { childDeliveryForEndedTurn, staleOwedReports } from "../childThreadDelivery.ts";
 import { RemoteRequestTurnEnds } from "../Services/RemoteRequestTurnEnds.ts";
 import { ScheduledRunTurnEnds } from "../Services/ScheduledRunTurnEnds.ts";
 import { RealtimeVoiceDevices } from "../Services/RealtimeVoiceDevices.ts";
+import {
+  splitStreamingAssistantMarkdownFlush,
+  STREAMING_MARKDOWN_START,
+  streamingMarkdownStateAfter,
+  type StreamingMarkdownState,
+} from "../streamingMarkdownFlush.ts";
 import {
   carriedBackgroundTasks,
   NO_BACKGROUND_TASKS,
@@ -108,7 +125,6 @@ const STREAMING_ASSISTANT_DELTA_FLUSH_INTERVAL = Duration.millis(
 );
 
 const SUBAGENT_RESULT_ACTIVITY_FLUSH_INTERVAL = Duration.millis(100);
-const MARKDOWN_FENCE_INDENT_LIMIT = 3;
 type ContentDeltaStreamKind = Extract<
   ProviderRuntimeEvent,
   { type: "content.delta" }
@@ -141,6 +157,8 @@ interface BufferedActivityStream {
   readonly byteCount: number;
   readonly lineCount: number;
   readonly truncated: boolean;
+  /** A tail held back because it could start a watched key (SecretScrubber.holdPiece). */
+  readonly held?: HeldText | undefined;
 }
 
 interface PendingStreamingAssistantMessage {
@@ -206,6 +224,15 @@ function runtimeEventMatchesThreadSession(
 ): boolean {
   if (!session || session.providerName === null) {
     return true;
+  }
+  const launchingInstanceId =
+    session.startup?.phase === "launching" ? session.startup.providerInstanceId : undefined;
+  if (
+    launchingInstanceId !== undefined &&
+    event.providerInstanceId !== undefined &&
+    !sameId(launchingInstanceId, event.providerInstanceId)
+  ) {
+    return false;
   }
   if (session.providerInstanceId !== undefined && event.providerInstanceId !== undefined) {
     return sameId(session.providerInstanceId, event.providerInstanceId);
@@ -468,394 +495,34 @@ function maxCheckpointTurnCount(
   return maxTurnCount;
 }
 
-function detectMarkdownFenceAtLineStart(
-  text: string,
-  index: number,
-): { marker: "`" | "~"; length: number; end: number } | null {
-  if (index > 0 && text[index - 1] !== "\n") {
-    return null;
-  }
-
-  let cursor = index;
-  let indent = 0;
-  while (text[cursor] === " " && indent < MARKDOWN_FENCE_INDENT_LIMIT + 1) {
-    cursor += 1;
-    indent += 1;
-  }
-  if (indent > MARKDOWN_FENCE_INDENT_LIMIT) {
-    return null;
-  }
-
-  const marker = text[cursor];
-  if (marker !== "`" && marker !== "~") {
-    return null;
-  }
-
-  let end = cursor;
-  while (text[end] === marker) {
-    end += 1;
-  }
-  const length = end - cursor;
-  return length >= 3 ? { marker, length, end } : null;
-}
-
-function isEscapedMarkdownCharacter(text: string, index: number): boolean {
-  let slashCount = 0;
-  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) {
-    slashCount += 1;
-  }
-  return slashCount % 2 === 1;
-}
-
-function isAsciiAlphaNumeric(char: string | undefined): boolean {
-  return char !== undefined && /^[A-Za-z0-9]$/u.test(char);
-}
-
-function isMarkdownBoundaryBefore(char: string | undefined): boolean {
-  return (
-    char === undefined ||
-    /\s/u.test(char) ||
-    char === "(" ||
-    char === "[" ||
-    char === "{" ||
-    char === "<" ||
-    char === '"' ||
-    char === "'"
-  );
-}
-
-interface MarkdownLine {
-  readonly text: string;
-  readonly start: number;
-  readonly end: number;
-  readonly hasLineEnding: boolean;
-}
-
-function splitMarkdownLines(text: string): MarkdownLine[] {
-  const lines: MarkdownLine[] = [];
-  let start = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    if (text[index] !== "\n") {
-      continue;
-    }
-    lines.push({
-      text: text.slice(start, index),
-      start,
-      end: index,
-      hasLineEnding: true,
-    });
-    start = index + 1;
-  }
-  lines.push({
-    text: text.slice(start),
-    start,
-    end: text.length,
-    hasLineEnding: false,
-  });
-  return lines;
-}
-
-function isSyntheticTrailingMarkdownLine(line: MarkdownLine, sourceText: string): boolean {
-  return !line.hasLineEnding && line.start === sourceText.length && line.text.length === 0;
-}
-
-function stripOuterTablePipes(line: string): string {
-  let value = line.trim();
-  if (value.startsWith("|")) {
-    value = value.slice(1);
-  }
-  if (value.endsWith("|")) {
-    value = value.slice(0, -1);
-  }
-  return value;
-}
-
-function isPotentialMarkdownTableRow(line: string): boolean {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith(">")) {
-    return false;
-  }
-  if (trimmed.startsWith("|")) {
-    return stripOuterTablePipes(trimmed).includes("|");
-  }
-  const firstPipe = trimmed.indexOf("|");
-  return firstPipe >= 0 && trimmed.indexOf("|", firstPipe + 1) >= 0;
-}
-
-function isMarkdownTableSeparatorRow(line: string): boolean {
-  if (!isPotentialMarkdownTableRow(line)) {
-    return false;
-  }
-  const cells = stripOuterTablePipes(line)
-    .split("|")
-    .map((cell) => cell.trim());
-  return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell));
-}
-
-function findPendingMarkdownTableStart(
-  text: string,
-  options?: { readonly continuingTable?: boolean },
-): number | null {
-  const lines = splitMarkdownLines(text);
-  let tableActive = options?.continuingTable === true;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    const nextLine = lines[index + 1];
-    if (isSyntheticTrailingMarkdownLine(line, text)) {
-      break;
-    }
-
-    if (tableActive) {
-      if (!isPotentialMarkdownTableRow(line.text)) {
-        tableActive = false;
-        continue;
-      }
-      if (!line.hasLineEnding) {
-        return line.start;
-      }
-      continue;
-    }
-
-    if (!isPotentialMarkdownTableRow(line.text)) {
-      continue;
-    }
-
-    if (!nextLine) {
-      return line.start;
-    }
-    if (!nextLine.hasLineEnding && !isMarkdownTableSeparatorRow(nextLine.text)) {
-      return line.start;
-    }
-    if (!isMarkdownTableSeparatorRow(nextLine.text)) {
-      continue;
-    }
-    if (!nextLine.hasLineEnding) {
-      return line.start;
-    }
-
-    tableActive = true;
-    index += 1;
-  }
-
-  return null;
-}
-
-function markdownTableContinuesAfterFlush(
-  text: string,
-  options?: { readonly continuingTable?: boolean },
+/**
+ * Whether a session update would leave `current` as it is apart from its
+ * time: every field the update sets already holds the same value there.
+ */
+function sessionUpdateChangesNothing(
+  current: OrchestrationSession | null | undefined,
+  next: Partial<OrchestrationSession>,
 ): boolean {
-  const lines = splitMarkdownLines(text);
-  let tableActive = options?.continuingTable === true;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (isSyntheticTrailingMarkdownLine(line, text)) {
-      break;
-    }
-
-    if (tableActive) {
-      if (isPotentialMarkdownTableRow(line.text)) {
-        continue;
-      }
-      tableActive = false;
-      continue;
-    }
-
-    if (!isPotentialMarkdownTableRow(line.text)) {
-      continue;
-    }
-
-    const nextLine = lines[index + 1];
-    if (
-      nextLine &&
-      !isSyntheticTrailingMarkdownLine(nextLine, text) &&
-      isMarkdownTableSeparatorRow(nextLine.text)
-    ) {
-      tableActive = true;
-      index += 1;
-    }
+  if (current === null || current === undefined) {
+    return false;
   }
-
-  return tableActive;
-}
-
-function findClosingMarkdownParenthesis(text: string, startIndex: number): number | null {
-  let depth = 0;
-  for (let index = startIndex; index < text.length; index += 1) {
-    const char = text[index];
-    if (isEscapedMarkdownCharacter(text, index)) {
-      continue;
+  return Object.entries(next).every(([key, value]) => {
+    if (key === "updatedAt") {
+      return true;
     }
-    if (char === "(") {
-      depth += 1;
-      continue;
+    if (key === "participantId") {
+      return (current.participantId ?? null) === (value ?? null);
     }
-    if (char !== ")") {
-      continue;
-    }
-    if (depth === 0) {
-      return index;
-    }
-    depth -= 1;
-  }
-  return null;
-}
-
-function findUnclosedInlineCodeSpanStart(text: string): number | null {
-  let inlineCode: { start: number; tickCount: number } | null = null;
-  let codeFence: { marker: "`" | "~"; length: number } | null = null;
-
-  for (let index = 0; index < text.length; index += 1) {
-    if (inlineCode === null) {
-      const fence = detectMarkdownFenceAtLineStart(text, index);
-      if (fence) {
-        if (codeFence === null) {
-          codeFence = { marker: fence.marker, length: fence.length };
-        } else if (codeFence.marker === fence.marker && fence.length >= codeFence.length) {
-          codeFence = null;
-        }
-        index = fence.end - 1;
-        continue;
-      }
-    }
-
-    if (codeFence !== null) {
-      continue;
-    }
-
-    const char = text[index];
-    if (char === "\\") {
-      index += 1;
-      continue;
-    }
-    if (char !== "`") {
-      continue;
-    }
-
-    const runStart = index;
-    let runEnd = index;
-    while (text[runEnd] === "`") {
-      runEnd += 1;
-    }
-    const tickCount = runEnd - runStart;
-
-    if (inlineCode && tickCount === inlineCode.tickCount) {
-      inlineCode = null;
-    } else if (inlineCode === null) {
-      inlineCode = { start: runStart, tickCount };
-    }
-
-    index = runEnd - 1;
-  }
-
-  return inlineCode?.start ?? null;
-}
-
-function findUnclosedLinkStart(text: string): number | null {
-  const labelStack: number[] = [];
-
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    if (isEscapedMarkdownCharacter(text, index)) {
-      continue;
-    }
-
-    if (char === "[") {
-      labelStack.push(text[index - 1] === "!" ? index - 1 : index);
-      continue;
-    }
-
-    if (char !== "]" || labelStack.length === 0) {
-      continue;
-    }
-
-    const labelStart = labelStack.pop()!;
-    const nextChar = text[index + 1];
-    if (nextChar === "(") {
-      const closeIndex = findClosingMarkdownParenthesis(text, index + 2);
-      if (closeIndex === null) {
-        return labelStart;
-      }
-      index = closeIndex;
-      continue;
-    }
-
-    if (nextChar === "[") {
-      const closeReferenceIndex = text.indexOf("]", index + 2);
-      if (closeReferenceIndex < 0) {
-        return labelStart;
-      }
-      index = closeReferenceIndex;
-    }
-  }
-
-  return labelStack[0] ?? null;
-}
-
-function findUnclosedEmphasisStart(text: string): number | null {
-  const markerStack: Array<{ marker: "*" | "~"; length: 1 | 2; start: number }> = [];
-
-  for (let index = 0; index < text.length; index += 1) {
-    const marker = text[index];
-    if ((marker !== "*" && marker !== "~") || isEscapedMarkdownCharacter(text, index)) {
-      continue;
-    }
-
-    let runEnd = index;
-    while (text[runEnd] === marker) {
-      runEnd += 1;
-    }
-    const runLength = runEnd - index;
-    const length = Math.min(runLength, 2) as 1 | 2;
-    const previousChar = text[index - 1];
-    const nextChar = text[index + length];
-    const canOpen =
-      isMarkdownBoundaryBefore(previousChar) &&
-      isAsciiAlphaNumeric(nextChar) &&
-      (marker === "*" || length === 2);
-    // Closing only needs a non-space character before the run (CommonMark's
-    // right-flanking rule). Requiring more — e.g. an alphanumeric — misses
-    // closers like "**done.**" or "**Note:**", leaving a phantom open span
-    // that wedges the streaming flush until the message completes.
-    const canClose = previousChar !== undefined && !/\s/u.test(previousChar);
-    const openIndex = markerStack.findLastIndex(
-      (entry) => entry.marker === marker && entry.length === length,
+    const held: unknown = current[key as keyof OrchestrationSession];
+    return (
+      held === value ||
+      (typeof held === "object" &&
+        held !== null &&
+        typeof value === "object" &&
+        value !== null &&
+        JSON.stringify(held) === JSON.stringify(value))
     );
-
-    if (openIndex >= 0 && canClose) {
-      markerStack.splice(openIndex, 1);
-    } else if (canOpen) {
-      markerStack.push({ marker, length, start: index });
-    }
-
-    index = runEnd - 1;
-  }
-
-  return markerStack.length > 0 ? Math.min(...markerStack.map((entry) => entry.start)) : null;
-}
-
-function splitStreamingAssistantMarkdownFlush(
-  text: string,
-  options?: { readonly continuingTable?: boolean },
-): {
-  readyText: string;
-  pendingText: string;
-} {
-  const pendingStarts = [
-    findUnclosedInlineCodeSpanStart(text),
-    findUnclosedLinkStart(text),
-    findUnclosedEmphasisStart(text),
-    findPendingMarkdownTableStart(text, options),
-  ].filter((start): start is number => start !== null);
-  if (pendingStarts.length === 0) {
-    return { readyText: text, pendingText: "" };
-  }
-  const pendingStart = Math.min(...pendingStarts);
-  return {
-    readyText: text.slice(0, pendingStart),
-    pendingText: text.slice(pendingStart),
-  };
+  });
 }
 
 function checkpointFileChangeActivity(input: {
@@ -1259,6 +926,36 @@ function orchestrationSessionStatusFromRuntimeState(
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  // Hiding a printed key (docs/design/secret-scrubbing.md, "Streams"): the
+  // provider hook hides whole values in each event; text ingestion appends
+  // piece by piece is held here, per buffer, so a key split across pieces is
+  // hidden where the pieces are joined. Whole snapshots get a whole-value check.
+  const secretScrubber = yield* SecretScrubber;
+  /**
+   * What each assistant message held back (a tail that could start a watched
+   * key), by thread and message: provider item ids, and so message ids, can
+   * repeat across threads. After a message completes its released tail stays,
+   * so a piece that reopens it can't complete the key; the oldest entries go
+   * past a cap.
+   */
+  const heldAssistantText = new Map<string, HeldText>();
+  const HELD_ASSISTANT_TEXT_CAP = 2_000;
+  const heldKey = (threadId: ThreadId, messageId: MessageId) => `${threadId}\u0000${messageId}`;
+  const setHeldAssistantText = (key: string, state: HeldText | undefined) => {
+    heldAssistantText.delete(key);
+    if (state === undefined) return;
+    heldAssistantText.set(key, state);
+    if (heldAssistantText.size > HELD_ASSISTANT_TEXT_CAP) {
+      const oldest = heldAssistantText.keys().next().value;
+      if (oldest !== undefined) heldAssistantText.delete(oldest);
+    }
+  };
+  /** Commands and thinking streams holding a tail, by stream key: their last piece, for the release. */
+  const heldActivityStreams = new Map<
+    string,
+    Extract<ProviderRuntimeEvent, { type: "content.delta" }>
+  >();
+
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   // Computer links, when this server has them: see RemoteRequestTurnEnds.
@@ -1325,7 +1022,15 @@ const make = Effect.gen(function* () {
   const subagentResultFlushQueued = yield* Ref.make(false);
   const subagentResultFlushRequests = yield* Queue.unbounded<void>();
   const realtimeAssistantMessageIds = yield* Ref.make(new Map<ThreadId, MessageId>());
-  const streamingAssistantTableMessageIds = yield* Ref.make(new Set<MessageId>());
+  // When a provider last reported a session state that matched the stored one,
+  // for threads whose last reports were not stored (see the session update
+  // below). The stored session's own time is older then, and an idle signal
+  // must be compared with the latest report, not the latest stored one.
+  const unstoredSessionReportAt = yield* Ref.make(new Map<ThreadId, string>());
+  // What each streaming reply's sent batches left open (see streamingMarkdownFlush.ts).
+  const streamingMarkdownStateByMessageId = yield* Ref.make(
+    new Map<MessageId, StreamingMarkdownState>(),
+  );
 
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -1737,7 +1442,115 @@ const make = Effect.gen(function* () {
       return answer;
     });
 
+  /**
+   * A row in the thread saying a watched key was hidden, once per name per
+   * turn (shared with the provider hook's notices). None for a side answer.
+   */
+  const noticeHiddenSecrets = (
+    event: ProviderRuntimeEvent,
+    threadId: ThreadId,
+    names: ReadonlyArray<string>,
+  ) =>
+    names.length === 0 || event.sideTurnId !== undefined
+      ? Effect.void
+      : Effect.forEach(
+          secretScrubber.takeNotices(threadId, event.turnId, names),
+          (name) =>
+            orchestrationEngine
+              .dispatch({
+                type: "thread.activity.append",
+                commandId: providerCommandId(event, `secret-hidden:${name}`),
+                threadId,
+                activity: {
+                  id: EventId.make(`secret-hidden:${event.eventId}:${name}`),
+                  tone: "warning",
+                  kind: "runtime.warning",
+                  summary: "Runtime warning",
+                  payload: {
+                    message: secretScrubber.noticeLine(name),
+                    provider: event.provider,
+                    detail: SECRET_HIDDEN_DETAIL,
+                    warningKind: SECRET_HIDDEN_WARNING_KIND,
+                  },
+                  turnId: toTurnId(event.turnId) ?? null,
+                  createdAt: event.createdAt,
+                },
+                createdAt: event.createdAt,
+              })
+              .pipe(
+                Effect.asVoid,
+                Effect.catch(() => Effect.void),
+              ),
+          { discard: true },
+        );
+
+  /** Hides whole watched values in an activity before it is stored. */
+  const scrubActivity = (event: ProviderRuntimeEvent, activity: OrchestrationThreadActivity) => {
+    const summary = secretScrubber.scrubText(activity.summary);
+    const payload = secretScrubber.scrubDeep(activity.payload);
+    const hidden =
+      summary.names.length > 0 || payload !== activity.payload
+        ? [...summary.names, ...secretScrubber.contains(activity.payload)]
+        : [];
+    return {
+      activity:
+        summary.text === activity.summary && payload === activity.payload
+          ? activity
+          : { ...activity, summary: summary.text, payload },
+      names: [...new Set(hidden)],
+      event,
+    };
+  };
+
+  /**
+   * Sends one piece of an assistant message's text. The piece is joined with
+   * what the message held back, whole watched values in it are hidden, and a
+   * tail that could start one is held back again until the next piece or the
+   * message completes (releaseHeldAssistantText). A piece held whole sends
+   * nothing.
+   */
   const dispatchAssistantDelta = (input: {
+    event: ProviderRuntimeEvent;
+    threadId: ThreadId;
+    messageId: MessageId;
+    delta: string;
+    turnId?: TurnId;
+    createdAt: string;
+    commandTag: string;
+  }) =>
+    Effect.gen(function* () {
+      const key = heldKey(input.threadId, input.messageId);
+      const held = secretScrubber.holdPiece(heldAssistantText.get(key), input.delta);
+      setHeldAssistantText(key, held.state);
+      yield* noticeHiddenSecrets(input.event, input.threadId, held.names);
+      if (held.out.length === 0) return;
+      yield* sendAssistantDelta({ ...input, delta: held.out });
+    });
+
+  /** What a message held back, sent as its last piece just before it completes. True when there was any. */
+  const releaseHeldAssistantText = (input: {
+    event: ProviderRuntimeEvent;
+    threadId: ThreadId;
+    messageId: MessageId;
+    turnId?: TurnId;
+    createdAt: string;
+    commandTag: string;
+  }) =>
+    Effect.gen(function* () {
+      const key = heldKey(input.threadId, input.messageId);
+      const held = heldAssistantText.get(key);
+      // Released into this message; what it held stays as already-sent text.
+      setHeldAssistantText(key, secretScrubber.afterRelease(held));
+      if (held === undefined || held.held.length === 0) return false;
+      yield* sendAssistantDelta({
+        ...input,
+        delta: held.held,
+        commandTag: `${input.commandTag}-held`,
+      });
+      return true;
+    });
+
+  const sendAssistantDelta = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
     messageId: MessageId;
@@ -1764,7 +1577,7 @@ const make = Effect.gen(function* () {
       ? dispatch
       : dispatch.pipe(
           Effect.asVoid,
-          Effect.catch(() => clearAssistantMessageState(input.messageId)),
+          Effect.catch(() => clearAssistantMessageState(input.threadId, input.messageId)),
         );
   };
 
@@ -1781,7 +1594,8 @@ const make = Effect.gen(function* () {
       event: input.event,
       childProviderThreadId: input.childProviderThreadId,
       parentProviderThreadId: input.parentProviderThreadId,
-      body: input.body,
+      // The child's answer so far, joined from its pieces: one whole-value check.
+      body: secretScrubber.scrubText(input.body).text,
       status: input.status,
       createdAt: input.createdAt,
     });
@@ -1993,30 +1807,32 @@ const make = Effect.gen(function* () {
       return next;
     });
 
-  const isStreamingAssistantTableActive = (messageId: MessageId) =>
-    Ref.get(streamingAssistantTableMessageIds).pipe(
-      Effect.map((messageIds) => messageIds.has(messageId)),
+  const getStreamingMarkdownState = (messageId: MessageId) =>
+    Ref.get(streamingMarkdownStateByMessageId).pipe(
+      Effect.map((states) => states.get(messageId) ?? STREAMING_MARKDOWN_START),
     );
 
-  const setStreamingAssistantTableActive = (messageId: MessageId, active: boolean) =>
-    Ref.update(streamingAssistantTableMessageIds, (messageIds) => {
-      if (active && messageIds.has(messageId)) {
-        return messageIds;
-      }
-      if (!active && !messageIds.has(messageId)) {
-        return messageIds;
-      }
-      const next = new Set(messageIds);
-      if (active) {
-        next.add(messageId);
-      } else {
-        next.delete(messageId);
-      }
+  /** Records that `sentText` went out for `messageId`, after what `state` describes. */
+  const recordStreamingMarkdownSent = (
+    messageId: MessageId,
+    state: StreamingMarkdownState,
+    sentText: string,
+  ) =>
+    Ref.update(streamingMarkdownStateByMessageId, (states) => {
+      const next = new Map(states);
+      next.set(messageId, streamingMarkdownStateAfter(sentText, state));
       return next;
     });
 
-  const clearStreamingAssistantTableState = (messageId: MessageId) =>
-    setStreamingAssistantTableActive(messageId, false);
+  const clearStreamingMarkdownState = (messageId: MessageId) =>
+    Ref.update(streamingMarkdownStateByMessageId, (states) => {
+      if (!states.has(messageId)) {
+        return states;
+      }
+      const next = new Map(states);
+      next.delete(messageId);
+      return next;
+    });
 
   const flushPendingStreamingAssistantMessage = (
     input: PendingStreamingAssistantMessage,
@@ -2024,10 +1840,11 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const bufferedText = yield* peekBufferedAssistantText(input.messageId);
-      const continuingTable = yield* isStreamingAssistantTableActive(input.messageId);
-      const { readyText, pendingText } = splitStreamingAssistantMarkdownFlush(bufferedText, {
-        continuingTable,
-      });
+      const markdownState = yield* getStreamingMarkdownState(input.messageId);
+      const { readyText, pendingText } = splitStreamingAssistantMarkdownFlush(
+        bufferedText,
+        markdownState,
+      );
       if (
         !hasRenderableAssistantText(readyText) ||
         (options?.onlyWithWords === true && !hasAssistantWords(readyText))
@@ -2036,10 +1853,7 @@ const make = Effect.gen(function* () {
       }
 
       yield* replaceBufferedAssistantText(input.messageId, pendingText);
-      yield* setStreamingAssistantTableActive(
-        input.messageId,
-        markdownTableContinuesAfterFlush(readyText, { continuingTable }),
-      );
+      yield* recordStreamingMarkdownSent(input.messageId, markdownState, readyText);
       yield* dispatchAssistantDelta({
         ...input,
         delta: readyText,
@@ -2085,6 +1899,11 @@ const make = Effect.gen(function* () {
       const spillChunk = yield* appendBufferedAssistantText(input.messageId, input.delta);
       if (spillChunk.length > 0) {
         yield* clearPendingStreamingAssistantMessage(input.messageId);
+        yield* recordStreamingMarkdownSent(
+          input.messageId,
+          yield* getStreamingMarkdownState(input.messageId),
+          spillChunk,
+        );
         yield* dispatchAssistantDelta({
           ...input,
           delta: spillChunk,
@@ -2132,6 +1951,9 @@ const make = Effect.gen(function* () {
 
   const appendBufferedActivityStream = (
     event: ProviderRuntimeEvent,
+    storedOn: ThreadId,
+    /** The item ended: what the stream held goes into its buffer, and a snapshot is taken. */
+    release = false,
   ): Effect.Effect<ProviderActivityStreamSnapshot | undefined> =>
     Effect.gen(function* () {
       if (event.type !== "content.delta") {
@@ -2146,12 +1968,24 @@ const make = Effect.gen(function* () {
       const previous = yield* Cache.getOption(bufferedActivityStreamByKey, streamKey).pipe(
         Effect.map(Option.getOrUndefined),
       );
-      const next = appendActivityStreamText(previous, event.payload.delta);
+      // Held before the buffer: its window can cut a key's front, and a
+      // snapshot of it is dispatched whole.
+      const held = release
+        ? { out: previous?.held?.held ?? "", state: undefined, names: [] }
+        : secretScrubber.holdPiece(previous?.held, event.payload.delta);
+      yield* noticeHiddenSecrets(event, storedOn, held.names);
+      if (held.state !== undefined && held.state.held.length > 0) {
+        heldActivityStreams.set(streamKey, event);
+      } else {
+        heldActivityStreams.delete(streamKey);
+      }
+      const next = { ...appendActivityStreamText(previous, held.out), held: held.state };
       yield* Cache.set(bufferedActivityStreamByKey, streamKey, next);
       const lastEmitted = yield* Cache.getOption(emittedActivityStreamCursorByKey, streamKey).pipe(
         Effect.map(Option.getOrUndefined),
       );
       if (
+        !(release && held.out.length > 0) &&
         !shouldEmitActivityStreamSnapshot({
           streamKind,
           lastEmitted,
@@ -2180,19 +2014,52 @@ const make = Effect.gen(function* () {
   const projectRuntimeActivities = (
     event: ProviderRuntimeEvent,
     thread: Pick<OrchestrationThread, "session" | "subagents">,
+    /** The thread the activities are stored on, for the notice. */
+    storedOn: ThreadId,
   ) =>
     Effect.gen(function* () {
-      const stream = yield* appendBufferedActivityStream(event);
-      const activities = projectRuntimeEventToActivities(event, { stream });
+      // An item that ends takes its streams' held tails into their output first.
+      const released: OrchestrationThreadActivity[] = [];
+      if (event.type === "item.completed" && event.itemId !== undefined) {
+        // A copy: the release below deletes from the map.
+        for (const [streamKey, last] of Array.from(heldActivityStreams)) {
+          if (last.threadId !== event.threadId || last.itemId !== event.itemId) continue;
+          heldActivityStreams.delete(streamKey);
+          const tail = {
+            ...last,
+            eventId: EventId.make(`${last.eventId}:held-tail`),
+            payload: { ...last.payload, delta: "" },
+          };
+          const snapshot = yield* appendBufferedActivityStream(tail, storedOn, true);
+          released.push(...projectRuntimeEventToActivities(tail, { stream: snapshot }));
+        }
+      }
+      const stream = yield* appendBufferedActivityStream(event, storedOn);
+      const projected = [...released, ...projectRuntimeEventToActivities(event, { stream })];
       const childProviderThreadId = childProviderThreadIdForEvent(event, thread);
-      return childProviderThreadId
-        ? activities.map((activity) => withSourceAgentThreadId(activity, childProviderThreadId))
-        : activities;
+      const activities = childProviderThreadId
+        ? projected.map((activity) => withSourceAgentThreadId(activity, childProviderThreadId))
+        : projected;
+      // Activities are stored whole; text joined into them (a list's lines,
+      // a stream's window) gets one more whole-value check.
+      const scrubbed = activities.map((activity) => scrubActivity(event, activity));
+      yield* noticeHiddenSecrets(
+        event,
+        storedOn,
+        scrubbed.flatMap((entry) => entry.names),
+      );
+      return scrubbed.map((entry) => entry.activity);
     });
 
-  const clearAssistantMessageState = (messageId: MessageId) =>
-    clearPendingStreamingAssistantMessage(messageId).pipe(
-      Effect.andThen(clearStreamingAssistantTableState(messageId)),
+  const clearAssistantMessageState = (threadId: ThreadId, messageId: MessageId) =>
+    Effect.sync(() => {
+      // Nothing held is sent from here; what was held counts as sent text, so
+      // a piece that reopens the message still can't complete a key.
+      const key = heldKey(threadId, messageId);
+      setHeldAssistantText(key, secretScrubber.afterRelease(heldAssistantText.get(key)));
+    }).pipe(
+      Effect.andThen(clearPendingStreamingAssistantMessage(messageId)),
+      Effect.andThen(clearStreamingMarkdownState(messageId)),
       Effect.andThen(clearBufferedAssistantText(messageId)),
       Effect.andThen(Cache.invalidate(streamedAssistantMessageIds, messageId)),
     );
@@ -2265,12 +2132,12 @@ const make = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       const bufferedText = yield* takeBufferedAssistantText(input.messageId);
-      const text =
-        bufferedText.length > 0
-          ? bufferedText
-          : (input.fallbackText?.trim().length ?? 0) > 0
-            ? input.fallbackText!
-            : "";
+      const usesFallback =
+        bufferedText.length === 0 && (input.fallbackText?.trim().length ?? 0) > 0;
+      const text = usesFallback ? input.fallbackText! : bufferedText;
+      // The fallback is the message's whole text: what the message held of
+      // earlier pieces is in it already, so it is not sent twice.
+      if (usesFallback) heldAssistantText.delete(heldKey(input.threadId, input.messageId));
       const hasRenderableText = hasRenderableAssistantText(text);
 
       if (hasRenderableText) {
@@ -2285,7 +2152,16 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (input.hasProjectedMessage || hasRenderableText) {
+      const releasedHeld = yield* releaseHeldAssistantText({
+        event: input.event,
+        threadId: input.threadId,
+        messageId: input.messageId,
+        ...(input.turnId ? { turnId: input.turnId } : {}),
+        createdAt: input.createdAt,
+        commandTag: input.finalDeltaCommandTag,
+      });
+
+      if (input.hasProjectedMessage || hasRenderableText || releasedHeld) {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.complete",
           commandId: providerCommandId(input.event, input.commandTag),
@@ -2297,7 +2173,7 @@ const make = Effect.gen(function* () {
           createdAt: input.createdAt,
         });
       }
-      yield* clearAssistantMessageState(input.messageId);
+      yield* clearAssistantMessageState(input.threadId, input.messageId);
     });
 
   const finalizeActiveAssistantSegmentForTurn = (input: {
@@ -2359,7 +2235,13 @@ const make = Effect.gen(function* () {
     updatedAt: string;
   }) =>
     Effect.gen(function* () {
-      const planMarkdown = normalizeProposedPlanMarkdown(input.planMarkdown);
+      // The plan is joined from pieces and stored whole: one whole-value check.
+      const scrubbedPlan =
+        input.planMarkdown === undefined ? undefined : secretScrubber.scrubText(input.planMarkdown);
+      if (scrubbedPlan !== undefined) {
+        yield* noticeHiddenSecrets(input.event, input.threadId, scrubbedPlan.names);
+      }
+      const planMarkdown = normalizeProposedPlanMarkdown(scrubbedPlan?.text);
       if (!planMarkdown) {
         return;
       }
@@ -2456,9 +2338,11 @@ const make = Effect.gen(function* () {
 
             const messageIds = yield* Cache.getOption(turnMessageIdsByTurnKey, key);
             if (Option.isSome(messageIds)) {
-              yield* Effect.forEach(messageIds.value, clearAssistantMessageState, {
-                concurrency: 1,
-              }).pipe(Effect.asVoid);
+              yield* Effect.forEach(
+                messageIds.value,
+                (messageId) => clearAssistantMessageState(threadId, messageId),
+                { concurrency: 1 },
+              ).pipe(Effect.asVoid);
             }
 
             yield* Cache.invalidate(turnMessageIdsByTurnKey, key);
@@ -2610,14 +2494,14 @@ const make = Effect.gen(function* () {
 
   const processSideTurnEvent = Effect.fnUntraced(function* (
     event: ProviderRuntimeEvent & { readonly sideTurnId: SideTurnId },
-    thread: Pick<OrchestrationThread, "id" | "sideTurn" | "session" | "subagents">,
+    thread: Pick<OrchestrationThread, "id" | "sideTurn" | "sideTurns" | "session" | "subagents">,
   ) {
     const { sideTurnId } = event;
-    // Only the side answer in progress. One already settled is final: its
+    // Only a side answer in progress. One already settled is final: its
     // late output is dropped, never written over the answer.
-    if ((thread.sideTurn ?? null)?.sideTurnId !== sideTurnId) {
+    if (liveSideTurn(thread, sideTurnId) === undefined) {
       sideAnswersWithText.delete(sideTurnId);
-      yield* clearAssistantMessageState(sideAnswerMessageId(sideTurnId));
+      yield* clearAssistantMessageState(thread.id, sideAnswerMessageId(sideTurnId));
       return;
     }
     const messageId = sideAnswerMessageId(sideTurnId);
@@ -2650,7 +2534,7 @@ const make = Effect.gen(function* () {
       event.type === "item.completed" ||
       event.type === "content.delta"
     ) {
-      const activities = yield* projectRuntimeActivities(event, thread);
+      const activities = yield* projectRuntimeActivities(event, thread, thread.id);
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",
@@ -2688,7 +2572,14 @@ const make = Effect.gen(function* () {
         createdAt: now,
         commandTag: "side-answer-flush",
       });
-      yield* clearAssistantMessageState(messageId);
+      yield* releaseHeldAssistantText({
+        event,
+        threadId: thread.id,
+        messageId,
+        createdAt: now,
+        commandTag: "side-answer-flush",
+      });
+      yield* clearAssistantMessageState(thread.id, messageId);
       yield* orchestrationEngine
         .dispatch({
           type: "thread.message.assistant.complete",
@@ -2798,13 +2689,104 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Child threads: a child's turn ended and its words were just flushed. If
-   * that turn answers a request its parent's agent made (the request's message
-   * started it, or it is the follow-up its own background work started), the
-   * answer goes back in one decider step that settles the request, writes the
-   * report into the parent and queues it for the agent that asked. With
-   * background work still owed, the answer waits for it. Never on the session
-   * going idle, which comes before buffered text is final.
+   * A moved thread's carried agent session ended a turn (docs/design/fleet.md,
+   * Part 3d). One that succeeded proves the session: its conversation is no
+   * longer owed (`resumed`). One that failed because the session's contents
+   * can't be used on this account or version (isCarriedSessionRejection)
+   * falls back once: the session is dropped and its cursor forgotten first,
+   * and only then is the fall-back recorded, naming the message that started
+   * the turn for the reactor to send again on a seeded session. A drop that
+   * fails records nothing: the session stays carried, and its next refused
+   * turn tries again. Any other failure is an ordinary failed turn.
+   */
+  const settleCarriedSession = Effect.fn("settleCarriedSession")(function* (input: {
+    readonly thread: OrchestrationThread;
+    /** The room agent whose session it was; null: the thread's own agent. */
+    readonly participantId: ThreadParticipantId | null;
+    readonly event: ProviderRuntimeEvent;
+    readonly turnId: TurnId;
+    readonly outcome: "completed" | "failed" | "interrupted";
+    readonly error: string | undefined;
+    readonly now: string;
+  }) {
+    const rejected =
+      input.outcome === "failed" &&
+      input.error !== undefined &&
+      isCarriedSessionRejection(input.error);
+    if (input.outcome !== "completed" && !rejected) return;
+    const endedTurn = yield* projectionTurnRepository
+      .getByTurnId({ threadId: input.thread.id, turnId: input.turnId })
+      .pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
+    // The message that started this turn. Only that one goes again; a turn
+    // whose message isn't known (one the provider started) or that the user
+    // already stopped sends nothing again, and the line tells the user to.
+    const startedBy = endedTurn?.pendingMessageId ?? undefined;
+    const stoppedByUser =
+      input.thread.agentRequests.hold || input.thread.session?.stopRequestedTurnId === input.turnId;
+    const resendMessageId = stoppedByUser ? undefined : startedBy;
+    if (rejected) {
+      // Off the ingestion queue: ending the session waits for its process,
+      // whose last events come through here.
+      yield* providerService
+        .dropResumeCursor(participantSessionKey(input.thread.id, input.participantId))
+        .pipe(
+          Effect.andThen(
+            orchestrationEngine.dispatch({
+              type: "thread.native-session.fall-back",
+              commandId: providerCommandId(input.event, "native-session-fall-back"),
+              threadId: input.thread.id,
+              reason: "turn_failed",
+              ...(resendMessageId !== undefined
+                ? { resendMessageId, chainEpoch: input.thread.agentRequests.chainEpoch }
+                : {}),
+              ...(input.participantId !== null ? { participantId: input.participantId } : {}),
+              createdAt: input.now,
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("a carried session's refused turn couldn't fall back yet", {
+              threadId: input.thread.id,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+          Effect.forkDetach,
+        );
+      return;
+    }
+    // The message whose send the session proved itself on, for a revert that takes it away.
+    const messageId =
+      startedBy ??
+      input.thread.messages.findLast(
+        (message) =>
+          message.role === "user" &&
+          message.imported !== true &&
+          (message.participantId ?? null) === input.participantId,
+      )?.id;
+    if (messageId === undefined) return;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.history-seed.delivered",
+      commandId: providerCommandId(input.event, "native-session-resumed"),
+      threadId: input.thread.id,
+      messageId,
+      nativeSession: "resumed",
+      ...(input.participantId !== null ? { participantId: input.participantId } : {}),
+      createdAt: input.now,
+    });
+  });
+
+  /**
+   * Child threads: a child's turn ended and its words were just flushed (or
+   * its runtime exited with the turn). If that turn answers a request its
+   * parent's agent made (the request's message started it), the answer goes
+   * back in one decider step that settles the request, writes the report into
+   * the parent and queues it for the agent that asked; with background work
+   * still owed, the answer waits for it. If the turn owed its parent a report
+   * (docs/design/agent-autonomy-no-limits.md, rule 2), that report is settled
+   * the same way. Never on the session going idle, which comes before
+   * buffered text is final.
    */
   const routeChildReport = Effect.fn("routeChildReport")(function* (input: {
     readonly threadId: ThreadId;
@@ -2847,7 +2829,7 @@ const make = Effect.gen(function* () {
         : parent.childRequests.open.filter(
             (request) => request.childThreadId === child.id && request.remote === undefined,
           );
-    if (parent === undefined || parent === null || owned.length === 0) {
+    if (owned.length === 0 && (child.childRequests.owedReports ?? []).length === 0) {
       return;
     }
     const turn = yield* projectionTurnRepository
@@ -2856,7 +2838,7 @@ const make = Effect.gen(function* () {
         Effect.map(Option.getOrUndefined),
         Effect.orElseSucceed(() => undefined),
       );
-    const delivery = childDeliveryForTurnEnd({
+    const delivery = childDeliveryForEndedTurn({
       owned,
       child,
       end: { turnId: input.turnId, outcome: input.outcome, error: input.error },
@@ -2867,16 +2849,57 @@ const make = Effect.gen(function* () {
       return;
     }
     yield* orchestrationEngine
-      .dispatch({ ...delivery, threadId: parent.id, createdAt: input.createdAt })
+      .dispatch(
+        delivery.type === "thread.child-report.settle"
+          ? { ...delivery, threadId: child.id, createdAt: input.createdAt }
+          : { ...delivery, threadId: child.parentThreadId, createdAt: input.createdAt },
+      )
       .pipe(
         Effect.catch((error) =>
           Effect.logInfo("provider runtime ingestion could not deliver a child thread's answer", {
             threadId: input.threadId,
-            requestId: delivery.requestId,
+            turnId: input.turnId,
             detail: String(error),
           }),
         ),
       );
+  });
+
+  /**
+   * Child threads: a turn is starting in `threadId`, and this handler has
+   * already taken every earlier turn's end, so a report the thread still owes
+   * for an earlier turn will never be settled by one (a lost turn end). It is
+   * settled now, as a turn that ended without being stopped (docs/design/
+   * agent-autonomy-no-limits.md, rule 3). The starting turn's own entry is
+   * kept, and so is the entry of a message still waiting to start (its turn
+   * claims it when it starts). Only this handler sweeps: a writer outside it
+   * could run ahead of a turn end it hasn't taken yet.
+   */
+  const sweepOwedReports = Effect.fn("sweepOwedReports")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly pendingMessageId: MessageId | null;
+    readonly createdAt: string;
+  }) {
+    const child = yield* resolveThreadDetail(input.threadId);
+    if (child === undefined || child === null) return;
+    if ((child.childRequests.owedReports ?? []).length === 0) return;
+    const stale = staleOwedReports(child, {
+      turnId: input.turnId,
+      messageIds: input.pendingMessageId === null ? [] : [input.pendingMessageId],
+    });
+    for (const delivery of stale) {
+      yield* orchestrationEngine
+        .dispatch({ ...delivery, threadId: child.id, createdAt: input.createdAt })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo("provider runtime ingestion could not settle a child's lost report", {
+              threadId: input.threadId,
+              detail: String(error),
+            }),
+          ),
+        );
+    }
   });
 
   /**
@@ -2987,25 +3010,65 @@ const make = Effect.gen(function* () {
       const current = (thread.checkBacks ?? []).filter(
         (checkBack) => checkBack.participantId === participantId,
       );
-      if (!sameCheckBacks(current, event.payload.checkBacks)) {
+      const reported = event.payload.checkBacks.map((checkBack) => ({
+        ...checkBack,
+        participantId,
+      }));
+      // A runtime that hasn't reported its own list yet may not know the jobs
+      // saved to the project it restored: the ones listed stay.
+      const next = event.payload.partial
+        ? [
+            ...reported,
+            ...current
+              .filter(
+                (listed) =>
+                  listed.durable && !reported.some((checkBack) => checkBack.id === listed.id),
+              )
+              .map(({ dormant: _dormant, ...listed }) => listed),
+          ].toSorted((left, right) => left.scheduledFor.localeCompare(right.scheduledFor))
+        : reported;
+      if (!sameCheckBacks(current, next)) {
         yield* orchestrationEngine.dispatch({
           type: "thread.check-backs.set",
           commandId: providerCommandId(event, "check-backs-set"),
           threadId: thread.id,
           participantId,
-          checkBacks: event.payload.checkBacks.map((checkBack) => ({
-            ...checkBack,
-            participantId,
-          })),
+          checkBacks: next,
           createdAt: event.createdAt,
         });
       }
+      // A check-back set by the turn the user just stopped, reported after
+      // Stop read the list: it ends as Stop's own would have.
+      const session = thread.session;
+      const added = next.some((checkBack) => !current.some((listed) => listed.id === checkBack.id));
+      if (
+        added &&
+        session !== null &&
+        (session.stopRequestedTurnId ?? null) !== null &&
+        sessionSlotParticipantId(session) === participantId
+      ) {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.check-back.cancel",
+            commandId: providerCommandId(event, "check-back-cancel-after-stop"),
+            threadId: thread.id,
+            participantId,
+            stopBackgroundWork: true,
+            createdAt: event.createdAt,
+          })
+          .pipe(Effect.ignoreCause({ log: true }));
+      }
+      // A move's stop ends them on purpose: it carries them (docs/design/fleet.md, Part 3e, (b)).
+      const movingTo = (thread.pendingMove ?? thread.move ?? null)?.target.label;
       for (const [index, ended] of (event.payload.ended ?? []).entries()) {
         yield* appendCheckBackActivity({
           event,
           threadId: thread.id,
           kind: "check-back.ended",
-          summary: "Check-back cancelled",
+          summary:
+            movingTo !== undefined
+              ? `Check-back ended: this thread is moving to ${movingTo}`
+              : "Check-back cancelled",
           tag: `check-back-ended-${index}`,
           payload: {
             scheduledFor: ended.scheduledFor,
@@ -3016,6 +3079,31 @@ const make = Effect.gen(function* () {
         });
       }
     });
+
+  const dispatchRuntimeSessionSet = (
+    command: Omit<
+      Extract<OrchestrationCommand, { type: "thread.session.set" }>,
+      "type" | "requireCurrentSession"
+    >,
+  ) =>
+    orchestrationEngine
+      .dispatch({
+        ...command,
+        type: "thread.session.set",
+        requireCurrentSession: true,
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+          Effect.logDebug("provider runtime ingestion skipped stale session update", {
+            commandId: command.commandId,
+            threadId: command.threadId,
+            providerName: command.session.providerName,
+            providerInstanceId: command.session.providerInstanceId,
+            detail: error.detail,
+          }).pipe(Effect.as(false)),
+        ),
+      );
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
@@ -3045,6 +3133,41 @@ const make = Effect.gen(function* () {
           ),
         );
         return;
+      }
+      // A runtime that ended can no longer fire any check-back still listed
+      // for its agent (saved jobs stay listed as dormant; session-only ones
+      // drop). Handle before the slot, active-session, and archive guards so
+      // non-slot room agents, switched providers, and archived threads never
+      // leave saved check-backs looking live.
+      if (event.type === "session.exited") {
+        const exitThread =
+          thread ??
+          Option.getOrUndefined(
+            yield* projectionSnapshotQuery
+              .getThreadDetailById(event.threadId, { includeArchived: true })
+              .pipe(Effect.orElseSucceed(() => Option.none())),
+          );
+        if (exitThread !== undefined) {
+          const participantId = event.participantId ?? null;
+          const current = (exitThread.checkBacks ?? []).filter(
+            (checkBack) => checkBack.participantId === participantId,
+          );
+          if (current.length > 0) {
+            const dormant = markCheckBacksDormant(exitThread.checkBacks ?? [], participantId);
+            if (!sameCheckBacks(current, dormant)) {
+              yield* orchestrationEngine
+                .dispatch({
+                  type: "thread.check-backs.set",
+                  commandId: providerCommandId(event, "check-backs-dormant"),
+                  threadId: exitThread.id,
+                  participantId,
+                  checkBacks: dormant,
+                  createdAt: event.createdAt,
+                })
+                .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+            }
+          }
+        }
       }
       if (!thread) return;
       if (event.sideTurnId !== undefined) {
@@ -3400,6 +3523,25 @@ const make = Effect.gen(function* () {
         }
       }
 
+      // A turn that starts now is recorded as the provider's, provisionally:
+      // this handler can't tell a message's turn from one the provider
+      // started (a check-back, a goal, background work that finished), so it
+      // never names a message. The reactor, which sent the message, names it
+      // with the turn's id once the provider took it, and that corrects this
+      // ("Restart and turn binding", rule B). The pending start is read only
+      // so the sweep leaves that message's report alone.
+      const pendingTurnStart =
+        event.type === "turn.started"
+          ? yield* projectionTurnRepository
+              .getPendingTurnStartByThreadId({ threadId: thread.id })
+              .pipe(Effect.orElseSucceed(() => Option.none()))
+          : Option.none();
+      const turnStartFields = (nextActiveTurnId: TurnId | null) =>
+        event.type !== "turn.started" ||
+        nextActiveTurnId === null ||
+        (activeTurnId !== null && sameId(activeTurnId, nextActiveTurnId))
+          ? {}
+          : { turnStartedBy: { provider: true } satisfies TurnStartedBy };
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
       const missingTurnForActiveTurn = activeTurnId !== null && eventTurnId === undefined;
@@ -3578,6 +3720,16 @@ const make = Effect.gen(function* () {
               };
 
         if (shouldApplyThreadLifecycle) {
+          if (event.type === "turn.started" && eventTurnId !== undefined) {
+            yield* sweepOwedReports({
+              threadId: thread.id,
+              turnId: eventTurnId,
+              pendingMessageId: Option.isSome(pendingTurnStart)
+                ? pendingTurnStart.value.messageId
+                : null,
+              createdAt: now,
+            });
+          }
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
               acceptedTurnStartedSourcePlan.sourceThreadId,
@@ -3598,34 +3750,59 @@ const make = Effect.gen(function* () {
             );
           }
 
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: providerCommandId(event, "thread-session-set"),
+          const session = {
             threadId: thread.id,
-            session: {
+            participantId: event.participantId ?? null,
+            status,
+            providerName: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            providerSessionId: thread.session?.providerSessionId ?? null,
+            providerThreadId:
+              event.type === "thread.started"
+                ? (event.payload?.providerThreadId ?? thread.session?.providerThreadId ?? null)
+                : (thread.session?.providerThreadId ?? null),
+            runtimeMode: thread.session?.runtimeMode ?? "full-access",
+            checkoutCwd: thread.session?.checkoutCwd ?? null,
+            activeTurnId: nextActiveTurnId,
+            ...(event.type === "session.started" || event.type === "session.exited"
+              ? NO_BACKGROUND_TASKS
+              : carriedBackgroundTasks(thread.session)),
+            lastError,
+            updatedAt: sessionUpdatedAt,
+          };
+          // A provider repeats its state while a turn runs (Claude reports each
+          // request it makes, several a second), and an update that changes
+          // nothing but the time would still be stored, sent to every client
+          // and read by every reactor.
+          // An error is always stored: its time says whether the user has seen it.
+          if (
+            status !== "error" &&
+            failedUsageLimit === undefined &&
+            sessionUpdateChangesNothing(thread.session, session)
+          ) {
+            yield* Ref.update(unstoredSessionReportAt, (reports) =>
+              new Map(reports).set(thread.id, sessionUpdatedAt),
+            );
+          } else {
+            const applied = yield* dispatchRuntimeSessionSet({
+              commandId: providerCommandId(event, "thread-session-set"),
               threadId: thread.id,
-              status,
-              providerName: event.provider,
-              ...(event.providerInstanceId !== undefined
-                ? { providerInstanceId: event.providerInstanceId }
-                : {}),
-              providerSessionId: thread.session?.providerSessionId ?? null,
-              providerThreadId:
-                event.type === "thread.started"
-                  ? (event.payload?.providerThreadId ?? thread.session?.providerThreadId ?? null)
-                  : (thread.session?.providerThreadId ?? null),
-              runtimeMode: thread.session?.runtimeMode ?? "full-access",
-              checkoutCwd: thread.session?.checkoutCwd ?? null,
-              activeTurnId: nextActiveTurnId,
-              ...(event.type === "session.started" || event.type === "session.exited"
-                ? NO_BACKGROUND_TASKS
-                : carriedBackgroundTasks(thread.session)),
-              lastError,
-              updatedAt: sessionUpdatedAt,
-            },
-            ...usageLimitFields,
-            createdAt: now,
-          });
+              session,
+              ...usageLimitFields,
+              ...turnStartFields(nextActiveTurnId),
+              createdAt: now,
+            });
+            if (applied) {
+              yield* Ref.update(unstoredSessionReportAt, (reports) => {
+                if (!reports.has(thread.id)) return reports;
+                const next = new Map(reports);
+                next.delete(thread.id);
+                return next;
+              });
+            }
+          }
         }
       }
 
@@ -3633,19 +3810,28 @@ const make = Effect.gen(function* () {
       // turn/completed notification is lost under load, use a fresh idle
       // observation to settle the matching projected session instead of
       // leaving the UI's working timer running forever.
+      const latestSessionReportAt = (session: { readonly updatedAt: string }) =>
+        Ref.get(unstoredSessionReportAt).pipe(
+          Effect.map((reports) => {
+            const unstored = reports.get(thread.id);
+            return unstored !== undefined && unstored > session.updatedAt
+              ? unstored
+              : session.updatedAt;
+          }),
+        );
       if (
         event.type === "thread.state.changed" &&
         event.payload.state === "idle" &&
         thread.session?.status === "running" &&
         thread.session.activeTurnId !== null &&
-        event.createdAt >= thread.session.updatedAt
+        event.createdAt >= (yield* latestSessionReportAt(thread.session))
       ) {
-        yield* orchestrationEngine.dispatch({
-          type: "thread.session.set",
+        yield* dispatchRuntimeSessionSet({
           commandId: providerCommandId(event, "thread-idle-session-set"),
           threadId: thread.id,
           session: {
             ...withoutLaunchMark(thread.session),
+            participantId: event.participantId ?? null,
             status: "ready",
             activeTurnId: null,
             lastError: null,
@@ -3679,12 +3865,12 @@ const make = Effect.gen(function* () {
           nextAwaitedTasks.length !== thread.session.awaitedBackgroundTaskCount ||
           !sameAwaitedBackgroundTasks(nextAwaitedTasks, thread.session.awaitedBackgroundTasks ?? [])
         ) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
+          yield* dispatchRuntimeSessionSet({
             commandId: providerCommandId(event, "task-snapshot-session-set"),
             threadId: thread.id,
             session: {
               ...withoutLaunchMark(thread.session),
+              participantId: event.participantId ?? null,
               pendingBackgroundTaskCount: nextPendingCount,
               awaitedBackgroundTaskCount: nextAwaitedTasks.length,
               awaitedBackgroundTasks: nextAwaitedTasks,
@@ -3720,12 +3906,12 @@ const make = Effect.gen(function* () {
             ? currentPendingCount + 1
             : Math.max(0, currentPendingCount - 1);
         if (nextPendingCount !== currentPendingCount) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
+          yield* dispatchRuntimeSessionSet({
             commandId: providerCommandId(event, "task-pending-session-set"),
             threadId: thread.id,
             session: {
               ...withoutLaunchMark(thread.session),
+              participantId: event.participantId ?? null,
               pendingBackgroundTaskCount: nextPendingCount,
               // Edges carry no intent, so every task is awaited, and no list:
               // with nothing describing them, the wait stays unspecific.
@@ -3796,15 +3982,14 @@ const make = Effect.gen(function* () {
               assistantDelta,
             );
             if (spillChunk.length > 0) {
-              yield* orchestrationEngine.dispatch({
-                type: "thread.message.assistant.delta",
-                commandId: providerCommandId(event, "assistant-delta-buffer-spill"),
+              yield* dispatchAssistantDelta({
+                event,
                 threadId: thread.id,
                 messageId: assistantMessageId,
-                participantId: event.participantId ?? null,
                 delta: spillChunk,
                 ...(turnId ? { turnId } : {}),
                 createdAt: now,
+                commandTag: "assistant-delta-buffer-spill",
               });
             }
           } else {
@@ -3921,27 +4106,34 @@ const make = Effect.gen(function* () {
           });
           yield* Cache.set(settledSubagentResultActivityKeys, bufferKey, true);
         } else {
-          const detailedThread = yield* getLoadedThreadDetail();
-          const messages = detailedThread?.messages ?? [];
+          // Every agent message that finishes lands here, many a turn while
+          // an agent works, so this reads the one message and asks one
+          // question of the turn instead of loading the thread's history.
           const turnId = toTurnId(event.turnId);
           const activeAssistantMessageId = turnId
             ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
             : Option.none<MessageId>();
-          const hasAssistantMessagesForTurn =
-            turnId !== undefined ? hasAssistantMessageForTurn(messages, turnId) : false;
           const assistantMessageId = Option.getOrElse(
             activeAssistantMessageId,
             () => assistantCompletion.messageId,
           );
-          const existingAssistantMessage = findMessageById(messages, assistantMessageId);
+          const existingAssistantMessage = Option.getOrUndefined(
+            yield* projectionSnapshotQuery.getThreadMessage({
+              threadId: thread.id,
+              messageId: assistantMessageId,
+            }),
+          );
           const shouldApplyFallbackCompletionText =
             !existingAssistantMessage || existingAssistantMessage.text.length === 0;
 
           const shouldSkipRedundantCompletion =
             Option.isNone(activeAssistantMessageId) &&
             turnId !== undefined &&
-            hasAssistantMessagesForTurn &&
-            (assistantCompletion.fallbackText?.trim().length ?? 0) === 0;
+            (assistantCompletion.fallbackText?.trim().length ?? 0) === 0 &&
+            (yield* projectionSnapshotQuery.hasAssistantMessageForTurn({
+              threadId: thread.id,
+              turnId,
+            }));
 
           if (!shouldSkipRedundantCompletion) {
             if (turnId && Option.isNone(activeAssistantMessageId)) {
@@ -4128,6 +4320,31 @@ const make = Effect.gen(function* () {
               pendingMessageId: endedTurn?.pendingMessageId ?? null,
             });
           }
+          // A moved thread's carried session proves itself by its first turn
+          // (docs/design/fleet.md, Part 3d), and so does each room agent's
+          // own (Part 3f, (i)).
+          const endedAgent = event.participantId ?? null;
+          const endedAgentSession =
+            endedAgent === null
+              ? detailedThread?.nativeSession
+              : detailedThread?.participants.find((entry) => entry.id === endedAgent)
+                  ?.nativeSession;
+          if (
+            detailedThread !== undefined &&
+            detailedThread !== null &&
+            endedAgentSession === "carried" &&
+            event.threadId === thread.id
+          ) {
+            yield* settleCarriedSession({
+              thread: detailedThread,
+              participantId: endedAgent,
+              event,
+              turnId,
+              outcome: turnOutcome,
+              error: turnError,
+              now,
+            }).pipe(Effect.ignoreCause({ log: true }));
+          }
 
           yield* finalizeBufferedProposedPlan({
             event,
@@ -4155,7 +4372,37 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "session.exited") {
+        // Held tails go into their messages before the session's state is cleared.
+        const prefix = `${thread.id}\u0000`;
+        // A copy: a release re-inserts its entry, which a live iteration would visit again.
+        for (const key of Array.from(heldAssistantText.keys())) {
+          if (!key.startsWith(prefix)) continue;
+          yield* releaseHeldAssistantText({
+            event,
+            threadId: thread.id,
+            messageId: MessageId.make(key.slice(prefix.length)),
+            createdAt: now,
+            commandTag: "session-exit",
+          });
+        }
         yield* clearTurnStateForSession(thread.id);
+        // A runtime that exits mid-turn takes the turn with it, and may never
+        // end it: its end goes to the child's parent here, before the next
+        // event can start a new session (docs/design/agent-autonomy-no-limits.md,
+        // rule 6). A turn whose message is sent again on a new runtime goes on.
+        if (
+          activeTurnId !== null &&
+          shouldApplyThreadLifecycle &&
+          event.payload.resendTurn === undefined
+        ) {
+          yield* routeChildReport({
+            threadId: thread.id,
+            turnId: activeTurnId,
+            outcome: "interrupted",
+            error: event.payload.reason ?? "its session exited",
+            createdAt: now,
+          });
+        }
       }
 
       if (event.type === "session.exited" && event.payload.resendTurn !== undefined) {
@@ -4179,14 +4426,24 @@ const make = Effect.gen(function* () {
                   detail: String(cause),
                 });
                 const latest = (yield* resolveThreadShell(thread.id))?.session;
-                if (!latest || latest.status === "running" || latest.status === "starting") {
+                if (
+                  !latest ||
+                  latest.status === "running" ||
+                  latest.status === "starting" ||
+                  (event.participantId ?? null) !== sessionSlotParticipantId(latest) ||
+                  !runtimeEventMatchesThreadSession(event, latest)
+                ) {
                   return;
                 }
-                yield* orchestrationEngine.dispatch({
-                  type: "thread.session.set",
+                yield* dispatchRuntimeSessionSet({
                   commandId: providerCommandId(event, "turn-resend-refused"),
                   threadId: thread.id,
-                  session: { ...withoutLaunchMark(latest), lastError: error, updatedAt: now },
+                  session: {
+                    ...withoutLaunchMark(latest),
+                    participantId: event.participantId ?? null,
+                    lastError: error,
+                    updatedAt: now,
+                  },
                   createdAt: now,
                 });
               }),
@@ -4202,12 +4459,12 @@ const make = Effect.gen(function* () {
           : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
 
         if (shouldApplyRuntimeError) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
+          yield* dispatchRuntimeSessionSet({
             commandId: providerCommandId(event, "runtime-error-session-set"),
             threadId: thread.id,
             session: {
               threadId: thread.id,
+              participantId: event.participantId ?? null,
               status: "error",
               providerName: event.provider,
               ...(event.providerInstanceId !== undefined
@@ -4296,7 +4553,7 @@ const make = Effect.gen(function* () {
 
       yield* recordMcpAppCall(event, thread.id);
 
-      const activities = yield* projectRuntimeActivities(event, attributionThread);
+      const activities = yield* projectRuntimeActivities(event, attributionThread, thread.id);
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",

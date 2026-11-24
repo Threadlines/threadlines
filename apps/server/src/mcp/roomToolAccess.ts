@@ -18,7 +18,11 @@
 /** The room endpoint's name, as each provider namespaces its tools. */
 export const ROOM_MCP_SERVER_NAME = "threadlines_room";
 
-/** Tools for starting, reading, messaging and stopping other threads. */
+/**
+ * Tools for starting, reading, messaging, stopping and wrapping up other
+ * threads, and moving the caller's own thread to a linked computer
+ * (`thread_move`).
+ */
 export const THREAD_TOOL_NAMES = [
   "thread_agents",
   "thread_start",
@@ -26,6 +30,8 @@ export const THREAD_TOOL_NAMES = [
   "thread_read",
   "thread_send",
   "thread_stop",
+  "thread_wrap",
+  "thread_move",
 ] as const;
 
 /** Tools for listing, creating and editing this computer's scheduled tasks. */
@@ -40,14 +46,24 @@ export const GUIDE_TOOL_NAME = "app_guide";
 /** Asking to change Threadlines settings, on a card the user answers (settingsChangeTools.ts). */
 export const SETTINGS_CHANGE_TOOL_NAME = "settings_change";
 
+/** Asking the user for a key on a private card (secretRequestTools.ts). */
+export const SECRET_REQUEST_TOOL_NAME = "secret_request";
+
 /** Alerting the user's assistants when the turn ends, when asked to (alertAssistantsTools.ts). */
 export const ALERT_ASSISTANTS_TOOL_NAME = "alert_assistants";
+
+/** Reading a project note, and writing one (projectNoteTools.ts). */
+export const PROJECT_NOTE_READ_TOOL_NAME = "project_note_read";
+export const PROJECT_NOTE_WRITE_TOOL_NAME = "project_note_write";
 
 /** The app's own tools: every local thread's own runtime gets them, room tools or not. */
 export const APP_TOOL_NAMES = [
   GUIDE_TOOL_NAME,
   SETTINGS_CHANGE_TOOL_NAME,
+  SECRET_REQUEST_TOOL_NAME,
   ALERT_ASSISTANTS_TOOL_NAME,
+  PROJECT_NOTE_READ_TOOL_NAME,
+  PROJECT_NOTE_WRITE_TOOL_NAME,
 ] as const;
 
 export const ROOM_TOOL_NAMES = [

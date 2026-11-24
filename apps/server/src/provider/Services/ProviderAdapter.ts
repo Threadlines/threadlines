@@ -27,7 +27,6 @@ import type {
   ProviderRealtimeOutputModality,
   ProviderSubagentInputRequest,
   ProviderSubagentInputResult,
-  ProviderCommandOutputResult,
   McpAppToolResult,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
@@ -52,6 +51,12 @@ import type {
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type {
+  NativeSessionExport,
+  NativeSessionImportInput,
+  NativeSessionImportResult,
+} from "../nativeSession.ts";
+
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 export type ProviderManualContextCompactionMode = "supported" | "unsupported";
 export type ProviderActiveTurnSteeringMode = "supported" | "unsupported";
@@ -61,6 +66,11 @@ export type ProviderNativeThreadForkMode = "supported" | "unsupported";
 export type ProviderRealtimeVoiceMode = "supported" | "unsupported";
 
 /** Partial goal update: omitted fields keep their provider-side values. */
+/** A running command's output as an adapter reads it, before keys are hidden and it is cut. */
+export type ProviderAdapterCommandOutput =
+  | { readonly status: "running"; readonly output: string; readonly totalBytes: number }
+  | { readonly status: "pending" | "unavailable" };
+
 export interface ProviderSetThreadGoalInput {
   readonly threadId: ThreadId;
   readonly objective?: string;
@@ -73,6 +83,11 @@ export interface ProviderSetThreadGoalInput {
   /** The model the goal's work should run on, for providers that start that
    *  work as a turn of their own (Claude). */
   readonly modelSelection?: ModelSelection;
+  /** What the agent reads ahead of the goal's work (a lead chat's role), as
+   *  a turn start would carry it. Never part of the objective. A driver puts
+   *  it in the agent's history without a turn of its own, or drops it when it
+   *  has no way to. */
+  readonly context?: string;
 }
 
 export interface ProviderAdapterCapabilities {
@@ -117,6 +132,19 @@ export interface ProviderAdapterCapabilities {
   readonly threadGoalPause?: ProviderThreadGoalsMode;
 
   /**
+   * Declares whether a supported goal takes a token budget. Absent means it
+   * does. Claude's don't: a goal with one arrives paused when a thread moves
+   * to it (docs/design/fleet.md, Part 3e).
+   */
+  readonly threadGoalBudget?: ProviderThreadGoalsMode;
+
+  /**
+   * Declares whether the agent sets itself times to come back (check-backs:
+   * Claude's ScheduleWakeup and CronCreate). Absent means it doesn't.
+   */
+  readonly checkBacks?: ProviderThreadGoalsMode;
+
+  /**
    * Declares whether this adapter can open a session as a provider-side fork
    * of another thread's history (`ProviderSessionStartInput.forkFrom`).
    */
@@ -131,8 +159,13 @@ export interface ProviderAdapterCapabilities {
    * remembers the reverted turns, and a revert says so. Default `native`. A
    * rollback's own `conversationRolledBack` overrides it, for an agent that
    * can rewind only to the turns it knows the positions of (Grok).
+   * `new-session` (Antigravity): `rollbackThread` stops the running work and
+   * ends the session, and ProviderService forgets the saved conversation in
+   * the thread's binding, so the next turn opens a new one seeded with the
+   * turns kept. A revert stops it before restoring files, and reaches it with
+   * no runtime live without starting one.
    */
-  readonly conversationRollback?: "native" | "none";
+  readonly conversationRollback?: "native" | "none" | "new-session";
 
   /**
    * Whether a session may be started before its first message, while the user
@@ -339,6 +372,17 @@ export interface ProviderAdapterShape<TError> {
   readonly hasSession: (threadId: ThreadId) => Effect.Effect<boolean>;
 
   /**
+   * Resolves once no runtime of this session key can still act: at once when
+   * none exists, otherwise once the runtime's process (with every child
+   * process it started) is gone. `hasSession` turns false as soon as a stop
+   * begins, so a caller that must not touch files the agent may still hold
+   * open (a revert) waits on this after asking for the stop; a live runtime
+   * is waited on until something stops it. Never fails. Absent: a stopped
+   * session is gone when `stopSession` returns.
+   */
+  readonly whenStopped?: (threadId: ThreadId) => Effect.Effect<void>;
+
+  /**
    * Read a provider thread snapshot.
    */
   readonly readThread: (threadId: ThreadId) => Effect.Effect<ProviderThreadSnapshot, TError>;
@@ -360,6 +404,28 @@ export interface ProviderAdapterShape<TError> {
    * session while still clearing Threadlines' persisted runtime binding.
    */
   readonly deleteThread?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /**
+   * A moved thread's session, to carry it to another computer
+   * (docs/design/fleet.md, Part 3d): the files its resume cursor needs in
+   * this instance's home, and the cursor to send. Null when it has none
+   * here. Only drivers whose sessions are files (Claude, Codex, Pi) have it;
+   * the others' moved threads get a summary.
+   */
+  readonly exportNativeSession?: (input: {
+    readonly resumeCursor: unknown;
+  }) => Effect.Effect<NativeSessionExport | null>;
+
+  /**
+   * Writes a session another computer carried into this instance's own
+   * home, every path named from the cursor's session id with this driver's
+   * layout, and returns the cursor that resumes it here. Refused, nothing
+   * of it stays: a file it can't place, or a destination someone else's
+   * file already holds.
+   */
+  readonly importNativeSession?: (
+    input: NativeSessionImportInput,
+  ) => Effect.Effect<NativeSessionImportResult>;
 
   /**
    * A workflow run's files, from the folders the run itself named: its
@@ -402,14 +468,15 @@ export interface ProviderAdapterShape<TError> {
 
   /**
    * What a command the session is running now has printed so far, by the
-   * tool call that started it. Optional: drivers whose output already
+   * tool call that started it, whole: ProviderService hides saved keys in it
+   * before cutting it to its end. Optional: drivers whose output already
    * streams as `command_output` deltas omit it. Answers `unavailable` for a
    * tool call the session doesn't know, so another session can be asked.
    */
   readonly readCommandOutput?: (
     threadId: ThreadId,
     toolCallId: string,
-  ) => Effect.Effect<ProviderCommandOutputResult, TError>;
+  ) => Effect.Effect<ProviderAdapterCommandOutput, TError>;
 
   /**
    * MCP Apps (docs/mcp-apps.md), through the session's own MCP client and
@@ -457,7 +524,73 @@ export interface ProviderAdapterShape<TError> {
   readonly stopAll: () => Effect.Effect<void, TError>;
 
   /**
+   * Proves that nothing this adapter ran for a thread is still running
+   * (docs/design/fleet.md, Part 3b, "Confirmed teardown"): every runtime of
+   * every session key whose thread is `threadId` (its own agent, room
+   * agents, side answers, early starts), and what those runtimes started.
+   * Called after their sessions were stopped; never starts anything. Waits
+   * (bounded) for the agent's processes to exit and ends what outlived the
+   * stop. `unconfirmed` when it can't prove it, with why; never a guess.
+   * Absent: the driver can't confirm, which counts as unconfirmed for a
+   * thread it ran.
+   */
+  readonly confirmThreadStopped?: (
+    threadId: ThreadId,
+    /**
+     * What the session directory keeps of each of the thread's sessions this
+     * driver ran, in this process or an earlier one: a driver whose own
+     * evidence a restart lost reads what may still run from these.
+     */
+    known: ReadonlyArray<ProviderStoppedSessionHint>,
+  ) => Effect.Effect<ProviderStopConfirmation>;
+
+  /**
+   * One session key's runtime is about to stop for a move: note what its
+   * processes started, so `confirmThreadStopped` can find what outlives the
+   * stop (an agent's shell in a process group of its own). ProviderService
+   * calls it only for a thread the session fence holds, so other stops pay
+   * nothing. Reads the process table off the event loop, bounded.
+   */
+  readonly noteBeforeStop?: (sessionKey: ThreadId) => Effect.Effect<void>;
+
+  /**
+   * The agent processes this adapter runs right now, and whose they are, for
+   * the CPU-by-thread view in Settings > Diagnostics. Read from what the
+   * driver already tracks; never starts anything. Absent: the driver can't
+   * say, so its processes count as Threadlines' own.
+   */
+  readonly listProcesses?: () => Effect.Effect<ReadonlyArray<ProviderProcessOwner>>;
+
+  /**
    * Canonical runtime event stream emitted by this adapter.
    */
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;
 }
+
+/**
+ * One process a driver runs (ProviderAdapterShape.listProcesses): a thread's
+ * agent, or one serving every thread of the provider (OpenCode's server).
+ */
+export type ProviderProcessOwner =
+  | {
+      readonly kind: "thread";
+      readonly threadId: ThreadId;
+      readonly pid: number;
+      /** It leads a process group of its own (POSIX), so the whole group is its. */
+      readonly ownGroup: boolean;
+      /** False once the process itself exited while its group lives on. */
+      readonly alive: boolean;
+    }
+  | { readonly kind: "shared"; readonly pid: number };
+
+/** One session a driver ran, as the session directory keeps it (confirmThreadStopped). */
+export interface ProviderStoppedSessionHint {
+  readonly sessionKey: ThreadId;
+  readonly resumeCursor: unknown;
+  readonly cwd: string | undefined;
+}
+
+/** Whether a thread's agents are proven stopped (ProviderAdapterShape.confirmThreadStopped). */
+export type ProviderStopConfirmation =
+  | { readonly confirmed: true }
+  | { readonly confirmed: false; readonly reason: string };

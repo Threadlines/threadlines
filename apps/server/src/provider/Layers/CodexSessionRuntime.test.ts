@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as Duration from "effect/Duration";
@@ -24,6 +27,7 @@ import { CODEX_BROWSER_TOKEN_ENV_VAR } from "../codexAppServerArgs.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { ROOM_REQUEST_DEADLINE } from "../../mcp/roomToolTimeouts.ts";
 import { ROOM_TOOL_NAMES } from "../../mcp/roomToolAccess.ts";
+import { PROJECT_BRIEF_CLEARED_NOTE, projectBriefHash } from "../projectBriefPreface.ts";
 import {
   buildPermissionsApprovalResponse,
   buildTurnStartParams,
@@ -1050,6 +1054,37 @@ describe("openCodexThread", () => {
     });
   });
 
+  it("resumes a carried rollout by its path in this home", async () => {
+    const payloads: unknown[] = [];
+    const client = {
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+        method: M,
+        payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        payloads.push(payload);
+        return Effect.succeed(
+          makeThreadOpenResponse("carried-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+        );
+      },
+    };
+    await Effect.runPromise(
+      openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/moved",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        resumeThreadId: "carried-thread",
+        resumePath: "/home/b/.codex/sessions/2026/07/15/rollout-x-carried-thread.jsonl",
+      }),
+    );
+    const resumed = payloads[0] as Record<string, unknown>;
+    assert.equal(resumed.threadId, "carried-thread");
+    assert.equal(resumed.path, "/home/b/.codex/sessions/2026/07/15/rollout-x-carried-thread.jsonl");
+    assert.equal(resumed.cwd, "/tmp/moved");
+  });
+
   it("does not fall back to a fresh thread when native resume is required", async () => {
     const calls: string[] = [];
     const client = {
@@ -1829,6 +1864,42 @@ describe("Codex room tools", () => {
       return { runtime, args: (spawned?.args ?? []).map(String), token };
     });
 
+  it("a conversation it couldn't reopen starts fresh and says so, so the thread is given its history", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { runtime } = yield* spawnRuntime({
+          threadId: ThreadId.make("resume-gone-thread"),
+          serverPort: 0,
+          runtimeMode: "full-access",
+          resumeCursor: { threadId: "019f6910-960c-7d83-87f7-074ab55a95fb" },
+        });
+        const session = yield* runtime.start();
+        assert.equal(session.resumeFailed, true);
+        assert.equal((yield* runtime.getSession).resumeFailed, true);
+        yield* runtime.close;
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+    );
+  });
+
+  it("a rollout carried from another computer that Codex can't read starts fresh and says so", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { runtime } = yield* spawnRuntime({
+          threadId: ThreadId.make("resume-carried-thread"),
+          serverPort: 0,
+          runtimeMode: "full-access",
+          resumeCursor: {
+            threadId: "019f6910-960c-7d83-87f7-074ab55a95fb",
+            rolloutPath: "/home/sessions/2026/07/15/rollout-x.jsonl",
+          },
+        });
+        const session = yield* runtime.start();
+        assert.equal(session.resumeFailed, true);
+        yield* runtime.close;
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+    );
+  });
+
   it("attaches the room endpoint on the runtime's own credential, which ends with it", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -1887,6 +1958,258 @@ describe("Codex room tools", () => {
 
         yield* runtime.close;
         assert.equal(yield* mcpSessionRegistry.resolve(token), null);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
+    );
+  });
+});
+
+describe("Codex project brief", () => {
+  /**
+   * A peer that answers what a session start asks, logs each request to
+   * PEER_LOG, and answers `config/read` as PEER_CONFIG says ("own": the user
+   * has their own developer instructions, "none": none, "fail": an error).
+   */
+  const PEER = `
+const fs = require("node:fs");
+const write = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+const opened = (id) => ({
+  approvalPolicy: "never",
+  approvalsReviewer: "user",
+  cwd: process.cwd(),
+  model: "gpt-5.6-sol",
+  modelProvider: "openai",
+  sandbox: { type: "dangerFullAccess" },
+  thread: {
+    cliVersion: "0.155.0", createdAt: 0, cwd: process.cwd(), ephemeral: true, id,
+    modelProvider: "openai", preview: "", projectId: null, sessionId: "session-1",
+    source: "cli", status: { type: "idle" }, turns: [], updatedAt: 0,
+  },
+});
+let rest = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  rest += chunk;
+  const lines = rest.split("\\n");
+  rest = lines.pop() ?? "";
+  for (const line of lines) {
+    if (line.trim().length === 0) continue;
+    const { id, method, params } = JSON.parse(line);
+    if (typeof method !== "string" || id === undefined) continue;
+    fs.appendFileSync(process.env.PEER_LOG, JSON.stringify({ method, params }) + "\\n");
+    if (method === "initialize") {
+      write({ id, result: { userAgent: "peer", codexHome: process.cwd(), platformFamily: process.platform === "win32" ? "windows" : "unix", platformOs: process.platform === "darwin" ? "macos" : process.platform } });
+    } else if (method === "config/read") {
+      if (process.env.PEER_CONFIG === "fail") write({ id, error: { code: -32603, message: "config.toml is invalid" } });
+      else write({ id, result: { config: process.env.PEER_CONFIG === "own" ? { developer_instructions: "Answer in French." } : {}, origins: {} } });
+    } else if (method === "thread/start") {
+      write({ id, result: opened("thread-new") });
+    } else if (method === "thread/resume") {
+      write({ id, result: opened(params.threadId) });
+    } else if (method === "thread/fork") {
+      write({ id, result: opened("thread-forked") });
+    } else if (method === "thread/inject_items") {
+      write({ id, result: {} });
+    } else {
+      write({ id, error: { code: -32601, message: "Unhandled request: " + method } });
+    }
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+  const BRIEF = "Use pnpm here. Never touch the generated folder.";
+  type PeerRequest = { readonly method: string; readonly params: Record<string, unknown> };
+
+  /** Start a runtime against the peer; returns its session and the requests the peer got. */
+  const startAgainstPeer = (
+    config: "own" | "none" | "fail",
+    options: Omit<Parameters<typeof makeCodexSessionRuntime>[0], "binaryPath" | "cwd">,
+  ) =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const dir = mkdtempSync(path.join(os.tmpdir(), "codex-project-brief-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
+      );
+      const log = path.join(dir, "requests.jsonl");
+      const runtime = yield* makeCodexSessionRuntime({
+        ...options,
+        binaryPath: process.execPath,
+        cwd: process.cwd(),
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+          ...spawner,
+          spawn: () =>
+            spawner.spawn(
+              ChildProcess.make(process.execPath, ["-e", PEER], {
+                env: { ...process.env, PEER_LOG: log, PEER_CONFIG: config },
+              }),
+            ),
+        }),
+      );
+      const session = yield* runtime.start();
+      yield* runtime.close;
+      const requests = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as PeerRequest);
+      return { session, requests };
+    });
+  const paramsOf = (requests: ReadonlyArray<PeerRequest>, method: string) =>
+    requests.find((request) => request.method === method)?.params;
+  const briefHashOf = (cursor: unknown) =>
+    (cursor as { readonly projectBriefHash?: string } | undefined)?.projectBriefHash;
+  /** The developer messages a resume added to the thread. */
+  const injectedTexts = (requests: ReadonlyArray<PeerRequest>) =>
+    requests
+      .filter((request) => request.method === "thread/inject_items")
+      .flatMap(
+        (request) =>
+          request.params.items as ReadonlyArray<{
+            role: string;
+            content: ReadonlyArray<{ text: string }>;
+          }>,
+      )
+      .map((item) => `${item.role}: ${item.content.map((part) => part.text).join("")}`);
+
+  it("opens a thread with the user's developer instructions, then the brief, and keeps its hash", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const started = yield* startAgainstPeer("own", {
+          threadId: ThreadId.make("brief-start-thread"),
+          serverPort: 0,
+          runtimeMode: "full-access",
+          projectInstructions: BRIEF,
+        });
+        assert.deepEqual(paramsOf(started.requests, "config/read"), { cwd: process.cwd() });
+        assert.equal(
+          paramsOf(started.requests, "thread/start")?.developerInstructions,
+          `Answer in French.\n\n${BRIEF}`,
+        );
+        assert.deepEqual(injectedTexts(started.requests), []);
+        assert.equal(briefHashOf(started.session.resumeCursor), projectBriefHash(BRIEF));
+
+        const forked = yield* startAgainstPeer("none", {
+          threadId: ThreadId.make("brief-fork-thread"),
+          serverPort: 0,
+          runtimeMode: "full-access",
+          forkFrom: { providerThreadId: "thread-source", lastTurnId: "turn-3" },
+          projectInstructions: BRIEF,
+        });
+        assert.equal(paramsOf(forked.requests, "thread/fork")?.developerInstructions, BRIEF);
+        assert.deepEqual(injectedTexts(forked.requests), []);
+        assert.equal(briefHashOf(forked.session.resumeCursor), projectBriefHash(BRIEF));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("20 seconds")),
+    );
+  });
+
+  it("adds the brief to a resumed thread only when it changed since the thread got it", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const resume = (projectInstructions: string | undefined, heldBrief: string) =>
+          startAgainstPeer("own", {
+            threadId: ThreadId.make("brief-resume-thread"),
+            serverPort: 0,
+            runtimeMode: "full-access",
+            resumeCursor: { threadId: "thread-old", projectBriefHash: projectBriefHash(heldBrief) },
+            ...(projectInstructions !== undefined ? { projectInstructions } : {}),
+          });
+
+        const same = yield* resume(BRIEF, BRIEF);
+        assert.deepEqual(injectedTexts(same.requests), []);
+        assert.equal(briefHashOf(same.session.resumeCursor), projectBriefHash(BRIEF));
+
+        const changed = yield* resume(BRIEF, "Use npm here.");
+        assert.deepEqual(injectedTexts(changed.requests), [`developer: ${BRIEF}`]);
+        assert.equal(paramsOf(changed.requests, "thread/inject_items")?.threadId, "thread-old");
+        assert.equal(briefHashOf(changed.session.resumeCursor), projectBriefHash(BRIEF));
+
+        const cleared = yield* resume(undefined, BRIEF);
+        assert.deepEqual(injectedTexts(cleared.requests), [
+          `developer: ${PROJECT_BRIEF_CLEARED_NOTE}`,
+        ]);
+        assert.equal(briefHashOf(cleared.session.resumeCursor), undefined);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("20 seconds")),
+    );
+  });
+
+  it("leaves the brief out when Codex's config can't be read, and out of a side answer", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        // Codex would drop the user's own instructions for ours.
+        const unreadable = yield* startAgainstPeer("fail", {
+          threadId: ThreadId.make("brief-unreadable-thread"),
+          serverPort: 0,
+          runtimeMode: "full-access",
+          projectInstructions: BRIEF,
+        });
+        assert.ok(paramsOf(unreadable.requests, "thread/start") !== undefined);
+        assert.equal(
+          paramsOf(unreadable.requests, "thread/start")?.developerInstructions,
+          undefined,
+        );
+        assert.deepEqual(injectedTexts(unreadable.requests), []);
+
+        const side = yield* startAgainstPeer("own", {
+          threadId: sideSessionKey(
+            ThreadId.make("0f8f5a52-4d0e-4c1b-9d56-1e7c1f9b7a02"),
+            SideTurnId.make("b2c4d6e8-1a3b-4c5d-8e9f-0a1b2c3d4e60"),
+            null,
+          ),
+          serverPort: 0,
+          runtimeMode: "full-access",
+          projectInstructions: BRIEF,
+          lockdown: {
+            kind: "review",
+            signIn: () => Effect.succeed({ kind: "apiKey", apiKey: "sk-test" }),
+          },
+        });
+        assert.ok(paramsOf(side.requests, "thread/start") !== undefined);
+        assert.equal(paramsOf(side.requests, "config/read"), undefined);
+        assert.equal(paramsOf(side.requests, "thread/start")?.developerInstructions, undefined);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("20 seconds")),
+    );
+  });
+
+  it("emits session/exited when the app-server process is killed by a signal", async () => {
+    if (process.platform === "win32") return;
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const runtime = yield* makeCodexSessionRuntime({
+          threadId: ThreadId.make("signal-exit-thread"),
+          serverPort: 0,
+          binaryPath: process.execPath,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+            ...spawner,
+            spawn: () =>
+              spawner.spawn(
+                ChildProcess.make(process.execPath, [
+                  fileURLToPath(
+                    new URL(
+                      "../../../../../packages/effect-codex-app-server/test/fixtures/codex-app-server-mock-peer.ts",
+                      import.meta.url,
+                    ),
+                  ),
+                ]),
+              ),
+          }),
+        );
+        const exited = yield* Deferred.make<ProviderEvent>();
+        yield* runtime.events.pipe(
+          Stream.runForEach((event) =>
+            event.method === "session/exited" ? Deferred.succeed(exited, event) : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+        yield* runtime.start();
+        assert.ok(runtime.process);
+        process.kill(runtime.process.pid, "SIGKILL");
+        const exitEvent = yield* Deferred.await(exited);
+        assert.equal(exitEvent.method, "session/exited");
+        assert.equal(exitEvent.message, "Codex App Server exited with signal SIGKILL.");
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.timeout("10 seconds")),
     );
   });

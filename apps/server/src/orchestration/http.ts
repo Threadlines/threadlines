@@ -10,7 +10,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { ServerAuth } from "../auth/Services/ServerAuth.ts";
 import { normalizeDispatchCommand, toDispatchCommandError } from "./Normalizer.ts";
 import {
-  messageSentFromClient,
+  messageSentFromSession,
   sessionDevicePlace,
   withMessageSentFrom,
   writesUserMessage,
@@ -88,7 +88,7 @@ export const orchestrationDispatchRouteLayer = HttpRouter.add(
     const normalizedCommand = writesUserMessage(normalized)
       ? withMessageSentFrom(
           normalized,
-          messageSentFromClient(session.client, sessionDevicePlace(session)),
+          messageSentFromSession(session, sessionDevicePlace(session)),
         )
       : normalized;
     // No ThreadBootstrap here: the app's first sends go over the WebSocket, and

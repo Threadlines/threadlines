@@ -21,7 +21,7 @@ import {
   withContextSeedPreamble,
 } from "@threadlines/shared/contextSeed";
 import { agentInvitesMode, agentThreadsMode } from "@threadlines/shared/serverSettings";
-import { transcriptAuthor } from "@threadlines/shared/messageAuthor";
+import { reachedAgent, transcriptAuthor } from "@threadlines/shared/messageAuthor";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -182,6 +182,21 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       });
     }
 
+    // Nor say why a session stops: only the server stops one with its family
+    // or as cleanup, which leaves no Stop hold.
+    if (command.type === "thread.session.stop" && command.cause !== undefined) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Only the server can stop a thread with its family or as cleanup.",
+      });
+    }
+
+    // Nor speak for a parent's agent: its thread_wrap is checked as the agent's.
+    if (command.type === "thread.done-override.set" && command.byParentAgent !== undefined) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Only a thread's parent agent can wrap it up as its parent.",
+      });
+    }
+
     // Child threads: starting what an agent asked for needs the setting still
     // on; the agents and the checkout are checked again as each one starts.
     if (command.type === "thread.child-request.respond" && command.choice === "start") {
@@ -276,10 +291,10 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       // context-seed fallback so the provider never sees both the old and the
       // edited instruction. Assistant/system anchors still carry the selected
       // message as background before the new continuation instruction.
-      const sourceMessages = sourceThread.messages.slice(
-        0,
-        replacesUserPrompt ? selectedIndex : selectedIndex + 1,
-      );
+      // Only what an agent was given: a pass that never ran stays out.
+      const sourceMessages = sourceThread.messages
+        .slice(0, replacesUserPrompt ? selectedIndex : selectedIndex + 1)
+        .filter((message) => reachedAgent(message, sourceThread));
       const entries = [
         ...sourceMessages.map((message) => ({
           kind: "message" as const,

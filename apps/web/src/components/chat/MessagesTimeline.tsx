@@ -7,6 +7,7 @@ import {
   type OrchestrationAgentRequest,
   type OrchestrationAwaitedBackgroundTask,
   type OrchestrationCheckBack,
+  type ProjectNoteSuggestion,
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   type RemoteChildThread,
@@ -73,6 +74,7 @@ import {
 } from "../ChatView.logic";
 import { AGENT_PAGE_TITLE_MIDDLE_PX, AgentPageRow } from "./AgentPageRow";
 import { McpAppCard } from "./McpAppCard";
+import { isSecretAnswerMessage, SecretAnswerRow } from "./SecretAnswerRow";
 import {
   CodeBlockRunScopeContext,
   CommandOutputMessage,
@@ -114,6 +116,7 @@ import {
   LoaderIcon,
   LogInIcon,
   MonitorDownIcon,
+  NotebookPenIcon,
   RefreshCwIcon,
   ReplyIcon,
   PencilIcon,
@@ -156,11 +159,20 @@ import {
 } from "../../childThreads";
 import { selectEnvironmentState, useStore } from "../../store";
 import {
+  anchorFromListPlace,
+  forgetThreadScroll,
+  type InitialScroll,
+  initialScrollForThread,
+  readThreadScroll,
+  rememberThreadScroll,
+} from "../../threadScrollMemory";
+import {
   remoteChildStanding,
   remoteChildStatusText,
   resolveThreadStatusPill,
 } from "../Sidebar.logic";
 import { useComputerLabel } from "../sidebar/linkedComputers";
+import { useConnectedComputerCapability } from "../../environments/computerCapabilities";
 import {
   describeScheduleCall,
   parseScheduleCallResult,
@@ -177,6 +189,7 @@ import {
   estimateTimelineRowHeight,
   resolveAssistantMessageCopyState,
   foldsAgentMessage,
+  movedInBroughtLine,
   scheduledRunMessageId,
   shouldCollapseUserMessage,
   stretchDurationMs,
@@ -201,7 +214,12 @@ import {
   TranscriptHighlightContextCard,
 } from "./TranscriptHighlightContextCard";
 import { TooltipProvider, TooltipWrapper } from "../ui/tooltip";
-import { describeCheckBack, formatCheckBackTime, nextCheckBack } from "./checkBacks";
+import {
+  describeCheckBack,
+  formatCheckBackTime,
+  liveCheckBacks,
+  nextCheckBack,
+} from "./checkBacks";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
   deriveDisplayedUserMessageState,
@@ -248,7 +266,10 @@ import type {
   TranscriptHighlightContextSelection,
   TranscriptHighlightSourceRole,
 } from "~/lib/transcriptHighlightContext";
-import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlightContext";
+import {
+  formatTranscriptHighlightContextPreview,
+  transcriptHighlightRoleWord,
+} from "~/lib/transcriptHighlightContext";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import {
   type AgentModelLabeler,
@@ -279,6 +300,13 @@ import { providerInstanceShowsBadge } from "../../providerInstances";
 // non-row-scoped state. `nowIso` is intentionally excluded — self-ticking
 // components (WorkingTimer, LiveElapsed) handle it.
 // ---------------------------------------------------------------------------
+
+/** Opens another thread; see MessagesTimelineProps.onOpenThread. */
+export type OpenThread = (
+  threadId: ThreadId,
+  environmentId?: EnvironmentId,
+  how?: "linked",
+) => void;
 
 interface TimelineRowSharedState {
   timestampFormat: TimestampFormat;
@@ -316,8 +344,14 @@ interface TimelineRowSharedState {
   onStopSideAnswer?: ((sideTurnId: SideTurnId) => void) | undefined;
   /** Cancels an agent's check-backs (ChatView.cancelCheckBack). */
   onCancelCheckBack?: ((checkBack: OrchestrationCheckBack) => void) | undefined;
+  /** Keeps or discards a suggested note; rejects with what went wrong. */
+  onResolveNoteSuggestion?: NoteSuggestionResolver | undefined;
   /** Puts a message an MCP app asked to send into the composer. */
   onPutMcpAppMessage?: ((text: string) => void) | undefined;
+  /** Adds a note on selected text to the composer; a page's full-size view offers it too. */
+  onAddTranscriptHighlightContext?:
+    | ((selection: TranscriptHighlightContextSelection) => void)
+    | undefined;
   /** Opens or closes a side answer's one-line status to watch it written. */
   onToggleSideAnswer: (sideTurnId: SideTurnId) => void;
   /** Scrolls to a message: a side answer posted below, or its question. */
@@ -340,7 +374,7 @@ interface TimelineRowSharedState {
   /** See MessagesTimelineProps.workflowRunActions. */
   workflowRunActions: WorkflowRunActions | null;
   /** See MessagesTimelineProps.onOpenThread. */
-  onOpenThread: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null;
+  onOpenThread: OpenThread | null;
   /** Every finished `thread_start` call, by turn: a call's record reads its turn's. */
   threadStartCallsByTurn: ReadonlyMap<string, ReadonlyArray<ThreadStartCall>>;
   /** A run thread's own first message and the line it folds to (MessagesTimelineProps.scheduledRunLabel). */
@@ -753,6 +787,13 @@ function revealTimelineSearchMatch(
 // ---------------------------------------------------------------------------
 
 const EMPTY_SIDE_ANSWERS: ReadonlyArray<SideAnswerView> = [];
+const EMPTY_NOTE_SUGGESTIONS: ReadonlyArray<ProjectNoteSuggestion> = [];
+
+/** Keeps or discards one suggested note on the thread's computer. */
+export type NoteSuggestionResolver = (
+  suggestion: ProjectNoteSuggestion,
+  decision: "keep" | "discard",
+) => Promise<void>;
 const NO_EXPANDED_SIDE_ANSWERS: ReadonlySet<SideTurnId> = new Set();
 const NO_FIND_OPEN_REQUESTS: ReadonlyMap<string, number> = new Map();
 /** Keys that scroll the list when it has focus. */
@@ -792,6 +833,14 @@ interface MessagesTimelineProps {
   /** Times the thread's agents set themselves to come back (Thread.checkBacks). */
   checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
   onCancelCheckBack?: ((checkBack: OrchestrationCheckBack) => void) | undefined;
+  /**
+   * Notes the thread's agents suggested, still waiting for the user, from the
+   * project context of the thread's computer (not the thread's own state).
+   * Each shows as a row after its turn's content. Stable while unchanged.
+   */
+  noteSuggestions?: ReadonlyArray<ProjectNoteSuggestion> | undefined;
+  /** Keeps or discards a suggested note; rejects with what went wrong. */
+  onResolveNoteSuggestion?: NoteSuggestionResolver | undefined;
   /** Puts a message an MCP app card asked to send into the composer. */
   onPutMcpAppMessage?: ((text: string) => void) | undefined;
   activeStatusLabel?: string | undefined;
@@ -841,6 +890,13 @@ interface MessagesTimelineProps {
   mcpAuthReconnectStatusByServerName?: ReadonlyMap<string, McpAuthReconnectStatus>;
   onRunMcpAuthReconnect?: (action: McpAuthReconnectAction) => void;
   onIsAtEndChange: (isAtEnd: boolean) => void;
+  /**
+   * Remember where this chat was left and open it there next time
+   * (threadScrollMemory). `hasNews`: the thread has something new to show
+   * the user, so it opens at the end and its place is dropped. Absent: no
+   * memory (drafts).
+   */
+  scrollMemory?: { readonly threadKey: string; readonly hasNews: boolean } | null | undefined;
   /** The turns on screen and a few rows past either edge, reported as the
    *  reader scrolls; the chat fetches older turns' steps from it. */
   onVisibleTurnIdsChange?: ((turnIds: ReadonlyArray<TurnId>) => void) | undefined;
@@ -873,8 +929,10 @@ interface MessagesTimelineProps {
    * Opens another thread: the one that started this thread, or one this
    * thread's agent started (child threads). `environmentId` names the
    * computer it lives on when that is another one; absent, this thread's.
+   * `"linked"`: a child on a computer this app can't see, read through the
+   * link (LinkedThreadView).
    */
-  onOpenThread?: ((threadId: ThreadId, environmentId?: EnvironmentId) => void) | null | undefined;
+  onOpenThread?: OpenThread | null | undefined;
   /**
    * The thread was started by a scheduled task's run: its first message, the
    * run's own, folds to this line ("Event · <task>", "Scheduled · <task>")
@@ -904,6 +962,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   awaitedTasks = null,
   checkBacks,
   onCancelCheckBack: onCancelCheckBackProp,
+  noteSuggestions = EMPTY_NOTE_SUGGESTIONS,
+  onResolveNoteSuggestion: onResolveNoteSuggestionProp,
   onPutMcpAppMessage: onPutMcpAppMessageProp,
   activeStatusLabel,
   activeTurnInProgress,
@@ -942,6 +1002,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   mcpAuthReconnectStatusByServerName = EMPTY_MCP_AUTH_RECONNECT_STATUS,
   onRunMcpAuthReconnect: onRunMcpAuthReconnectProp,
   onIsAtEndChange,
+  scrollMemory = null,
   onVisibleTurnIdsChange,
   searchTarget = null,
   planScrollTarget = null,
@@ -958,6 +1019,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // the thread, and a new context value would redraw every row on screen.
   const {
     onCancelCheckBack,
+    onResolveNoteSuggestion,
     onPutMcpAppMessage,
     onStopSideAnswer,
     onOpenTurnDiff,
@@ -972,6 +1034,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onOpenThread,
   } = useStableHandlers({
     onCancelCheckBack: onCancelCheckBackProp,
+    onResolveNoteSuggestion: onResolveNoteSuggestionProp,
     onPutMcpAppMessage: onPutMcpAppMessageProp,
     onStopSideAnswer: onStopSideAnswerProp,
     onOpenTurnDiff: onOpenTurnDiffProp,
@@ -1058,8 +1121,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       openAgentRequestByMessageId,
       workingParticipantId,
       roomAgentNames,
+      noteSuggestions,
     }),
     [
+      noteSuggestions,
       workingParticipantId,
       roomAgentNames,
       sideAnswers,
@@ -1173,7 +1238,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         : -1,
     [rows, searchTarget],
   );
-  const initialAutoStickToBottom = searchTargetRowIndex < 0;
+  // Where this chat opens (threadScrollMemory), decided as it mounts, before
+  // opening it marks the thread seen. Something new to show drops the place.
+  const [opensAtRememberedPlace] = useState(() => {
+    if (scrollMemory === null) return false;
+    if (scrollMemory.hasNews) {
+      forgetThreadScroll(scrollMemory.threadKey);
+      return false;
+    }
+    return readThreadScroll(scrollMemory.threadKey) !== null;
+  });
+  // The remembered row, found once the rows are here; only the list's first
+  // mount opens there (a later remount is the end following itself).
+  const [rememberedScroll, setRememberedScroll] = useState<InitialScroll | null>(null);
+  if (opensAtRememberedPlace && rememberedScroll === null && rows.length > 0) {
+    setRememberedScroll(
+      initialScrollForThread({
+        threadKey: scrollMemory!.threadKey,
+        hasNews: false,
+        indexOfRowKey: (rowKey) => rows.findIndex((row) => row.id === rowKey),
+      }),
+    );
+  }
+  const initialAnchor =
+    searchTargetRowIndex < 0 && rememberedScroll?.kind === "anchor" ? rememberedScroll : null;
+  const initialAutoStickToBottom = searchTargetRowIndex < 0 && !opensAtRememberedPlace;
   const [autoStickToBottom, setAutoStickToBottom] = useState(initialAutoStickToBottom);
   const autoStickToBottomRef = useRef(initialAutoStickToBottom);
   const upwardScrollDetectorRef = useRef(createUpwardScrollDetector());
@@ -1182,6 +1271,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     null,
   );
   const [legendListEpoch, setLegendListEpoch] = useState(0);
+  // Where the list opens on this mount: a remembered row, or (null) the end
+  // or a find target. A rebuilt list (a later epoch) opens at the end.
+  const openingAnchor = legendListEpoch === 0 ? initialAnchor : null;
+  const opensAtAnchor = openingAnchor !== null;
   const lastHandledStickToBottomRequestKeyRef = useRef(stickToBottomRequestKey);
   const previousActiveTurnInProgressRef = useRef(activeTurnInProgress);
   const userScrollLockTimerRef = useRef<number | null>(null);
@@ -1224,6 +1317,51 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return estimateTimelineRowHeight(row, timelineWidthRef.current);
   }, []);
+
+  // The remembered row was gone: the chat opens at the end, following it.
+  useLayoutEffect(() => {
+    if (rememberedScroll?.kind === "end" && searchTargetRowIndex < 0) {
+      setAutoStickToBottomState(true);
+    }
+  }, [rememberedScroll, searchTargetRowIndex, setAutoStickToBottomState]);
+
+  // Where the chat was when it is left, read once from the list then: the
+  // anchor, or nothing at the end. Nothing is written while scrolling.
+  const scrollMemoryKey = scrollMemory?.threadKey ?? null;
+  useLayoutEffect(() => {
+    if (scrollMemoryKey === null) return;
+    return () => {
+      // Runs once, when the timeline is left. The list is read then, not
+      // when this ran: a pinned list is rebuilt when a turn settles, and an
+      // emptied chat has none. Layout cleanups run before the list leaves
+      // the page, so its rows are still drawn. The offset is read from the
+      // screen, not from the list's positions, which leave out its header
+      // and padding.
+      const list = listRef.current;
+      const state = list?.getState?.();
+      const node = list?.getScrollableNode?.();
+      if (!state || !(node instanceof HTMLElement)) {
+        forgetThreadScroll(scrollMemoryKey);
+        return;
+      }
+      const firstRowKey = (state.data[state.start] as MessagesTimelineRow | undefined)?.id;
+      const rowElement =
+        firstRowKey === undefined
+          ? null
+          : node.querySelector<HTMLElement>(`[data-timeline-row-id="${CSS.escape(firstRowKey)}"]`);
+      rememberThreadScroll(
+        scrollMemoryKey,
+        anchorFromListPlace({
+          isAtEnd: state.isAtEnd,
+          firstRowKey,
+          viewTopBelowRowTop:
+            rowElement === null
+              ? undefined
+              : node.getBoundingClientRect().top - rowElement.getBoundingClientRect().top,
+        }),
+      );
+    };
+  }, [listRef, scrollMemoryKey]);
 
   const assignLegendListRef = useCallback(
     (instance: LegendListRef | null) => {
@@ -1798,7 +1936,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   ]);
 
   useEffect(() => {
-    if (!legendListReady || !hasRows || searchTargetRowIndex >= 0) {
+    if (!legendListReady || !hasRows || searchTargetRowIndex >= 0 || opensAtAnchor) {
       return;
     }
 
@@ -1810,6 +1948,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     hasRows,
     legendListEpoch,
     legendListReady,
+    opensAtAnchor,
     routeThreadKey,
     searchTargetRowIndex,
     stickToBottomUnlessHeld,
@@ -2007,7 +2146,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workflowRunActions,
       onOpenThread,
       onCancelCheckBack,
+      onResolveNoteSuggestion,
       onPutMcpAppMessage,
+      onAddTranscriptHighlightContext,
       threadStartCallsByTurn,
       runMessage,
       anchorOwnsLiveAgents,
@@ -2052,7 +2193,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workflowRunActions,
       onOpenThread,
       onCancelCheckBack,
+      onResolveNoteSuggestion,
       onPutMcpAppMessage,
+      onAddTranscriptHighlightContext,
       threadStartCallsByTurn,
       runMessage,
       anchorOwnsLiveAgents,
@@ -2120,10 +2263,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     renderItem={renderItem}
                     estimatedItemSize={90}
                     getEstimatedItemSize={getEstimatedItemSize}
-                    initialScrollAtEnd={searchTargetRowIndex < 0}
+                    initialScrollAtEnd={searchTargetRowIndex < 0 && !opensAtAnchor}
                     {...(searchTargetRowIndex >= 0
                       ? { initialScrollIndex: { index: searchTargetRowIndex, viewPosition: 0.35 } }
-                      : {})}
+                      : openingAnchor !== null
+                        ? {
+                            initialScrollIndex: {
+                              index: openingAnchor.index,
+                              viewOffset: -openingAnchor.offsetPx,
+                            },
+                          }
+                        : {})}
                     maintainScrollAtEnd={
                       searchTargetRowIndex < 0 &&
                       ((autoStickToBottom && !listHeld) || stickToBottomRequestPending)
@@ -2372,6 +2522,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "mcp-app" ? <McpAppTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "check-back" ? <CheckBackTimelineRow row={row} /> : null}
+      {row.kind === "note-suggestion" ? <NoteSuggestionTimelineRow row={row} /> : null}
       {row.kind === "side-status" ? <SideStatusTimelineRow row={row} /> : null}
     </div>
   );
@@ -2390,6 +2541,8 @@ function MessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "messag
       return row.message.fromOutside !== undefined ? (
         <OutsideAgentMessageTimelineRow row={row} origin={row.message.fromOutside} />
       ) : null;
+    case "after-move":
+      return <AfterMoveMessageTimelineRow row={row} />;
     case "user":
       return <UserTimelineRow row={row} />;
     case "invite":
@@ -2475,27 +2628,53 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
 
 /**
  * Where a thread that moved here from another computer starts being this
- * computer's: a quiet rule across the conversation with one line in it. The
- * history above came with the move, and revert stops at this line.
+ * computer's: a quiet rule across the conversation with one line in it,
+ * saying whether its agent kept its memory or got a summary. Under it, what
+ * came along ("Its goal · 2 queued messages"), then each thing that didn't,
+ * with why. The history above came with the move, and revert stops at this
+ * line. A carried session that couldn't be resumed here gets a line of its
+ * own, later.
  */
 function MovedInTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "moved-in" }> }) {
   const ctx = use(TimelineRowCtx);
+  const { movedIn } = row;
+  const fellBack = movedIn.agentGot === "fell_back";
+  const brought = movedInBroughtLine(movedIn.brought);
   return (
     <div className="mx-auto max-w-4xl px-1">
       <div
         className="flex min-w-0 items-center gap-3 text-xs leading-[18px] text-muted-foreground"
-        data-testid="moved-in-boundary"
+        data-testid={fellBack ? "native-session-fell-back" : "moved-in-boundary"}
       >
         <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-border" />
         <span className="flex min-w-0 items-center gap-1.5">
           <MonitorDownIcon aria-hidden="true" className="size-3.5 shrink-0" />
           <span className="min-w-0 truncate">
-            Moved here from {row.movedIn.fromLabel} ·{" "}
-            {formatDateAndTime(row.movedIn.movedAt, ctx.timestampFormat)}
+            {fellBack ? (
+              "Couldn't resume the agent's session here, so it got a summary instead."
+            ) : (
+              <>
+                Moved here from {movedIn.fromLabel}{" "}
+                {movedIn.agentGot === "memory"
+                  ? "with its agent's memory"
+                  : "with a summary of the conversation"}{" "}
+                · {formatDateAndTime(movedIn.movedAt, ctx.timestampFormat)}
+              </>
+            )}
           </span>
         </span>
         <span aria-hidden="true" className="h-px min-w-6 flex-1 bg-border" />
       </div>
+      {brought !== null || movedIn.left.length > 0 ? (
+        <div className="mt-0.5 px-6 text-center text-xs leading-[18px] text-muted-foreground">
+          {brought !== null ? <p data-testid="moved-in-brought">{brought}</p> : null}
+          {movedIn.left.map((sentence) => (
+            <p key={sentence} data-testid="moved-in-left">
+              {sentence}
+            </p>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2599,7 +2778,27 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   if (isCommandOutputMessage(row.message.id)) {
     return <CommandOutputTimelineRow row={row} />;
   }
+  if (isSecretAnswerMessage(row.message.id)) {
+    return <SecretAnswerTimelineRow row={row} />;
+  }
   return <UserMessageTimelineRow row={row} />;
+}
+
+/**
+ * How an agent's request for a key ended, sent to it as your message: a quiet
+ * row ("You saved STRIPE_SECRET_KEY to .env.local"), not a bubble.
+ */
+function SecretAnswerTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <SecretAnswerRow
+      messageId={row.message.id}
+      messageText={row.message.text}
+      environmentId={ctx.activeThreadEnvironmentId}
+      threadId={ctx.activeThreadId}
+      timestampFormat={ctx.timestampFormat}
+    />
+  );
 }
 
 /**
@@ -3169,7 +3368,7 @@ function ThreadMessageTimelineRow({
       title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
     >
       <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
-        {ctx.onOpenThread && source.openable ? (
+        {ctx.onOpenThread && (source.openable || source.linked) ? (
           <button
             type="button"
             className="min-w-0 cursor-pointer truncate text-foreground/85 underline-offset-2 transition-colors hover:text-foreground hover:underline"
@@ -3178,6 +3377,7 @@ function ThreadMessageTimelineRow({
               ctx.onOpenThread?.(
                 origin.threadId,
                 source.computer ? source.computer.environmentId : undefined,
+                source.openable ? undefined : "linked",
               )
             }
           >
@@ -3221,7 +3421,11 @@ function ThreadMessageTimelineRow({
           }
         />
       </div>
-      {message.requestOutcome === "cancelled" ? (
+      {message.notSent === true ? (
+        // A lead chat's pass that never reached the agent; the line in the
+        // thread below says why.
+        <MessageNotSentNote />
+      ) : message.requestOutcome === "cancelled" ? (
         <p
           className="mt-1 pl-3 text-xs leading-4 text-muted-foreground"
           data-thread-message-outcome="cancelled"
@@ -3282,6 +3486,72 @@ function OutsideAgentMessageTimelineRow({
           environmentId={ctx.activeThreadEnvironmentId}
           skills={ctx.skills}
           className="text-foreground/80"
+          searchHighlightQuery={
+            ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
+          }
+        />
+      </div>
+      {/* Refused or taken back before it reached the agent; the line in the
+          thread below says why. */}
+      {message.notSent === true ? <MessageNotSentNote /> : null}
+    </div>
+  );
+}
+
+/** Under a message another agent sent that never reached this thread's agent. */
+function MessageNotSentNote() {
+  return (
+    <p
+      className="mt-1 pl-3 text-xs leading-4 text-muted-foreground"
+      data-thread-message-outcome="not-sent"
+    >
+      Not sent
+    </p>
+  );
+}
+
+/**
+ * What Threadlines wrote for the agent when the thread moved here, or when
+ * its move didn't happen (ChatMessage.afterMove, docs/design/fleet.md, Part
+ * 3e): a goal to carry on with, check-backs to set again. Folded like the
+ * messages agents send each other, under Threadlines' name, never read as
+ * the user's.
+ */
+function AfterMoveMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const { message } = row;
+  // Written for this thread's agent, which reads its paths in this checkout.
+  const fold = useAgentMessageFold(row, ctx.markdownCwd);
+  return (
+    <div
+      className="group min-w-0 px-1 py-0.5"
+      data-after-move-message={message.id}
+      title={formatTimestamp(message.createdAt, ctx.timestampFormat)}
+    >
+      <div className="mb-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10.5px] text-muted-foreground">
+        <span className="min-w-0 truncate text-foreground">Threadlines</span>
+        <span className="shrink-0">·</span>
+        <span className="min-w-0 truncate">to the agent, about the move</span>
+        {message.text.length > 0 && !fold.folded ? (
+          <div className={AGENT_MESSAGE_COPY_CLASS}>
+            <MessageCopyButton
+              text={message.text}
+              ariaLabel="Copy message"
+              size="icon-xs"
+              variant="ghost"
+              className="-my-1.5 text-muted-foreground hover:text-foreground"
+            />
+          </div>
+        ) : null}
+      </div>
+      <div className="border-l border-border pl-3">
+        <AgentMessageBody
+          text={message.text}
+          fold={fold}
+          cwd={ctx.markdownCwd}
+          environmentId={ctx.activeThreadEnvironmentId}
+          skills={ctx.skills}
+          className="text-muted-foreground"
           searchHighlightQuery={
             ctx.activeSearchTargetMessageId === message.id ? ctx.searchTargetQuery : undefined
           }
@@ -4041,6 +4311,7 @@ function PageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "page" }> 
         threadId={ctx.activeThreadId}
         page={row.page}
         updated={row.updated}
+        onAddHighlight={ctx.onAddTranscriptHighlightContext}
       />
     </>
   );
@@ -4234,6 +4505,99 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
  * check-back that agent set; one saved to the project outlives the runtime
  * and has no Cancel.
  */
+/**
+ * A note an agent suggested here: its title and one line, with Keep and
+ * Discard, plain until hover. The title opens its text, so the user reads
+ * what they keep. It leaves when the computer's snapshot drops it.
+ */
+function NoteSuggestionTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "note-suggestion" }>;
+}) {
+  const { onResolveNoteSuggestion } = use(TimelineRowCtx);
+  const { suggestion } = row;
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState<"keep" | "discard" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const resolve = (decision: "keep" | "discard") => {
+    if (!onResolveNoteSuggestion || pending !== null) return;
+    setPending(decision);
+    setError(null);
+    onResolveNoteSuggestion(suggestion, decision).then(
+      () => setPending(null),
+      (cause: unknown) => {
+        setPending(null);
+        setError(
+          cause instanceof Error && cause.message.trim().length > 0
+            ? cause.message
+            : "That did not work. Try again.",
+        );
+      },
+    );
+  };
+  const action =
+    "shrink-0 rounded px-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-64";
+  return (
+    <div className="py-1" data-note-suggestion-row={suggestion.id}>
+      <div className="flex min-w-0 items-center gap-1.5 pl-1 text-xs leading-4">
+        <NotebookPenIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+          className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-ring"
+        >
+          <span className="shrink-0 text-muted-foreground">Suggested note</span>
+          <span className="min-w-0 truncate font-medium text-foreground">{suggestion.title}</span>
+          <ChevronRightIcon
+            aria-hidden
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground transition-transform",
+              open && "rotate-90",
+            )}
+          />
+        </button>
+        {onResolveNoteSuggestion ? (
+          <span className="ms-1 flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              className={action}
+              aria-label={`Keep ${suggestion.title}`}
+              disabled={pending !== null}
+              onClick={() => resolve("keep")}
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              className={action}
+              aria-label={`Discard ${suggestion.title}`}
+              disabled={pending !== null}
+              onClick={() => resolve("discard")}
+            >
+              Discard
+            </button>
+          </span>
+        ) : null}
+      </div>
+      <p className="truncate pl-[22px] text-[11px] leading-4 text-muted-foreground">
+        {suggestion.summary}
+      </p>
+      {open ? (
+        <p className="mt-1 ml-[22px] max-h-60 overflow-y-auto text-xs leading-[18px] whitespace-pre-wrap text-foreground">
+          {suggestion.text}
+        </p>
+      ) : null}
+      {error !== null ? (
+        <p role="alert" className="pl-[22px] text-[11px] leading-4 text-destructive-foreground">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function CheckBackTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "check-back" }> }) {
   const { roomAgents, onCancelCheckBack } = use(TimelineRowCtx);
   const nowMs = useRelativeTimeTick(30_000);
@@ -4242,7 +4606,7 @@ function CheckBackTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "chec
   const { label, when } = describeCheckBack(soonest, nowMs);
   // In a room, the line says which agent will come back.
   const agentName = roomAgents?.get(roomAgentKey(soonest.participantId))?.name ?? null;
-  const others = row.checkBacks.filter((checkBack) => checkBack !== soonest);
+  const others = liveCheckBacks(row.checkBacks).filter((checkBack) => checkBack !== soonest);
   return (
     <div className="py-1" data-check-back-row="true">
       <p className="flex min-w-0 items-center gap-1.5 pl-1 text-xs leading-4 text-muted-foreground">
@@ -4802,10 +5166,14 @@ function StartedThreadsRecord({ entry }: { entry: TimelineWorkEntry }) {
 /**
  * A thread the agent started on a linked computer: the real thread when the
  * app has that computer's threads, else the parent's record of it, with its
- * last known status. Either way it says which computer.
+ * last known status, which opens it read through the link where this
+ * thread's computer does that (LinkedThreadView). Either way it says which
+ * computer.
  */
 function RemoteStartedThreadLine({ child }: { child: RemoteChildThread }) {
+  const { activeThreadEnvironmentId, onOpenThread } = use(TimelineRowCtx);
   const computerLabel = useComputerLabel();
+  const readsLinked = useConnectedComputerCapability(activeThreadEnvironmentId, "linkedThreadRead");
   const thread = useStore(
     (state) =>
       selectEnvironmentState(state, child.environmentId).sidebarThreadSummaryById[child.threadId],
@@ -4816,24 +5184,29 @@ function RemoteStartedThreadLine({ child }: { child: RemoteChildThread }) {
   }
   const entry = { ...remoteChildStanding(child), computerLabel: computer };
   return (
-    <li
-      className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-foreground/85"
-      data-started-thread={child.threadId}
-    >
-      <span
-        aria-label={entry.status?.label ?? "Finished"}
-        className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          entry.status ? entry.status.dotClass : "bg-muted-foreground/45",
-        )}
-      />
-      <span className="min-w-0 truncate">{child.title}</span>
-      <span className="min-w-0 shrink-[2] truncate text-muted-foreground">on {computer}</span>
-      {entry.status ? (
-        <span className="ms-auto shrink-0 text-muted-foreground">
-          {remoteChildStatusText(entry)}
-        </span>
-      ) : null}
+    <li>
+      <button
+        type="button"
+        className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 text-left text-xs leading-5 text-foreground/85 transition-colors hover:text-foreground disabled:cursor-default disabled:hover:text-foreground/85"
+        disabled={!readsLinked || onOpenThread === null}
+        data-started-thread={child.threadId}
+        onClick={() => onOpenThread?.(child.threadId, child.environmentId, "linked")}
+      >
+        <span
+          aria-label={entry.status?.label ?? "Finished"}
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            entry.status ? entry.status.dotClass : "bg-muted-foreground/45",
+          )}
+        />
+        <span className="min-w-0 truncate">{child.title}</span>
+        <span className="min-w-0 shrink-[2] truncate text-muted-foreground">on {computer}</span>
+        {entry.status ? (
+          <span className="ms-auto shrink-0 text-muted-foreground">
+            {remoteChildStatusText(entry)}
+          </span>
+        ) : null}
+      </button>
     </li>
   );
 }
@@ -5428,7 +5801,7 @@ const UserMessageTranscriptHighlightInlineLabel = memo(
     context: ParsedTranscriptHighlightContextEntry;
   }) {
     const preview = formatTranscriptHighlightContextPreview(props.context);
-    const roleWord = props.context.sourceRole === "assistant" ? "assistant" : "your";
+    const roleWord = transcriptHighlightRoleWord(props.context.sourceRole);
 
     return (
       <Popover>

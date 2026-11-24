@@ -424,6 +424,8 @@ function roomToolDraft(tool: string, agent: string | null): StepDraft | null {
       return notable(phrase("Sent one of its threads a message", "Sending a thread a message"));
     case "thread_stop":
       return notable(phrase("Stopped one of its threads", "Stopping a thread"));
+    case "thread_wrap":
+      return notable(phrase("Wrapped up its threads", "Wrapping up threads"));
     case "thread_agents":
       return routine(
         phrase("Checked which agents can run a thread", "Checking which agents can run a thread"),

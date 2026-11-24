@@ -111,6 +111,7 @@ import {
 } from "../claudeLongRunningTool.ts";
 import { CLAUDE_PREVIEW_PANEL_INSTRUCTIONS } from "../previewPanelInstructions.ts";
 import { nonEmptyTrimmed } from "../providerSnapshot.ts";
+import { makeAgentProcessLedger, realProcessProbe } from "../agentProcessLedger.ts";
 import { httpStatusFailureCategory, withFailureCategory } from "../providerFailureCategory.ts";
 import {
   buildAgentPageInstructions,
@@ -158,6 +159,7 @@ import { ServerConfig } from "../../config.ts";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpCommandsEndpointUrl,
+  mcpDeviceEndpointUrl,
   mcpEndpointUrl,
   mcpPagesEndpointUrl,
   mcpRoomEndpointUrl,
@@ -167,6 +169,8 @@ import {
   CLAUDE_COMMAND_TOOL_IDS,
   COMMANDS_MCP_SERVER_NAME,
 } from "../../mcp/commandTools.ts";
+import { CLAUDE_DEVICE_TOOL_IDS, DEVICE_MCP_SERVER_NAME } from "../../mcp/deviceTools.ts";
+import { buildDeviceInstructions } from "../deviceInstructions.ts";
 import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { outsideWorkLookup } from "../outsideWorkLookup.ts";
 import { ROOM_TOOL_CALL_TIMEOUT } from "../../mcp/roomToolTimeouts.ts";
@@ -198,6 +202,7 @@ import {
 } from "../Drivers/ClaudeGoals.ts";
 import {
   claudeCheckBackTrigger,
+  claudeCheckBacksAfterScheduleTool,
   claudeCheckBacksFromSessionCrons,
   isClaudeCheckBackTool,
   makeClaudeCheckBackState,
@@ -224,6 +229,10 @@ import {
   readClaudeTranscriptResumeFacts,
   resolveClaudeConfigDir,
 } from "../Drivers/ClaudeSessionTranscripts.ts";
+import {
+  exportClaudeNativeSession,
+  importClaudeNativeSession,
+} from "../Drivers/ClaudeNativeSession.ts";
 import {
   ClaudeWorkflowFileError,
   claudeWorkflowAgentTranscriptPath,
@@ -585,6 +594,12 @@ interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
   readonly query: ClaudeQueryRuntime;
+  /**
+   * The Claude Code process the SDK started, as it reported it, with its
+   * exit: completed once the process is seen gone after a stop. Undefined
+   * when the SDK didn't say (a test double, or an SDK that dropped the hook).
+   */
+  readonly cli: { readonly pid: number; readonly exited: Deferred.Deferred<void> } | undefined;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   // The access level's permission mode on the current model; plan turns
@@ -997,6 +1012,8 @@ export function buildClaudeSystemPromptAppend(input: {
   readonly pageAssetsDir: string | undefined;
   readonly artifacts: boolean;
   readonly commandRequests: boolean;
+  /** The device tools (ProviderSessionStartInput.deviceTools). */
+  readonly deviceTools: boolean;
   /** The room endpoint's tools this session may call, when it is attached. */
   readonly room:
     | { readonly tools: ReadonlyArray<RoomToolName>; readonly schedules: boolean }
@@ -1020,6 +1037,7 @@ export function buildClaudeSystemPromptAppend(input: {
       : []),
     ...(input.artifacts ? [CLAUDE_ARTIFACT_INSTRUCTIONS] : []),
     ...(input.commandRequests ? [buildCommandRequestInstructions({})] : []),
+    ...(input.deviceTools ? [buildDeviceInstructions()] : []),
     ...(input.room?.schedules === true
       ? [buildScheduleInstructions({ toolPrefix: roomPrefix, claude: true })]
       : []),
@@ -1044,6 +1062,20 @@ export function buildClaudeSystemPromptAppend(input: {
     ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
   ].join("\n\n");
 }
+
+/**
+ * The project's brief goes after Threadlines' own text (docs/design/
+ * project-brief-notes.md): the part every thread shares stays first, so
+ * Claude Code's cache of it is reused, and agentContextBudget.test.ts keeps
+ * measuring only that part.
+ */
+export const withClaudeProjectInstructions = (
+  append: string,
+  projectInstructions: string | undefined,
+): string =>
+  projectInstructions === undefined || projectInstructions.length === 0
+    ? append
+    : `${append}\n\n${projectInstructions}`;
 
 /** A locked-down side runtime's room endpoint and the room tools it may call. */
 export interface ClaudeSideRoomTools {
@@ -2847,15 +2879,15 @@ const CLAUDE_GOAL_REPLY_TIMEOUT = Duration.seconds(30);
 const CLAUDE_GOAL_WATCH_INTERVAL = Duration.millis(1_500);
 /** How long after the model proposes a goal its record may still land. */
 const CLAUDE_GOAL_PROPOSAL_WATCH_MS = 60_000;
+/** How long a stopped session's Claude Code process is watched for its exit, and how often. */
+const CLI_EXIT_WATCH_MS = 15_000;
+const CLI_EXIT_POLL_MS = 100;
 /** How long "steer now" waits for the SDK to take the steer before it moves
  *  running work to the background anyway. */
 const CLAUDE_STEER_TAKEN_TIMEOUT = Duration.seconds(2);
 /** How long a read of a running command's output may take; a slower one
  *  answers "nothing yet" and the client asks again. */
 const CLAUDE_COMMAND_OUTPUT_READ_TIMEOUT = Duration.seconds(3);
-/** The most of a running command's output a read hands back: its end, which
- *  holds the lines a client shows. Claude itself keeps the last 8 KiB. */
-const CLAUDE_COMMAND_OUTPUT_TAIL_CHARS = 4_096;
 /** How long reading the session's MCP tools may hold up a finished MCP tool
  *  call's step; a slower read leaves that step without its app. */
 const CLAUDE_MCP_TOOLS_READ_TIMEOUT = Duration.millis(1500);
@@ -4291,6 +4323,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       >(undefined));
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
+  /** Each Claude Code process it started, until proven gone (confirmThreadStopped). */
+  const processes = yield* makeAgentProcessLedger();
+  /** Session keys whose process the SDK never reported: their stop can't be proven. */
+  const unreportedProcesses = new Set<ThreadId>();
+  const adapterScope = yield* Effect.scope;
+  /**
+   * Waits (bounded) for a stopped session's Claude Code process to go: the
+   * SDK ends it on timers of its own (SIGTERM after 2 s, SIGKILL 5 s later)
+   * and gives no exit to await, so its pid is watched, only after the stop.
+   */
+  const watchCliExit = (cli: NonNullable<ClaudeSessionContext["cli"]>) =>
+    Effect.gen(function* () {
+      for (let waited = 0; waited < CLI_EXIT_WATCH_MS; waited += CLI_EXIT_POLL_MS) {
+        if (!realProcessProbe.exists(cli.pid)) {
+          yield* Deferred.succeed(cli.exited, undefined);
+          return;
+        }
+        yield* Effect.sleep(Duration.millis(CLI_EXIT_POLL_MS));
+      }
+    }).pipe(Effect.forkIn(adapterScope), Effect.asVoid);
   /**
    * Sessions Claude Code refused to start, by id. A thread keeps the id of
    * its session for the next start to resume, and one that never began left
@@ -5232,7 +5284,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       provider: PROVIDER,
       createdAt: stamp.createdAt,
       threadId: context.session.threadId,
-      payload: { checkBacks, ...(ended && ended.length > 0 ? { ended } : {}) },
+      payload: {
+        checkBacks,
+        ...(ended && ended.length > 0 ? { ended } : {}),
+        ...(context.checkBacks.reported ? {} : { partial: true }),
+      },
       providerRefs: nativeProviderRefs(context),
     });
   });
@@ -6360,17 +6416,29 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const [index, tool] = toolEntry;
       // A check-back's exact time, reason and job id are only in the
-      // scheduling tool's own result (one tool_result per such message).
+      // scheduling tool's own result (one tool_result per such message). The
+      // change is published at once: Stop must see it if the turn never
+      // reaches Claude's own report at its end.
       if (
-        (tool.toolName === "ScheduleWakeup" || tool.toolName === "CronCreate") &&
+        (tool.toolName === "ScheduleWakeup" ||
+          tool.toolName === "CronCreate" ||
+          tool.toolName === "CronDelete") &&
         toolResults.length === 1 &&
         !toolResult.isError
       ) {
-        recordClaudeScheduleTool(context.checkBacks, {
+        const call = {
           toolName: tool.toolName,
           input: tool.input,
           result: (message as { readonly tool_use_result?: unknown }).tool_use_result,
-        });
+        };
+        recordClaudeScheduleTool(context.checkBacks, call);
+        const checkBacks = claudeCheckBacksAfterScheduleTool(
+          context.checkBacks,
+          call,
+          Date.now(),
+          nonEmptyString(claudeEnvironment.TZ),
+        );
+        if (checkBacks !== undefined) yield* emitCheckBacksUpdated(context, checkBacks);
       }
       if (tool.itemType === "collab_agent_tool_call") {
         // Background agents settle after this tool_result; keep the launch so
@@ -6710,6 +6778,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const queueGoalCommand = Effect.fn("queueGoalCommand")(function* (
     context: ClaudeSessionContext,
     command: { readonly kind: "set" | "clear"; readonly args: string },
+    goalContext?: string,
   ) {
     const reply = yield* Deferred.make<ClaudeGoalCommandOutcome>();
     const request: ClaudeGoalCommandRequest = { ...command, sentAtMs: Date.now() };
@@ -6717,16 +6786,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const messages: Array<SDKUserMessage> = [];
     // A goal can be the first thing a thread handed over from another agent
     // asks for; the handoff's context goes in ahead of it, as it would ahead
-    // of a message.
+    // of a message. So does what the goal's work should read first (a lead
+    // chat's role), unless a turn is running: that turn already heard it.
     const seed = context.pendingContextSeedText;
-    if (
-      command.kind === "set" &&
-      seed !== undefined &&
-      supportsClaudeAppendOnly(context.cliVersion)
-    ) {
+    const leading =
+      command.kind === "set" && supportsClaudeAppendOnly(context.cliVersion)
+        ? [seed, context.turnState ? undefined : goalContext]
+            .filter((part): part is string => part !== undefined && part.trim().length > 0)
+            .join("\n\n")
+        : "";
+    if (leading.length > 0) {
       messages.push(
         deliverAsWritten(
-          buildUserMessage({ sdkContent: [{ type: "text", text: seed }], appendOnly: true }),
+          buildUserMessage({ sdkContent: [{ type: "text", text: leading }], appendOnly: true }),
           context.cliVersion,
         ),
       );
@@ -6754,8 +6826,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const sendGoalCommand = Effect.fn("sendGoalCommand")(function* (
     context: ClaudeSessionContext,
     command: { readonly kind: "set" | "clear"; readonly args: string },
+    goalContext?: string,
   ) {
-    const { reply, request } = yield* queueGoalCommand(context, command);
+    const { reply, request } = yield* queueGoalCommand(context, command, goalContext);
     yield* ensureGoalWatch(context);
     const outcome = yield* Deferred.await(reply).pipe(
       Effect.timeoutOption(CLAUDE_GOAL_REPLY_TIMEOUT),
@@ -6886,7 +6959,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       threadId: input.threadId,
       modelSelection: input.modelSelection,
     });
-    const outcome = yield* sendGoalCommand(context, { kind: "set", args: objective });
+    const outcome = yield* sendGoalCommand(
+      context,
+      { kind: "set", args: objective },
+      input.context,
+    );
     if (!outcome.accepted) {
       return yield* refuse(outcome.text.length > 0 ? outcome.text : "Claude did not set the goal.");
     }
@@ -8517,6 +8594,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         emitRuntimeError(context, "Failed to close Claude runtime query.", cause),
       ),
     );
+    if (context.cli !== undefined) yield* watchCliExit(context.cli);
 
     const updatedAt = yield* nowIso;
     context.session = {
@@ -8641,6 +8719,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // another project directory; start fresh when it is gone entirely.
       let resumeState = requestedResumeState;
       let resumeTranscriptPath: string | undefined;
+      // The conversation asked for couldn't be reopened, so this session
+      // starts without it (ProviderSession.resumeFailed).
+      let resumeFailed = false;
       if (requestedResumeState?.resume !== undefined) {
         const transcriptResolution = yield* ensureClaudeSessionTranscript({
           environment: claudeEnvironment,
@@ -8707,6 +8788,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             reason: "starting a fresh session because no project directory holds the transcript",
           });
           resumeState = undefined;
+          resumeFailed = true;
           // Degraded resume must be visible to the user, not just the server
           // log: the fresh session has none of the thread's earlier context.
           const fallbackStamp = yield* makeEventStamp();
@@ -8859,6 +8941,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             const context = yield* Ref.get(contextRef);
             const sessionCrons = (hookInput as { session_crons?: unknown }).session_crons;
             if (!context || context.stopped || !Array.isArray(sessionCrons)) return {};
+            const firstReport = !context.checkBacks.reported;
+            context.checkBacks.reported = true;
             const checkBacks = claudeCheckBacksFromSessionCrons(
               context.checkBacks,
               sessionCrons.flatMap((cron) => {
@@ -8879,7 +8963,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               Date.now(),
               nonEmptyString(claudeEnvironment.TZ),
             );
-            if (!sameCheckBacks(context.checkBacks.current, checkBacks)) {
+            // The first report is whole: after a partial list it is sent even
+            // when it reads the same, to settle the saved jobs that list kept.
+            if (
+              (firstReport && context.checkBacks.current.length > 0) ||
+              !sameCheckBacks(context.checkBacks.current, checkBacks)
+            ) {
               context.checkBacks.current = checkBacks;
               yield* emitCheckBacksUpdated(context, checkBacks);
             }
@@ -9554,6 +9643,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       );
       // `ask_user_to_run`: a command card the user runs from the chat.
       const commandRequests = input.commandRequests === true && !lockdown;
+      // The device tools: simulators and emulators on this computer.
+      const deviceTools = input.deviceTools === true && !lockdown;
       const credential =
         !lockdown || roomGrant.attach
           ? yield* mcpSessionRegistry.credentialFor({
@@ -9562,6 +9653,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               room: roomGrant.attach,
               pages: agentPages,
               commands: commandRequests,
+              device: deviceTools,
               sideKind,
               scheduledRun: input.scheduledRunTools === true,
               guideOnly: roomGrant.guideOnly,
@@ -9628,29 +9720,46 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 },
               }
             : {}),
+          ...(credential !== undefined && deviceTools
+            ? {
+                [DEVICE_MCP_SERVER_NAME]: {
+                  type: "http" as const,
+                  url: mcpDeviceEndpointUrl(serverConfig.port),
+                  headers: { Authorization: `Bearer ${credential.token}` },
+                  // Like the others: Claude Code waits for the server before
+                  // the first turn, and each tool's own mark decides whether
+                  // it is in the prompt (toolLoading.ts).
+                  alwaysLoad: true,
+                },
+              }
+            : {}),
         },
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: buildClaudeSystemPromptAppend({
-            pageAssetsDir: agentPages ? pageAssets : undefined,
-            artifacts,
-            commandRequests: credential !== undefined && commandRequests,
-            room:
-              roomServer !== undefined
-                ? {
-                    tools: roomToolsFor(undefined, {
-                      scheduledRun: input.scheduledRunTools === true,
-                      guideOnly: roomGrant.guideOnly,
-                    }),
-                    schedules: input.scheduleTools === true,
-                  }
-                : undefined,
-            lockdown,
-            managedWorktree: runsInManagedWorktree,
-          }),
+          append: withClaudeProjectInstructions(
+            buildClaudeSystemPromptAppend({
+              pageAssetsDir: agentPages ? pageAssets : undefined,
+              artifacts,
+              commandRequests: credential !== undefined && commandRequests,
+              deviceTools: credential !== undefined && deviceTools,
+              room:
+                roomServer !== undefined
+                  ? {
+                      tools: roomToolsFor(undefined, {
+                        scheduledRun: input.scheduledRunTools === true,
+                        guideOnly: roomGrant.guideOnly,
+                      }),
+                      schedules: input.scheduleTools === true,
+                    }
+                  : undefined,
+              lockdown,
+              managedWorktree: runsInManagedWorktree,
+            }),
+            lockdown ? undefined : input.projectInstructions,
+          ),
         },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // SDK 0.3.233 dropped the todo/task tools from the default tool
@@ -9677,6 +9786,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(credential !== undefined && agentPages ? CLAUDE_PAGE_TOOL_IDS : []),
           // Asking the user to run a command only shows a card; they decide.
           ...(credential !== undefined && commandRequests ? CLAUDE_COMMAND_TOOL_IDS : []),
+          // The user turned on "Agents can use devices"; driving one goes
+          // through the agent-device command, which asks like any command.
+          ...(credential !== undefined && deviceTools ? CLAUDE_DEVICE_TOOL_IDS : []),
         ],
         ...(effectiveEffort
           ? {
@@ -9793,11 +9905,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.path_to_executable": claudeBinaryPath,
       });
 
+      // The SDK says which process it started (an option its types leave
+      // out), so a stop can be proven: docs/design/fleet.md, Part 3b.
+      let reportedPid: number | undefined;
+      const reportingOptions: ClaudeQueryOptions & {
+        readonly onProcessSpawned: (pid: number) => void;
+      } = {
+        ...queryOptions,
+        onProcessSpawned: (pid) => {
+          reportedPid = pid;
+        },
+      };
       const queryRuntime = yield* Effect.try({
         try: () =>
           createQuery({
             prompt,
-            options: queryOptions,
+            options: reportingOptions,
           }),
         catch: (cause) =>
           new ProviderAdapterProcessError({
@@ -9831,14 +9954,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
           turnCount: resumeState?.turnCount ?? 0,
         },
+        ...(resumeFailed ? { resumeFailed: true } : {}),
         createdAt: startedAt,
         updatedAt: startedAt,
       };
 
+      const cli =
+        reportedPid === undefined
+          ? undefined
+          : { pid: reportedPid, exited: yield* Deferred.make<void>() };
+      if (cli === undefined) {
+        unreportedProcesses.add(threadId);
+      } else {
+        unreportedProcesses.delete(threadId);
+        yield* processes.track(threadId, {
+          pid: cli.pid,
+          exited: Deferred.await(cli.exited),
+          // The SDK spawns it in this server's own process group.
+          ownGroup: false,
+        });
+      }
       const context: ClaudeSessionContext = {
         session,
         promptQueue,
         query: queryRuntime,
+        cli,
         streamFiber: undefined,
         startedAt,
         basePermissionMode: permissionMode,
@@ -10526,7 +10666,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const { output, total_bytes: totalBytes } = read.value;
     return {
       status: "running",
-      tail: output.slice(-CLAUDE_COMMAND_OUTPUT_TAIL_CHARS),
+      output,
       totalBytes: Number.isSafeInteger(totalBytes) && totalBytes > 0 ? totalBytes : 0,
     } as const;
   });
@@ -10949,6 +11089,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       activeTurnSteering: "supported",
       threadGoals: "supported",
       threadGoalPause: "unsupported",
+      // `/goal` takes only the condition.
+      threadGoalBudget: "unsupported",
+      checkBacks: "supported",
       earlySessionStart: "supported",
     },
     startSession,
@@ -10976,6 +11119,25 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     listSessions,
     hasSession,
     stopAll,
+    exportNativeSession: ({ resumeCursor }) =>
+      exportClaudeNativeSession({
+        configDir: resolveClaudeConfigDir(claudeEnvironment, path),
+        resumeCursor,
+      }),
+    importNativeSession: (input) =>
+      importClaudeNativeSession({
+        ...input,
+        configDir: resolveClaudeConfigDir(claudeEnvironment, path),
+      }),
+    noteBeforeStop: processes.beforeStop,
+    listProcesses: processes.owners,
+    confirmThreadStopped: (threadId) =>
+      [...unreportedProcesses].some((key) => parseSessionKey(key).threadId === threadId)
+        ? Effect.succeed({
+            confirmed: false,
+            reason: "Claude Code didn't report which process it started",
+          } as const)
+        : processes.confirm(threadId),
     get streamEvents() {
       return Stream.fromQueue(runtimeEventQueue);
     },

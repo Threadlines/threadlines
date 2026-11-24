@@ -167,6 +167,7 @@ import type {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
   ServerProcessResourceHistoryResult,
+  ServerThreadCpuUsageResult,
   ServerProviderDataSharingSetInput,
   ServerProviderDataSharingSetResult,
   ServerProviderRateLimitResetCreditConsumeInput,
@@ -222,6 +223,22 @@ import type {
   PreviewAutomationClientHost,
   PreviewAutomationResponse,
 } from "./previewAutomation.ts";
+import type {
+  DeviceActionInput,
+  DeviceChannelCredit,
+  DeviceChannelEvent,
+  DeviceChannelOpen,
+  DeviceChannelSend,
+  DeviceCloseInput,
+  DeviceDetail,
+  DeviceDetailInput,
+  DeviceListInput,
+  DeviceOpenInput,
+  DeviceServiceState,
+  DeviceSession,
+  DeviceShutdownInput,
+  DeviceUpdateToolInput,
+} from "./device.ts";
 import type {
   PreviewLocalServer,
   PreviewTunnelCredit,
@@ -299,6 +316,8 @@ import type {
 export interface ContextMenuItem<T extends string = string> {
   id: T;
   label: string;
+  /** A short second line under the label (a native menu shows it on macOS only). */
+  sublabel?: string;
   destructive?: boolean;
   disabled?: boolean;
   /** Starts a new group: a divider above it (none at the top of the menu). */
@@ -309,6 +328,7 @@ export interface ContextMenuItem<T extends string = string> {
 export interface ContextMenuItemSchemaType {
   readonly id: string;
   readonly label: string;
+  readonly sublabel?: string;
   readonly destructive?: boolean;
   readonly disabled?: boolean;
   readonly separatorBefore?: boolean;
@@ -318,6 +338,7 @@ export interface ContextMenuItemSchemaType {
 export const ContextMenuItemSchema: Schema.Codec<ContextMenuItemSchemaType> = Schema.Struct({
   id: Schema.String,
   label: Schema.String,
+  sublabel: Schema.optionalKey(Schema.String),
   destructive: Schema.optionalKey(Schema.Boolean),
   disabled: Schema.optionalKey(Schema.Boolean),
   separatorBefore: Schema.optionalKey(Schema.Boolean),
@@ -562,6 +583,12 @@ export interface DesktopQuitConfirmationRequest {
   activeScheduledTaskCount?: number;
   /** Terminals on this computer running a command, which quitting stops too. */
   busyTerminalCount?: number;
+  /**
+   * The quit already waits for these moves (`desktop:quit-after-moves`): a
+   * page that loaded since (a reload, a crash) shows their progress, and
+   * answers once they're done, instead of asking again.
+   */
+  quitAfterMoves?: DesktopQuitAfterMovesInput;
 }
 
 export const DesktopQuitConfirmationRequestSchema = Schema.Struct({
@@ -569,6 +596,24 @@ export const DesktopQuitConfirmationRequestSchema = Schema.Struct({
   runningThreadCount: Schema.Number,
   activeScheduledTaskCount: Schema.optionalKey(Schema.Number),
   busyTerminalCount: Schema.optionalKey(Schema.Number),
+  quitAfterMoves: Schema.optionalKey(Schema.Struct({ batchId: Schema.String })),
+});
+
+/**
+ * "Move them to <computer> and quit" (docs/design/fleet.md, Part 3c): the
+ * page queued the working threads as batch `batchId` (`moves.queueMany`) and
+ * hands the quit's wait to the main process (`desktop:quit-after-moves`).
+ * From then on hiding or closing the window doesn't answer the quit with no,
+ * a second quit shows the same progress, and the app quits once
+ * `moves.batchStatus` is final for every member with none not moved. If the
+ * page goes away, the main process asks `moves.batchStatus` itself.
+ */
+export interface DesktopQuitAfterMovesInput {
+  batchId: string;
+}
+
+export const DesktopQuitAfterMovesInputSchema = Schema.Struct({
+  batchId: Schema.String,
 });
 
 /**
@@ -1602,6 +1647,17 @@ export interface DesktopBridge {
    * watchdog samples the backdrop frame's process.
    */
   setBackdropActive?: (active: boolean) => Promise<void>;
+  /**
+   * A press on a header control that is also a button (the project name,
+   * the thread title) became a drag (true), or ended (false): the window
+   * follows the cursor meanwhile. Absent on older desktop builds.
+   */
+  setWindowDragging?: (dragging: boolean) => Promise<void>;
+  /**
+   * Whether `setWindowDragging` can move the window here: false under
+   * Wayland, where the app can't move its own window. Absent on older builds.
+   */
+  canMoveWindow?: () => boolean;
   /** The watchdog found the backdrop frame over its CPU budget; the app makes the art still. */
   onBackdropTooHeavy?: (listener: () => void) => () => void;
   /** View › Reset Theme: the app goes back to the built-in System theme. */
@@ -1628,6 +1684,23 @@ export interface DesktopBridge {
     listener: (request: DesktopQuitConfirmationRequest | null) => void,
   ) => () => void;
   resolveQuitConfirmation?: (confirmed: boolean) => Promise<void>;
+  /**
+   * `desktop:quit-after-moves`: quit once batch `batchId` has moved (see
+   * DesktopQuitAfterMovesInput). Absent: an older desktop app.
+   */
+  quitAfterMoves?: (input: DesktopQuitAfterMovesInput) => Promise<void>;
+  /**
+   * `desktop:quit-after-moves-cancel`: stop waiting to quit after moves. The
+   * moves themselves go on (or are cancelled by the page with `moves.unqueue`).
+   */
+  cancelQuitAfterMoves?: () => Promise<void>;
+  /**
+   * `desktop:quit-after-moves-show`: the moves a quit waits for need the
+   * user (one didn't move, or one is held), so the window comes back, shown
+   * and focused, even if it was hidden or minimized while it waited. Does
+   * nothing unless the app waits to quit after moves.
+   */
+  showQuitAfterMoves?: () => Promise<void>;
   onMenuAction: (
     listener: (action: string, payload?: DesktopMenuActionPayload) => void,
   ) => () => void;
@@ -1737,6 +1810,8 @@ export interface LocalApi {
     getProcessResourceHistory: (
       input: ServerProcessResourceHistoryInput,
     ) => Promise<ServerProcessResourceHistoryResult>;
+    /** CPU by thread over the last minute; keeps the server's sampler going. */
+    getThreadCpuUsage: () => Promise<ServerThreadCpuUsageResult>;
     signalProcess: (input: ServerSignalProcessInput) => Promise<ServerSignalProcessResult>;
     resolveBackgroundRuns: (
       input: ServerResolveBackgroundRunsInput,
@@ -1834,6 +1909,35 @@ export interface EnvironmentApi {
     claim: (claim: PreviewAutomationClaim) => Promise<void>;
     /** Only for servers that advertise `browserLoopbackTunnel`. */
     active: (activity: PreviewAutomationActivity) => Promise<void>;
+  };
+  /**
+   * Simulators and emulators on the environment's machine
+   * (docs/design/devices.md). Only for servers that advertise `devices`.
+   */
+  device: {
+    list: (input: DeviceListInput) => Promise<DeviceServiceState>;
+    updateTool: (input: DeviceUpdateToolInput) => Promise<DeviceServiceState>;
+    open: (input: DeviceOpenInput) => Promise<DeviceSession>;
+    close: (input: DeviceCloseInput) => Promise<void>;
+    shutdown: (input: DeviceShutdownInput) => Promise<void>;
+    detail: (input: DeviceDetailInput) => Promise<DeviceDetail>;
+    action: (input: DeviceActionInput) => Promise<DeviceDetail>;
+    /** The state now and after every change, followed again after a reconnect. */
+    subscribeState: (listener: (state: DeviceServiceState) => void) => () => void;
+    /**
+     * One request or socket to the device hub, open until the returned call.
+     * Never resubscribed: `onClosed` comes once when it ends any other way,
+     * with the failure when it failed.
+     */
+    channel: {
+      open: (
+        input: DeviceChannelOpen,
+        listener: (event: DeviceChannelEvent) => void,
+        onClosed: (failure?: unknown) => void,
+      ) => () => void;
+      send: (input: DeviceChannelSend) => Promise<void>;
+      credit: (input: DeviceChannelCredit) => Promise<void>;
+    };
   };
   /**
    * The browser's way to the environment's own `localhost` from another

@@ -32,6 +32,7 @@ import {
   type WebhookSignature,
 } from "@threadlines/contracts";
 import {
+  cadenceCronExpression,
   cadenceSaveRefusal,
   describeCadence,
   sameCadence,
@@ -46,7 +47,7 @@ import {
 import * as Result from "effect/Result";
 
 import { viewerTimeZone } from "../../lib/timeZones";
-import { nextCheckBack } from "../chat/checkBacks";
+import { liveCheckBacks, nextCheckBack } from "../chat/checkBacks";
 
 // ---------------------------------------------------------------------------
 // Where the page is (its search params are in scheduledShell.logic.ts)
@@ -106,12 +107,16 @@ export function taskRunStatus(
 /** The viewer's own zone. */
 export { viewerTimeZone } from "../../lib/timeZones";
 
-/** A wall time in the viewer's locale ("9:00", "9:00 AM"). */
-export function formatClock(clock: ScheduledTaskClock): string {
+/**
+ * A wall time in the viewer's locale ("9:00", "9:00 AM"); `hour12` follows
+ * the app's clock setting where the caller has it, else the locale decides.
+ */
+export function formatClock(clock: ScheduledTaskClock, hour12?: boolean): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
     timeZone: "UTC",
+    ...(hour12 !== undefined ? { hour12 } : {}),
   }).format(Date.UTC(2000, 0, 1, clock.hour, clock.minute));
 }
 
@@ -135,8 +140,13 @@ export function formatCadenceDay(date: string, nowMs: number = Date.now()): stri
 export function describeTaskSchedule(
   task: Pick<ScheduledTask, "cadence" | "timeZone">,
   viewerZone: string = viewerTimeZone(),
+  hour12?: boolean,
 ): string {
-  const words = describeCadence(task.cadence, formatClock, formatCadenceDay);
+  const words = describeCadence(
+    task.cadence,
+    (clock) => formatClock(clock, hour12),
+    formatCadenceDay,
+  );
   return task.cadence.kind === "manual" ||
     task.cadence.kind === "webhook" ||
     task.timeZone === viewerZone
@@ -378,7 +388,20 @@ export const CADENCE_KIND_LABELS: Record<CadenceKind, string> = {
   webhook: "When something happens",
 };
 
-/** The kinds the Schedule field offers, in its order; event tasks only on a computer that runs them. */
+/**
+ * The patterns the schedule popover's Repeat field lists. A cron rule and
+ * event triggers sit one step further in, as rows of their own.
+ */
+export const REPEAT_KINDS = [
+  "manual",
+  "once",
+  "hourly",
+  "daily",
+  "weekdays",
+  "weekly",
+] as const satisfies readonly CadenceKind[];
+
+/** The kinds a task can have, in the popover's order; event tasks only on a computer that runs them. */
 export function cadenceKindsFor(eventTasks: boolean): readonly CadenceKind[] {
   const clock: CadenceKind[] = [
     "manual",
@@ -771,6 +794,11 @@ export interface ScheduledTaskForm {
   readonly minute: number;
   readonly weekday: number;
   readonly cron: string;
+  /**
+   * The user wrote the cron rule (or the task already ran on one): until
+   * then, switching to a cron rule starts from the schedule picked so far.
+   */
+  readonly cronChosen: boolean;
   /** An event task's start (docs/design/event-tasks.md), kept while another kind is picked. */
   readonly webhook: WebhookForm;
   readonly timeZone: string;
@@ -829,6 +857,7 @@ export function emptyTaskForm(input: {
     minute: 0,
     weekday: 1,
     cron: "0 9 * * 1-5",
+    cronChosen: false,
     webhook: DEFAULT_WEBHOOK_FORM,
     timeZone: input.timeZone,
     timeZoneChosen: false,
@@ -864,7 +893,7 @@ export function taskForm(task: ScheduledTask, environmentId: EnvironmentId): Sch
     ...(cadence.kind === "once" ? { date: cadence.date } : {}),
     ...(cadence.kind === "hourly" ? { minute: cadence.minute } : {}),
     ...(cadence.kind === "weekly" ? { weekday: cadence.weekday } : {}),
-    ...(cadence.kind === "custom" ? { cron: cadence.cron } : {}),
+    ...(cadence.kind === "custom" ? { cron: cadence.cron, cronChosen: true } : {}),
     ...(cadence.kind === "webhook" ? { webhook: webhookFormOf(cadence) } : {}),
     timeZoneChosen: true,
     target: task.target.kind,
@@ -892,6 +921,48 @@ export function formCadence(form: ScheduledTaskForm): ScheduledTaskCadence {
     case "webhook":
       return webhookCadenceOf(form.webhook, form.target === "new_thread");
   }
+}
+
+/**
+ * The switch to a cron rule: one the user wrote stays, else it starts from
+ * the schedule picked so far ("Weekdays at 9:00" gives `0 9 * * 1-5`). A
+ * one-time schedule isn't carried over: as a rule it would repeat every year.
+ */
+export function customCadencePatch(
+  form: ScheduledTaskForm,
+): Pick<ScheduledTaskForm, "cadenceKind" | "cron"> {
+  if (form.cronChosen || form.cadenceKind === "once" || form.cadenceKind === "custom") {
+    return { cadenceKind: "custom", cron: form.cron };
+  }
+  const seeded = form.cadenceKind === "webhook" ? null : cadenceCronExpression(formCadence(form));
+  return { cadenceKind: "custom", cron: seeded ?? form.cron };
+}
+
+/**
+ * What the schedule button says: the schedule in a few words, as the task
+ * list words it ("Weekdays at 9:00 AM", "Mondays at 9:00 AM · Europe/Madrid")
+ * with times in the app's clock setting (`hour12`),
+ * or the kind while it's only half set up (a cron rule not written yet, an
+ * event task without its repository).
+ */
+export function scheduleSummary(
+  form: ScheduledTaskForm,
+  viewerZone: string = viewerTimeZone(),
+  hour12?: boolean,
+): string {
+  if (form.cadenceKind === "custom" && form.cron.trim().length === 0) return "Custom cron rule";
+  if (
+    form.cadenceKind === "webhook" &&
+    form.webhook.source === "github" &&
+    form.webhook.repository.trim().length === 0
+  ) {
+    return CADENCE_KIND_LABELS.webhook;
+  }
+  return describeTaskSchedule(
+    { cadence: formCadence(form), timeZone: form.timeZone },
+    viewerZone,
+    hour12,
+  );
 }
 
 export type FormProblems = Partial<
@@ -1167,7 +1238,8 @@ export function checkBackThreads<
     .flatMap((thread) => {
       const soonest = nextCheckBack(thread.checkBacks);
       if (thread.archivedAt !== null || soonest === null) return [];
-      return [{ thread, soonest, more: (thread.checkBacks?.length ?? 1) - 1 }];
+      // A dormant one can't fire until its agent runs again, so it isn't one more.
+      return [{ thread, soonest, more: liveCheckBacks(thread.checkBacks).length - 1 }];
     })
     .toSorted(
       (left, right) =>

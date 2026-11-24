@@ -605,6 +605,7 @@ export function LiveThreadBrowserView({ browser }: { browser: LiveThreadBrowserR
         left: "anchor(left)",
         width: "anchor-size(width)",
         height: "anchor-size(height)",
+        // Over the app, under toasts (z-45) and menus and dialogs (z-50).
         zIndex: 40,
       }
     : {

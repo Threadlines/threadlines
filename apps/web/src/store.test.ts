@@ -14,11 +14,14 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RoomAgentRequestId,
+  SecretRequestId,
   SettingsChangeRequestId,
   SideTurnId,
   ThreadId,
   ThreadParticipantId,
+  ThreadMoveBatchId,
   ThreadMoveId,
+  ThreadMoveRequestId,
   TurnId,
   OrchestrationThread,
   type OrchestrationEvent,
@@ -65,7 +68,7 @@ import {
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
-/** A shell no other thread started, with no threads of its own and no settings change waiting. */
+/** A shell no other thread started, with no threads of its own and no agent request waiting. */
 const NO_CHILD_THREAD_SHELL_FIELDS = {
   parentThreadId: null,
   parentTurnId: null,
@@ -75,6 +78,7 @@ const NO_CHILD_THREAD_SHELL_FIELDS = {
   awaitedChildThreadCount: 0,
   pendingChildApproval: false,
   pendingSettingsChange: false,
+  pendingSecretRequest: false,
 } as const;
 
 function withActiveEnvironmentState(
@@ -530,6 +534,143 @@ describe("agents' settings changes", () => {
       localEnvironmentId,
     );
     expect(pillOf(askedAgain)).toBe("Pending Approval");
+  });
+});
+
+describe("agents' requests for keys", () => {
+  const threadId = ThreadId.make("thread-1");
+  const threadRef = scopeThreadRef(localEnvironmentId, threadId);
+  const requestId = SecretRequestId.make("secret-request-1");
+  const waiting = {
+    requestId,
+    participantId: null,
+    turnId: TurnId.make("turn-1"),
+    name: "STRIPE_SECRET_KEY",
+    reason: "To run the checkout tests.",
+    use: { kind: "env_file" as const, path: ".env.local" },
+    replaces: false,
+    status: "waiting" as const,
+    createdAt: "2026-02-27T00:00:01.000Z",
+    noted: false,
+  };
+  const pillOf = (state: AppState) => {
+    const summary = localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+    return summary === undefined
+      ? null
+      : (resolveThreadStatusPill({ thread: summary })?.label ?? null);
+  };
+  const shellUpsert = (pendingSecretRequest: boolean) =>
+    ({
+      kind: "thread-upserted",
+      sequence: 2,
+      thread: {
+        id: threadId,
+        projectId: ProjectId.make("project-1"),
+        title: "Thread",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+        runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        effectiveCwd: null,
+        goal: null,
+        latestTurn: null,
+        createdAt: "2026-02-13T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+        archivedAt: null,
+        pinnedAt: null,
+        pullRequestAutoFix: false,
+        pullRequestAutoMerge: null,
+        linkedPullRequests: [],
+        participants: [],
+        doneOverride: null,
+        lastSeenAt: null,
+        session: null,
+        latestUserMessageAt: null,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        hasActionableProposedPlan: false,
+        cumulativeDiffStat: null,
+        diffStatBaselineTurnCount: 0,
+        ...NO_CHILD_THREAD_SHELL_FIELDS,
+        pendingSecretRequest,
+      },
+    }) as const;
+
+  it("waits on the user from the shell, then from the thread's own requests as they change", () => {
+    const fromShell = applyShellEvent(
+      makeState(makeThread()),
+      shellUpsert(true),
+      localEnvironmentId,
+    );
+    expect(pillOf(fromShell)).toBe("Pending Approval");
+
+    const loaded = syncServerThreadDetail(
+      fromShell,
+      decodeOrchestrationThread({
+        id: threadId,
+        projectId: "project-1",
+        title: "Thread",
+        modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+        runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+        branch: null,
+        worktreePath: null,
+        latestTurn: null,
+        createdAt: "2026-02-13T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+        deletedAt: null,
+        messages: [],
+        activities: [],
+        checkpoints: [],
+        session: null,
+        secretRequests: [waiting],
+      }),
+      localEnvironmentId,
+    );
+    expect(selectThreadByRef(loaded, threadRef)?.secretRequests).toEqual([waiting]);
+    expect(pillOf(loaded)).toBe("Pending Approval");
+
+    // Being saved still waits; saved, it no longer does.
+    const claim = { claimId: "claim-1", deviceLabel: "iPhone" };
+    const claimed = applyOrchestrationEvent(
+      loaded,
+      makeEvent("thread.secret-request-claimed", {
+        threadId,
+        requestId,
+        claim,
+        claimedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(pillOf(claimed)).toBe("Pending Approval");
+    const saved = applyOrchestrationEvent(
+      claimed,
+      makeEvent("thread.secret-request-settled", {
+        threadId,
+        requestId,
+        ending: "saved",
+        savedAt: "2026-02-27T00:00:03.000Z",
+        noted: true,
+        settledAt: "2026-02-27T00:00:03.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(pillOf(saved)).toBe(null);
+    expect(selectThreadByRef(saved, threadRef)?.secretRequests).toEqual([
+      {
+        ...waiting,
+        status: "saved",
+        claim,
+        savedAt: "2026-02-27T00:00:03.000Z",
+        settledAt: "2026-02-27T00:00:03.000Z",
+        noted: true,
+      },
+    ]);
+    // The shell's next push agrees with what the thread folded.
+    const pushed = applyShellEvent(saved, shellUpsert(false), localEnvironmentId);
+    expect(localEnvironmentStateOf(pushed).sidebarThreadSummaryById[threadId]).toBe(
+      localEnvironmentStateOf(saved).sidebarThreadSummaryById[threadId],
+    );
   });
 });
 
@@ -1875,6 +2016,90 @@ describe("incremental orchestration updates", () => {
     expect(sidebarThreads[0]?.remoteOrigin?.threadId).toBe("thread-on-mac");
   });
 
+  it("takes a thread started without report back out of its starter's Stop once a person writes in it", () => {
+    const threadId = ThreadId.make("thread-1");
+    const threadRef = scopeThreadRef(localEnvironmentId, threadId);
+    const base = makeState(makeThread({ id: threadId }));
+    const environment = base.environmentStateById[localEnvironmentId]!;
+    const loose: AppState = {
+      ...base,
+      environmentStateById: {
+        ...base.environmentStateById,
+        [localEnvironmentId]: {
+          ...environment,
+          threadShellById: {
+            ...environment.threadShellById,
+            [threadId]: {
+              ...environment.threadShellById[threadId]!,
+              parentThreadId: ThreadId.make("thread-lead"),
+              attachedToParent: false,
+              stopsWithParent: true,
+            },
+          },
+        },
+      },
+    };
+    const flagOf = (state: AppState) => selectThreadByRef(state, threadRef)?.stopsWithParent;
+    expect(flagOf(loose)).toBe(true);
+    const queued = (origin: { composer?: "typed"; fromAgentThread?: true }) =>
+      applyOrchestrationEvent(
+        loose,
+        makeEvent("thread.follow-up-queued", {
+          threadId,
+          followUp: {
+            messageId: MessageId.make("message-queued"),
+            text: "and the tests too",
+            attachments: [],
+            ...(origin.composer !== undefined ? { composer: origin.composer } : {}),
+            ...(origin.fromAgentThread
+              ? {
+                  fromThread: {
+                    threadId: ThreadId.make("thread-lead"),
+                    requestId: ChildRequestId.make("request-1"),
+                    kind: "request" as const,
+                  },
+                }
+              : {}),
+            runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+            interactionMode: DEFAULT_INTERACTION_MODE,
+            createdAt: "2026-02-27T00:00:01.000Z",
+          },
+        }),
+        localEnvironmentId,
+      );
+    // Queued behind a running turn, steered in, or accepted: each is the person writing.
+    expect(flagOf(queued({ composer: "typed" }))).toBeUndefined();
+    const steer = {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      messageId: MessageId.make("message-steer"),
+      role: "user" as const,
+      text: "steer it",
+      sentFrom: { kind: "phone" as const },
+      createdAt: "2026-02-27T00:00:02.000Z",
+    };
+    expect(
+      flagOf(
+        applyOrchestrationEvent(
+          loose,
+          makeEvent("thread.follow-up-submitted", steer),
+          localEnvironmentId,
+        ),
+      ),
+    ).toBeUndefined();
+    expect(
+      flagOf(
+        applyOrchestrationEvent(
+          loose,
+          makeEvent("thread.follow-up-accepted", steer),
+          localEnvironmentId,
+        ),
+      ),
+    ).toBeUndefined();
+    // The agent that started it writing there leaves it under that agent's Stop.
+    expect(flagOf(queued({ fromAgentThread: true }))).toBe(true);
+  });
+
   it("adds accepted follow-ups as inline user messages", () => {
     const threadId = ThreadId.make("thread-1");
     const turnId = TurnId.make("turn-1");
@@ -1957,7 +2182,7 @@ describe("incremental orchestration updates", () => {
     );
     const answering = selectThreadByRef(state, ref);
     expect(answering?.messages[0]?.sideTurnId).toBe(sideTurnId);
-    expect(answering?.sideTurn?.status).toBe("running");
+    expect(answering?.sideTurns?.[0]?.status).toBe("running");
 
     state = apply(
       state,
@@ -1970,7 +2195,7 @@ describe("incremental orchestration updates", () => {
         settledAt: "2026-02-27T00:00:09.000Z",
       }),
     );
-    expect(selectThreadByRef(state, ref)?.sideTurn ?? null).toBeNull();
+    expect(selectThreadByRef(state, ref)?.sideTurns).toEqual([]);
   });
 
   it("follows an agent's request live, from its message to the user writing again", () => {
@@ -2053,10 +2278,12 @@ describe("incremental orchestration updates", () => {
       requestKind: "review",
       reviewInput,
     });
-    expect(running?.sideTurn).toMatchObject({ kind: "review", askedBy: { participantId: null } });
+    expect(running?.sideTurns?.[0]).toMatchObject({
+      kind: "review",
+      askedBy: { participantId: null },
+    });
     expect(running?.agentRequests).toMatchObject({
       open: [{ requestId, status: "running" }],
-      requestsSinceUser: 1,
     });
 
     state = apply(
@@ -2082,7 +2309,6 @@ describe("incremental orchestration updates", () => {
       open: [],
       hold: true,
       chainEpoch: 1,
-      requestsSinceUser: 1,
     });
     // The outcome stays on the message, beside what the review was given.
     expect(stopped?.messages[0]).toMatchObject({ requestOutcome: "stopped", reviewInput });
@@ -2097,7 +2323,6 @@ describe("incremental orchestration updates", () => {
     expect(selectThreadByRef(state, ref)?.agentRequests).toMatchObject({
       hold: false,
       chainEpoch: 1,
-      requestsSinceUser: 0,
     });
   });
 
@@ -2181,9 +2406,9 @@ describe("incremental orchestration updates", () => {
       awaitedChildThreadCount: 1,
       pendingChildApproval: true,
     });
-    expect(selectThreadByRef(state, scopeThreadRef(localEnvironmentId, parentId))).toMatchObject({
-      childRequests: { startsSinceUser: 2 },
-    });
+    expect(
+      selectThreadByRef(state, scopeThreadRef(localEnvironmentId, parentId))?.childRequests?.open,
+    ).toHaveLength(2);
 
     // The parent's request lands in the child as another thread's message.
     state = apply(
@@ -2360,6 +2585,249 @@ describe("incremental orchestration updates", () => {
       movedAt: "2026-02-27T00:00:07.000Z",
     });
     expect(summaryOf(state)?.moveStatus).toBe("moved");
+  });
+
+  it("follows a move that waits for the thread to be free, and drops steps of an older one", () => {
+    const threadId = ThreadId.make("thread-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const requestId = ThreadMoveRequestId.make("queued-1");
+    const macMini = {
+      environmentId: EnvironmentId.make("environment-mac-mini"),
+      label: "Mac mini",
+    };
+    const agent = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+    const pendingOf = (state: AppState) => selectThreadByRef(state, ref)?.pendingMove;
+    const summaryOf = (state: AppState) =>
+      localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+    const queue = (id: typeof requestId) =>
+      makeEvent("thread.move-queued", {
+        threadId,
+        pendingMove: {
+          requestId: id,
+          target: macMini,
+          agent,
+          mode: "when-done",
+          stage: "waiting",
+          requestedAt: "2026-02-27T00:00:01.000Z",
+          requestedBy: { kind: "user" },
+          waitsFor: [{ code: "turn", words: "when this turn ends" }],
+        },
+      });
+
+    let state = apply(makeState(makeThread({ id: threadId })), queue(requestId));
+    expect(pendingOf(state)).toMatchObject({ requestId, stage: "waiting", target: macMini });
+    expect(summaryOf(state)?.moveStatus).toBe("queued");
+
+    // The turn ended; Mac mini is offline: it waits, held, saying why.
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-status-set", {
+        threadId,
+        requestId,
+        waitsFor: [],
+        hold: { kind: "target_unreachable", words: "Waiting for Mac mini to connect." },
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    // A step naming another request is not this one's.
+    state = apply(
+      state,
+      makeEvent("thread.move-quiescing", {
+        threadId,
+        requestId: ThreadMoveRequestId.make("queued-old"),
+        updatedAt: "2026-02-27T00:00:03.000Z",
+      }),
+    );
+    expect(pendingOf(state)).toMatchObject({
+      stage: "waiting",
+      waitsFor: [],
+      hold: { kind: "target_unreachable", words: "Waiting for Mac mini to connect." },
+    });
+
+    state = apply(
+      state,
+      makeEvent("thread.move-quiescing", {
+        threadId,
+        requestId,
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+    );
+    expect(pendingOf(state)?.stage).toBe("quiescing");
+
+    // Cancelled: the thread is its own again. A late end of an old request changes nothing.
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-ended", {
+        threadId,
+        requestId,
+        reason: "cancelled",
+        endedAt: "2026-02-27T00:00:05.000Z",
+      }),
+    );
+    expect(pendingOf(state)).toBeUndefined();
+    expect(summaryOf(state)?.moveStatus).toBeUndefined();
+
+    // Queued again, and started: the move takes its place in one step.
+    const secondRequestId = ThreadMoveRequestId.make("queued-2");
+    state = apply(state, queue(secondRequestId));
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-ended", {
+        threadId,
+        requestId,
+        reason: "cancelled",
+        endedAt: "2026-02-27T00:00:06.000Z",
+      }),
+    );
+    expect(pendingOf(state)?.requestId).toBe(secondRequestId);
+    state = apply(
+      state,
+      makeEvent("thread.move-started", {
+        threadId,
+        transferId: ThreadMoveId.make("move-from-queue"),
+        target: macMini,
+        agent,
+        startedAt: "2026-02-27T00:00:07.000Z",
+        queuedRequestId: secondRequestId,
+      }),
+    );
+    // The same decision ends the queued move it started from.
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-ended", {
+        threadId,
+        requestId: secondRequestId,
+        reason: "started",
+        endedAt: "2026-02-27T00:00:07.000Z",
+      }),
+    );
+    expect(pendingOf(state)).toBeUndefined();
+    expect(selectThreadByRef(state, ref)?.move).toMatchObject({
+      phase: "exporting",
+      queuedRequestId: secondRequestId,
+    });
+    expect(summaryOf(state)?.moveStatus).toBe("moving");
+  });
+
+  it("keeps how a batch's move went live: stopping, waiting for the target, sent, then not moved", () => {
+    const threadId = ThreadId.make("thread-1");
+    const ref = scopeThreadRef(localEnvironmentId, threadId);
+    const requestId = ThreadMoveRequestId.make("queued-batch");
+    const batchId = ThreadMoveBatchId.make("batch-1");
+    const transferId = ThreadMoveId.make("move-batch");
+    const macMini = {
+      environmentId: EnvironmentId.make("environment-mac-mini"),
+      label: "Mac mini",
+    };
+    const agent = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+    const apply = (state: AppState, event: OrchestrationEvent) =>
+      applyOrchestrationEvent(state, event, localEnvironmentId);
+    const threadOf = (state: AppState) => selectThreadByRef(state, ref);
+    const summaryOf = (state: AppState) =>
+      localEnvironmentStateOf(state).sidebarThreadSummaryById[threadId];
+
+    let state = apply(
+      makeState(makeThread({ id: threadId })),
+      makeEvent("thread.move-queued", {
+        threadId,
+        pendingMove: {
+          requestId,
+          target: macMini,
+          mode: "when-done",
+          stage: "waiting",
+          requestedAt: "2026-02-27T00:00:01.000Z",
+          requestedBy: { kind: "user" },
+          batchId,
+        },
+      }),
+    );
+    // "Stop the agents and move now": stopping from here.
+    state = apply(
+      state,
+      makeEvent("thread.move-mode-set", {
+        threadId,
+        requestId,
+        mode: "stop-now",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+    );
+    expect(threadOf(state)?.pendingMove).toMatchObject({ mode: "stop-now", stage: "quiescing" });
+
+    state = apply(
+      state,
+      makeEvent("thread.move-started", {
+        threadId,
+        transferId,
+        target: macMini,
+        agent,
+        startedAt: "2026-02-27T00:00:03.000Z",
+        queuedRequestId: requestId,
+        batchId,
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.move-queue-ended", {
+        threadId,
+        requestId,
+        reason: "started",
+        endedAt: "2026-02-27T00:00:03.000Z",
+      }),
+    );
+    state = apply(
+      state,
+      makeEvent("thread.move-progressed", {
+        threadId,
+        transferId,
+        phase: "exporting",
+        waitingForTarget: true,
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+    );
+    expect(summaryOf(state)?.moveStatus).toBe("waiting");
+
+    // Every byte is there; only Mac mini's Allow is left.
+    state = apply(
+      state,
+      makeEvent("thread.move-progressed", {
+        threadId,
+        transferId,
+        phase: "awaiting_approval",
+        sentBytes: 10,
+        totalBytes: 10,
+        staged: true,
+        updatedAt: "2026-02-27T00:00:05.000Z",
+      }),
+    );
+    expect(threadOf(state)?.lastMoveOutcome).toMatchObject({
+      result: "awaiting_approval",
+      batchId,
+      transferId,
+      requestId,
+    });
+    expect(summaryOf(state)?.moveStatus).toBe("sent");
+
+    // Turned down there: the thread is its own again, and says why.
+    state = apply(
+      state,
+      makeEvent("thread.move-aborted", {
+        threadId,
+        transferId,
+        reason: "Mac mini's user didn't allow it.",
+        code: "denied",
+        updatedAt: "2026-02-27T00:00:06.000Z",
+      }),
+    );
+    expect(threadOf(state)?.move).toBeUndefined();
+    expect(threadOf(state)?.lastMoveOutcome).toMatchObject({
+      result: "not_moved",
+      batchId,
+      words: "Mac mini's user didn't allow it.",
+      reason: "denied",
+    });
+    expect(summaryOf(state)?.moveStatus).toBeUndefined();
   });
 
   it("keeps a moved thread's imported history marked, and out of its latest turn", () => {
@@ -3243,13 +3711,15 @@ describe("selectRunningSidebarThreadsAcrossEnvironments", () => {
   it("keeps a room live while an agent answers on the side and the others are idle", () => {
     const answering = makeSidebarSummary({
       id: ThreadId.make("thread-answering"),
-      sideTurn: {
-        sideTurnId: SideTurnId.make("side-1"),
-        participantId: null,
-        messageId: MessageId.make("question-1"),
-        status: "running",
-        startedAt: "2026-02-13T00:06:00.000Z",
-      },
+      sideTurns: [
+        {
+          sideTurnId: SideTurnId.make("side-1"),
+          participantId: null,
+          messageId: MessageId.make("question-1"),
+          status: "running",
+          startedAt: "2026-02-13T00:06:00.000Z",
+        },
+      ],
     });
     const state = makeEmptyState({
       threadIds: [answering.id],

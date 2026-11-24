@@ -325,6 +325,7 @@ export interface WsRpcClient {
     readonly getProcessResourceHistory: RpcUnaryMethod<
       typeof WS_METHODS.serverGetProcessResourceHistory
     >;
+    readonly getThreadCpuUsage: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetThreadCpuUsage>;
     readonly signalProcess: RpcUnaryMethod<typeof WS_METHODS.serverSignalProcess>;
     readonly resolveBackgroundRuns: RpcUnaryMethod<typeof WS_METHODS.serverResolveBackgroundRuns>;
     readonly readBackgroundRunOutput: RpcUnaryMethod<
@@ -447,6 +448,27 @@ export interface WsRpcClient {
     readonly search: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeSearch>;
     readonly read: RpcUnaryMethod<typeof WS_METHODS.themeVsCodeRead>;
   };
+  /** Simulators and emulators (docs/design/devices.md), on servers reporting `devices`. */
+  readonly device: {
+    readonly list: RpcUnaryMethod<typeof WS_METHODS.deviceList>;
+    readonly updateTool: RpcUnaryMethod<typeof WS_METHODS.deviceUpdateTool>;
+    readonly open: RpcUnaryMethod<typeof WS_METHODS.deviceOpen>;
+    readonly close: RpcUnaryMethod<typeof WS_METHODS.deviceClose>;
+    readonly shutdown: RpcUnaryMethod<typeof WS_METHODS.deviceShutdown>;
+    readonly detail: RpcUnaryMethod<typeof WS_METHODS.deviceDetail>;
+    readonly action: RpcUnaryMethod<typeof WS_METHODS.deviceAction>;
+    readonly subscribeState: RpcStreamMethod<typeof WS_METHODS.subscribeDeviceState>;
+    readonly channelOpen: RpcInputStreamMethod<typeof WS_METHODS.deviceChannelOpen>;
+    readonly channelSend: RpcUnaryMethod<typeof WS_METHODS.deviceChannelSend>;
+    readonly channelCredit: RpcUnaryMethod<typeof WS_METHODS.deviceChannelCredit>;
+  };
+  /** This computer's project briefs and notes (docs/design/project-brief-notes.md), on servers reporting `projectContext`. */
+  readonly projectContext: {
+    readonly subscribe: RpcStreamMethod<typeof WS_METHODS.projectContextSubscribe>;
+    readonly setBrief: RpcUnaryMethod<typeof WS_METHODS.projectContextSetBrief>;
+    readonly readNote: RpcUnaryMethod<typeof WS_METHODS.projectContextReadNote>;
+    readonly changeNote: RpcUnaryMethod<typeof WS_METHODS.projectContextChangeNote>;
+  };
   /** This computer's scheduled tasks (docs/design/fleet.md, Part 6). */
   readonly scheduledTasks: {
     readonly subscribe: RpcStreamMethod<typeof WS_METHODS.scheduledTasksSubscribe>;
@@ -490,6 +512,15 @@ export interface WsRpcClient {
     readonly reportDevice: RpcUnaryMethod<typeof WS_METHODS.settingsChangeReportDevice>;
   };
   /**
+   * Agents' requests for keys (docs/design/secret-requests.md), answered on
+   * the thread's own computer: the card's Save or Not now (the value goes
+   * wrapped in Redacted, never logged), and Remove now on a saved row.
+   */
+  readonly secretRequest: {
+    readonly respond: RpcUnaryMethod<typeof WS_METHODS.secretRequestRespond>;
+    readonly remove: RpcUnaryMethod<typeof WS_METHODS.secretRequestRemove>;
+  };
+  /**
    * Agents outside Threadlines (docs/design/outside-agents.md): owner only,
    * on servers whose descriptor reports `outsideAgents`.
    */
@@ -530,6 +561,8 @@ export interface WsRpcClient {
     readonly setAccess: RpcUnaryMethod<typeof WS_METHODS.linksSetAccess>;
     readonly remove: RpcUnaryMethod<typeof WS_METHODS.linksRemove>;
     readonly respondRequest: RpcUnaryMethod<typeof WS_METHODS.linksRespondRequest>;
+    /** A parent's child on a linked computer, read through the link, where the descriptor reports `linkedThreadRead`. */
+    readonly readThread: RpcUnaryMethod<typeof WS_METHODS.linksReadThread>;
   };
   /**
    * Moving a thread to a linked computer (docs/design/fleet.md, Part 3), on
@@ -539,6 +572,22 @@ export interface WsRpcClient {
     readonly preview: RpcUnaryMethod<typeof WS_METHODS.movesPreview>;
     readonly start: RpcUnaryMethod<typeof WS_METHODS.movesStart>;
     readonly cancel: RpcUnaryMethod<typeof WS_METHODS.movesCancel>;
+    /**
+     * A move that waits for the thread to be free (Part 3b). Only servers
+     * whose preview can say `waitsFor` or an `unreachable` target serve these.
+     */
+    readonly queue: RpcUnaryMethod<typeof WS_METHODS.movesQueue>;
+    readonly unqueue: RpcUnaryMethod<typeof WS_METHODS.movesUnqueue>;
+    readonly retry: RpcUnaryMethod<typeof WS_METHODS.movesRetry>;
+    /**
+     * Several threads at once (Part 3c), on servers whose descriptor reports
+     * `threadMoveBatch`; `respondMany` where it reports `threadMoveStagedApproval`.
+     */
+    readonly previewMany: RpcUnaryMethod<typeof WS_METHODS.movesPreviewMany>;
+    readonly queueMany: RpcUnaryMethod<typeof WS_METHODS.movesQueueMany>;
+    readonly setMode: RpcUnaryMethod<typeof WS_METHODS.movesSetMode>;
+    readonly batchStatus: RpcUnaryMethod<typeof WS_METHODS.movesBatchStatus>;
+    readonly respondMany: RpcUnaryMethod<typeof WS_METHODS.movesRespondMany>;
   };
   /**
    * Setting up a project on another computer (docs/design/fleet.md, Part 8),
@@ -1043,6 +1092,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
             Effect.withTracerEnabled(false),
           ),
         ),
+      getThreadCpuUsage: () =>
+        transport.request((client) =>
+          client[WS_METHODS.serverGetThreadCpuUsage]({}).pipe(Effect.withTracerEnabled(false)),
+        ),
       signalProcess: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverSignalProcess](input).pipe(Effect.withTracerEnabled(false)),
@@ -1294,6 +1347,47 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       search: (input) => transport.request((client) => client[WS_METHODS.themeVsCodeSearch](input)),
       read: (input) => transport.request((client) => client[WS_METHODS.themeVsCodeRead](input)),
     },
+    device: {
+      list: (input) => transport.request((client) => client[WS_METHODS.deviceList](input)),
+      updateTool: (input) =>
+        transport.request((client) => client[WS_METHODS.deviceUpdateTool](input)),
+      open: (input) => transport.request((client) => client[WS_METHODS.deviceOpen](input)),
+      close: (input) => transport.request((client) => client[WS_METHODS.deviceClose](input)),
+      shutdown: (input) => transport.request((client) => client[WS_METHODS.deviceShutdown](input)),
+      detail: (input) => transport.request((client) => client[WS_METHODS.deviceDetail](input)),
+      action: (input) => transport.request((client) => client[WS_METHODS.deviceAction](input)),
+      subscribeState: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.subscribeDeviceState]({}), listener, {
+          ...options,
+          tag: WS_METHODS.subscribeDeviceState,
+        }),
+      // A channel carries one request or socket to the hub and cannot pick up
+      // where it left off: when the connection drops it ends, and the Device
+      // tab opens a fresh one with a decoder waiting for a keyframe.
+      channelOpen: (input, listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.deviceChannelOpen](input), listener, {
+          tag: WS_METHODS.deviceChannelOpen,
+          resubscribe: false,
+          ...(options?.onComplete ? { onComplete: options.onComplete } : {}),
+        }),
+      channelSend: (input) =>
+        transport.request((client) => client[WS_METHODS.deviceChannelSend](input)),
+      channelCredit: (input) =>
+        transport.request((client) => client[WS_METHODS.deviceChannelCredit](input)),
+    },
+    projectContext: {
+      subscribe: (listener, options) =>
+        transport.subscribe((client) => client[WS_METHODS.projectContextSubscribe]({}), listener, {
+          ...options,
+          tag: WS_METHODS.projectContextSubscribe,
+        }),
+      setBrief: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextSetBrief](input)),
+      readNote: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextReadNote](input)),
+      changeNote: (input) =>
+        transport.request((client) => client[WS_METHODS.projectContextChangeNote](input)),
+    },
     scheduledTasks: {
       subscribe: (listener, options) =>
         transport.subscribe(
@@ -1356,6 +1450,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       reportDevice: (input) =>
         transport.request((client) => client[WS_METHODS.settingsChangeReportDevice](input)),
     },
+    secretRequest: {
+      respond: (input) =>
+        transport.request((client) => client[WS_METHODS.secretRequestRespond](input)),
+      remove: (input) =>
+        transport.request((client) => client[WS_METHODS.secretRequestRemove](input)),
+    },
     links: {
       subscribe: (listener, options) =>
         transport.subscribe((client) => client[WS_METHODS.linksSubscribe]({}), listener, {
@@ -1369,6 +1469,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       remove: (input) => transport.request((client) => client[WS_METHODS.linksRemove](input)),
       respondRequest: (input) =>
         transport.request((client) => client[WS_METHODS.linksRespondRequest](input)),
+      readThread: (input) =>
+        transport.request((client) => client[WS_METHODS.linksReadThread](input)),
     },
     // Never replayed on a new socket: the user answers what is on screen, and
     // after a reconnect the fresh snapshot says what still waits.
@@ -1418,6 +1520,17 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       preview: (input) => transport.request((client) => client[WS_METHODS.movesPreview](input)),
       start: (input) => transport.request((client) => client[WS_METHODS.movesStart](input)),
       cancel: (input) => transport.request((client) => client[WS_METHODS.movesCancel](input)),
+      queue: (input) => transport.request((client) => client[WS_METHODS.movesQueue](input)),
+      unqueue: (input) => transport.request((client) => client[WS_METHODS.movesUnqueue](input)),
+      retry: (input) => transport.request((client) => client[WS_METHODS.movesRetry](input)),
+      previewMany: (input) =>
+        transport.request((client) => client[WS_METHODS.movesPreviewMany](input)),
+      queueMany: (input) => transport.request((client) => client[WS_METHODS.movesQueueMany](input)),
+      setMode: (input) => transport.request((client) => client[WS_METHODS.movesSetMode](input)),
+      batchStatus: (input) =>
+        transport.request((client) => client[WS_METHODS.movesBatchStatus](input)),
+      respondMany: (input) =>
+        transport.request((client) => client[WS_METHODS.movesRespondMany](input)),
     },
     // Every call here is safe to send again: the reads are pure, a start is
     // the same job for the same setupId, and cancel and dismiss repeat as

@@ -45,6 +45,8 @@ export function useThemeCreditsDraft(
   manifest: ThemeManifest,
   /** What to say under credits a theme keeps. */
   keepsLine: string,
+  /** Credits from an existing Showcase theme being updated, used until the person edits them. */
+  fallbackCredits?: ThemeCredits | null,
 ): ThemeCreditsDraft {
   const [remembered, setRemembered] = useLocalStorage<ThemeCredits, ThemeCredits>(
     REMEMBERED_CREDITS_KEY,
@@ -52,13 +54,17 @@ export function useThemeCreditsDraft(
     ThemeCredits,
   );
   const own = cleanThemeCredits(manifest.credits);
-  const [author, setAuthor] = useState(remembered.author ?? "");
-  const [link, setLink] = useState(remembered.link ?? "");
-  const [license, setLicense] = useState<ThemeLicense>(
-    remembered.license !== undefined && remembered.license !== "MIT"
-      ? remembered.license
-      : "CC-BY-4.0",
-  );
+  const [draft, setDraft] = useState<{
+    readonly author: string;
+    readonly link: string;
+    readonly license: ThemeLicense;
+  } | null>(null);
+  const base = cleanThemeCredits(fallbackCredits) ?? remembered;
+  const baseLicense: ThemeLicense =
+    base.license !== undefined && base.license !== "MIT" ? base.license : "CC-BY-4.0";
+  const author = draft?.author ?? base.author ?? "";
+  const link = draft?.link ?? base.link ?? "";
+  const license = draft?.license ?? baseLicense;
   const given = cleanThemeCredits({
     ...(author.trim() ? { author } : {}),
     ...(link.trim() ? { link } : {}),
@@ -81,7 +87,7 @@ export function useThemeCreditsDraft(
             value={author}
             maxLength={60}
             placeholder="Your name"
-            onChange={(event) => setAuthor(event.target.value)}
+            onChange={(event) => setDraft({ author: event.target.value, link, license })}
           />
         </LabeledField>
         <LabeledField
@@ -101,14 +107,14 @@ export function useThemeCreditsDraft(
             maxLength={200}
             placeholder="https://"
             aria-invalid={!valid}
-            onChange={(event) => setLink(event.target.value)}
+            onChange={(event) => setDraft({ author, link: event.target.value, license })}
           />
         </LabeledField>
         <LabeledField label="License" hint={THEME_LICENSE_WORDS[license].lets}>
           <Select
             value={license}
             onValueChange={(next) => {
-              if (next !== null) setLicense(next as ThemeLicense);
+              if (next !== null) setDraft({ author, link, license: next as ThemeLicense });
             }}
           >
             <SelectTrigger size="sm" aria-label="License">

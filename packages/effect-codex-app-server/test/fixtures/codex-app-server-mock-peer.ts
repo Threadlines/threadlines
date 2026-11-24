@@ -186,6 +186,22 @@ const handleMethod = (message: Record<string, unknown>) => {
       });
       return;
     }
+    case "thread/resume": {
+      const params = message.params as { threadId?: string; path?: string } | undefined;
+      // A rollout file it can't read (written by a newer Codex, say).
+      if (params?.path !== undefined) {
+        respondError(message.id as number | string, -32603, "unsupported rollout format");
+        return;
+      }
+      // A conversation this home no longer has, as Codex words it.
+      const threadId = params?.threadId;
+      respondError(
+        message.id as number | string,
+        -32600,
+        `no rollout found for thread id ${threadId ?? ""}`,
+      );
+      return;
+    }
     default: {
       if (message.id !== undefined) {
         respondError(message.id as number | string, -32601, `Unhandled request: ${method}`);

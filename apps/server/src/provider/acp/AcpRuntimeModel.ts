@@ -1,6 +1,11 @@
 import type * as EffectAcpSchema from "effect-acp/schema";
+import { cleanSlashCommands } from "@threadlines/shared/slashCommands";
 import { deriveToolActivityPresentation } from "@threadlines/shared/toolActivity";
-import type { ToolLifecycleItemType, UsageTokenTotals } from "@threadlines/contracts";
+import type {
+  ServerProviderSlashCommand,
+  ToolLifecycleItemType,
+  UsageTokenTotals,
+} from "@threadlines/contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -29,7 +34,33 @@ export interface AcpToolCallState {
   readonly status?: "pending" | "inProgress" | "completed" | "failed";
   readonly command?: string;
   readonly detail?: string;
+  /**
+   * The timeline row type, when the agent's `kind` doesn't say it (an MCP
+   * call an agent runs as a command). Set by a descriptor's
+   * `normalizeToolCall`; absent, the row type follows `kind`.
+   */
+  readonly itemType?: ToolLifecycleItemType;
+  /**
+   * In-memory tag of which MCP wire shape `normalizeToolCall` established
+   * (`wrapper` vs `direct`), preserved across merges so later updates are only
+   * validated against that same form. Not written to `data`.
+   */
+  readonly mcpCallMode?: "wrapper" | "direct";
   readonly data: Record<string, unknown>;
+}
+
+/**
+ * One report of a tool call as the agent sent it: a `tool_call` or
+ * `tool_call_update`, or a permission request's call. Read by a descriptor's
+ * `normalizeToolCall`, which needs what this report says, not only the
+ * merged state.
+ */
+export interface AcpToolCallReport {
+  readonly title?: string | null | undefined;
+  readonly kind?: string | null | undefined;
+  readonly rawInput?: unknown;
+  readonly content?: ReadonlyArray<{ readonly type: string }> | null | undefined;
+  readonly locations?: ReadonlyArray<unknown> | null | undefined;
 }
 
 export interface AcpPlanUpdate {
@@ -96,6 +127,11 @@ export type AcpParsedSessionEvent =
       /** The session's running cost in USD so far, from ACP `usage_update`. */
       readonly _tag: "SessionCost";
       readonly totalUsd: number;
+    }
+  | {
+      /** The commands the agent runs on `/<name>`, from ACP `available_commands_update`. */
+      readonly _tag: "AvailableCommandsUpdated";
+      readonly commands: ReadonlyArray<ServerProviderSlashCommand>;
     };
 
 type AcpSessionSetupResponse =
@@ -141,6 +177,22 @@ export const LEGACY_MODEL_OPTION_ID = "model";
 /** An option that lets the user choose the agent's mode (its id or category says so). */
 export function isModeConfigOption(option: EffectAcpSchema.SessionConfigOption): boolean {
   return option.category === "mode" || option.id.trim().toLowerCase() === LEGACY_MODE_OPTION_ID;
+}
+
+/**
+ * The config option that selects the agent's reasoning / thinking level, by
+ * ACP's standard `thought_level` category. Only select options qualify.
+ */
+export function findThoughtLevelConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): EffectAcpSchema.SessionConfigOption | undefined {
+  if (!configOptions) return undefined;
+  return configOptions.find(
+    (option) =>
+      option.category === "thought_level" &&
+      option.type === "select" &&
+      option.id.trim().length > 0,
+  );
 }
 
 /**
@@ -402,7 +454,12 @@ function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecyc
   }
 }
 
-function makeToolCallState(
+/**
+ * A tool call's state from one report of it, named and described the way
+ * the core shows every call. Also how a descriptor's `normalizeToolCall`
+ * rebuilds a call it stops retyping, so no earlier label stays on it.
+ */
+export function makeToolCallState(
   input: {
     readonly toolCallId: string;
     readonly title?: string | null | undefined;
@@ -540,6 +597,7 @@ export function mergeToolCallState(
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
   const detail = next.detail ?? previous?.detail;
+  const mcpCallMode = next.mcpCallMode ?? previous?.mcpCallMode;
   return {
     toolCallId: next.toolCallId,
     ...(kind ? { kind } : {}),
@@ -548,6 +606,7 @@ export function mergeToolCallState(
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
     ...(detail ? { detail } : {}),
+    ...(mcpCallMode ? { mcpCallMode } : {}),
     data: mergeToolCallData(previous?.data, next.data, kind, command),
   };
 }
@@ -561,10 +620,17 @@ function diffContentPaths(
   );
 }
 
+/**
+ * A permission request as the approval shows it. ACP lets the request carry
+ * only part of the call (its id, say), so it is read on top of what the
+ * session already knows of the call (`known`, its updates merged): a command
+ * an earlier update named is never left out of the approval.
+ */
 export function parsePermissionRequest(
   params: EffectAcpSchema.RequestPermissionRequest,
+  known?: AcpToolCallState,
 ): AcpPermissionRequest {
-  const toolCall = makeToolCallState(
+  const fromRequest = makeToolCallState(
     {
       toolCallId: params.toolCall.toolCallId,
       title: params.toolCall.title,
@@ -577,9 +643,54 @@ export function parsePermissionRequest(
     },
     { fallbackStatus: "pending" },
   );
-  const kind = normalizeToolKind(params.toolCall.kind) ?? "unknown";
+  const toolCall =
+    known !== undefined && fromRequest !== undefined
+      ? mergeToolCallState(known, fromRequest)
+      : (fromRequest ?? known);
+  return describePermissionRequest(params, toolCall);
+}
+
+/**
+ * What a tool call would do, as text that changes whenever that does: its
+ * kind and row type, its command, the paths it names, its input, and an
+ * edit's old and new text. An approval is tied to this, not to how the call
+ * reads: an edit whose replacement text changed is a different edit even
+ * when its title and path are the same.
+ */
+export function toolCallSubstance(toolCall: AcpToolCallState | undefined): string {
+  if (toolCall === undefined) return "";
+  const { content, locations, rawInput } = toolCall.data;
+  const changes = Array.isArray(content)
+    ? content.flatMap((entry) =>
+        isRecord(entry) && entry.type === "diff"
+          ? [{ path: entry.path, oldText: entry.oldText ?? null, newText: entry.newText }]
+          : [],
+      )
+    : [];
+  const paths = Array.isArray(locations)
+    ? locations.flatMap((entry) => (isRecord(entry) ? [entry.path] : []))
+    : [];
+  return JSON.stringify([
+    toolCall.kind ?? null,
+    toolCall.itemType ?? null,
+    toolCall.command ?? null,
+    paths,
+    changes,
+    rawInput ?? null,
+  ]);
+}
+
+/** The kind and words of an approval for this call, as far as it is known. */
+export function describePermissionRequest(
+  params: EffectAcpSchema.RequestPermissionRequest,
+  toolCall: AcpToolCallState | undefined,
+): AcpPermissionRequest {
+  const kind = normalizeToolKind(params.toolCall.kind) ?? toolCall?.kind ?? "unknown";
   // An edit is named by the files it changes, not its generic title.
-  const editedPaths = diffContentPaths(params.toolCall.content);
+  const content = toolCall?.data.content;
+  const editedPaths = Array.isArray(content)
+    ? diffContentPaths(content as ReadonlyArray<EffectAcpSchema.ToolCallContent>)
+    : [];
   const detail =
     toolCall?.command ??
     (editedPaths.length > 0 ? editedPaths.join(", ") : undefined) ??
@@ -712,6 +823,13 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       ) {
         events.push({ _tag: "SessionCost", totalUsd: cost.amount });
       }
+      break;
+    }
+    case "available_commands_update": {
+      events.push({
+        _tag: "AvailableCommandsUpdated",
+        commands: cleanSlashCommands(upd.availableCommands),
+      });
       break;
     }
     default:

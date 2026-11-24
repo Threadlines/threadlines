@@ -50,6 +50,7 @@ import type { McpInvocationScope } from "../mcp/McpSessionRegistry.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadCommandRepository } from "../persistence/Services/ProjectionThreadCommands.ts";
+import { SecretScrubber } from "../secrets/SecretScrubber.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TerminalManager, type TerminalCommandRunUpdate } from "../terminal/Services/Manager.ts";
 
@@ -104,6 +105,7 @@ const make = Effect.gen(function* () {
   const commandRows = yield* ProjectionThreadCommandRepository;
   const terminals = yield* TerminalManager;
   const settings = yield* ServerSettingsService;
+  const secretScrubber = yield* SecretScrubber;
 
   /** The thread each run of this process belongs to; run updates carry only the run id. */
   const runThreads = new Map<string, ThreadId>();
@@ -147,6 +149,15 @@ const make = Effect.gen(function* () {
         return {
           outcome: "refused" as const,
           detail: `Keep the command under ${MAX_SHELL_COMMAND_LENGTH} characters and ${MAX_SHELL_COMMAND_LINES} lines; put longer scripts in a file and ask to run that.`,
+        };
+      }
+      // A card shows its command, and the run prints it: a saved key in it
+      // would be on screen and in the output (docs/design/secret-scrubbing.md).
+      const [watched] = secretScrubber.contains([command, reason]);
+      if (watched !== undefined) {
+        return {
+          outcome: "refused" as const,
+          detail: `This command contains ${watched}. Read it from its file inside the command instead.`,
         };
       }
       const dialect = serverCommandDialect();
@@ -213,7 +224,7 @@ const make = Effect.gen(function* () {
         commandId: CommandId.make(`command-run:${progress.runId}:${key}`),
         threadId,
         progress,
-        ...(output !== undefined ? { output } : {}),
+        ...(output !== undefined ? { output: secretScrubber.scrubText(output).text } : {}),
         createdAt: yield* nowIso,
       });
     });
@@ -256,7 +267,12 @@ const make = Effect.gen(function* () {
           threadId,
           runId: run.runId,
           automatic,
-          message: { messageId, text: buildCommandOutputMessage({ run, output }) },
+          message: {
+            messageId,
+            // The whole message, command and folder included: a card or a
+            // record made before a key was saved still holds it whole.
+            text: secretScrubber.scrubText(buildCommandOutputMessage({ run, output })).text,
+          },
           createdAt: yield* nowIso,
         })
         .pipe(Effect.mapError((error) => failWith(error.message)));

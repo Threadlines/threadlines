@@ -28,4 +28,28 @@ describe("redactAcpLogCredentials", () => {
     // The raw protocol line is logged before it is decoded.
     expect(redactAcpLogCredentials(JSON.stringify(sessionNew))).not.toContain("tl_abc");
   });
+
+  it("redacts stdio-bridge MCP authorization env values, decoded or raw", () => {
+    const sessionNew = {
+      cwd: "/repo",
+      mcpServers: [
+        {
+          name: "threadlines_room",
+          command: "/usr/bin/node",
+          args: ["-e", "..."],
+          env: [
+            { name: "THREADLINES_MCP_URL", value: "http://127.0.0.1:3773/mcp/room" },
+            { name: "THREADLINES_MCP_AUTHORIZATION", value: "Bearer tl_secret_xyz" },
+          ],
+        },
+      ],
+    };
+
+    const redacted = redactAcpLogCredentials(sessionNew) as typeof sessionNew;
+    expect(redacted.mcpServers[0]?.env).toEqual([
+      { name: "THREADLINES_MCP_URL", value: "http://127.0.0.1:3773/mcp/room" },
+      { name: "THREADLINES_MCP_AUTHORIZATION", value: "[redacted]" },
+    ]);
+    expect(redactAcpLogCredentials(JSON.stringify(sessionNew))).not.toContain("tl_secret_xyz");
+  });
 });

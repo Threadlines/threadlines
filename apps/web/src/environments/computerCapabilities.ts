@@ -8,6 +8,7 @@ import type {
   ExecutionEnvironmentCapabilities,
   ExecutionEnvironmentDescriptor,
 } from "@threadlines/contracts";
+import { useCallback } from "react";
 
 import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentDescriptor } from "./primary";
 import {
@@ -49,6 +50,21 @@ export function useConnectedComputerCapability(
     environmentId === null ? undefined : state.byId[environmentId],
   );
   return environmentId !== null && capabilityOf(environmentId, capability, primary, runtime);
+}
+
+/**
+ * {@link useConnectedComputerCapability} for any computer, as a check: for a
+ * surface that learns which computer it asks about only as it works.
+ */
+export function useConnectedComputerCapabilityCheck(
+  capability: keyof ExecutionEnvironmentCapabilities,
+): (environmentId: EnvironmentId) => boolean {
+  const primary = usePrimaryEnvironmentDescriptor();
+  const runtimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  return useCallback(
+    (environmentId) => capabilityOf(environmentId, capability, primary, runtimeById[environmentId]),
+    [capability, primary, runtimeById],
+  );
 }
 
 function capabilityOf(

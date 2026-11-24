@@ -1551,3 +1551,71 @@ describe("ProviderModelPicker", () => {
     }
   });
 });
+
+describe("plan limits", () => {
+  it("dots a provider near its plan's limit, and says a model's own limit on its row", async () => {
+    const now = Date.now();
+    const resetsAt = now + 3 * 86_400_000 + 16 * 3_600_000 + 30 * 60_000;
+    const effort = selectDescriptor("effort", "Reasoning", [
+      { id: "high", label: "high", isDefault: true },
+    ]);
+    const claudeModel = (slug: string, name: string) => ({
+      slug,
+      name,
+      isCustom: false,
+      capabilities: createModelCapabilities({ optionDescriptors: [effort] }),
+    });
+    const claude: ServerProvider = {
+      ...TEST_PROVIDERS[1]!,
+      models: [
+        claudeModel("claude-opus-5-5", "Claude Opus 5.5"),
+        claudeModel("claude-fable-5-2", "Claude Fable 5.2"),
+      ],
+      accountUsage: {
+        source: "claude-oauth-usage",
+        checkedAt: new Date(now).toISOString(),
+        primaryLimitId: "claude",
+        limits: [
+          {
+            limitId: "claude",
+            secondary: {
+              usedPercent: 84,
+              remainingPercent: 16,
+              resetsAt,
+              windowDurationMins: 10_080,
+            },
+            scoped: [
+              {
+                scopeLabel: "Fable",
+                usedPercent: 100,
+                remainingPercent: 0,
+                resetsAt,
+                windowDurationMins: 10_080,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-5-5",
+      lockedProvider: null,
+      providers: [claude, TEST_PROVIDERS[0]!],
+    });
+    try {
+      await openModelPicker();
+      const tab = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-model-picker-tab="${id}"]`)!;
+      expect(tab("claudeAgent").querySelector("[data-model-picker-near-limit]")).not.toBeNull();
+      expect(tab("codex").querySelector("[data-model-picker-near-limit]")).toBeNull();
+      const limits = Array.from(
+        getModelPickerListElement().querySelectorAll<HTMLElement>("[data-model-usage-limit]"),
+      ).map((element) => [element.dataset.modelUsageLimit, element.textContent]);
+      // Only Fable has a limit of its own; Opus's row stays as it was.
+      expect(limits).toEqual([["reached", "Limit · resets in 3d 16h"]]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+});

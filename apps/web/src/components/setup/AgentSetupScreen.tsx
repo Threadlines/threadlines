@@ -21,12 +21,12 @@ import {
 } from "@threadlines/shared/providerAuthCommands";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { CheckIcon, ExternalLinkIcon, FolderIcon, GitBranchIcon, LoaderIcon } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import * as Option from "effect/Option";
 import { useShallow } from "zustand/react/shallow";
 
 import { APP_BASE_NAME } from "../../branding";
-import { useCommandPaletteStore } from "../../commandPaletteStore";
+import { openAddProject } from "../addProject/addProjectStore";
 import { usePrimaryEnvironmentDescriptor } from "../../environments/primary/context";
 import { useNavigateBackWithinApp } from "../../hooks/useNavigateBackWithinApp";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
@@ -745,13 +745,16 @@ export function AgentSetupScreen({ routeStep }: { readonly routeStep: SetupStep 
     void handleNewThread(projectRef, { replace: true });
   };
 
-  const chooseFolder = () => {
-    useCommandPaletteStore.getState().openAddProject({
-      ...(environmentId ? { environmentId } : {}),
-      onProjectSelected: (selected) => {
-        if (!environmentId || selected.environmentId !== environmentId) return;
-        updateProgress(environmentId, { projectId: String(selected.projectId) });
+  const chooseFolder = (event: MouseEvent<HTMLElement>) => {
+    openAddProject({
+      selection: {
+        ...(environmentId ? { environmentId } : {}),
+        onProjectSelected: (selected) => {
+          if (!environmentId || selected.environmentId !== environmentId) return;
+          updateProgress(environmentId, { projectId: String(selected.projectId) });
+        },
       },
+      returnFocus: event.currentTarget,
     });
   };
 

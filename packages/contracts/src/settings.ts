@@ -12,10 +12,15 @@ import {
 import {
   AgentInvitesMode,
   AgentThreadsMode,
+  DEFAULT_NEW_THREAD_RUNTIME_MODE,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
   FollowUpDelivery,
   ModelSelection,
+  ProviderInteractionMode,
   RoomAgentRole,
+  RuntimeMode,
 } from "./orchestration.ts";
+import { ProjectNotesMode } from "./projectContext.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 import { ThemeArtInThreads, ThemeGlassLevel, ThemeMotion } from "./themes.ts";
 import { ClaudeWorkflowSize } from "./workflow.ts";
@@ -61,6 +66,14 @@ export type InboxSort = typeof InboxSort.Type;
 export const DEFAULT_INBOX_SORT: InboxSort = "recent";
 export const MIN_SIDEBAR_THREAD_PREVIEW_COUNT = 1;
 export const MAX_SIDEBAR_THREAD_PREVIEW_COUNT = 15;
+/**
+ * Where General Chats live: their own page in the rail ("page"), or a section
+ * at the foot of the Threads list ("threads").
+ */
+export const GeneralChatsPlacement = Schema.Literals(["page", "threads"]);
+export type GeneralChatsPlacement = typeof GeneralChatsPlacement.Type;
+export const DEFAULT_GENERAL_CHATS_PLACEMENT: GeneralChatsPlacement = "page";
+
 export const SidebarThreadPreviewCount = Schema.Int.check(
   Schema.isBetween({
     minimum: MIN_SIDEBAR_THREAD_PREVIEW_COUNT,
@@ -191,6 +204,9 @@ export const ClientSettingsSchema = Schema.Struct({
   // Off, only the user opens the panel. Per device: it is a choice about how
   // much room this screen has.
   autoOpenAgentsPanel: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // A short sound in the open app when an agent finishes or needs the user.
+  // Per device: one computer may want it and the laptop on the couch not.
+  alertSound: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   chatChangedFilesDefaultExpanded: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -234,8 +250,9 @@ export const ClientSettingsSchema = Schema.Struct({
     .pipe(Schema.withDecodingDefault(Effect.succeed(12))),
   // xterm's screen reader mode: an accessible copy of the terminal's text.
   terminalScreenReaderMode: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  // What the send button does with a message typed while a turn runs: add it
-  // to that turn, or hold it for the next one. The last choice sticks.
+  // Global default for what Enter does when sending a message while a turn
+  // runs: add it to that turn ("steer"), or hold it for the next one ("queue").
+  // Applies to all providers; the composer's send menu can override it per thread.
   followUpDelivery: FollowUpDelivery.pipe(Schema.withDecodingDefault(Effect.succeed("steer"))),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
@@ -275,6 +292,11 @@ export const ClientSettingsSchema = Schema.Struct({
   sidebarGrouping: SidebarGrouping.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_GROUPING)),
   ),
+  // Per device: a phone may want the chats in its one list, a wide screen
+  // their own page.
+  generalChatsPlacement: GeneralChatsPlacement.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_GENERAL_CHATS_PLACEMENT)),
+  ),
   inboxSort: InboxSort.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_INBOX_SORT))),
   // The inbox's custom order, as scoped thread keys. Kept on this device: the
   // inbox spans computers, and no one of them owns the order across all of them.
@@ -284,6 +306,12 @@ export const ClientSettingsSchema = Schema.Struct({
   // The order the user dragged the inbox's project and computer headers into,
   // as group keys. Empty: each group sits where its first row would.
   inboxGroupOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  // Where each group stood when the custom sort first showed it, as group keys.
+  // The custom sort places groups the user never dragged by this, so a group
+  // stays put when its top row goes away; the other sorts ignore it.
+  inboxCustomGroupOrder: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -647,7 +675,7 @@ export const AntigravitySettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Binary path",
         description:
-          "Leave empty to use the Antigravity runtime Threadlines installs. Set it to run your own agy_acp_server.",
+          "Leave empty to use the Antigravity CLI Threadlines installs. Set it to run your own `agy` (1.5.14 or newer).",
         providerSettingsForm: { placeholder: "Managed by Threadlines", clearWhenEmpty: "omit" },
       }),
     ),
@@ -1030,6 +1058,13 @@ export const ServerSettings = Schema.Struct({
    */
   agentThreads: AgentThreadsMode.pipe(Schema.withDecodingDefault(Effect.succeed("ask" as const))),
   /**
+   * Whether agents may write project notes, and what a note becomes
+   * (ProjectNotesMode, docs/design/project-brief-notes.md): off, a
+   * suggestion the user keeps, or kept at once for threads within its
+   * writer's access. Never chosen: `ask`. Read at every write.
+   */
+  projectNotes: ProjectNotesMode.pipe(Schema.withDecodingDefault(Effect.succeed("ask" as const))),
+  /**
    * Whether a thread an agent starts or messages may work in another
    * thread's worktree instead of one of its own (thread_start and thread_send
    * `checkout`, docs/design/child-threads.md, "Workspaces"). Read at every
@@ -1063,6 +1098,19 @@ export const ServerSettings = Schema.Struct({
    */
   enableClaudeArtifacts: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
+   * Devices: the Device tab shows iOS Simulators and Android Emulators on
+   * this computer (docs/design/devices.md). Turning it on installs and starts
+   * the device hub when the tab or an agent first asks; off stops the hub.
+   * Simulators keep running either way. Never chosen: off.
+   */
+  enableDevices: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Agents can use devices: sessions started while this and `enableDevices`
+   * are on get the `device_*` tools, and the agent-device command line is
+   * installed. Applies to sessions started after a change. Never chosen: off.
+   */
+  agentDeviceAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
    * How many agents Claude aims for when it writes a workflow, for every
    * Claude account. Read when a Claude session starts and before each turn,
    * so a change applies from the next message without a restart.
@@ -1088,6 +1136,14 @@ export const ServerSettings = Schema.Struct({
    * Never chosen: on.
    */
   codexSuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * After a turn a person started, Antigravity suggests their next message:
+   * one short isolated answer (preferring Gemini Hydrogen, then Flash, at low
+   * thinking) on the account's usage. Skipped while that model's usage window
+   * is 90% used. Read before each suggestion, and the composer hides
+   * Antigravity suggestions while it is off. Never chosen: on.
+   */
+  antigravitySuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /**
    * "Continue at reset" for every thread a Claude or Codex usage limit stops,
    * when the limit names its reset time: the thread continues by itself once
@@ -1129,6 +1185,20 @@ export const ServerSettings = Schema.Struct({
    */
   newThreadRoomAgents: Schema.Array(NewThreadRoomAgent).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /**
+   * The access level a new thread starts with on this computer. Agents that
+   * lack the level run at the next safer one they have. Never chosen: Auto.
+   */
+  newThreadRuntimeMode: RuntimeMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_NEW_THREAD_RUNTIME_MODE)),
+  ),
+  /**
+   * Whether a new thread starts in Build (`default`) or Plan (`plan`) mode on
+   * this computer. Agents without Plan mode start in Build. Never chosen: Build.
+   */
+  newThreadInteractionMode: ProviderInteractionMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   /**
    * The name the user gave this computer in Threadlines. Every device and
@@ -1296,13 +1366,17 @@ export const ServerSettingsPatch = Schema.Struct({
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
   agentInvites: Schema.optionalKey(AgentInvitesMode),
   agentThreads: Schema.optionalKey(AgentThreadsMode),
+  projectNotes: Schema.optionalKey(ProjectNotesMode),
   agentThreadsShareWorktrees: Schema.optionalKey(Schema.Boolean),
   enableRooms: Schema.optionalKey(Schema.Boolean),
   enableAgentPages: Schema.optionalKey(Schema.Boolean),
   enableClaudeArtifacts: Schema.optionalKey(Schema.Boolean),
+  enableDevices: Schema.optionalKey(Schema.Boolean),
+  agentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
   claudeSuggestionsWhenUsageRunsFast: Schema.optionalKey(Schema.Boolean),
   codexSuggestions: Schema.optionalKey(Schema.Boolean),
+  antigravitySuggestions: Schema.optionalKey(Schema.Boolean),
   continueAfterUsageLimits: Schema.optionalKey(Schema.Boolean),
   continueAfterRestart: Schema.optionalKey(Schema.Boolean),
   enableCommandRequests: Schema.optionalKey(Schema.Boolean),
@@ -1311,6 +1385,8 @@ export const ServerSettingsPatch = Schema.Struct({
   // reasoning, and the list is the whole list.
   newThreadModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   newThreadRoomAgents: Schema.optionalKey(Schema.Array(NewThreadRoomAgent)),
+  newThreadRuntimeMode: Schema.optionalKey(RuntimeMode),
+  newThreadInteractionMode: Schema.optionalKey(ProviderInteractionMode),
   computerName: Schema.optionalKey(Schema.NullOr(DeviceName)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
@@ -1330,6 +1406,7 @@ export const ClientSettingsPatch = Schema.Struct({
   browserSearchEngine: Schema.optionalKey(BrowserSearchEngine),
   browserSignIns: Schema.optionalKey(BrowserSignIns),
   autoOpenAgentsPanel: Schema.optionalKey(Schema.Boolean),
+  alertSound: Schema.optionalKey(Schema.Boolean),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
@@ -1373,9 +1450,11 @@ export const ClientSettingsPatch = Schema.Struct({
   ),
   suppressCrossProviderSwitchWarning: Schema.optionalKey(Schema.Boolean),
   sidebarGrouping: Schema.optionalKey(SidebarGrouping),
+  generalChatsPlacement: Schema.optionalKey(GeneralChatsPlacement),
   inboxSort: Schema.optionalKey(InboxSort),
   inboxCustomOrder: Schema.optionalKey(Schema.Array(Schema.String)),
   inboxGroupOrder: Schema.optionalKey(Schema.Array(Schema.String)),
+  inboxCustomGroupOrder: Schema.optionalKey(Schema.Array(Schema.String)),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),

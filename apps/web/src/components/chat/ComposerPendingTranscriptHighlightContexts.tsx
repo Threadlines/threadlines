@@ -3,7 +3,10 @@ import { SquarePenIcon, Trash2Icon, XIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import type { TranscriptHighlightContextDraft } from "~/lib/transcriptHighlightContext";
-import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlightContext";
+import {
+  formatTranscriptHighlightContextPreview,
+  transcriptHighlightRoleWord,
+} from "~/lib/transcriptHighlightContext";
 import { COMPOSER_INLINE_CHIP_DISMISS_BUTTON_CLASS_NAME } from "../composerInlineChip";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -67,7 +70,7 @@ function TranscriptHighlightChip({
   const [noteDraft, setNoteDraft] = useState(context.note);
 
   const preview = formatTranscriptHighlightContextPreview(context);
-  const roleWord = context.sourceRole === "assistant" ? "assistant" : "your";
+  const roleWord = transcriptHighlightRoleWord(context.sourceRole);
 
   // Keep the editable draft aligned with the stored note when it changes elsewhere.
   useEffect(() => {

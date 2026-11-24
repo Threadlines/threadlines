@@ -14,8 +14,10 @@ import {
   type ProjectId,
   ProviderInstanceId,
   type OrchestrationEvent,
+  type OrchestrationSecretRequest,
   type OrchestrationSettingsChangeRequest,
   type RoomAgentRequestId,
+  SecretRequestId,
   SettingsChangeRequestId,
   type SideTurnId,
   type ThreadId,
@@ -23,6 +25,8 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
+import { secretAnswerMessageId } from "@threadlines/shared/secretRequests";
+import * as Effect from "effect/Effect";
 import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -68,10 +72,17 @@ import {
   findVisibleComposerFooter,
   mountChatView,
   registerChatViewSuiteHooks,
+  waitForURL,
   fixture,
   rpcHarness,
+  createUserMessage,
+  withLinkedThreadReadFixture,
+  setSidebarThreadWork,
 } from "./ChatView.browser-harness";
+import { selectSidebarThreadSummaryByRef, useStore } from "../store";
+import { resolveThreadStatusPill } from "./Sidebar.logic";
 import { readThemePreference } from "../hooks/useTheme";
+import { nextFrames, readAfterEachPaint } from "../lib/frameProbe.browser-harness";
 
 vi.mock("../lib/gitStatusState", () => ({
   // Read synchronously by the draft seeder to skip a checkout already known
@@ -559,6 +570,41 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       picker.click();
       await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
 
+      // Pointing at a pill swaps its icon for ⋯ without resizing it: a pill
+      // that grew could wrap onto the next line, out from under the pointer,
+      // and flicker between the two. (offsetWidth: the picker's opening
+      // animation scales bounding boxes.)
+      const options = () =>
+        pill(astraId)!.querySelector<HTMLButtonElement>('button[aria-label$=" options"]')!;
+      const widthBefore = pill(astraId)!.offsetWidth;
+      // At rest no pill shows its ⋯, the picked one included.
+      for (const button of document.querySelectorAll(
+        '[data-room-agents-bar] button[aria-label$=" options"]',
+      )) {
+        expect(getComputedStyle(button).visibility).toBe("hidden");
+      }
+      await userEvent.hover(pill(astraId)!);
+      await vi.waitFor(() => expect(getComputedStyle(options()).visibility).toBe("visible"));
+      expect(pill(astraId)!.offsetWidth).toBe(widthBefore);
+
+      // Its menu renames without closing the picker or changing who is picked.
+      options().click();
+      const menuItem = (text: string) =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === text,
+        ) ?? null;
+      (await waitForElement(() => menuItem("Rename…"), "The pill's menu should open.")).click();
+      const nameBox = await waitForElement(
+        () => pill(astraId)!.querySelector<HTMLInputElement>("input"),
+        "Rename should open the pill's name box.",
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(nameBox));
+      expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+      expect(pill("primary")?.getAttribute("aria-checked")).toBe("true");
+      expect(pill(astraId)?.getAttribute("aria-checked")).toBe("false");
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(pill(astraId)!.querySelector("input")).toBeNull());
+
       // "+" starts adding; picking an agent instead means not a new one after
       // all, and the list below is that agent's again.
       document
@@ -575,6 +621,11 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       // One tab stop for the group; the arrow keys move along it and pick.
       expect(pill(astraId)?.tabIndex).toBe(0);
       expect(pill("primary")?.tabIndex).toBe(-1);
+      // The picker focuses its search box once more a frame and a tick after it
+      // (re)renders; on a busy machine that lands late. Let those pass first,
+      // or they pull focus off the pill before the arrow key.
+      await nextFrames(2);
+      await new Promise((resolve) => setTimeout(resolve, 0));
       pill(astraId)!.focus();
       await userEvent.keyboard("{ArrowLeft}");
       await vi.waitFor(() => {
@@ -583,6 +634,28 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       });
       // Still open: picking an agent doesn't close the picker.
       expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+
+      // A right-click opens the same menu, which removes the agent.
+      pill(astraId)!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }),
+      );
+      (
+        await waitForElement(
+          () => menuItem("Remove from thread"),
+          "Right-click should open the menu.",
+        )
+      ).click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (request as { type?: string }).type === "thread.participant.remove",
+          ),
+        ).toMatchObject({ participantId: astraId }),
+      );
+      expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+      expect(pill("primary")?.getAttribute("aria-checked")).toBe("true");
     } finally {
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();
@@ -828,6 +901,20 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
           ).toMatchObject({ requestId, choice: "review" }),
         { timeout: 8_000, interval: 16 },
       );
+      // The server took the answer, but the thread has not caught up yet, so
+      // the card is still there. It says what it is doing in place of the
+      // buttons: a second answer in that gap would be refused as an invite
+      // already answered.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(document.querySelector('[data-testid="agent-invite-panel"]')).toBe(panel);
+      expect(panel.querySelector('[data-testid="agent-invite-answering"]')?.textContent).toBe(
+        "Asking GPT-6 Astra for a review…",
+      );
+      expect(
+        [...panel.querySelectorAll<HTMLButtonElement>("button")].filter((button) =>
+          ["Not now", "Add to thread", "Review only"].includes(button.textContent ?? ""),
+        ),
+      ).toEqual([]);
     } finally {
       await mounted.cleanup();
     }
@@ -1120,6 +1207,9 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       );
       expect(neverMadeReport?.querySelector("button[data-thread-message-author]")).toBeNull();
 
+      // This server can't take a partial answer: no checkboxes, and Start
+      // answers for the whole batch.
+      expect(panel.querySelector('[data-slot="checkbox"]')).toBeNull();
       [...panel.querySelectorAll<HTMLButtonElement>("button")]
         .find((button) => button.textContent === "Start")
         ?.click();
@@ -1134,6 +1224,597 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
           ).toMatchObject({ batchId, choice: "start" }),
         { timeout: 8_000, interval: 16 },
       );
+      const respond = wsRequests.find(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          (request as { type?: string }).type === "thread.child-request.respond",
+      ) as { requestIds?: unknown } | undefined;
+      expect(respond?.requestIds).toBeUndefined();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("starts only the threads left checked, where the server takes a partial answer", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-child-select" as MessageId,
+      targetText: "child select target",
+    });
+    const batchId = ChildRequestBatchId.make("batch-select");
+    const capabilities = { repositoryIdentity: true, childStartSelection: true };
+    const ask = (index: number, title: string) => ({
+      requestId: ChildRequestId.make(`request-select-${index}`),
+      batchId,
+      kind: "start" as const,
+      from: { participantId: null },
+      callerTurnId: "turn-select" as TurnId,
+      deliveryEpoch: 0,
+      status: "awaiting_user" as const,
+      childThreadId: `thread-child-select-${index}` as ThreadId,
+      childMessageId: `msg-child-select-${index}` as MessageId,
+      launch: {
+        title,
+        prompt: `${title}.`,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        reportBack: true,
+        runSetup: true,
+        workspace: { kind: "project_folder" as const },
+      },
+      createdAt: isoAt(301),
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          environment: { ...nextFixture.serverConfig.environment, capabilities },
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          environment: { ...nextFixture.welcome.environment, capabilities },
+        };
+      },
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                childRequests: {
+                  ...EMPTY_CHILD_REQUEST_STATE,
+                  startsSinceUser: 3,
+                  open: [
+                    ask(1, "Fix the flaky test"),
+                    ask(2, "Update the docs"),
+                    ask(3, "Bump the version"),
+                  ],
+                },
+              }
+            : thread,
+        ),
+      },
+    });
+    try {
+      const panel = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="child-threads-panel"]'),
+        "Unable to find the approval card.",
+      );
+      const startButton = () =>
+        [...panel.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+          button.textContent?.startsWith("Start"),
+        );
+      expect(startButton()?.textContent).toBe("Start all");
+      await page.getByRole("checkbox", { name: "Start Update the docs" }).click();
+      await vi.waitFor(() => expect(startButton()?.textContent).toBe("Start 2"));
+      startButton()?.click();
+      await vi.waitFor(
+        () =>
+          expect(
+            wsRequests.find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                (request as { type?: string }).type === "thread.child-request.respond",
+            ),
+          ).toMatchObject({
+            batchId,
+            choice: "start",
+            requestIds: ["request-select-1", "request-select-3"],
+          }),
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows a family as tabs on the parent and its threads, and keeps the row still across a switch", async () => {
+    const firstChild = "thread-family-first" as ThreadId;
+    const secondChild = "thread-family-second" as ThreadId;
+    const loner = "thread-family-loner" as ThreadId;
+    const withThreads = addThreadToSnapshot(
+      addThreadToSnapshot(
+        addThreadToSnapshot(
+          createSnapshotForTargetUser({
+            targetMessageId: "msg-user-family-tabs" as MessageId,
+            targetText: "family tabs target",
+          }),
+          firstChild,
+        ),
+        secondChild,
+      ),
+      loner,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withThreads,
+        threads: withThreads.threads.map((thread) =>
+          thread.id === firstChild || thread.id === secondChild
+            ? {
+                ...thread,
+                title: thread.id === firstChild ? "Write the changelog" : "Fix the flaky test",
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: thread.id === firstChild ? isoAt(10) : isoAt(20),
+              }
+            : thread,
+        ),
+      },
+    });
+    const keyOf = (threadId: ThreadId) =>
+      scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId));
+    const row = () => document.querySelector<HTMLElement>('[data-testid="family-tabs"]');
+    try {
+      await waitForElement(row, "The family row should show on the parent.");
+      const keys = () =>
+        [...row()!.querySelectorAll<HTMLElement>('[role="tab"]')].map((tab) => tab.dataset.testid);
+      // A starved CI tab can take seconds to file every thread.
+      await vi.waitFor(
+        () =>
+          expect(keys()).toEqual([
+            `family-tab-${THREAD_KEY}`,
+            `family-tab-${keyOf(firstChild)}`,
+            `family-tab-${keyOf(secondChild)}`,
+          ]),
+        { timeout: 10_000 },
+      );
+
+      // Switching to a child: the row stays mounted where it is, every frame.
+      const rowAtStart = row()!;
+      const top = rowAtStart.getBoundingClientRect().top;
+      const samples: { present: boolean; same: boolean; top: number | null }[] = [];
+      const stop = readAfterEachPaint(() => {
+        const current = row();
+        samples.push({
+          present: current !== null,
+          same: current === rowAtStart,
+          top: current?.getBoundingClientRect().top ?? null,
+        });
+      });
+      await page.getByTestId(`family-tab-${keyOf(secondChild)}`).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${secondChild}`),
+        "A tab click should open its thread.",
+      );
+      await vi.waitFor(
+        () =>
+          expect(
+            row()
+              ?.querySelector(`[data-testid="family-tab-${keyOf(secondChild)}"]`)
+              ?.getAttribute("aria-selected"),
+          ).toBe("true"),
+        { timeout: 10_000 },
+      );
+      await nextFrames(3);
+      stop();
+      expect(samples.length).toBeGreaterThan(0);
+      expect(samples.every((sample) => sample.present && sample.same)).toBe(true);
+      expect(samples.every((sample) => sample.top === top)).toBe(true);
+      // The row says who started this thread: the header's chip gives way.
+      expect(document.body.textContent).not.toContain("Started by");
+
+      // A thread with no family has no row.
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: loner },
+      });
+      await vi.waitFor(() => expect(row()).toBeNull(), { timeout: 10_000 });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("ends the family row with Stop while the parent's threads are going, and sends what the menu sends", async () => {
+    const child = "thread-family-stop-child" as ThreadId;
+    const quiet = "thread-family-stop-quiet" as ThreadId;
+    const withThreads = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-family-stop" as MessageId,
+          targetText: "family stop target",
+        }),
+        child,
+      ),
+      quiet,
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...withThreads,
+        threads: withThreads.threads.map((thread) =>
+          thread.id === child || thread.id === quiet
+            ? {
+                ...thread,
+                title: thread.id === child ? "Write the changelog" : "Fix the flaky test",
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: thread.id === child ? isoAt(10) : isoAt(20),
+              }
+            : thread,
+        ),
+      },
+    });
+    const row = () => document.querySelector<HTMLElement>('[data-testid="family-tabs"]');
+    const stopButton = () =>
+      row()?.querySelector<HTMLButtonElement>('[data-testid="family-tabs-stop"]') ?? null;
+    try {
+      await waitForElement(row, "The family row should show on the parent.");
+      // Nothing under the parent is going: no button.
+      await vi.waitFor(() => expect(row()!.querySelectorAll('[role="tab"]').length).toBe(3), {
+        timeout: 10_000,
+      });
+      expect(stopButton()).toBeNull();
+
+      // A child waits on the user: the parent's Stop reaches it.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, child, "needs-you");
+      await vi.waitFor(() => expect(stopButton()?.textContent).toBe("Stop 1 thread"));
+      // It sits at the row's end, after the last tab.
+      const lastTab = [...row()!.querySelectorAll<HTMLElement>('[role="tab"]')].at(-1)!;
+      expect(stopButton()!.getBoundingClientRect().left).toBeGreaterThan(
+        lastTab.getBoundingClientRect().right,
+      );
+
+      stopButton()!.click();
+      const stops = () =>
+        wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.children.stop",
+        );
+      await vi.waitFor(() => expect(stops()).toHaveLength(1));
+      // The parent, with no ids: every thread its Stop reaches that is still going.
+      expect(stops()[0]).toMatchObject({ threadId: THREAD_ID });
+      expect(stops()[0]).not.toHaveProperty("childThreadIds");
+
+      // Once nothing is going, the button leaves.
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, child, "needs-you", {
+        hasPendingApprovals: false,
+      });
+      await vi.waitFor(() => expect(stopButton()).toBeNull());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the family row's Stop in view on a phone while the tabs scroll under it", async () => {
+    const children = ["phone-first", "phone-second", "phone-third"].map(
+      (id) => `thread-family-${id}` as ThreadId,
+    );
+    const withThreads = children.reduce(
+      (snapshot, id) => addThreadToSnapshot(snapshot, id),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-family-phone" as MessageId,
+        targetText: "family phone target",
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: {
+        ...withThreads,
+        threads: withThreads.threads.map((thread) => {
+          const index = children.indexOf(thread.id);
+          return index === -1
+            ? thread
+            : {
+                ...thread,
+                title: `A long title for the thread that does part ${index + 1} of the work`,
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: isoAt(10 + index),
+              };
+        }),
+      },
+    });
+    const row = () => document.querySelector<HTMLElement>('[data-testid="family-tabs"]');
+    try {
+      await waitForElement(row, "The family row should show on the parent.");
+      setSidebarThreadWork(LOCAL_ENVIRONMENT_ID, children[2]!, "needs-you");
+      const stop = await waitForElement(
+        () => row()?.querySelector<HTMLElement>('[data-testid="family-tabs-stop"]') ?? null,
+        "The Stop button should show.",
+      );
+      const strip = row()!.querySelector<HTMLElement>('[role="tablist"]')!;
+      // The tabs overflow and scroll; the button stays whole inside the row and the screen.
+      expect(strip.scrollWidth).toBeGreaterThan(strip.clientWidth);
+      const rowRect = row()!.getBoundingClientRect();
+      const stopRect = stop.getBoundingClientRect();
+      expect(stopRect.left).toBeGreaterThanOrEqual(strip.getBoundingClientRect().right);
+      expect(stopRect.right).toBeLessThanOrEqual(Math.min(rowRect.right, window.innerWidth));
+      strip.scrollLeft = strip.scrollWidth;
+      await nextFrames(2);
+      expect(stop.getBoundingClientRect().left).toBe(stopRect.left);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a thread started on a computer this app can't see, read through the link", async () => {
+    const windows = EnvironmentId.make("environment-windows");
+    const childId = "thread-child-windows" as ThreadId;
+    const childKey = scopedThreadKey(scopeThreadRef(windows, childId));
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-linked-child" as MessageId,
+      targetText: "linked child target",
+    });
+    const reads: Array<Record<string, unknown>> = [];
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                childRequests: {
+                  ...EMPTY_CHILD_REQUEST_STATE,
+                  remoteChildren: [
+                    {
+                      environmentId: windows,
+                      label: "Windows PC",
+                      threadId: childId,
+                      handle: "Codex",
+                      title: "Check the Windows build",
+                      attachmentEpoch: 0,
+                      cachedStatus: "working",
+                      updatedAt: isoAt(300),
+                    },
+                  ],
+                },
+              }
+            : thread,
+        ),
+      },
+      configureFixture: withLinkedThreadReadFixture,
+      resolveRpc: (body) => {
+        if (body._tag !== WS_METHODS.linksReadThread) return undefined;
+        reads.push(body);
+        return {
+          outcome: "ok",
+          messages: [
+            {
+              messageId: "m-ask",
+              sequence: 1,
+              at: isoAt(301),
+              role: "user",
+              author: "Browser test thread (on Local environment)",
+              origin: "thread_request",
+              text: "Check the Windows build.",
+            },
+            {
+              messageId: "m-answer",
+              sequence: 2,
+              at: isoAt(302),
+              role: "assistant",
+              author: "Codex",
+              origin: "agent",
+              text: "The Windows build passes.",
+            },
+          ],
+          next: 2,
+          more: false,
+        };
+      },
+    });
+    try {
+      const tab = page.getByTestId(`family-tab-${childKey}`);
+      await vi.waitFor(() => expect(tab.element()).not.toHaveAttribute("disabled"), {
+        timeout: 10_000,
+      });
+      await tab.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/linked/${windows}/${childId}`),
+        "The tab should open the thread read through the link.",
+      );
+      await expect.element(page.getByText("The Windows build passes.")).toBeVisible();
+      await expect.element(page.getByText("Check the Windows build.")).toBeVisible();
+      await vi.waitFor(() =>
+        expect(
+          document
+            .querySelector('[data-testid="linked-thread-place"]')
+            ?.textContent?.replace(/\s+/g, " "),
+        ).toBe("Windows PC·working"),
+      );
+      expect(reads[0]).toMatchObject({
+        parentThreadId: THREAD_ID,
+        environmentId: windows,
+        threadId: childId,
+        limit: 50,
+      });
+      // The family row stays, with this thread's tab open.
+      await vi.waitFor(() =>
+        expect(page.getByTestId(`family-tab-${childKey}`).element()).toHaveAttribute(
+          "aria-selected",
+          "true",
+        ),
+      );
+      await page.getByTestId(`family-tab-${THREAD_KEY}`).click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${THREAD_ID}`),
+        "The parent's tab should open the parent again.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the lead's tab whole on a crowded row, drops a shared topic, and cuts long tabs to one width", async () => {
+    const titles = [
+      "Panel Jam animation timing review",
+      "Panel Jam: council round two",
+      "Review: last three commits on main",
+      "Pull Station restructure: start the split",
+      "Pull Station: Android toolchain setup",
+      "Pull Station: UI polish pass after review",
+    ];
+    const children = titles.map((_, index) => `thread-crowded-${index}` as ThreadId);
+    const base = children.reduce(
+      (snapshot, child) => addThreadToSnapshot(snapshot, child),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-crowded-family" as MessageId,
+        targetText: "crowded family target",
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width: 1_280 },
+      snapshot: {
+        ...base,
+        projects: base.projects.map((project) => ({ ...project, leadThreadId: THREAD_ID })),
+        threads: base.threads.map((thread) => {
+          const index = children.indexOf(thread.id);
+          return index === -1
+            ? thread
+            : {
+                ...thread,
+                title: titles[index]!,
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: isoAt(10 + index),
+              };
+        }),
+      },
+    });
+    const tabs = () => [
+      ...document.querySelectorAll<HTMLElement>('[data-testid="family-tabs"] [role="tab"]'),
+    ];
+    try {
+      await vi.waitFor(() => expect(tabs()).toHaveLength(1 + children.length), {
+        timeout: 10_000,
+      });
+      const [leadTab, ...childTabs] = tabs();
+      const labelOf = (tab: HTMLElement) => tab.querySelector<HTMLElement>("span.truncate")!;
+      // A topic two threads share is dropped from their tabs, and kept in the tooltip.
+      expect(childTabs.map((tab) => labelOf(tab).textContent)).toEqual([
+        "Animation timing review",
+        "Council round two",
+        "Review: last three commits on main",
+        "Restructure: start the split",
+        "Android toolchain setup",
+        "UI polish pass after review",
+      ]);
+      expect(childTabs.map((tab) => tab.title)).toEqual(titles);
+      // "Lead" is never cut...
+      expect(labelOf(leadTab!).textContent).toBe("Lead");
+      expect(labelOf(leadTab!).scrollWidth).toBeLessThanOrEqual(labelOf(leadTab!).clientWidth);
+      // ...and on a crowded row the cut tabs share one width, which no other tab passes.
+      const width = (tab: HTMLElement) => tab.getBoundingClientRect().width;
+      const cut = childTabs.filter((tab) => labelOf(tab).scrollWidth > labelOf(tab).clientWidth);
+      expect(cut.length).toBeGreaterThan(1);
+      const cutWidths = cut.map(width);
+      // Within a pixel: layout splits the row in fractions of one.
+      expect(Math.max(...cutWidths) - Math.min(...cutWidths)).toBeLessThan(1);
+      expect(childTabs.every((tab) => width(tab) < Math.max(...cutWidths) + 1)).toBe(true);
+
+      // The sidebar's rows under the lead say the same, with the full title for screen readers.
+      await page.getByTestId(`thread-family-${THREAD_ID}`).click();
+      const sidebarTitle = (child: ThreadId) =>
+        document.querySelector<HTMLElement>(`[data-testid="child-title-${child}"]`);
+      await vi.waitFor(() => expect(sidebarTitle(children[4]!)).not.toBeNull(), {
+        timeout: 10_000,
+      });
+      expect(sidebarTitle(children[4]!)!.querySelector(`[aria-hidden="true"]`)?.textContent).toBe(
+        "Android toolchain setup",
+      );
+      expect(sidebarTitle(children[4]!)!.querySelector(".sr-only")?.textContent).toBe(titles[4]);
+      expect(sidebarTitle(children[2]!)!.textContent).toBe(titles[2]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps short-titled tabs on the row where they fit, instead of behind +N", async () => {
+    const titles = ["UI", "DB", "QA", "CI", "Ops", "Docs", "Perf", "Auth"];
+    const children = titles.map((_, index) => `thread-short-${index}` as ThreadId);
+    const base = children.reduce(
+      (snapshot, child) => addThreadToSnapshot(snapshot, child),
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-short-family" as MessageId,
+        targetText: "short family target",
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...base,
+        projects: base.projects.map((project) => ({ ...project, leadThreadId: THREAD_ID })),
+        threads: base.threads.map((thread) => {
+          const index = children.indexOf(thread.id);
+          return index === -1
+            ? thread
+            : {
+                ...thread,
+                title: titles[index]!,
+                parentThreadId: THREAD_ID,
+                attachedToParent: true,
+                createdAt: isoAt(10 + index),
+              };
+        }),
+      },
+    });
+    const row = () => document.querySelector<HTMLElement>('[data-testid="family-tabs"]');
+    try {
+      await vi.waitFor(
+        () => expect(row()?.querySelectorAll('[role="tab"]')).toHaveLength(1 + titles.length),
+        { timeout: 10_000 },
+      );
+      // Nine tabs at the 96px floor would not fit; at their own widths they do, none cut.
+      const onRow = () => [
+        ...row()!.querySelectorAll<HTMLElement>(
+          '[role="tab"], [data-testid="family-tabs-overflow"]',
+        ),
+      ];
+      const unclipped = () =>
+        onRow().every((item) => {
+          const label = item.querySelector<HTMLElement>("span.truncate") ?? item;
+          return label.scrollWidth <= label.clientWidth;
+        });
+      const inside = () =>
+        onRow().every(
+          (item) =>
+            item.getBoundingClientRect().right <= row()!.getBoundingClientRect().right + 0.5,
+        );
+      expect(row()!.clientWidth).toBeLessThan((1 + titles.length) * 96);
+      expect(row()!.querySelector('[data-testid="family-tabs-overflow"]')).toBeNull();
+      expect(unclipped()).toBe(true);
+      expect(inside()).toBe(true);
+
+      // A larger browser font: the row measures what it draws, so what shows still fits whole.
+      document.documentElement.style.fontSize = "24px";
+      try {
+        await vi.waitFor(
+          () => expect(row()!.querySelector('[data-testid="family-tabs-overflow"]')).not.toBeNull(),
+          { timeout: 5_000 },
+        );
+        await nextFrames(3);
+        expect(unclipped()).toBe(true);
+        expect(inside()).toBe(true);
+      } finally {
+        document.documentElement.style.fontSize = "";
+      }
     } finally {
       await mounted.cleanup();
     }
@@ -1179,7 +1860,15 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
                 }
               : thread,
           ),
-          { ...thisThread, id: parentThreadId, title: "Ship the 0.6 release", messages: [] },
+          // Its parent is wrapped: no family row stands in for the chip, so the
+          // header names it (docs/design/lead-chat.md, "Family tabs").
+          {
+            ...thisThread,
+            id: parentThreadId,
+            title: "Ship the 0.6 release",
+            messages: [],
+            doneOverride: { state: "done" as const, at: isoAt(400) },
+          },
         ],
       },
     });
@@ -1255,6 +1944,130 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
         { timeout: 8_000, interval: 16 },
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a pill's menu on a long press in the phone drawer, and keeps it open when the finger lifts", async () => {
+    const astraId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-hold" as MessageId,
+      targetText: "room hold target",
+    });
+    // What a phone sends for a finger held on an element and lifted: touch
+    // pointer events on it, then a mouse press and a click on whatever is
+    // under the finger by then. For a held pill that is the menu's backdrop,
+    // which came up under the finger. (Replayed by hand: real touches would
+    // put the whole test browser in touch mode.)
+    const touch = async (element: Element, holdMs: number) => {
+      const box = element.getBoundingClientRect();
+      const at = {
+        clientX: box.left + box.width / 2,
+        clientY: box.top + box.height / 2,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      };
+      const finger = { ...at, pointerId: 7, pointerType: "touch", isPrimary: true };
+      element.dispatchEvent(new PointerEvent("pointerdown", finger));
+      await new Promise((resolve) => setTimeout(resolve, holdMs));
+      element.dispatchEvent(new PointerEvent("pointerup", finger));
+      const under = document.elementFromPoint(at.clientX, at.clientY) ?? element;
+      // A real mouse press moves the keyboard focus to what it lands on,
+      // unless the page takes the press.
+      const pressTaken = !under.dispatchEvent(new MouseEvent("mousedown", at));
+      for (const type of ["mouseup", "click"]) {
+        under.dispatchEvent(new MouseEvent(type, at));
+      }
+      // Let what those did reach the page.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return { pressTaken };
+    };
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      configureFixture: withCodexModels,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: astraId,
+                    handle: "agent-2",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const pill = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-room-agent-row="${id}"]`);
+      const sheet = () => document.querySelector('[data-model-picker-sheet="true"]');
+      const menuItem = (text: string) =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === text,
+        ) ?? null;
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      picker.click();
+      await waitForElement(sheet, "A phone should open the picker as a drawer.");
+      const astra = await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
+      // The drawer slides in: a touch is aimed at where the pill comes to rest.
+      await vi.waitFor(async () => {
+        const top = astra.getBoundingClientRect().top;
+        await nextFrames(2);
+        expect(astra.getBoundingClientRect().top).toBe(top);
+      });
+
+      // The hold opens the menu, and lifting the finger leaves it open,
+      // without picking the pill or closing the drawer.
+      const lift = await touch(astra, 700);
+      expect(astra.hasAttribute("data-menu-open")).toBe(true);
+      expect(menuItem("Rename…")).not.toBeNull();
+      expect(pill(astraId)?.getAttribute("aria-checked")).toBe("false");
+      expect(sheet()).not.toBeNull();
+
+      // The lift's press is taken, so the keyboard focus stays in the menu:
+      // Escape closes the menu, not the drawer around it.
+      expect(lift.pressTaken).toBe(true);
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(astra.hasAttribute("data-menu-open")).toBe(false));
+      expect(sheet()).not.toBeNull();
+      await touch(astra, 700);
+      expect(astra.hasAttribute("data-menu-open")).toBe(true);
+
+      // A tap outside the menu still closes it, and only it.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await touch(document.querySelector('[data-slot="menu-backdrop"]')!, 40);
+      expect(astra.hasAttribute("data-menu-open")).toBe(false);
+      await vi.waitFor(() => expect(menuItem("Rename…")).toBeNull());
+      expect(sheet()).not.toBeNull();
+
+      // A tap on Rename, even a slow one, opens the name box, focused, in the
+      // open drawer: it is not taken for another hold on the pill.
+      await touch(astra, 700);
+      await touch(menuItem("Rename…")!, 600);
+      const nameBox = await waitForElement(
+        () => pill(astraId)!.querySelector<HTMLInputElement>("input"),
+        "Rename should open the pill's name box.",
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(nameBox));
+      expect(sheet()).not.toBeNull();
+    } finally {
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();
     }
   });
@@ -1766,6 +2579,436 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
           allow: false,
         });
         expect(respondRequests()[1]!["claim"]).toBeUndefined();
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+  });
+
+  describe("an agent's request for a key", () => {
+    const CANARY = "sk_test_canary_4f9a";
+    const secretRequest = (
+      id: string,
+      overrides: Partial<OrchestrationSecretRequest> = {},
+    ): OrchestrationSecretRequest => ({
+      requestId: SecretRequestId.make(id),
+      participantId: null,
+      turnId: "turn-secret" as TurnId,
+      name: "STRIPE_SECRET_KEY",
+      reason: "To run the checkout tests against Stripe test mode.",
+      use: { kind: "env_file", path: ".env.local" },
+      replaces: false,
+      status: "waiting",
+      createdAt: isoAt(301),
+      noted: false,
+      ...overrides,
+    });
+    const snapshotWith = (
+      requests: ReadonlyArray<OrchestrationSecretRequest>,
+      extraMessages: ReadonlyArray<ReturnType<typeof createUserMessage>> = [],
+    ) => {
+      const base = createSnapshotForTargetUser({
+        targetMessageId: "msg-user-secret-request" as MessageId,
+        targetText: "set up stripe",
+      });
+      return {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                secretRequests: requests,
+                messages: [...thread.messages, ...extraMessages],
+              }
+            : thread,
+        ),
+      };
+    };
+    let liveSequence = 0;
+    const sendLive = <T extends OrchestrationEvent["type"]>(
+      type: T,
+      payload: Extract<OrchestrationEvent, { type: T }>["payload"],
+    ) => {
+      liveSequence += 1;
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+        kind: "event",
+        event: {
+          sequence: fixture.snapshot.snapshotSequence + liveSequence,
+          eventId: EventId.make(`evt-secret-request-${liveSequence}`),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: NOW_ISO,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type,
+          payload,
+        },
+      });
+    };
+    const respondRequests = () =>
+      wsRequests.filter((request) => request._tag === WS_METHODS.secretRequestRespond);
+    const panel = () =>
+      waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="secret-request-panel"]'),
+        "Unable to find the key card.",
+      );
+    const field = (card: HTMLElement) =>
+      card.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        '[data-testid="secret-request-panel-field"]',
+      );
+    const button = (card: HTMLElement, name: string) =>
+      [...card.querySelectorAll<HTMLButtonElement>("button")].find(
+        (candidate) => candidate.textContent === name,
+      )!;
+    const text = (card: HTMLElement, testId: string) =>
+      card.querySelector(`[data-testid="secret-request-panel-${testId}"]`)?.textContent ?? null;
+    /** The value as it went over the wire, where the client unwrapped it to encode the frame. */
+    const sentValue = (request: Record<string, unknown>) =>
+      (request["answer"] as { readonly value?: unknown }).value;
+    const claimOf = (request: Record<string, unknown>) => ({
+      claimId: request["claimId"] as string,
+      deviceLabel: request["deviceLabel"] as string,
+    });
+    /** Whether the typed value is anywhere the app keeps state. */
+    const valueKeptAnywhere = () => {
+      const storage = [localStorage, sessionStorage].flatMap((store) =>
+        Object.keys(store).map((key) => `${key}=${store.getItem(key) ?? ""}`),
+      );
+      return (
+        storage.some((entry) => entry.includes(CANARY)) ||
+        JSON.stringify(useStore.getState()).includes(CANARY)
+      );
+    };
+    const deferred = <T,>() => {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((settle) => {
+        resolve = settle;
+      });
+      return { promise, resolve };
+    };
+    const waitOptions = { timeout: 8_000, interval: 16 };
+
+    it("shows Threadlines' own lines about where the key goes, and Save sends it once", async () => {
+      const request = secretRequest("secret-request-save", { replaces: true });
+      const answer = deferred<unknown>();
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([request]),
+        resolveRpc: (body) =>
+          body._tag === WS_METHODS.secretRequestRespond ? answer.promise : undefined,
+      });
+
+      try {
+        const card = await panel();
+        expect(text(card, "heading")).toMatch(/.+ is asking for a key$/);
+        expect(text(card, "name")).toBe("STRIPE_SECRET_KEY");
+        expect(text(card, "reason")).toMatch(
+          / says: To run the checkout tests against Stripe test mode\.$/,
+        );
+        const computer = readPrimaryEnvironmentDescriptor()?.label;
+        expect(text(card, "replaces")).toBe(
+          "Replaces the STRIPE_SECRET_KEY already in .env.local.",
+        );
+        expect(text(card, "destination")).toBe(
+          `Saved as STRIPE_SECRET_KEY in .env.local, in this thread's folder on ${computer}. It stays out of the chat. The agent can read that file.`,
+        );
+        // A password field no password manager fills or saves, and not part
+        // of the message box's form.
+        const input = field(card) as HTMLInputElement;
+        expect(input.type).toBe("password");
+        expect(input.autocomplete).toBe("new-password");
+        expect(input.getAttribute("data-1p-ignore")).not.toBeNull();
+        expect(input.getAttribute("data-lpignore")).toBe("true");
+        expect(input.form).toBeNull();
+        expect(button(card, "Save").disabled).toBe(true);
+        // The sidebar shows the thread waits on the user.
+        const summary = selectSidebarThreadSummaryByRef(useStore.getState(), THREAD_REF);
+        expect(summary && resolveThreadStatusPill({ thread: summary })?.label).toBe(
+          "Pending Approval",
+        );
+
+        await userEvent.fill(input, CANARY);
+        const save = button(card, "Save");
+        expect(save.disabled).toBe(false);
+        save.click();
+        save.click();
+        await vi.waitFor(() => expect(respondRequests()).toHaveLength(1), waitOptions);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(respondRequests()).toHaveLength(1);
+        const sent = respondRequests()[0]!;
+        expect(sent).toMatchObject({
+          threadId: THREAD_ID,
+          requestId: request.requestId,
+          claimId: expect.any(String),
+          deviceLabel: expect.any(String),
+          answer: { type: "save" },
+        });
+        expect(sentValue(sent)).toBe(CANARY);
+        expect(valueKeptAnywhere()).toBe(false);
+
+        // The computer claims and saves it: the card goes.
+        sendLive("thread.secret-request-claimed", {
+          threadId: THREAD_ID,
+          requestId: request.requestId,
+          claim: claimOf(sent),
+          claimedAt: isoAt(302),
+        });
+        answer.resolve({ outcome: "saved" });
+        sendLive("thread.secret-request-settled", {
+          threadId: THREAD_ID,
+          requestId: request.requestId,
+          ending: "saved",
+          savedAt: isoAt(303),
+          noted: true,
+          settledAt: isoAt(303),
+        });
+        await vi.waitFor(
+          () => expect(document.querySelector('[data-testid="secret-request-panel"]')).toBeNull(),
+          waitOptions,
+        );
+        expect(valueKeptAnywhere()).toBe(false);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps the card and the field on a rejected value, and retries under the same claim", async () => {
+      const request = secretRequest("secret-request-rejected");
+      let calls = 0;
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([request]),
+        resolveRpc: (body) => {
+          if (body._tag !== WS_METHODS.secretRequestRespond) return undefined;
+          calls += 1;
+          return calls === 1
+            ? {
+                outcome: "rejected",
+                detail:
+                  "An env file can't hold this value as typed. Ask the agent to request it for its commands instead.",
+              }
+            : Effect.die(new Error("the socket closed"));
+        },
+      });
+
+      try {
+        const card = await panel();
+        await userEvent.fill(field(card)!, CANARY);
+        button(card, "Save").click();
+        await vi.waitFor(
+          () =>
+            expect(text(card, "problem")).toBe(
+              "An env file can't hold this value as typed. Ask the agent to request it for its commands instead.",
+            ),
+          waitOptions,
+        );
+        expect(field(card)?.value).toBe(CANARY);
+
+        // A send that never got its answer keeps the field too, and the
+        // next Save is a retry under the same claim.
+        button(card, "Save").click();
+        await vi.waitFor(
+          () =>
+            expect(text(card, "problem")).toBe(
+              `Couldn't reach ${readPrimaryEnvironmentDescriptor()?.label}. Try again.`,
+            ),
+          waitOptions,
+        );
+        expect(field(card)?.value).toBe(CANARY);
+        const [first, second] = respondRequests();
+        expect(claimOf(second!).claimId).toBe(claimOf(first!).claimId);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("clears typed text when the card is replaced or answered on another device, and says why", async () => {
+      const first = secretRequest("secret-request-first");
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([first]),
+      });
+
+      try {
+        await userEvent.fill(field(await panel())!, CANARY);
+        // The agent asks again for the same key: a fresh card, empty.
+        const newer = secretRequest("secret-request-newer", { createdAt: isoAt(302) });
+        sendLive("thread.secret-request-created", {
+          threadId: THREAD_ID,
+          request: newer,
+          replaces: [first.requestId],
+        });
+        await vi.waitFor(async () => {
+          const card = await panel();
+          expect(card.parentElement?.innerHTML).not.toContain(CANARY);
+          expect(field(card)?.value).toBe("");
+          expect(document.body.textContent).toContain(
+            "The agent asked for STRIPE_SECRET_KEY again",
+          );
+        }, waitOptions);
+
+        // Typed again, then answered on a phone.
+        await userEvent.fill(field(await panel())!, CANARY);
+        sendLive("thread.secret-request-claimed", {
+          threadId: THREAD_ID,
+          requestId: newer.requestId,
+          claim: { claimId: "claim-phone", deviceLabel: "iPhone" },
+          claimedAt: isoAt(303),
+        });
+        await vi.waitFor(async () => {
+          const card = await panel();
+          expect(text(card, "status")).toBe("Answered on iPhone");
+          expect(field(card)).toBeNull();
+        }, waitOptions);
+        expect(respondRequests()).toHaveLength(0);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("offers to remove edge spaces without trimming, and Not now declines under a claim", async () => {
+      const request = secretRequest("secret-request-spaces", {
+        use: { kind: "commands" },
+      });
+      const second = secretRequest("secret-request-second", {
+        name: "OPENAI_API_KEY",
+        createdAt: isoAt(302),
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([request, second]),
+        resolveRpc: (body) =>
+          body._tag === WS_METHODS.secretRequestRespond ? { outcome: "declined" } : undefined,
+      });
+
+      try {
+        const card = await panel();
+        expect(text(card, "position")).toBe("1 of 2");
+        expect(text(card, "destination")).toMatch(
+          /^Kept in a private file on .+ until .+\. It stays out of the chat\. The agent can read it\.$/,
+        );
+        // A one-line field would drop the line break of a two-line paste and
+        // save an altered key: the paste is refused with the reason instead.
+        const pasted = new DataTransfer();
+        pasted.setData("text/plain", `${CANARY}\nsecond-line`);
+        field(card)!.dispatchEvent(
+          new ClipboardEvent("paste", { clipboardData: pasted, bubbles: true, cancelable: true }),
+        );
+        await vi.waitFor(() => expect(text(card, "problem")).toContain("line break"), waitOptions);
+        expect(field(card)?.value).toBe("");
+
+        await userEvent.fill(field(card)!, ` ${CANARY} `);
+        await vi.waitFor(
+          () => expect(text(card, "spaces")).toContain("This starts or ends with a space."),
+          waitOptions,
+        );
+        expect(field(card)?.value).toBe(` ${CANARY} `);
+        button(card, "Remove spaces").click();
+        await vi.waitFor(() => expect(field(card)?.value).toBe(CANARY), waitOptions);
+        expect(text(card, "spaces")).toBeNull();
+
+        button(card, "Not now").click();
+        await vi.waitFor(() => expect(respondRequests()).toHaveLength(1), waitOptions);
+        expect(respondRequests()[0]).toMatchObject({
+          requestId: request.requestId,
+          claimId: expect.any(String),
+          answer: { type: "decline" },
+        });
+        expect(sentValue(respondRequests()[0]!)).toBeUndefined();
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("turns Save off when the connection to the computer isn't encrypted", async () => {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([]),
+      });
+
+      try {
+        await waitForElement(
+          () => document.querySelector<HTMLElement>('[data-chat-composer-form="true"]'),
+          "Unable to find the composer.",
+        );
+        // This app reaches its server by a plain address on the network.
+        window.desktopBridge = {
+          getLocalEnvironmentBootstrap: () => ({
+            httpBaseUrl: "http://192.168.1.20:3773",
+            wsBaseUrl: "ws://192.168.1.20:3773",
+          }),
+        } as unknown as NonNullable<typeof window.desktopBridge>;
+        sendLive("thread.secret-request-created", {
+          threadId: THREAD_ID,
+          request: secretRequest("secret-request-unprotected"),
+        });
+        const card = await panel();
+        expect(text(card, "unprotected")).toBe(
+          `The connection to ${readPrimaryEnvironmentDescriptor()?.label} isn't encrypted, so a key can't be sent from here. Answer on that computer.`,
+        );
+        expect(button(card, "Save").disabled).toBe(true);
+        expect(field(card)?.disabled).toBe(true);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("draws the saved message as a quiet row, with Remove now while the file is there", async () => {
+      const saved = secretRequest("secret-request-saved", {
+        use: { kind: "commands" },
+        status: "saved",
+        claim: { claimId: "claim-1", deviceLabel: "This Mac" },
+        savedAt: isoAt(303),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        settledAt: isoAt(303),
+        noted: true,
+      });
+      const message = createUserMessage({
+        id: secretAnswerMessageId(saved.requestId),
+        text: "I saved STRIPE_SECRET_KEY for your commands in a private file.",
+        offsetSeconds: 400,
+      });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: snapshotWith([saved], [message]),
+        resolveRpc: (body) =>
+          body._tag === WS_METHODS.secretRequestRemove ? Effect.void : undefined,
+      });
+
+      try {
+        const row = await waitForElement(
+          () =>
+            document.querySelector<HTMLElement>(`[data-secret-answer-row="${saved.requestId}"]`),
+          "Unable to find the saved row.",
+        );
+        expect(row.querySelector("[data-secret-answer-text]")?.textContent).toMatch(
+          /^You saved STRIPE_SECRET_KEY for the agent's commands\. Removed at .+ tomorrow\.$/,
+        );
+        // A quiet row, not the bubble the agent's message text would be.
+        expect(document.body.textContent).not.toContain("in a private file.");
+        row.querySelector<HTMLButtonElement>("[data-secret-answer-remove]")!.click();
+        await vi.waitFor(
+          () =>
+            expect(
+              wsRequests.filter((request) => request._tag === WS_METHODS.secretRequestRemove),
+            ).toEqual([
+              expect.objectContaining({ threadId: THREAD_ID, requestId: saved.requestId }),
+            ]),
+          waitOptions,
+        );
+        sendLive("thread.secret-request-removed", {
+          threadId: THREAD_ID,
+          requestId: saved.requestId,
+          removedAt: isoAt(404),
+        });
+        await vi.waitFor(() => {
+          expect(row.querySelector("[data-secret-answer-text]")?.textContent).toBe(
+            "You saved STRIPE_SECRET_KEY for the agent's commands. Removed.",
+          );
+          expect(row.querySelector("[data-secret-answer-remove]")).toBeNull();
+        }, waitOptions);
       } finally {
         await mounted.cleanup();
       }

@@ -73,6 +73,7 @@ const ASKS_THE_USER: ReadonlySet<string> = new Set([
   "question",
   "schedule",
   "settings",
+  "secret",
 ]);
 
 const DROP: AlertVerdict = { type: "drop" };
@@ -192,6 +193,12 @@ export const makeAlertChecks = Effect.gen(function* () {
             (request) => request.requestId === alert.subjectId && request.status === "waiting",
           )
             ? send("needs_you", "settings")
+            : DROP;
+        case "secret":
+          return (thread.secretRequests ?? []).some(
+            (request) => request.requestId === alert.subjectId && request.status === "waiting",
+          )
+            ? send("needs_you", "secret")
             : DROP;
         case "plan": {
           // A plan alert that waits for a retry still needs its plan open, on the latest turn.

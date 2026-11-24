@@ -143,4 +143,29 @@ describe("theme-showcase", () => {
       (await checkShowcaseRepository(repo, { base, author: "will", trusted: true })).size,
     ).toBe(0);
   });
+
+  it("lets an outside author update their own featured theme without changing featured", async () => {
+    fresh();
+    writeTheme("harbor", harbor, { sharedBy: "sam", featured: true });
+    const base = commit();
+
+    // Editing theme.threadlines-theme while leaving featured: true intact passes.
+    writeTheme(
+      "harbor",
+      { ...harbor, colors: { ...harbor.colors, accent: "#3b76ff" } },
+      { sharedBy: "sam", featured: true },
+    );
+    commit();
+    expect((await checkShowcaseRepository(repo, { base, author: "sam" })).size).toBe(0);
+
+    // Flipping featured off is still refused for an outside author.
+    writeTheme(
+      "harbor",
+      { ...harbor, colors: { ...harbor.colors, accent: "#3b76ff" } },
+      { sharedBy: "sam", featured: false },
+    );
+    commit();
+    const problems = await checkShowcaseRepository(repo, { base, author: "sam" });
+    expect(problems.get("themes/harbor")).toEqual(["Only maintainers feature a theme."]);
+  });
 });

@@ -14,6 +14,7 @@ import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { usageMeterColor } from "../../lib/providerUsage";
+import { UsagePaceMark } from "./UsagePaceMark";
 import { cn } from "../../lib/utils";
 import {
   deriveUsageWindow,
@@ -22,11 +23,13 @@ import {
   useUsageEnvironmentTargets,
 } from "../../lib/usageReactQuery";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { readLocalApi } from "../../localApi";
 import { useServerProviders } from "../../rpc/serverState";
 import { RelativeTimeLabel } from "../RelativeTimeLabel";
 import { PageTitlebar } from "../PageTitlebar";
 import {
   ClaudeAI,
+  AntigravityIcon,
   FxIcon,
   GrokIcon,
   MuseIcon,
@@ -128,6 +131,7 @@ const USAGE_PROVIDER_ICONS: Record<UsageProviderKind, Icon> = {
   muse: MuseIcon,
   opencode: OpenCodeIcon,
   fx: FxIcon,
+  antigravity: AntigravityIcon,
 };
 
 function shareDigits(share: number): number {
@@ -269,7 +273,12 @@ export function UsageView() {
                 isFetching={usageQuery.isFetching}
                 disabled={!view}
                 onWindowChange={setSelectedWindow}
-                onRefresh={() => void usageQuery.refetch()}
+                onRefresh={() => {
+                  void usageQuery.refetch();
+                  void readLocalApi()
+                    ?.server.refreshProviders()
+                    .catch(() => undefined);
+                }}
               />
             ) : null}
           </div>
@@ -461,7 +470,7 @@ function UsagePlanLimits({
                         {meter.detail}
                       </span>
                     </span>
-                    <div className="h-[3px] w-full bg-border/40">
+                    <div className="relative h-[3px] w-full bg-border/40">
                       <div
                         className="h-full"
                         style={{
@@ -470,6 +479,13 @@ function UsagePlanLimits({
                             usageMeterColor(meter.usedPercent, meter.warning) ?? fill,
                         }}
                       />
+                      {meter.elapsedPercent !== undefined && meter.paceDetail !== undefined ? (
+                        <UsagePaceMark
+                          elapsedPercent={meter.elapsedPercent}
+                          detail={meter.paceDetail}
+                          className="h-2"
+                        />
+                      ) : null}
                     </div>
                   </div>
                 ))}

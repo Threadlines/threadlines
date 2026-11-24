@@ -9,6 +9,7 @@
  *
  * @module ProviderServiceLive
  */
+import { SecretScrubber } from "../../secrets/SecretScrubber.ts";
 import {
   EventId,
   MessageId,
@@ -65,8 +66,14 @@ import {
   providerTurnMetricAttributes,
   withMetrics,
 } from "../../observability/Metrics.ts";
-import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import {
+  type ProviderAdapterError,
+  ProviderAdapterRequestError,
+  ProviderValidationError,
+} from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import { ThreadSessionAdmission } from "../Services/ThreadSessionAdmission.ts";
+import { ProjectInstructions } from "../Services/ProjectInstructions.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import {
@@ -81,8 +88,15 @@ import { type EarlySessionEndReason, makeEarlySessionLedger } from "../earlySess
 
 /** An early start that takes longer than this is given up. */
 const EARLY_SESSION_START_TIMEOUT = Duration.seconds(60);
+/** The most of a running command's output a read hands back: its end, which
+ *  holds the lines a client shows. Claude itself keeps the last 8 KiB. */
+const COMMAND_OUTPUT_TAIL_CHARS = 4_096;
 /** How often unused early sessions are checked for expiry. */
 const EARLY_SESSION_SWEEP_INTERVAL = Duration.seconds(30);
+/** How long quiesceThread waits for a start or recovery of the thread already under way. */
+const QUIESCE_START_WAIT = Duration.seconds(90);
+/** How long a revert waits for a stopping agent's process to go, before ending it, and after. */
+const REVERT_STOP_WAIT = Duration.seconds(20);
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import {
   analyticsAgentProperties,
@@ -121,6 +135,8 @@ const ProviderSetThreadGoalServiceInput = Schema.Struct({
   status: Schema.optional(ThreadGoalStatus),
   tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
   modelSelection: Schema.optional(ModelSelection),
+  context: Schema.optional(Schema.String),
+  origin: Schema.optional(Schema.Literals(["user", "automatic"])),
 });
 const ProviderClearThreadGoalServiceInput = Schema.Struct({
   threadId: ThreadId,
@@ -208,6 +224,8 @@ function toRuntimePayloadFromSession(
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
     readonly earlyUnused?: boolean;
+    /** See readPersistedHistoryOwed. */
+    readonly historyOwed?: boolean;
     /** A start: what it asked of the room endpoint, recorded over any older start's. */
     readonly startedWith?: { readonly guideTools: boolean };
   },
@@ -217,6 +235,9 @@ function toRuntimePayloadFromSession(
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
+    // Which runtime the binding describes: history acknowledgements and
+    // forgets name it (noteHistoryDelivered, forgetConversation).
+    sessionCreatedAt: session.createdAt,
     // Kept so a recovered runtime gets the room tools it was started with.
     ...(session.roomTools !== undefined ? { roomTools: session.roomTools } : {}),
     // A start replaces both (null clears an older start's room tools in the
@@ -231,7 +252,27 @@ function toRuntimePayloadFromSession(
       ? { lastRuntimeEventAt: extra.lastRuntimeEventAt }
       : {}),
     ...(extra?.earlyUnused !== undefined ? { earlyUnused: extra.earlyUnused } : {}),
+    ...(extra?.historyOwed !== undefined ? { historyOwed: extra.historyOwed } : {}),
   };
+}
+
+/**
+ * The agent's conversation lacks the thread's history: Threadlines forgot it
+ * (a revert on an agent that can't rewind, a conversation the agent can't go
+ * on with), or a start handed the history over and no send has carried it
+ * yet. Every start then opens a new conversation and reports `resumeFailed`,
+ * so the thread seeds its next message; a send that carried the history
+ * clears it (`noteHistoryDelivered`). Kept in the binding, so a restart in
+ * between can't reopen the conversation as it was.
+ */
+function readPersistedHistoryOwed(runtimePayload: ProviderRuntimeBinding["runtimePayload"]) {
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "historyOwed" in runtimePayload &&
+    runtimePayload.historyOwed === true
+  );
 }
 
 /**
@@ -381,6 +422,28 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory;
+  // Watched keys are hidden here, before anything stores, logs or sends an
+  // event (docs/design/secret-scrubbing.md, "Where it runs").
+  const secretScrubber = yield* SecretScrubber;
+  const admission = yield* ThreadSessionAdmission;
+  const projectInstructions = yield* Effect.serviceOption(ProjectInstructions);
+  /**
+   * The project's text for a session about to start (docs/design/
+   * project-brief-notes.md, "Delivery"), read at every adapter start so a
+   * restarted session gets the brief as it is now. Whatever a caller passed
+   * is replaced: only this lookup decides it.
+   */
+  const withProjectInstructions = <T extends ProviderSessionStartInput>(input: T) =>
+    Effect.gen(function* () {
+      const { projectInstructions: _ignored, ...rest } = input;
+      if (Option.isNone(projectInstructions)) return rest;
+      const text = yield* projectInstructions.value.forSession({
+        sessionKey: input.threadId,
+        runtimeMode: input.runtimeMode,
+        canUseNoteTools: input.roomTools === true || input.guideTools === true,
+      });
+      return text === undefined ? rest : { ...rest, projectInstructions: text };
+    });
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const turnLatency = makeTurnLatencyTracker();
@@ -408,6 +471,33 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   };
   /** Early sessions that finished starting, kept for whoever adopts them. */
   const earlyStartedSessions = new Map<string, ProviderSession>();
+  /**
+   * Sessions mid-handoff/start whose adapter may already list the new runtime
+   * before `stopStaleSessionsForThread` and `upsertSessionBinding` finish.
+   */
+  const startingInstancesByThread = new Map<
+    ThreadId,
+    {
+      readonly fromInstanceId: ProviderInstanceId | undefined;
+      readonly toInstanceId: ProviderInstanceId;
+    }
+  >();
+  /**
+   * Monotonic counter and last completed handoff per thread so a `listSessions`
+   * call that snapshotted adapters before a handoff finished can distinguish a
+   * stale outgoing runtime from genuine binding corruption.
+   */
+  const handoffEpochByThread = new Map<ThreadId, number>();
+  const lastHandoffByThread = new Map<
+    ThreadId,
+    {
+      readonly fromInstanceId: ProviderInstanceId | undefined;
+      readonly toInstanceId: ProviderInstanceId;
+    }
+  >();
+  const bumpHandoffEpoch = (threadId: ThreadId) => {
+    handoffEpochByThread.set(threadId, (handoffEpochByThread.get(threadId) ?? 0) + 1);
+  };
   const awaitEarlyGate = (threadId: string): Effect.Effect<void> => {
     const gate = earlyGates.get(threadId);
     return gate === undefined ? Effect.void : Deferred.await(gate);
@@ -474,6 +564,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                 handoffQueueMs: latency.handoffSteps.queueMs,
                 handoffPrepareMs: latency.handoffSteps.prepareMs,
                 handoffCheckpointMs: latency.handoffSteps.checkpointMs,
+                ...(latency.handoffSteps.checkpointFailed !== undefined
+                  ? { handoffCheckpointFailed: latency.handoffSteps.checkpointFailed }
+                  : {}),
               }
             : {}),
           firstOutputMs: latency.firstOutputMs,
@@ -638,6 +731,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly lastRuntimeEvent?: string;
       readonly lastRuntimeEventAt?: string;
       readonly earlyUnused?: boolean;
+      readonly historyOwed?: boolean;
       readonly startedWith?: { readonly guideTools: boolean };
     },
   ) =>
@@ -665,11 +759,27 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     event: ProviderRuntimeEvent,
   ): Effect.Effect<void> =>
     Effect.sync(() => correlateRuntimeEventWithInstance(source, event)).pipe(
+      // An agent that can't go on with its conversation: forgotten before
+      // anyone hears the session ended, so no start can reopen it.
+      Effect.tap((canonicalEvent) =>
+        canonicalEvent.type === "session.exited" &&
+        canonicalEvent.payload.conversationLost !== undefined
+          ? forgetConversation(canonicalEvent.threadId, {
+              onlySession: canonicalEvent.payload.conversationLost.sessionCreatedAt,
+            })
+          : Effect.void,
+      ),
       Effect.flatMap((canonicalEvent) =>
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,
           eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
+        }).pipe(
+          Effect.andThen(
+            Effect.forEach(secretScrubber.scrubRuntimeEvent(canonicalEvent), publishRuntimeEvent, {
+              discard: true,
+            }),
+          ),
+        ),
       ),
     );
 
@@ -728,6 +838,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     () => reconcileInstanceSubscriptions,
   ).pipe(Effect.forkScoped);
 
+  /**
+   * The session fence (ThreadSessionAdmission): no session of a thread that
+   * is moving, moved, or having its sessions ended for a move starts or
+   * recovers, whatever its key and whoever asks.
+   */
+  const requireAdmission = (operation: string, sessionKey: ThreadId) =>
+    Effect.gen(function* () {
+      const refusal = yield* admission.refusal(parseSessionKey(sessionKey).threadId);
+      if (refusal !== null) return yield* toValidationError(operation, refusal);
+    });
+
   const recoverSessionForThread = Effect.fn("recoverSessionForThread")(function* (input: {
     readonly binding: ProviderRuntimeBinding;
     readonly operation: string;
@@ -744,15 +865,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* withEarlyGate(
       input.binding.threadId,
       Effect.gen(function* () {
+        // The fence is read holding the gate, so a recovery that waited on
+        // it while a move began is refused (quiesceThread waits for gates).
+        yield* requireAdmission(input.operation, input.binding.threadId);
         if (earlySessions.waiting(input.binding.threadId) === undefined) {
           earlySessions.forget(input.binding.threadId);
         }
         const adapter = yield* registry.getByInstance(bindingInstanceId);
         // A cursor nothing used points at a conversation that may not exist.
+        // Nor one whose conversation was forgotten: the thread's next start
+        // opens a new one and seeds it.
         const hasResumeCursor =
           input.binding.resumeCursor !== null &&
           input.binding.resumeCursor !== undefined &&
-          !readPersistedEarlyUnused(input.binding.runtimePayload);
+          !readPersistedEarlyUnused(input.binding.runtimePayload) &&
+          !readPersistedHistoryOwed(input.binding.runtimePayload);
         const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
         if (hasActiveSession) {
           const activeSessions = yield* adapter.listSessions();
@@ -765,11 +892,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               input.binding.threadId,
             );
             yield* analytics.record("provider.session.recovered", {
-              provider: existing.provider,
+              ...analyticsAgentProperties({
+                provider: existing.provider,
+                communityAgentId: yield* communityAgentIdOf(bindingInstanceId),
+              }),
               strategy: "adopt-existing",
               hasResumeCursor: existing.resumeCursor !== undefined,
+              resumeFailed: false,
             });
-            return { adapter, session: existing } as const;
+            return { adapter, session: existing, historyOwed: false } as const;
           }
         }
 
@@ -789,21 +920,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
         const startBeganAtMs = yield* Clock.currentTimeMillis;
         const startBeganNanos = yield* Clock.monotonicTimeNanos;
-        const resumed = yield* adapter.startSession({
-          threadId: input.binding.threadId,
-          provider: input.binding.provider,
-          providerInstanceId: bindingInstanceId,
-          ...(persistedCwd ? { cwd: persistedCwd } : {}),
-          ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
-          ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
-          ...(readPersistedRoomToolsRequest(input.binding.runtimePayload)
-            ? { roomTools: true }
-            : {}),
-          ...(readPersistedGuideToolsRequest(input.binding.runtimePayload)
-            ? { guideTools: true }
-            : {}),
-          runtimeMode: input.binding.runtimeMode ?? "full-access",
-        });
+        const resumed = yield* adapter.startSession(
+          yield* withProjectInstructions({
+            threadId: input.binding.threadId,
+            provider: input.binding.provider,
+            providerInstanceId: bindingInstanceId,
+            ...(persistedCwd ? { cwd: persistedCwd } : {}),
+            ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
+            ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
+            ...(readPersistedRoomToolsRequest(input.binding.runtimePayload)
+              ? { roomTools: true }
+              : {}),
+            ...(readPersistedGuideToolsRequest(input.binding.runtimePayload)
+              ? { guideTools: true }
+              : {}),
+            runtimeMode: input.binding.runtimeMode ?? "full-access",
+          }),
+        );
         if (resumed.provider !== adapter.provider) {
           return yield* toValidationError(
             input.operation,
@@ -818,17 +951,25 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           instanceId: bindingInstanceId,
           timing: { kind: "resume", startMs },
         });
+        // As after any start: a conversation it couldn't reopen owes the
+        // thread's history, kept in the binding until a send carries it.
+        const historyOwed = resumed.resumeFailed === true;
         yield* upsertSessionBinding(
           { ...resumed, providerInstanceId: bindingInstanceId },
           input.binding.threadId,
+          historyOwed ? { historyOwed: true } : undefined,
         );
         yield* analytics.record("provider.session.recovered", {
-          provider: resumed.provider,
+          ...analyticsAgentProperties({
+            provider: resumed.provider,
+            communityAgentId: yield* communityAgentIdOf(bindingInstanceId),
+          }),
           strategy: "resume-thread",
           hasResumeCursor: resumed.resumeCursor !== undefined,
+          resumeFailed: historyOwed,
           startMs,
         });
-        return { adapter, session: resumed } as const;
+        return { adapter, session: resumed, historyOwed } as const;
       }),
     ).pipe(
       withMetrics({
@@ -887,6 +1028,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       instanceId,
       threadId: input.threadId,
       isActive: true,
+      // Reopened without its conversation: the thread owes it its history.
+      historyOwed: recovered.historyOwed,
     } as const;
   });
 
@@ -908,9 +1051,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
               yield* adapter.stopSession(input.threadId).pipe(
                 Effect.tap(() =>
-                  analytics.record("provider.session.stopped", {
-                    provider: adapter.provider,
-                  }),
+                  communityAgentIdOf(instanceId).pipe(
+                    Effect.flatMap((communityAgentId) =>
+                      analytics.record(
+                        "provider.session.stopped",
+                        analyticsAgentProperties({
+                          provider: adapter.provider,
+                          communityAgentId,
+                        }),
+                      ),
+                    ),
+                  ),
                 ),
                 Effect.catchCause((cause) =>
                   Effect.logWarning("provider.session.stop-stale-failed", {
@@ -950,6 +1101,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       schema: ProviderSessionStartInput,
       payload: rawInput,
     });
+    yield* requireAdmission("ProviderService.startSession", threadId);
 
     const resolvedInstanceId = yield* requireBindingInstanceId(
       "ProviderService.startSession",
@@ -1004,8 +1156,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           )));
       const persistedCursorUsable =
         persistedSharesHistory && !readPersistedEarlyUnused(persistedBinding?.runtimePayload);
-      const effectiveResumeCursor =
-        input.resumeCursor ?? (persistedCursorUsable ? persistedBinding?.resumeCursor : undefined);
+      // A forgotten conversation is never reopened, whoever passes its cursor.
+      const historyOwed =
+        persistedSharesHistory && readPersistedHistoryOwed(persistedBinding?.runtimePayload);
+      const effectiveResumeCursor = historyOwed
+        ? undefined
+        : (input.resumeCursor ??
+          (persistedCursorUsable ? persistedBinding?.resumeCursor : undefined));
+      // Started with no history of its own: the thread seeds its next message
+      // (a start handed a seed carries it already).
+      const owesHistorySeed =
+        historyOwed && input.contextSeed === undefined && input.forkFrom === undefined;
       const effectiveCwd =
         input.cwd ??
         (persistedSharesHistory ? readPersistedCwd(persistedBinding?.runtimePayload) : undefined);
@@ -1029,60 +1190,100 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const adapter = yield* registry.getByInstance(resolvedInstanceId);
       const startBeganAtMs = yield* Clock.currentTimeMillis;
       const startBeganNanos = yield* Clock.monotonicTimeNanos;
-      const session = yield* adapter.startSession({
-        ...input,
-        providerInstanceId: resolvedInstanceId,
-        ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-        ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
-        // An early start reopens the conversation or fails: starting it fresh
-        // instead is left to the ordinary start, which tells the thread.
-        ...(early ? { resumePolicy: "required" as const } : {}),
-      });
-
-      if (session.provider !== adapter.provider) {
-        return yield* toValidationError(
-          "ProviderService.startSession",
-          `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
+      // The cursor the adapter gets is the one decided above, never the
+      // caller's as given: a forgotten conversation's must not get through.
+      const { resumeCursor: _requestedCursor, ...startInput } = input;
+      const inFlightHandoff = {
+        fromInstanceId: persistedBinding?.providerInstanceId,
+        toInstanceId: resolvedInstanceId,
+      } as const;
+      const { sessionWithInstance, sessionStart } = yield* Effect.gen(function* () {
+        yield* Effect.sync(() => {
+          bumpHandoffEpoch(threadId);
+          startingInstancesByThread.set(threadId, inFlightHandoff);
+        });
+        const session = yield* adapter.startSession(
+          yield* withProjectInstructions({
+            ...startInput,
+            providerInstanceId: resolvedInstanceId,
+            ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+            ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
+            // An early start reopens the conversation or fails: starting it fresh
+            // instead is left to the ordinary start, which tells the thread.
+            ...(early ? { resumePolicy: "required" as const } : {}),
+          }),
         );
-      }
-      const sessionStart = {
-        kind: classifyProviderSessionStart({
-          hasPreviousBinding: persistedBinding !== undefined,
-          previousProvider: persistedBinding?.provider,
-          previousInstanceId: persistedBinding?.providerInstanceId,
-          nextProvider: resolvedProvider,
-          nextInstanceId: resolvedInstanceId,
-          hasContextSeed: input.contextSeed !== undefined,
-          hasResumeCursor: effectiveResumeCursor !== undefined,
-        }),
-        startMs: yield* millisSince(startBeganNanos),
-      };
-      turnLatency.sessionStarted(threadId, {
-        beganAtMs: startBeganAtMs,
-        atMs: yield* Clock.currentTimeMillis,
-        instanceId: resolvedInstanceId,
-        timing: sessionStart,
-      });
-      const sessionWithInstance = {
-        ...session,
-        providerInstanceId: resolvedInstanceId,
-      };
 
-      yield* stopStaleSessionsForThread({
-        threadId,
-        currentInstanceId: resolvedInstanceId,
-      });
-      // A fresh early start's conversation exists only once something uses
-      // it; until then a later start must not try to resume it.
-      const fresh =
-        effectiveResumeCursor === undefined &&
-        input.contextSeed === undefined &&
-        input.forkFrom === undefined;
-      yield* upsertSessionBinding(sessionWithInstance, threadId, {
-        modelSelection: input.modelSelection,
-        earlyUnused: early && fresh,
-        startedWith: { guideTools: input.guideTools === true },
-      });
+        if (session.provider !== adapter.provider) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
+          );
+        }
+        const sessionStart = {
+          kind: classifyProviderSessionStart({
+            hasPreviousBinding: persistedBinding !== undefined,
+            previousProvider: persistedBinding?.provider,
+            previousInstanceId: persistedBinding?.providerInstanceId,
+            nextProvider: resolvedProvider,
+            nextInstanceId: resolvedInstanceId,
+            hasContextSeed: input.contextSeed !== undefined,
+            hasResumeCursor: effectiveResumeCursor !== undefined,
+          }),
+          startMs: yield* millisSince(startBeganNanos),
+        };
+        turnLatency.sessionStarted(threadId, {
+          beganAtMs: startBeganAtMs,
+          atMs: yield* Clock.currentTimeMillis,
+          instanceId: resolvedInstanceId,
+          timing: sessionStart,
+        });
+        const sessionWithInstance = {
+          ...session,
+          providerInstanceId: resolvedInstanceId,
+          // It reopened the conversation its cursor named: the adapter took a
+          // cursor and didn't report that it couldn't (resumeFailed).
+          ...(effectiveResumeCursor !== undefined &&
+          effectiveResumeCursor !== null &&
+          session.resumeFailed !== true
+            ? { resumed: true }
+            : {}),
+          ...(owesHistorySeed ? { resumeFailed: true } : {}),
+        };
+
+        yield* stopStaleSessionsForThread({
+          threadId,
+          currentInstanceId: resolvedInstanceId,
+        });
+        // A fresh early start's conversation exists only once something uses
+        // it; until then a later start must not try to resume it.
+        const fresh =
+          effectiveResumeCursor === undefined &&
+          input.contextSeed === undefined &&
+          input.forkFrom === undefined;
+        yield* upsertSessionBinding(sessionWithInstance, threadId, {
+          modelSelection: input.modelSelection,
+          earlyUnused: early && fresh,
+          // Owed until a send carries it: the forgotten conversation's, the
+          // seed this start handed over (an adapter may hold it until a send),
+          // or the history of a conversation the adapter couldn't reopen.
+          ...(historyOwed || input.contextSeed !== undefined || session.resumeFailed === true
+            ? { historyOwed: true }
+            : {}),
+          startedWith: { guideTools: input.guideTools === true },
+        });
+        return { sessionWithInstance, sessionStart } as const;
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (startingInstancesByThread.get(threadId) === inFlightHandoff) {
+              startingInstancesByThread.delete(threadId);
+              lastHandoffByThread.set(threadId, inFlightHandoff);
+              bumpHandoffEpoch(threadId);
+            }
+          }),
+        ),
+      );
       yield* analytics.record("provider.session.started", {
         ...analyticsAgentProperties({
           provider: sessionWithInstance.provider,
@@ -1291,13 +1492,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   ) =>
     Effect.gen(function* () {
       const nowMs = yield* Clock.currentTimeMillis;
-      const provider = yield* registry.getInstanceInfo(entry.instanceId as ProviderInstanceId).pipe(
-        Effect.map((info) => info.driverKind),
-        Effect.orElseSucceed(() => "unknown"),
+      const agent = yield* registry.getInstanceInfo(entry.instanceId as ProviderInstanceId).pipe(
+        Effect.map((info) => ({
+          provider: info.driverKind,
+          communityAgentId: info.communityAgentId,
+        })),
+        Effect.orElseSucceed(() => ({ provider: "unknown", communityAgentId: undefined })),
       );
       yield* Effect.logInfo("provider service stopped an unused early session", { reason });
       yield* analytics.record("provider.session.early_unused", {
-        provider,
+        ...analyticsAgentProperties(agent),
         reason,
         ageMs: Math.max(0, nowMs - entry.startedAtMs),
       });
@@ -1592,6 +1796,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                 "provider.turn.handoff_queue_ms": input.handoffSteps.queueMs,
                 "provider.turn.handoff_prepare_ms": input.handoffSteps.prepareMs,
                 "provider.turn.handoff_checkpoint_ms": input.handoffSteps.checkpointMs,
+                "provider.turn.handoff_checkpoint_failed":
+                  input.handoffSteps.checkpointFailed === true,
               }
             : {}),
         });
@@ -1607,72 +1813,104 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }),
           ),
         );
-      if (latencySendId !== undefined) {
-        yield* recordTurnLatency(turnLatency.sent(input.threadId, latencySendId, turn.turnId));
-      }
-      yield* directory.upsert({
-        threadId: input.threadId,
-        provider: routed.adapter.provider,
-        providerInstanceId: routed.instanceId,
-        status: "running",
-        ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
-        runtimePayload: {
-          ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-          activeTurnId: turn.turnId,
-          lastRuntimeEvent: "provider.sendTurn",
-          lastRuntimeEventAt: yield* nowIso,
-        },
-      });
-      if (input.telemetryContext?.kind === "thread_fork") {
-        const sourceModelSelection = input.telemetryContext.sourceModelSelection;
-        // Model names are read by agent kind (Pi's own list applies to every Pi instance).
-        const sourceDriver = sourceModelSelection
-          ? yield* registry.getByInstance(sourceModelSelection.instanceId).pipe(
-              Effect.map((adapter) => adapter.provider),
-              Effect.orElseSucceed(() => undefined),
-            )
-          : undefined;
-        yield* analytics.record("thread.fork.created", {
-          sourceProvider: sourceModelSelection?.instanceId ?? "unknown",
-          targetProvider: input.modelSelection?.instanceId ?? routed.instanceId,
-          providerChanged:
-            sourceModelSelection !== undefined &&
-            input.modelSelection !== undefined &&
-            sourceModelSelection.instanceId !== input.modelSelection.instanceId,
-          modelChanged:
-            sourceModelSelection !== undefined &&
-            input.modelSelection !== undefined &&
-            sourceModelSelection.model !== input.modelSelection.model,
-          hasForkContext: true,
-          seedMode: input.telemetryContext.seedMode ?? "context-seed",
-          includedMessageCount: input.telemetryContext.includedMessageCount,
-          includedToolSummaryCount: input.telemetryContext.includedToolSummaryCount,
-          includedAttachmentCount: input.telemetryContext.includedAttachmentCount,
-          omittedAttachmentCount: input.telemetryContext.omittedAttachmentCount,
-          ...analyticsModelProperties({
-            model: sourceModelSelection?.model,
-            provider: sourceDriver,
-            prefix: "source",
-          }),
+      // The provider has the turn from here: what follows is bookkeeping. A
+      // failure in it is logged, never reported as a turn that didn't start
+      // (the reactor would then call a message the agent read unsent).
+      yield* Effect.gen(function* () {
+        if (latencySendId !== undefined) {
+          yield* recordTurnLatency(turnLatency.sent(input.threadId, latencySendId, turn.turnId));
+        }
+        yield* directory.upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          status: "running",
+          ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+          runtimePayload: {
+            ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+            activeTurnId: turn.turnId,
+            lastRuntimeEvent: "provider.sendTurn",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        });
+        if (input.telemetryContext?.kind === "thread_fork") {
+          const sourceModelSelection = input.telemetryContext.sourceModelSelection;
+          // Model names and fork telemetry use the driver kind (and public
+          // community agent id), never a user-defined instance id slug.
+          const sourceInfo = sourceModelSelection
+            ? yield* registry.getInstanceInfo(sourceModelSelection.instanceId).pipe(
+                Effect.map((info) => ({
+                  provider: info.driverKind,
+                  communityAgentId: info.communityAgentId,
+                })),
+                Effect.orElseSucceed(() => undefined),
+              )
+            : undefined;
+          const sourceDriver = sourceInfo?.provider;
+          yield* analytics.record("thread.fork.created", {
+            ...analyticsAgentProperties({
+              provider: sourceDriver ?? "unknown",
+              communityAgentId: sourceInfo?.communityAgentId,
+              prefix: "source",
+            }),
+            ...analyticsAgentProperties({
+              provider: routed.adapter.provider,
+              communityAgentId,
+              prefix: "target",
+            }),
+            providerChanged:
+              sourceModelSelection !== undefined &&
+              sourceModelSelection.instanceId !==
+                (input.modelSelection?.instanceId ?? routed.instanceId),
+            modelChanged:
+              sourceModelSelection !== undefined &&
+              input.modelSelection !== undefined &&
+              sourceModelSelection.model !== input.modelSelection.model,
+            hasForkContext: true,
+            seedMode: input.telemetryContext.seedMode ?? "context-seed",
+            includedMessageCount: input.telemetryContext.includedMessageCount,
+            includedToolSummaryCount: input.telemetryContext.includedToolSummaryCount,
+            includedAttachmentCount: input.telemetryContext.includedAttachmentCount,
+            omittedAttachmentCount: input.telemetryContext.omittedAttachmentCount,
+            ...analyticsModelProperties({
+              model: sourceModelSelection?.model,
+              provider: sourceDriver,
+              prefix: "source",
+            }),
+            ...analyticsModelProperties({
+              model: input.modelSelection?.model,
+              provider: routed.adapter.provider,
+              prefix: "target",
+            }),
+          });
+        }
+        yield* analytics.record("provider.turn.sent", {
+          ...analyticsAgentProperties({ provider: routed.adapter.provider, communityAgentId }),
           ...analyticsModelProperties({
             model: input.modelSelection?.model,
             provider: routed.adapter.provider,
-            prefix: "target",
           }),
+          interactionMode: input.interactionMode,
+          attachmentCount: input.attachments.length,
+          hasInput: typeof input.input === "string" && input.input.trim().length > 0,
+          ...(input.origin !== undefined ? { origin: input.origin } : {}),
+          ...(input.lane !== undefined ? { lane: input.lane } : {}),
         });
-      }
-      yield* analytics.record("provider.turn.sent", {
-        ...analyticsAgentProperties({ provider: routed.adapter.provider, communityAgentId }),
-        ...analyticsModelProperties({
-          model: input.modelSelection?.model,
-          provider: routed.adapter.provider,
-        }),
-        interactionMode: input.interactionMode,
-        attachmentCount: input.attachments.length,
-        hasInput: typeof input.input === "string" && input.input.trim().length > 0,
-        ...(input.origin !== undefined ? { origin: input.origin } : {}),
-      });
-      return turn;
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider turn bookkeeping failed after the provider took the turn", {
+            threadId: input.threadId,
+            turnId: turn.turnId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+      // The message went to a conversation recovery opened without the
+      // thread's history: the caller owes it to the next message. This one
+      // stays sent; it was prepared for the runtime that had the history.
+      return "historyOwed" in routed && routed.historyOwed
+        ? { ...turn, historyOwed: true as const }
+        : turn;
     }).pipe(
       withMetrics({
         counter: providerTurnsTotal,
@@ -1852,7 +2090,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           },
         });
         yield* analytics.record("provider.review.started", {
-          provider: routed.adapter.provider,
+          ...analyticsAgentProperties({
+            provider: routed.adapter.provider,
+            communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+          }),
           targetType: input.target.type,
           delivery: input.delivery,
         });
@@ -2275,9 +2516,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }),
           ),
         );
-        yield* analytics.record("provider.context.compact_requested", {
-          provider: routed.adapter.provider,
-        });
+        yield* analytics.record(
+          "provider.context.compact_requested",
+          analyticsAgentProperties({
+            provider: routed.adapter.provider,
+            communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+          }),
+        );
       }).pipe(
         withMetrics({
           counter: providerTurnsTotal,
@@ -2320,11 +2565,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }
       const goal = yield* routed.adapter.setThreadGoal({
         threadId: routed.threadId,
-        origin: "user",
+        origin: input.origin ?? "user",
         ...(input.objective !== undefined ? { objective: input.objective } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
         ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+        ...(input.context !== undefined ? { context: input.context } : {}),
       });
       // Project the authoritative response directly: goal notifications keep
       // later autonomous updates flowing, but the requester's own change must
@@ -2347,7 +2593,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         },
       );
       yield* analytics.record("provider.goal.set", {
-        provider: routed.adapter.provider,
+        ...analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
         status: goal.status,
       });
       return goal;
@@ -2398,9 +2647,36 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           payload: {},
         },
       );
-      yield* analytics.record("provider.goal.cleared", {
-        provider: routed.adapter.provider,
+      yield* analytics.record(
+        "provider.goal.cleared",
+        analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
+      );
+    },
+  );
+
+  const getThreadGoal: ProviderServiceShape["getThreadGoal"] = Effect.fn("getThreadGoal")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.getThreadGoal",
+        schema: ProviderClearThreadGoalServiceInput,
+        payload: rawInput,
       });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.getThreadGoal",
+        allowRecovery: false,
+      });
+      if (
+        !routed.isActive ||
+        routed.adapter.capabilities.threadGoals !== "supported" ||
+        routed.adapter.getThreadGoal === undefined
+      ) {
+        return null;
+      }
+      return yield* routed.adapter.getThreadGoal(routed.threadId);
     },
   );
 
@@ -2445,9 +2721,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       status: "paused",
       origin: "automatic",
     });
-    yield* analytics.record("provider.goal.paused_for_stop", {
-      provider: routed.adapter.provider,
-    });
+    yield* analytics.record(
+      "provider.goal.paused_for_stop",
+      analyticsAgentProperties({
+        provider: routed.adapter.provider,
+        communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+      }),
+    );
     return pausedGoal;
   });
 
@@ -2472,9 +2752,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.thread_id": input.threadId,
           "provider.request_id": input.requestId,
         });
-        yield* routed.adapter.respondToRequest(routed.threadId, input.requestId, input.decision);
+        yield* routed.adapter.respondToRequest(
+          routed.threadId,
+          input.requestId,
+          secretScrubber.restoreAnswer(routed.threadId, input.requestId, input.decision),
+        );
         yield* analytics.record("provider.request.responded", {
-          provider: routed.adapter.provider,
+          ...analyticsAgentProperties({
+            provider: routed.adapter.provider,
+            communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+          }),
           decision: input.decision,
         });
       }).pipe(
@@ -2511,13 +2798,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.request_id": input.requestId,
       });
+      // A question shown with a key hidden is answered under its original text.
+      const answers = secretScrubber.restoreAnswer(routed.threadId, input.requestId, input.answers);
       yield* input.unanswered === undefined
-        ? routed.adapter.respondToUserInput(routed.threadId, input.requestId, input.answers)
+        ? routed.adapter.respondToUserInput(routed.threadId, input.requestId, answers)
         : routed.adapter.respondToUserInput(
             routed.threadId,
             input.requestId,
-            input.answers,
-            input.unanswered,
+            answers,
+            secretScrubber.restoreAnswer(routed.threadId, input.requestId, input.unanswered),
           );
     }).pipe(
       withMetrics({
@@ -2572,7 +2861,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         lastResumeCursor = (yield* routed.adapter.listSessions()).find(
           (session) => session.threadId === routed.threadId,
         )?.resumeCursor;
-        yield* routed.adapter.stopSession(routed.threadId);
+        // A thread the session fence holds is stopping for a move: what its
+        // agent started is noted first, so the move can prove it gone
+        // (quiesceThread). Every other stop skips the process table.
+        if (
+          routed.adapter.noteBeforeStop !== undefined &&
+          (yield* admission.refusal(parseSessionKey(routed.threadId).threadId)) !== null
+        ) {
+          yield* routed.adapter.noteBeforeStop(routed.threadId);
+        }
+        // Two stops of one session can race (a move's quiesce and the
+        // reactor's session stop): the one that finds it already gone, or
+        // closed, has nothing left to stop.
+        yield* routed.adapter.stopSession(routed.threadId).pipe(
+          Effect.catchTags({
+            ProviderAdapterSessionNotFoundError: () => Effect.void,
+            ProviderAdapterSessionClosedError: () => Effect.void,
+          }),
+        );
       }
       // A side answer's runtime is disposable: nothing ever resumes it, so
       // its binding goes with it rather than piling up as "stopped".
@@ -2590,9 +2896,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           },
         });
       }
-      yield* analytics.record("provider.session.stopped", {
-        provider: routed.adapter.provider,
-      });
+      yield* analytics.record(
+        "provider.session.stopped",
+        analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
+      );
     }).pipe(
       withMetrics({
         counter: providerSessionsTotal,
@@ -2606,6 +2916,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const listSessions: ProviderServiceShape["listSessions"] = Effect.fn("listSessions")(
     function* () {
+      const handoffEpochBefore = new Map(handoffEpochByThread);
       const currentAdapters = yield* getAdapterEntries;
       const sessionsByProvider = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
         adapter.listSessions().pipe(
@@ -2656,14 +2967,41 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "ProviderService.listSessions",
           binding,
         );
-        if (binding.provider !== session.provider) {
-          return yield* Effect.die(
-            new Error(
-              `ProviderService.listSessions: thread '${session.threadId}' is active on provider '${session.provider}' but persisted binding names provider '${binding.provider}'.`,
-            ),
-          );
-        }
-        if (overrides.providerInstanceId !== session.providerInstanceId) {
+        if (
+          binding.provider !== session.provider ||
+          overrides.providerInstanceId !== session.providerInstanceId
+        ) {
+          // A replacement start registers the new runtime before stopping the
+          // outgoing session and updating the persisted binding. Omit only the
+          // mismatched half belonging to that transition (in flight, or
+          // completed between our adapter snapshot and binding read) so real
+          // out-of-band binding corruption still dies loudly.
+          const inFlight = startingInstancesByThread.get(session.threadId);
+          const matchesInFlightHandoff =
+            inFlight !== undefined &&
+            ((session.providerInstanceId === inFlight.toInstanceId &&
+              overrides.providerInstanceId === inFlight.fromInstanceId) ||
+              (session.providerInstanceId === inFlight.fromInstanceId &&
+                overrides.providerInstanceId === inFlight.toInstanceId));
+          const completedDuringSnapshot =
+            handoffEpochByThread.get(session.threadId) !== handoffEpochBefore.get(session.threadId);
+          const lastHandoff = completedDuringSnapshot
+            ? lastHandoffByThread.get(session.threadId)
+            : undefined;
+          const matchesCompletedHandoff =
+            lastHandoff !== undefined &&
+            session.providerInstanceId === lastHandoff.fromInstanceId &&
+            overrides.providerInstanceId === lastHandoff.toInstanceId;
+          if (matchesInFlightHandoff || matchesCompletedHandoff) {
+            continue;
+          }
+          if (binding.provider !== session.provider) {
+            return yield* Effect.die(
+              new Error(
+                `ProviderService.listSessions: thread '${session.threadId}' is active on provider '${session.provider}' but persisted binding names provider '${binding.provider}'.`,
+              ),
+            );
+          }
           return yield* Effect.die(
             new Error(
               `ProviderService.listSessions: thread '${session.threadId}' is active on provider instance '${session.providerInstanceId}' but persisted binding names '${overrides.providerInstanceId}'.`,
@@ -2703,6 +3041,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return yield* Effect.gen(function* () {
       // Using an early session makes it the thread's.
       yield* adoptEarlySession(input.threadId);
+      const forgotten = yield* forgetByStartingOver(input.threadId, input.numTurns);
+      if (forgotten !== undefined) return { conversationRolledBack: forgotten };
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.rollbackConversation",
@@ -2733,7 +3073,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         yield* upsertSessionBinding(rolledBackSession, routed.threadId);
       }
       yield* analytics.record("provider.conversation.rolled_back", {
-        provider: routed.adapter.provider,
+        ...analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
         turns: input.numTurns,
       });
       return {
@@ -2751,6 +3094,125 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }),
     );
   });
+
+  /**
+   * Forgets a saved conversation in the thread's binding (see
+   * readPersistedHistoryOwed): its cursor goes, the history is owed, and no
+   * runtime is named any more, so no older session's acknowledgement clears
+   * the debt. With `onlySession`, only while the binding still holds that
+   * session (a lost session's late exit leaves its replacement alone).
+   * False when the binding couldn't be read or written; the agent then
+   * remembers.
+   */
+  const forgetConversation = (threadId: ThreadId, options?: { readonly onlySession?: string }) =>
+    Effect.gen(function* () {
+      // A forget that names its runtime checks and writes in one step: a
+      // replacement started meanwhile keeps its conversation.
+      if (options?.onlySession !== undefined) {
+        yield* directory.patchIfSession({
+          threadId,
+          sessionCreatedAt: options.onlySession,
+          runtimePayload: { historyOwed: true, sessionCreatedAt: null },
+          clearResumeCursor: true,
+        });
+        return true;
+      }
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      if (binding === undefined) return true;
+      yield* directory.upsert({
+        threadId,
+        provider: binding.provider,
+        ...(binding.providerInstanceId !== undefined
+          ? { providerInstanceId: binding.providerInstanceId }
+          : {}),
+        resumeCursor: null,
+        runtimePayload: { historyOwed: true, sessionCreatedAt: null },
+      });
+      return true;
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider service could not forget a conversation", {
+          threadId,
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as(false)),
+      ),
+    );
+
+  /**
+   * A revert for an agent that forgets by starting over (`new-session`): a
+   * live runtime stops what it runs and ends (its `rollbackThread`), then the
+   * binding forgets the conversation. Nothing is started for it. Undefined
+   * for every other agent, which `rollbackConversation` handles as before.
+   */
+  const forgetByStartingOver = (threadId: ThreadId, numTurns: number) =>
+    Effect.gen(function* () {
+      // A binding that can't be read fails the revert: whether something of
+      // the agent still runs can't be known.
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      // No saved conversation: nothing can bring the reverted turns back.
+      if (binding === undefined) return true;
+      if (binding.providerInstanceId === undefined) return undefined;
+      const adapter = yield* registry
+        .getByInstance(binding.providerInstanceId)
+        .pipe(Effect.orElseSucceed(() => undefined));
+      if (adapter?.capabilities.conversationRollback !== "new-session") return undefined;
+      if (yield* adapter.hasSession(threadId)) {
+        // A rollback that can't stop the work ends the runtime instead; one
+        // that can't be ended either fails the revert.
+        yield* adapter.rollbackThread(threadId, numTurns).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider service ends a runtime its rollback couldn't stop", {
+              threadId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.andThen(adapter.stopSession(threadId))),
+          ),
+        );
+      }
+      // A runtime that is stopping (hasSession no longer reports it) can
+      // still write through a command it started: the files wait until its
+      // process is gone (whenStopped). A wait past the limit ends the runtime;
+      // one that still won't go fails the revert.
+      const whenStopped = adapter.whenStopped;
+      if (whenStopped !== undefined) {
+        const gone = yield* whenStopped(threadId).pipe(Effect.timeoutOption(REVERT_STOP_WAIT));
+        if (Option.isNone(gone)) {
+          yield* Effect.logWarning("provider service ends a runtime still stopping at a revert", {
+            threadId,
+          });
+          // Bounded too: a stop already stalled may hold the lock this one waits for.
+          yield* adapter
+            .stopSession(threadId)
+            .pipe(Effect.ignore, Effect.timeoutOption(REVERT_STOP_WAIT));
+          const ended = yield* whenStopped(threadId).pipe(Effect.timeoutOption(REVERT_STOP_WAIT));
+          if (Option.isNone(ended)) {
+            return yield* new ProviderAdapterRequestError({
+              provider: adapter.provider,
+              method: "rollbackThread",
+              detail: "The agent's process did not stop.",
+            });
+          }
+        }
+      }
+      const forgotten = yield* forgetConversation(threadId);
+      yield* analytics.record("provider.conversation.rolled_back", {
+        ...analyticsAgentProperties({
+          provider: adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(binding.providerInstanceId),
+        }),
+        turns: numTurns,
+      });
+      return forgotten;
+    });
+
+  const noteHistoryDelivered: ProviderServiceShape["noteHistoryDelivered"] = ({
+    threadId,
+    sessionCreatedAt,
+  }) =>
+    // Checked and written in one step: another runtime than the one that
+    // sent it (a replacement started meanwhile) still owes it.
+    directory
+      .patchIfSession({ threadId, sessionCreatedAt, runtimePayload: { historyOwed: false } })
+      .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
 
   /**
    * Every provider session key of a thread: its own agent first, then any
@@ -2834,7 +3296,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (!routed.isActive || read === undefined) return undefined;
         return yield* read(routed.threadId, input.toolCallId);
       }).pipe(Effect.orElseSucceed(() => undefined));
-      if (answer?.status === "running") return answer;
+      if (answer?.status === "running") {
+        // Hidden whole, then cut: a cut first could leave part of a key.
+        return {
+          status: "running",
+          tail: secretScrubber
+            .scrubText(answer.output, { cutTail: true })
+            .text.slice(-COMMAND_OUTPUT_TAIL_CHARS),
+          totalBytes: answer.totalBytes,
+        } as const;
+      }
       if (answer?.status === "pending") pending = true;
     }
     return { status: pending ? "pending" : "unavailable" } as const;
@@ -2945,10 +3416,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const input = { threadId };
     let metricProvider = "unknown";
     return yield* Effect.gen(function* () {
+      // A fenced thread's runtime isn't brought back just to delete its
+      // transcript: only its binding goes (and a live runtime, if any).
+      const admitted =
+        (yield* admission.refusal(parseSessionKey(input.threadId).threadId)) === null;
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.deleteThread",
-        allowRecovery: true,
+        allowRecovery: admitted,
       });
       turnLatency.sessionStopped(input.threadId);
       earlySessions.forget(input.threadId);
@@ -2959,14 +3434,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.native_delete_supported": routed.adapter.deleteThread !== undefined,
       });
-      if (routed.adapter.deleteThread) {
+      if (routed.adapter.deleteThread && (admitted || routed.isActive)) {
         yield* routed.adapter.deleteThread(routed.threadId);
       } else if (routed.isActive) {
         yield* routed.adapter.stopSession(routed.threadId);
       }
       yield* directory.deleteBinding(input.threadId);
       yield* analytics.record("provider.thread.deleted", {
-        provider: routed.adapter.provider,
+        ...analyticsAgentProperties({
+          provider: routed.adapter.provider,
+          communityAgentId: yield* communityAgentIdOf(routed.instanceId),
+        }),
         nativeDelete: routed.adapter.deleteThread !== undefined,
       });
     }).pipe(
@@ -2980,8 +3458,159 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const exportNativeSession: ProviderServiceShape["exportNativeSession"] = Effect.fn(
+    "exportNativeSession",
+  )(function* (threadId) {
+    const binding = Option.getOrUndefined(
+      yield* directory.getBinding(threadId).pipe(Effect.orElseSucceed(() => Option.none())),
+    );
+    const instanceId = binding?.providerInstanceId;
+    const cursor = binding?.resumeCursor;
+    if (instanceId === undefined || cursor === undefined || cursor === null) return null;
+    // An early start nobody used never began a conversation to carry.
+    if (readPersistedEarlyUnused(binding?.runtimePayload)) return null;
+    const adapter = yield* registry.getByInstance(instanceId).pipe(Effect.option);
+    if (Option.isNone(adapter) || adapter.value.exportNativeSession === undefined) return null;
+    return yield* adapter.value.exportNativeSession({ resumeCursor: cursor });
+  });
+
+  const importNativeSession: ProviderServiceShape["importNativeSession"] = Effect.fn(
+    "importNativeSession",
+  )(function* ({ instanceId, ...input }) {
+    const adapter = yield* registry.getByInstance(instanceId).pipe(Effect.option);
+    if (Option.isNone(adapter) || adapter.value.importNativeSession === undefined) {
+      return { refused: "this agent can't take a carried session" };
+    }
+    return yield* adapter.value.importNativeSession(input);
+  });
+
+  const adoptNativeSession: ProviderServiceShape["adoptNativeSession"] = Effect.fn(
+    "adoptNativeSession",
+  )(function* (input) {
+    const info = yield* registry.getInstanceInfo(input.instanceId);
+    yield* directory.upsert({
+      threadId: input.threadId,
+      provider: info.driverKind,
+      providerInstanceId: input.instanceId,
+      status: "stopped",
+      resumeCursor: input.cursor,
+      runtimeMode: input.runtimeMode,
+      runtimePayload: { activeTurnId: null },
+    });
+  });
+
+  const forgetNativeSession: ProviderServiceShape["forgetNativeSession"] = (threadId) =>
+    directory.deleteBinding(threadId);
+
+  const dropResumeCursor: ProviderServiceShape["dropResumeCursor"] = Effect.fn("dropResumeCursor")(
+    function* (threadId) {
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      if (binding === undefined) return;
+      const live = (yield* listSessions()).some((session) => session.threadId === threadId);
+      if (live) yield* stopSession({ threadId });
+      yield* directory.upsert({ ...binding, status: "stopped", resumeCursor: null });
+    },
+  );
+
+  const quiesceThread: ProviderServiceShape["quiesceThread"] = Effect.fn("quiesceThread")(
+    function* (threadId) {
+      const ofThread = (key: string) => parseSessionKey(ThreadId.make(key)).threadId === threadId;
+      const liveOfThread = Effect.forEach(yield* getAdapterEntries, ([instanceId, adapter]) =>
+        adapter
+          .listSessions()
+          .pipe(
+            Effect.map((sessions) =>
+              sessions
+                .filter((session) => session.status !== "closed" && ofThread(session.threadId))
+                .map((session) => ({ instanceId, adapter, key: session.threadId })),
+            ),
+          ),
+      ).pipe(Effect.map((perAdapter) => perAdapter.flat()));
+      const ran = new Set<ProviderInstanceId>();
+      const problems: string[] = [];
+      /** Stops every listed session of the thread, and its early starts. */
+      const stopWhatRuns = Effect.gen(function* () {
+        const live = yield* liveOfThread;
+        for (const entry of live) ran.add(entry.instanceId);
+        // Early starts still starting have no session to list yet. One whose
+        // agent already runs has what it started noted before it is ended; a
+        // listed session's stop notes its own (stopSessionCore).
+        const keys = new Set<ThreadId>(live.map((entry) => entry.key));
+        for (const rawKey of earlyStartRuns.keys()) {
+          if (!ofThread(rawKey)) continue;
+          const key = ThreadId.make(rawKey);
+          keys.add(key);
+          if (live.some((entry) => entry.key === key)) continue;
+          for (const [, adapter] of yield* getAdapterEntries) {
+            if (adapter.noteBeforeStop !== undefined) yield* adapter.noteBeforeStop(key);
+          }
+        }
+        for (const key of keys) {
+          yield* stopSession({ threadId: key }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.sync(() => {
+                const error = Cause.squash(cause);
+                problems.push(
+                  `stopping it failed (${error instanceof Error ? error.message : String(error)})`,
+                );
+              }),
+            ),
+          );
+        }
+      });
+      yield* stopWhatRuns;
+      // A start or recovery that passed the fence before it went up holds
+      // its key's gate until its session is listed: wait for each, then stop
+      // what they opened. Any start from here is refused (it reads the fence
+      // holding the gate).
+      const inFlight = [...earlyGates.entries()]
+        .filter(([key]) => ofThread(key))
+        .map(([, gate]) => gate);
+      if (inFlight.length > 0) {
+        const settled = yield* Effect.forEach(inFlight, (gate) => Deferred.await(gate), {
+          concurrency: "unbounded",
+          discard: true,
+        }).pipe(Effect.timeoutOption(QUIESCE_START_WAIT));
+        if (Option.isNone(settled)) problems.push("a session of it is still starting");
+        yield* stopWhatRuns;
+      }
+      for (const entry of yield* liveOfThread) {
+        problems.push(`${entry.adapter.provider} still lists its session`);
+      }
+      // Each driver proves its processes, and what they started, are gone,
+      // with what the directory keeps of the sessions it ran for the thread.
+      const bindings = (yield* directory.listBindings().pipe(
+        Effect.catch(() =>
+          Effect.sync(() => {
+            problems.push("its sessions' records couldn't be read");
+            return [];
+          }),
+        ),
+      )).filter((binding) => ofThread(binding.threadId));
+      for (const [instanceId, adapter] of yield* getAdapterEntries) {
+        if (adapter.confirmThreadStopped === undefined) {
+          if (ran.has(instanceId)) problems.push(`${adapter.provider} can't confirm it stopped`);
+          continue;
+        }
+        const confirmation = yield* adapter.confirmThreadStopped(
+          threadId,
+          bindings
+            .filter((binding) => binding.providerInstanceId === instanceId)
+            .map((binding) => ({
+              sessionKey: binding.threadId,
+              resumeCursor: binding.resumeCursor,
+              cwd: readPersistedCwd(binding.runtimePayload),
+            })),
+        );
+        if (!confirmation.confirmed) problems.push(confirmation.reason);
+      }
+      return problems.length === 0
+        ? ({ confirmed: true } as const)
+        : ({ confirmed: false, reason: problems.join("; ") } as const);
+    },
+  );
+
   const runStopAll = Effect.fn("runStopAll")(function* () {
-    const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
     const activeSessions = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
       adapter.listSessions().pipe(
@@ -3023,7 +3652,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }),
     ).pipe(Effect.asVoid);
     yield* analytics.record("provider.sessions.stopped_all", {
-      sessionCount: threadIds.length,
+      sessionCount: activeSessions.length,
     });
     yield* analytics.flush;
   });
@@ -3073,11 +3702,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     compactContext,
     setThreadGoal,
     pauseThreadGoalForStop,
+    getThreadGoal,
     clearThreadGoal,
     respondToRequest,
     respondToUserInput,
     stopSession,
     listSessions,
+    quiesceThread,
+    exportNativeSession,
+    importNativeSession,
+    adoptNativeSession,
+    forgetNativeSession,
+    dropResumeCursor,
+    noteHistoryDelivered,
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
@@ -3086,6 +3723,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     agentSession,
     sendSubagentInput,
     deleteThread,
+    listAgentProcesses: getAdapterEntries.pipe(
+      Effect.flatMap((entries) =>
+        Effect.forEach(entries, ([, adapter]) =>
+          // One driver that can't answer leaves only its own processes out.
+          Effect.suspend(() => adapter.listProcesses?.() ?? Effect.succeed([])).pipe(
+            Effect.catchCause(() => Effect.succeed([])),
+            Effect.map((owners) =>
+              owners.map((owner) => ({ ...owner, provider: adapter.provider })),
+            ),
+          ),
+        ),
+      ),
+      Effect.map((lists) => lists.flat()),
+    ),
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
     // independently receive all runtime events.

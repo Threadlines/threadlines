@@ -12,6 +12,7 @@ import {
   ProjectId,
   ProjectKind,
   ProjectScript,
+  ThreadId,
 } from "@threadlines/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -29,6 +30,8 @@ export const ProjectionProject = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   /** Left out when writing a new project: it isn't muted. */
   phoneAlertsMuted: Schema.optional(Schema.Boolean),
+  /** The project's lead chat; left out or null when it has none. */
+  leadThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),

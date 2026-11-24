@@ -1,5 +1,5 @@
 /**
- * Parses `lsof -iTCP -sTCP:LISTEN -P -n -F pcn`.
+ * Lists and parses `lsof -iTCP -sTCP:LISTEN -P -n -F pcn`.
  *
  * `-F` emits one field per line behind a single-character tag, which is the
  * only lsof output worth depending on: the human-readable table changes shape
@@ -7,6 +7,9 @@
  * (command) describe the process, and every `n` (address) line after them
  * belongs to that process until the next `p`.
  */
+import { execFile } from "node:child_process";
+
+const LSOF_TIMEOUT_MS = 5_000;
 
 export interface ListeningPort {
   port: number;
@@ -40,6 +43,18 @@ function loopbackProbeHost(address: string): "127.0.0.1" | "::1" | null {
   }
 }
 
+/**
+ * The port of an lsof `n` address, or null when it is not a listener's. IPv6
+ * arrives bracketed, and lsof writes "->" for established connections; a
+ * listener has no peer.
+ */
+function listenerPort(address: string): number | null {
+  if (address.includes("->")) return null;
+  const port = Number.parseInt(address.slice(address.lastIndexOf(":") + 1), 10);
+  return Number.isNaN(port) || port <= 0 ? null : port;
+}
+
+/** Listeners this machine's browser can reach, one per port, sorted by port. */
 export function parseListeningPorts(lsofOutput: string): ListeningPort[] {
   const byPort = new Map<number, ListeningPort>();
   let pid: number | null = null;
@@ -63,14 +78,9 @@ export function parseListeningPorts(lsofOutput: string): ListeningPort[] {
     if (tag !== "n" || pid === null) {
       continue;
     }
-    // IPv6 arrives bracketed, and lsof writes "->" for established
-    // connections; a listener has no peer.
-    const probeHost = value.includes("->") ? null : loopbackProbeHost(value);
-    if (probeHost === null) {
-      continue;
-    }
-    const port = Number.parseInt(value.slice(value.lastIndexOf(":") + 1), 10);
-    if (Number.isNaN(port) || port <= 0) {
+    const port = listenerPort(value);
+    const probeHost = port === null ? null : loopbackProbeHost(value);
+    if (port === null || probeHost === null) {
       continue;
     }
     // The same port often appears twice, once per address family: one entry,
@@ -84,4 +94,60 @@ export function parseListeningPorts(lsofOutput: string): ListeningPort[] {
   }
 
   return [...byPort.values()].sort((a, b) => a.port - b.port);
+}
+
+/**
+ * Every port listened on in lsof output, at any address. For refusing
+ * ports: a listener bound only to 127.0.0.2 is not offered as a server, but a
+ * tunnel can still reach it.
+ */
+export function parseListenerPortNumbers(lsofOutput: string): number[] {
+  const ports = new Set<number>();
+  for (const line of lsofOutput.split("\n")) {
+    if (line[0] !== "n") continue;
+    const port = listenerPort(line.slice(1));
+    if (port !== null) ports.add(port);
+  }
+  return [...ports].sort((a, b) => a - b);
+}
+
+/**
+ * Runs `lsof -iTCP -sTCP:LISTEN -P -n -F pcn`, for every process or only
+ * `pids`, and hands back what it printed. Null when lsof is missing or ran out
+ * of time; empty on Windows, which has no lsof.
+ */
+export function readListeningSockets(options?: {
+  readonly pids?: ReadonlyArray<number>;
+}): Promise<string | null> {
+  if (process.platform === "win32") return Promise.resolve("");
+  const pids = options?.pids;
+  if (pids !== undefined && pids.length === 0) return Promise.resolve("");
+  const args = [
+    ...(pids === undefined ? [] : ["-a", "-p", pids.join(",")]),
+    "-iTCP",
+    "-sTCP:LISTEN",
+    "-P",
+    "-n",
+    "-F",
+    "pcn",
+  ];
+  return new Promise((resolve) => {
+    execFile(
+      "lsof",
+      args,
+      { encoding: "utf8", timeout: LSOF_TIMEOUT_MS, maxBuffer: 4_000_000 },
+      (error, stdout) => {
+        // lsof exits 1 when some descriptors are unreadable, or some of the
+        // given pids hold no listener, while still printing the ones it found,
+        // so its output stands then. Not when it never ran or was cut off:
+        // half a list read as a whole one would leave listeners out.
+        const exitedWithCode = typeof (error as { code?: unknown } | null)?.code === "number";
+        if (error !== null && (!exitedWithCode || error.killed === true)) {
+          resolve(null);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
 }

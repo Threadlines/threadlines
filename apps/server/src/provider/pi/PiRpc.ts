@@ -104,6 +104,8 @@ export interface PiRpc {
   readonly exited: Effect.Effect<PiExit>;
   readonly hasExited: Effect.Effect<boolean>;
   readonly stderrTail: () => string;
+  /** Pi's process id, for proof it is gone after a stop (agentProcessLedger). Absent for doubles. */
+  readonly pid?: number;
 }
 
 export interface PiRpcOptions {
@@ -434,5 +436,6 @@ export const startPiRpc = (
       exited: Deferred.await(exited),
       hasExited: Deferred.isDone(exited),
       stderrTail: () => stderrTail,
+      pid: Number(child.pid),
     } satisfies PiRpc;
   });

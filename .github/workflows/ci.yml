@@ -17,6 +17,7 @@ on:
         type: boolean
 
 permissions:
+  checks: read
   contents: read
 
 concurrency:
@@ -24,9 +25,110 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # On pushes to main, check whether a green merge_group run of this workflow
+  # targeting main already verified every required job on this exact commit.
+  # Skipped immediately on pull_request, merge_group, and workflow_dispatch with
+  # no runner startup cost. Fails open: if precheck errors or skips, full CI
+  # still runs. Keep the required job list in step with DEFAULT_REQUIRED_CHECKS
+  # in scripts/verify-release-ci.ts.
+  precheck:
+    name: Check if commit already passed CI
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip_ci: ${{ steps.check.outputs.skip_ci }}
+      warm_cache: ${{ steps.check.outputs.warm_cache }}
+    steps:
+      - id: check
+        name: Check prior merge_group verdict on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          required_json='[
+            "Checks and Build",
+            "Unit Test",
+            "Server Test (1/4)",
+            "Server Test (2/4)",
+            "Server Test (3/4)",
+            "Server Test (4/4)",
+            "Browser Test (1/2)",
+            "Browser Test (2/2)",
+            "Release Smoke"
+          ]'
+
+          # Find the newest successful merge_group run of ci.yml for main on this exact SHA.
+          merge_run_id="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=merge_group&head_sha=${GITHUB_SHA}&status=success&per_page=20" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success" and (.head_branch | startswith("gh-readonly-queue/main/")))] | sort_by(.run_started_at // .created_at) | last | .id // empty'
+          )"
+
+          already_passed="false"
+          if [[ -n "$merge_run_id" ]]; then
+            already_passed="$(
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${merge_run_id}/jobs?per_page=100" --jq '.jobs[]' \
+                | jq -s --argjson required "$required_json" '
+                    . as $jobs |
+                    $required | all(. as $name |
+                      any($jobs[]; .name == $name and .status == "completed" and .conclusion == "success")
+                    )
+                  '
+            )"
+          fi
+
+          if [[ "$already_passed" != "true" ]]; then
+            echo "Commit ${GITHUB_SHA} has no passing main merge_group CI run covering all required checks; running full CI."
+            echo "skip_ci=false" >> "$GITHUB_OUTPUT"
+            echo "warm_cache=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "merge_group run ${merge_run_id} already passed every required check on ${GITHUB_SHA}; skipping duplicate push CI."
+          echo "skip_ci=true" >> "$GITHUB_OUTPUT"
+
+          # Keep the main-scoped pnpm store cache warm when pnpm-lock.yaml changed
+          # (caches saved on merge_group branches are not visible to future PRs).
+          # Compare the lockfile blob SHA directly so large diffs (>300 files) never
+          # miss a lockfile change, and warm conservatively if the lookup fails.
+          warm_cache="true"
+          if [[ -n "$BEFORE" && "$BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            before_blob="$(gh api "repos/${GITHUB_REPOSITORY}/contents/pnpm-lock.yaml?ref=${BEFORE}" --jq '.sha' 2>/dev/null || true)"
+            after_blob="$(gh api "repos/${GITHUB_REPOSITORY}/contents/pnpm-lock.yaml?ref=${GITHUB_SHA}" --jq '.sha' 2>/dev/null || true)"
+            if [[ -n "$before_blob" && -n "$after_blob" && "$before_blob" == "$after_blob" ]]; then
+              warm_cache="false"
+            fi
+          fi
+          echo "warm_cache=${warm_cache}" >> "$GITHUB_OUTPUT"
+
+  warm_cache:
+    name: Warm main dependency cache
+    needs: [precheck]
+    if: ${{ github.event_name == 'push' && needs.precheck.result == 'success' && needs.precheck.outputs.skip_ci == 'true' && needs.precheck.outputs.warm_cache == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: vp install --frozen-lockfile
+
   # scripts/verify-release-ci.ts requires this job by name.
   quality:
     name: Checks and Build
+    needs: [precheck]
+    if: ${{ !cancelled() && !(github.event_name == 'push' && needs.precheck.result == 'success' && needs.precheck.outputs.skip_ci == 'true') }}
     runs-on: ubuntu-latest
     # 20 minutes starves dependency-bump branches: a lockfile change cold-starts
     # every cache and slow runners then hit the cap mid-pipeline.
@@ -61,7 +163,10 @@ jobs:
         run: node scripts/sync-effect-source.ts --check
 
       - name: Typecheck
-        run: vp exec vp run -r --concurrency-limit 2 typecheck
+        # Typecheck runs before build against .ts sources directly, so packages
+        # don't need topological ordering (`apps/server` lists `@threadlines/web`
+        # only to bundle its dist output).
+        run: vp exec vp run --parallel --concurrency-limit 4 --filter '!@threadlines/monorepo' typecheck
 
       - name: Build desktop pipeline
         run: vp exec vp run build:desktop
@@ -81,6 +186,8 @@ jobs:
   # scripts/verify-release-ci.ts requires this job by name.
   unit_test:
     name: Unit Test
+    needs: [precheck]
+    if: ${{ !cancelled() && !(github.event_name == 'push' && needs.precheck.result == 'success' && needs.precheck.outputs.skip_ci == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -113,13 +220,15 @@ jobs:
   # update DEFAULT_REQUIRED_CHECKS in scripts/verify-release-ci.ts.
   server_test:
     name: Server Test (${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: [precheck]
+    if: ${{ !cancelled() && !(github.event_name == 'push' && needs.precheck.result == 'success' && needs.precheck.outputs.skip_ci == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       # One failing shard still lets the others report their own failures.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -158,8 +267,8 @@ jobs:
   # verification (scripts/verify-release-ci.ts) checks the jobs themselves.
   quality_gate:
     name: Format, Lint, Typecheck, Test, Build
-    if: ${{ always() }}
-    needs: [quality, unit_test, server_test]
+    if: ${{ always() && !(github.event_name == 'push' && needs.precheck.result == 'success' && needs.precheck.outputs.skip_ci == 'true') }}
+    needs: [precheck, quality, unit_test, server_test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -167,8 +276,8 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
-          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null
+          echo "$RESULTS" | jq -r 'del(.precheck) | to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'del(.precheck) | all(.[]; .result == "success")' > /dev/null
 
   # The browser suite is CPU-bound (every spec renders the whole app), so one
   # 4-core runner tops out at about two tabs' worth of work. Two shards on two
@@ -177,6 +286,8 @@ jobs:
   # updates DEFAULT_REQUIRED_CHECKS in scripts/verify-release-ci.ts too.
   browser:
     name: Browser Test (${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: [precheck]
+    if: ${{ !cancelled() && !(github.event_name == 'push' && needs.precheck.result == 'success' && needs.precheck.outputs.skip_ci == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -197,27 +308,40 @@ jobs:
       - name: Install dependencies
         run: vp install --frozen-lockfile
 
-      # Hosted runners point apt at azure.archive.ubuntu.com, which
-      # intermittently stalls for 20+ minutes and starves the job timeout.
-      # Plain HTTP to archive.ubuntu.com can stall too (every request waited
-      # 30 s on 2026-10-07 while HTTPS answered at once), so Ubuntu's archive
-      # is fetched over HTTPS, and a stuck connection gives up after 10 s and
-      # retries once. Ubuntu 24.04 keeps the active mirror in apt-mirrors.txt,
-      # while older images use .list or .sources files, so update every
-      # supported format. The config file sorts last so the image's own
-      # settings can't override it.
-      - name: Use main Ubuntu mirror for apt, over HTTPS
-        run: |
-          sudo find /etc/apt -type f \( -name "*.list" -o -name "*.sources" -o -name "apt-mirrors.txt" \) \
-            -exec sed -i -E 's|https?://(azure\.)?archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' {} +
-          printf '%s\n' 'Acquire::http::Timeout "10";' 'Acquire::https::Timeout "10";' 'Acquire::Retries "1";' \
-            | sudo tee /etc/apt/apt.conf.d/zz-threadlines-ci >/dev/null
-          apt-config dump | grep -E '^Acquire::(Retries|https?::Timeout) '
-          grep -rhoE 'https?://[a-z.]*ubuntu\.com/ubuntu' /etc/apt | sort | uniq -c
-
+      # Hosted ubuntu-latest images already ship Chromium's shared libraries.
+      # `playwright install --with-deps` spent 2.5 to 5 minutes on throttled
+      # EC2 Ubuntu mirrors (`*.ec2.archive.ubuntu.com`) fetching optional font
+      # packages. Install the browser binaries first and only touch apt when a
+      # real headless launch fails (for example after a future runner image
+      # drops a library). When apt is needed, rewrite all Ubuntu mirror hosts
+      # (azure., *.ec2., etc.) to archive.ubuntu.com over HTTPS with a 10 s
+      # timeout and 1 retry so a stuck mirror cannot starve the job.
       - name: Install browser test runtime
         timeout-minutes: 10
-        run: vp exec vp run --filter @threadlines/web test:browser:install
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./apps/web/node_modules/.bin/playwright install chromium
+          probe_chromium() {
+            node --input-type=module -e '
+              import { chromium } from "./apps/web/node_modules/playwright/index.mjs";
+              const browser = await chromium.launch({ headless: true });
+              await browser.close();
+            '
+          }
+          if probe_chromium; then
+            echo "Chromium launched with preinstalled system libraries; skipping apt."
+          else
+            echo "Chromium launch failed; installing system dependencies via apt over HTTPS."
+            sudo find /etc/apt -type f \( -name "*.list" -o -name "*.sources" -o -name "apt-mirrors.txt" \) \
+              -exec sed -i -E 's|https?://([a-z0-9.-]+\.)?archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' {} +
+            printf '%s\n' 'Acquire::http::Timeout "10";' 'Acquire::https::Timeout "10";' 'Acquire::Retries "1";' \
+              | sudo tee /etc/apt/apt.conf.d/zz-threadlines-ci >/dev/null
+            apt-config dump | grep -E '^Acquire::(Retries|https?::Timeout) ' || true
+            grep -rhoE 'https?://[a-z0-9.-]*ubuntu\.com/ubuntu' /etc/apt 2>/dev/null | sort | uniq -c || true
+            ./apps/web/node_modules/.bin/playwright install-deps chromium
+            probe_chromium
+          fi
 
       - name: Browser test
         env:
@@ -249,8 +373,8 @@ jobs:
   # name: it passes only when every browser shard passed.
   browser_gate:
     name: Browser Test
-    if: ${{ always() }}
-    needs: [browser]
+    if: ${{ always() && !(github.event_name == 'push' && needs.precheck.result == 'success' && needs.precheck.outputs.skip_ci == 'true') }}
+    needs: [precheck, browser]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -258,13 +382,17 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
-          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null
+          echo "$RESULTS" | jq -r 'del(.precheck) | to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'del(.precheck) | all(.[]; .result == "success")' > /dev/null
 
   release_smoke:
     name: Release Smoke
+    needs: [precheck]
+    if: ${{ !cancelled() && !(github.event_name == 'push' && needs.precheck.result == 'success' && needs.precheck.outputs.skip_ci == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A lockfile change cold-starts the Vite+ cache: setup alone took ~8 minutes
+    # on #950 and the old 10-minute cap cut the job off while saving the cache.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -288,6 +416,8 @@ jobs:
       - quality_gate
       - browser_gate
       - release_smoke
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy == true
+    # Explicit status checks are required because `precheck` is a skipped
+    # transitive ancestor on workflow_dispatch (implicit success() would skip).
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success' && needs.browser_gate.result == 'success' && needs.release_smoke.result == 'success' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy == true }}
     uses: ./.github/workflows/deploy-web.yml
     secrets: inherit

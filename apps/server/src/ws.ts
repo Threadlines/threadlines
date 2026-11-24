@@ -67,8 +67,11 @@ import {
   WsCoreRpcGroup,
   WsOutsideAgentsRpcGroup,
   WsRpcGroup,
+  WsMovesRpcGroup,
+  WsLinkedThreadsRpcGroup,
   WsThemeShowcaseRpcGroup,
   WsThemeVsCodeRpcGroup,
+  WsDeviceRpcGroup,
   WsThemesRpcGroup,
   WsOwnerRequiredError,
   OutsideAgentError,
@@ -89,7 +92,8 @@ import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand, toDispatchCommandError } from "./orchestration/Normalizer.ts";
 import {
-  messageSentFromClient,
+  type DeviceSession,
+  messageSentFromSession,
   sessionIsComputer,
   sessionDevicePlace,
   withMessageSentFrom,
@@ -97,13 +101,17 @@ import {
 } from "./orchestration/messageSentFrom.ts";
 import { RealtimeVoiceDevices } from "./orchestration/Services/RealtimeVoiceDevices.ts";
 import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoalescing.ts";
+import { threadsArchivedWith } from "./orchestration/archivedWithParent.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ComputerLinkClient } from "./links/ComputerLinkClient.ts";
+import { makeLinkedThreadRead } from "./links/linkedThreadRead.ts";
 import { AgentPages } from "./pages/AgentPages.ts";
 import { McpApps } from "./mcpApps/McpApps.ts";
 import { CommandRuns } from "./commandRuns/CommandRuns.ts";
 import { AgentSettingsChanges } from "./settingsChanges/AgentSettingsChanges.ts";
+import { AgentSecretRequests } from "./secrets/AgentSecretRequests.ts";
 import { ThreadBootstrap } from "./orchestration/Services/ThreadBootstrap.ts";
 import { ThreadSearch } from "./orchestration/Services/ThreadSearch.ts";
 import { UsageService } from "./usage/UsageService.ts";
@@ -115,6 +123,8 @@ import {
 import { LocalServers } from "./preview/LocalServers.ts";
 import { PreviewAutomationBroker } from "./preview/PreviewAutomationBroker.ts";
 import { PreviewTunnel } from "./preview/PreviewTunnel.ts";
+import { DeviceChannels } from "./device/DeviceChannels.ts";
+import { DeviceService } from "./device/DeviceService.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { PullRequestService } from "./pullRequest/PullRequestService.ts";
 import { PullRequestObservations } from "./pullRequest/PullRequestObservations.ts";
@@ -174,9 +184,12 @@ import { RelayHost } from "./relay/RelayHost.ts";
 import { OtherComputers } from "./outsideAgents/OtherComputers.ts";
 import { OutsideAgentSignIn } from "./outsideAgents/OutsideAgentSignIn.ts";
 import { ComputerLinks } from "./links/ComputerLinks.ts";
+import { ProjectContext } from "./projectContext/ProjectContext.ts";
 import { ScheduledTasks, snapshotForClient } from "./scheduled/ScheduledTasks.ts";
 import { ThemeLibrary } from "./themes/ThemeLibrary.ts";
 import { ThemeShowcase } from "./themes/ThemeShowcase.ts";
+import { LinkMoves } from "./links/LinkMoves.ts";
+import { MoveQueue } from "./moves/MoveQueue.ts";
 import { ThemeVsCode } from "./themes/ThemeVsCode.ts";
 import { ThreadMoves } from "./moves/ThreadMoves.ts";
 import { ProjectSetups } from "./projectSetup/ProjectSetups.ts";
@@ -184,9 +197,16 @@ import { ProjectSetupSource } from "./projectSetup/ProjectSetupSource.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { makeBackgroundRunOutputReader } from "./diagnostics/BackgroundRunOutput.ts";
+import {
+  scrubExternalThreadList,
+  scrubTranscript,
+  scrubWorkflowRunFile,
+} from "./secrets/readBackScrubbing.ts";
+import { SecretScrubber } from "./secrets/SecretScrubber.ts";
 import { makeWorkflowRunRequests } from "./orchestration/workflowRunRequests.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import { ThreadCpuUsage } from "./diagnostics/ThreadCpuUsage.ts";
 import * as StallMonitor from "./observability/StallMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscoveryLayer from "./sourceControl/SourceControlDiscovery.ts";
@@ -224,6 +244,15 @@ const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchComma
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/**
+ * Events only the server reads (its own bookkeeping, like a child's dropped
+ * report). They are never sent to a client in any form: a client decodes
+ * events against a closed union, and one built before such an event would
+ * fail the whole batch it came in.
+ */
+export const isServerOnlyEvent = (event: OrchestrationEvent): boolean =>
+  event.type === "thread.child-report-dropped";
 
 export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
@@ -272,6 +301,11 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.settings-change-settled"
       | "thread.settings-change-device-reported"
       | "thread.settings-change-notes-delivered"
+      | "thread.secret-request-created"
+      | "thread.secret-request-claimed"
+      | "thread.secret-request-settled"
+      | "thread.secret-request-removed"
+      | "thread.secret-request-notes-delivered"
       | "thread.handed-back"
       | "thread.parent-attachment-set"
       | "thread.pull-request-dismissed";
@@ -305,6 +339,13 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.settings-change-settled" ||
     event.type === "thread.settings-change-device-reported" ||
     event.type === "thread.settings-change-notes-delivered" ||
+    // Keys agents asked for: the card and the saved rows (its shell only
+    // carries pendingSecretRequest).
+    event.type === "thread.secret-request-created" ||
+    event.type === "thread.secret-request-claimed" ||
+    event.type === "thread.secret-request-settled" ||
+    event.type === "thread.secret-request-removed" ||
+    event.type === "thread.secret-request-notes-delivered" ||
     // Which pull request rows are closed lives on the shell, but a detail
     // snapshot writes the shell too: one read before a close and delivered
     // after it would undo the close, so the change follows the snapshot here.
@@ -420,22 +461,29 @@ function toAuthAccessStreamEvent(
  */
 const followDeviceName = (
   sessions: SessionCredentialServiceShape,
-  sessionId: AuthSessionId,
+  session: DeviceSession & { readonly sessionId: AuthSessionId },
   sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
   /** Where the device is (sessionDevicePlace): fixed for the session. */
   place: MessageSentFrom["place"],
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
+      const { sessionId } = session;
       const changes = yield* sessions.subscribeChanges;
       const current = yield* sessions.clientOf(sessionId);
       if (Option.isSome(current)) {
-        yield* Ref.set(sentFromRef, messageSentFromClient(current.value, place));
+        yield* Ref.set(
+          sentFromRef,
+          messageSentFromSession({ ...session, client: current.value }, place),
+        );
       }
       yield* changes.pipe(
         Stream.runForEach((change) =>
           change.type === "clientUpserted" && change.clientSession.sessionId === sessionId
-            ? Ref.set(sentFromRef, messageSentFromClient(change.clientSession.client, place))
+            ? Ref.set(
+                sentFromRef,
+                messageSentFromSession({ ...session, client: change.clientSession.client }, place),
+              )
             : Effect.void,
         ),
       );
@@ -444,7 +492,10 @@ const followDeviceName = (
     Effect.catchCause((cause) =>
       Cause.hasInterruptsOnly(cause)
         ? Effect.failCause(cause)
-        : Effect.logWarning("ws.device-name.follow-failed", { sessionId, cause }),
+        : Effect.logWarning("ws.device-name.follow-failed", {
+            sessionId: session.sessionId,
+            cause,
+          }),
     ),
     Effect.andThen(Effect.never),
   );
@@ -737,6 +788,74 @@ const ThemeShowcaseRpcLayer = WsThemeShowcaseRpcGroup.toLayer(
   }),
 );
 
+/**
+ * Moving a thread to a linked computer (docs/design/fleet.md, Parts 3 and
+ * 3b): its own RPC group and layer (WsMovesRpcGroup), merged in
+ * makeWsRpcLayer. Open to every paired device, as the thread's other
+ * commands are.
+ */
+const MovesRpcLayer = WsMovesRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const threadMoves = yield* ThreadMoves;
+    const moveQueue = yield* MoveQueue;
+    const linkMoves = yield* LinkMoves;
+    const aggregate = { "rpc.aggregate": "moves" } as const;
+    return WsMovesRpcGroup.of({
+      [WS_METHODS.movesPreview]: (input) =>
+        observeRpcEffect(WS_METHODS.movesPreview, threadMoves.preview(input.threadId), aggregate),
+      [WS_METHODS.movesStart]: (input) =>
+        observeRpcEffect(WS_METHODS.movesStart, threadMoves.start(input), aggregate),
+      [WS_METHODS.movesCancel]: (input) =>
+        observeRpcEffect(WS_METHODS.movesCancel, threadMoves.cancel(input.threadId), aggregate),
+      [WS_METHODS.movesQueue]: (input) =>
+        observeRpcEffect(WS_METHODS.movesQueue, moveQueue.queue(input), aggregate),
+      [WS_METHODS.movesUnqueue]: (input) =>
+        observeRpcEffect(WS_METHODS.movesUnqueue, moveQueue.unqueue(input), aggregate),
+      [WS_METHODS.movesRetry]: (input) =>
+        observeRpcEffect(WS_METHODS.movesRetry, moveQueue.retry(input), aggregate),
+      [WS_METHODS.movesPreviewMany]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.movesPreviewMany,
+          threadMoves.previewMany(input.threadIds),
+          aggregate,
+        ),
+      [WS_METHODS.movesQueueMany]: (input) =>
+        observeRpcEffect(WS_METHODS.movesQueueMany, moveQueue.queueMany(input), aggregate),
+      [WS_METHODS.movesSetMode]: (input) =>
+        observeRpcEffect(WS_METHODS.movesSetMode, moveQueue.setMode(input), aggregate),
+      [WS_METHODS.movesBatchStatus]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.movesBatchStatus,
+          moveQueue.batchStatus(input.batchId),
+          aggregate,
+        ),
+      [WS_METHODS.movesRespondMany]: (input) =>
+        observeRpcEffect(WS_METHODS.movesRespondMany, linkMoves.respondMany(input), aggregate),
+    });
+  }),
+);
+
+/**
+ * Reading a parent's child on a linked computer through the link
+ * (linkedThreadRead.ts): its own RPC group and layer
+ * (WsLinkedThreadsRpcGroup), merged in makeWsRpcLayer. Open to every paired
+ * device, as the parent's own thread is.
+ */
+const LinkedThreadsRpcLayer = WsLinkedThreadsRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const readThread = makeLinkedThreadRead({
+      client: yield* ComputerLinkClient,
+      snapshots: yield* ProjectionSnapshotQuery,
+    });
+    return WsLinkedThreadsRpcGroup.of({
+      [WS_METHODS.linksReadThread]: (input) =>
+        observeRpcEffect(WS_METHODS.linksReadThread, readThread(input), {
+          "rpc.aggregate": "links",
+        }),
+    });
+  }),
+);
+
 /** VS Code themes from the Open VSX store (docs/design/custom-themes.md). */
 const ThemeVsCodeRpcLayer = WsThemeVsCodeRpcGroup.toLayer(
   Effect.gen(function* () {
@@ -750,6 +869,51 @@ const ThemeVsCodeRpcLayer = WsThemeVsCodeRpcGroup.toLayer(
     });
   }),
 );
+
+/**
+ * Devices (docs/design/devices.md): its own RPC group and layer
+ * (WsDeviceRpcGroup), merged in makeWsRpcLayer. Open to every paired device,
+ * as terminals are. Channels belong to this connection (`viewerId`) and close
+ * with it.
+ */
+const makeDeviceRpcLayer = (viewerId: string) =>
+  WsDeviceRpcGroup.toLayer(
+    Effect.gen(function* () {
+      const devices = yield* DeviceService;
+      const channels = yield* DeviceChannels;
+      const aggregate = { "rpc.aggregate": "devices" } as const;
+      return WsDeviceRpcGroup.of({
+        [WS_METHODS.deviceList]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceList, devices.list(input), aggregate),
+        [WS_METHODS.deviceUpdateTool]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceUpdateTool, devices.updateTool(input.tool), aggregate),
+        [WS_METHODS.deviceOpen]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceOpen, devices.open(input, "user"), aggregate),
+        [WS_METHODS.deviceClose]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceClose, devices.close(input), aggregate),
+        [WS_METHODS.deviceShutdown]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceShutdown, devices.shutdown(input), aggregate),
+        [WS_METHODS.deviceDetail]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceDetail, devices.detail(input), aggregate),
+        [WS_METHODS.deviceAction]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceAction, devices.action(input), aggregate),
+        [WS_METHODS.subscribeDeviceState]: (_input) =>
+          observeRpcStream(WS_METHODS.subscribeDeviceState, devices.stream, aggregate),
+        [WS_METHODS.deviceChannelOpen]: (input) =>
+          // Scoped to the subscription: the client letting go, or its socket
+          // dropping, closes the request or socket to the hub too.
+          observeRpcStreamEffect(
+            WS_METHODS.deviceChannelOpen,
+            channels.open(viewerId, input),
+            aggregate,
+          ),
+        // A channel's messages and credits are its traffic itself: left out of
+        // the RPC metrics and traces they would drown.
+        [WS_METHODS.deviceChannelSend]: (input) => channels.send(viewerId, input),
+        [WS_METHODS.deviceChannelCredit]: (input) => channels.credit(viewerId, input),
+      });
+    }),
+  );
 
 /** Every RPC the WebSocket serves, for one connection. */
 const makeWsRpcLayer = (
@@ -768,7 +932,10 @@ const makeWsRpcLayer = (
     makeOutsideAgentsRpcLayer(currentSession.role),
     ThemesRpcLayer,
     ThemeShowcaseRpcLayer,
+    MovesRpcLayer,
     ThemeVsCodeRpcLayer,
+    makeDeviceRpcLayer(viewerId),
+    LinkedThreadsRpcLayer,
   );
 
 const makeCoreRpcLayer = (
@@ -796,14 +963,16 @@ const makeCoreRpcLayer = (
       const pushAlerts = yield* PushAlerts;
       const computerLinks = yield* ComputerLinks;
       const scheduledTasks = yield* ScheduledTasks;
-      const threadMoves = yield* ThreadMoves;
+      const projectContext = yield* ProjectContext;
       const projectSetups = yield* ProjectSetups;
       const projectSetupSource = yield* ProjectSetupSource;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const secretScrubber = yield* SecretScrubber;
       const agentPages = yield* AgentPages;
       const mcpApps = yield* McpApps;
       const commandRuns = yield* CommandRuns;
       const agentSettingsChanges = yield* AgentSettingsChanges;
+      const agentSecretRequests = yield* AgentSecretRequests;
       const threadSearch = yield* ThreadSearch;
       const usage = yield* UsageService;
       const orchestrationEngine = yield* OrchestrationEngineService;
@@ -865,18 +1034,25 @@ const makeCoreRpcLayer = (
       const currentSentFrom = sessions.clientOf(currentSessionId).pipe(
         Effect.flatMap((client) =>
           Option.isSome(client)
-            ? Ref.setAndGet(sentFromRef, messageSentFromClient(client.value, devicePlace))
+            ? Ref.setAndGet(
+                sentFromRef,
+                messageSentFromSession({ ...currentSession, client: client.value }, devicePlace),
+              )
             : Ref.get(sentFromRef),
         ),
         Effect.catch(() => Ref.get(sentFromRef)),
       );
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
-      const readBackgroundRunOutput = makeBackgroundRunOutputReader(projectionSnapshotQuery);
+      const readBackgroundRunOutput = makeBackgroundRunOutputReader(
+        projectionSnapshotQuery,
+        secretScrubber,
+      );
       const workflowRunRequests = makeWorkflowRunRequests({
         projectionSnapshotQuery,
         providerService,
       });
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
+      const threadCpuUsage = yield* ThreadCpuUsage;
       const stallMonitor = yield* StallMonitor.StallMonitor;
 
       const loadAuthAccessSnapshot = () =>
@@ -1188,17 +1364,7 @@ const makeCoreRpcLayer = (
         readonly throughSequence: number;
       }) =>
         Effect.gen(function* () {
-          const archived = yield* orchestrationEngine.readEvents(input.fromSequenceExclusive).pipe(
-            Stream.takeWhile((event) => event.sequence <= input.throughSequence),
-            Stream.filter(
-              (event): event is Extract<OrchestrationEvent, { type: "thread.archived" }> =>
-                event.type === "thread.archived" &&
-                event.commandId === input.commandId &&
-                event.payload.threadId !== input.threadId,
-            ),
-            Stream.map((event) => event.payload.threadId),
-            Stream.runCollect,
-          );
+          const archived = yield* threadsArchivedWith(orchestrationEngine, input);
           if (archived.length === 0) {
             return;
           }
@@ -1221,7 +1387,12 @@ const makeCoreRpcLayer = (
                       threadId,
                       createdAt: yield* nowIso,
                     });
-                    yield* dispatchNormalizedCommand(stopCommand);
+                    // Cleanup: an archive's stop leaves no Stop hold.
+                    yield* dispatchNormalizedCommand(
+                      stopCommand.type === "thread.session.stop"
+                        ? { ...stopCommand, cause: "cleanup" as const }
+                        : stopCommand,
+                    );
                   }).pipe(
                     Effect.catchCause((cause) =>
                       Effect.logWarning("failed to stop provider session during archive", {
@@ -1313,7 +1484,12 @@ const makeCoreRpcLayer = (
                   createdAt: yield* nowIso,
                 });
 
-                yield* dispatchNormalizedCommand(stopCommand);
+                // Cleanup: an archive's stop leaves no Stop hold.
+                yield* dispatchNormalizedCommand(
+                  stopCommand.type === "thread.session.stop"
+                    ? { ...stopCommand, cause: "cleanup" as const }
+                    : stopCommand,
+                );
               }).pipe(
                 Effect.catchCause((cause) =>
                   Effect.logWarning("failed to stop provider session during archive", {
@@ -1502,7 +1678,9 @@ const makeCoreRpcLayer = (
                 }),
               ),
             ).pipe(
-              Effect.map((events) => Array.from(events)),
+              Effect.map((events) =>
+                Array.from(events).filter((event) => !isServerOnlyEvent(event)),
+              ),
               Effect.flatMap(enrichOrchestrationEvents),
               Effect.mapError(
                 (cause) =>
@@ -1745,6 +1923,9 @@ const makeCoreRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverReadSubagentTranscript,
             providerService.readSubagentTranscript(input).pipe(
+              // Read straight from the provider's files: hide saved keys
+              // (docs/design/secret-scrubbing.md), as for the next three.
+              Effect.map((result) => scrubTranscript(secretScrubber, result)),
               Effect.mapError(
                 (error) =>
                   new ProviderSubagentTranscriptError({
@@ -1796,6 +1977,7 @@ const makeCoreRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverListExternalProviderThreads,
             providerService.listExternalThreads(input).pipe(
+              Effect.map((result) => scrubExternalThreadList(secretScrubber, result)),
               Effect.mapError(
                 (error) =>
                   new ProviderExternalThreadError({
@@ -1816,6 +1998,7 @@ const makeCoreRpcLayer = (
               providerService,
               projectionSnapshotQuery,
               orchestrationEngine,
+              secretScrubber,
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -2061,6 +2244,10 @@ const makeCoreRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverGetThreadCpuUsage]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverGetThreadCpuUsage, threadCpuUsage.read, {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverSignalProcess]: (input) =>
           observeRpcEffect(WS_METHODS.serverSignalProcess, processDiagnostics.signal(input), {
             "rpc.aggregate": "server",
@@ -2109,13 +2296,17 @@ const makeCoreRpcLayer = (
         [WS_METHODS.serverReadWorkflowRunFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReadWorkflowRunFile,
-            workflowRunRequests.readRunFile(input),
+            workflowRunRequests
+              .readRunFile(input)
+              .pipe(Effect.map((result) => scrubWorkflowRunFile(secretScrubber, result))),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverReadWorkflowAgentTranscript]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReadWorkflowAgentTranscript,
-            workflowRunRequests.readAgentTranscript(input),
+            workflowRunRequests
+              .readAgentTranscript(input)
+              .pipe(Effect.map((result) => scrubTranscript(secretScrubber, result))),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverSaveWorkflowCommand]: (input) =>
@@ -3361,6 +3552,24 @@ const makeCoreRpcLayer = (
         // devices, which can already start threads here.
         // A client that can't show event tasks (no "webhook" in `supports`)
         // never gets them.
+        // The app's own: no agent tool server offers these, so no agent can
+        // set a brief (docs/design/project-brief-notes.md).
+        [WS_METHODS.projectContextSubscribe]: () =>
+          observeRpcStream(WS_METHODS.projectContextSubscribe, projectContext.changes, {
+            "rpc.aggregate": "projectContext",
+          }),
+        [WS_METHODS.projectContextSetBrief]: (input) =>
+          observeRpcEffect(WS_METHODS.projectContextSetBrief, projectContext.setBrief(input), {
+            "rpc.aggregate": "projectContext",
+          }),
+        [WS_METHODS.projectContextReadNote]: (input) =>
+          observeRpcEffect(WS_METHODS.projectContextReadNote, projectContext.readNote(input), {
+            "rpc.aggregate": "projectContext",
+          }),
+        [WS_METHODS.projectContextChangeNote]: (input) =>
+          observeRpcEffect(WS_METHODS.projectContextChangeNote, projectContext.changeNote(input), {
+            "rpc.aggregate": "projectContext",
+          }),
         [WS_METHODS.scheduledTasksSubscribe]: (input) =>
           observeRpcStream(
             WS_METHODS.scheduledTasksSubscribe,
@@ -3420,6 +3629,15 @@ const makeCoreRpcLayer = (
         [WS_METHODS.settingsChangeRespond]: (input) =>
           observeRpcEffect(WS_METHODS.settingsChangeRespond, agentSettingsChanges.respond(input), {
             "rpc.aggregate": "settingsChange",
+          }),
+        // The value never reaches a span attribute: only the method and aggregate do.
+        [WS_METHODS.secretRequestRespond]: (input) =>
+          observeRpcEffect(WS_METHODS.secretRequestRespond, agentSecretRequests.respond(input), {
+            "rpc.aggregate": "secretRequest",
+          }),
+        [WS_METHODS.secretRequestRemove]: (input) =>
+          observeRpcEffect(WS_METHODS.secretRequestRemove, agentSecretRequests.remove(input), {
+            "rpc.aggregate": "secretRequest",
           }),
         [WS_METHODS.settingsChangeReportDevice]: (input) =>
           observeRpcEffect(
@@ -3501,19 +3719,7 @@ const makeCoreRpcLayer = (
             scheduledTasks.runWithWebhookEvent(input),
             { "rpc.aggregate": "scheduledTasks" },
           ),
-        // Moving a thread to a linked computer (docs/design/fleet.md, Part 3).
-        [WS_METHODS.movesPreview]: (input) =>
-          observeRpcEffect(WS_METHODS.movesPreview, threadMoves.preview(input.threadId), {
-            "rpc.aggregate": "moves",
-          }),
-        [WS_METHODS.movesStart]: (input) =>
-          observeRpcEffect(WS_METHODS.movesStart, threadMoves.start(input), {
-            "rpc.aggregate": "moves",
-          }),
-        [WS_METHODS.movesCancel]: (input) =>
-          observeRpcEffect(WS_METHODS.movesCancel, threadMoves.cancel(input.threadId), {
-            "rpc.aggregate": "moves",
-          }),
+
         // Setting up a project on another computer (docs/design/fleet.md,
         // Part 8): the app reads from the computer that has it and starts
         // the job on the one that gets the copy.
@@ -3570,6 +3776,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const threadBootstrap = yield* ThreadBootstrap;
     const terminalManager = yield* TerminalManager;
     const pushAlerts = yield* PushAlerts;
+    const deviceChannels = yield* DeviceChannels;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3580,7 +3787,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
         const viewerId = randomUUIDv4Sync();
         const devicePlace = sessionDevicePlace(session);
-        const sentFromRef = yield* Ref.make(messageSentFromClient(session.client, devicePlace));
+        const sentFromRef = yield* Ref.make(messageSentFromSession(session, devicePlace));
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           disableTracing: true,
         }).pipe(
@@ -3656,7 +3863,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               rpcWebSocketHttpEffect,
               Effect.raceFirst(
                 closeWhenRevoked,
-                followDeviceName(sessions, session.sessionId, sentFromRef, devicePlace),
+                followDeviceName(sessions, session, sentFromRef, devicePlace),
               ),
             ),
           () =>
@@ -3665,6 +3872,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               .pipe(
                 Effect.andThen(terminalManager.releaseViewer(viewerId)),
                 Effect.andThen(pushAlerts.releaseViewer(viewerId)),
+                Effect.andThen(deviceChannels.releaseConnection(viewerId)),
               ),
         );
       }).pipe(Effect.scoped, Effect.catchTag("AuthError", respondToAuthError)),

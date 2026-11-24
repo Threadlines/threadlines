@@ -1,5 +1,5 @@
 import { usePullRequestRecords } from "../environments/pullRequests/pullRequestRecordsStore";
-import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
+import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import type { PullRequestRef, ScopedThreadRef } from "@threadlines/contracts";
 import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -28,11 +28,19 @@ import {
 import { deriveHostedStaticThreadRouteState } from "./-chatIndexState";
 import { type DiffRouteSearch, parseDiffRouteSearch } from "../diffRouteSearch";
 import { AgentsPanel } from "../components/chat/AgentsPanel";
+import { ProjectBoardPanel } from "../components/chat/ProjectBoardPanel";
 import {
   ThreadPullRequestLinkContext,
   type ThreadPullRequestLinks,
 } from "../components/chat/ThreadPullRequestLinkContext";
 import { ChatRightPanel } from "../components/ChatRightPanel";
+import {
+  onAgentOpenedDevice,
+  selectThreadDevice,
+  useDevicesSupported,
+  useDeviceState,
+} from "../components/device/deviceState";
+import { dockDeviceFloat, useDeviceFloat } from "../components/device/deviceViewStore";
 import { useAgentsPanelSource } from "../agentsPanelStore";
 import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -126,6 +134,8 @@ import {
   SourceControlPanel,
   type SourceControlProjectTarget,
 } from "../components/source-control/SourceControlPanel";
+import { useCommandHandlers } from "../commands/commandHandlers";
+import { usePanelTabCommands } from "../commands/panelTabCommands";
 
 // The rail can be opened before the chat column has published its turn state
 // (or on a thread with nothing running at all), so the agents tab renders from
@@ -147,6 +157,14 @@ interface ThreadPullRequestTarget {
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const MediaPanel = lazy(() =>
   import("../components/media/MediaPanel").then((module) => ({ default: module.MediaPanel })),
+);
+const DevicePanel = lazy(() =>
+  import("../components/device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
+);
+const DeviceFloatingWindow = lazy(() =>
+  import("../components/device/DeviceFloatingWindow").then((module) => ({
+    default: module.DeviceFloatingWindow,
+  })),
 );
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
 
@@ -361,14 +379,16 @@ function ChatThreadRouteView() {
     [navigate, threadRef],
   );
 
+  const devicesSupported = useDevicesSupported(threadRef?.environmentId ?? null);
   const availableTabs = useMemo(
     () =>
       availableRightPanelTabs({
         isGeneralChat: isGeneralChatThread,
         // A thread the server has not accepted yet has no turn, so no agents.
         isDraft: !serverThread,
+        devicesSupported,
       }),
-    [isGeneralChatThread, serverThread],
+    [devicesSupported, isGeneralChatThread, serverThread],
   );
 
   // The thread's pull request, for the Pull request tab and the launcher row
@@ -621,6 +641,39 @@ function ChatThreadRouteView() {
   const pullRequestOpen = activeTab === "pullRequest";
   const agentsOpen = activeTab === "agents";
   const mediaOpen = activeTab === "media";
+  const threadsOpen = activeTab === "threads";
+  const deviceOpen = activeTab === "device";
+  // An agent opening a device brings the Device tab up on it for whoever is
+  // watching the thread (docs/design/devices.md). The device state is
+  // followed while a thread whose computer has devices is on screen.
+  const deviceTabAvailable = availableTabs.includes("device");
+  useDeviceState(threadRef?.environmentId ?? null, deviceTabAvailable);
+  useEffect(() => {
+    if (!threadRef || !deviceTabAvailable || currentThreadKey === null) return;
+    return onAgentOpenedDevice((environmentId, session) => {
+      if (environmentId !== threadRef.environmentId || session.threadId !== threadRef.threadId) {
+        return;
+      }
+      selectThreadDevice(currentThreadKey, session.deviceId);
+      // On phone/narrow viewports the right panel is a sheet covering the chat, so don't cover it.
+      if (shouldUseDiffSheet) return;
+      focusRightPanelTab(currentThreadKey, "device");
+      navigateToTab("device");
+    });
+  }, [currentThreadKey, deviceTabAvailable, navigateToTab, shouldUseDiffSheet, threadRef]);
+  // A device floating over the chat (docs/design/devices.md). "Open in right
+  // panel" docks it on its chip in the Device tab, the way an agent opens one.
+  const deviceFloat = useDeviceFloat(currentThreadKey);
+  const openFloatingDeviceInPanel = useCallback(
+    (deviceId: string) => {
+      if (currentThreadKey === null) return;
+      dockDeviceFloat(currentThreadKey);
+      selectThreadDevice(currentThreadKey, deviceId);
+      focusRightPanelTab(currentThreadKey, "device");
+      navigateToTab("device");
+    },
+    [currentThreadKey, navigateToTab],
+  );
   // A published source outlives the navigation for a frame or two, so the rail
   // only trusts one that names the thread it is rendering.
   const agentsSource =
@@ -751,6 +804,19 @@ function ChatThreadRouteView() {
   );
   // What a transcript link to one of these opens. Only the ones the tab can
   // show are offered, so a link never lands on the tab's fallback.
+  // The panel's tabs in the palette, through the same selector the tab row
+  // uses so the URL follows, and the thread's pull request.
+  const leadPullRequestNumber = leadPullRequestTarget?.reference.number ?? null;
+  usePanelTabCommands(availableTabs, selectTab);
+  useCommandHandlers({
+    // Only where there is one to open: a command that lands on "this thread
+    // has no pull request" is a dead end the palette should not offer.
+    "thread.pullRequest": leadPullRequestNumber !== null && {
+      title: `Open pull request #${leadPullRequestNumber}`,
+      keywords: [`#${leadPullRequestNumber}`],
+      run: () => openPullRequestTab(leadPullRequestNumber),
+    },
+  });
   const threadPullRequestLinks = useMemo<ThreadPullRequestLinks | null>(
     () =>
       threadPullRequests.length === 0
@@ -948,6 +1014,34 @@ function ChatThreadRouteView() {
     },
     [navigate, shouldUseDiffSheet, threadRef],
   );
+  // A row of the Threads tab: that thread, with its own Threads tab beside it
+  // so the board stays in view while the user works down it. On a phone the
+  // sheet steps aside so the thread is what shows.
+  const openThreadFromBoard = useCallback(
+    (target: ScopedThreadRef) => {
+      if (!threadRef) {
+        return;
+      }
+      const sameThread =
+        target.environmentId === threadRef.environmentId && target.threadId === threadRef.threadId;
+      if (sameThread) {
+        if (shouldUseDiffSheet) {
+          hideSidebar();
+        }
+        return;
+      }
+      if (!shouldUseDiffSheet) {
+        focusRightPanelTab(scopedThreadKey(target), "threads");
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(target),
+        search: (previous) =>
+          rightPanelTabSearchParams(previous, shouldUseDiffSheet ? null : "threads"),
+      });
+    },
+    [hideSidebar, navigate, shouldUseDiffSheet, threadRef],
+  );
   // Reorder touches only the strip's remembered order; the URL owns the
   // active tab, and that does not change here.
   const reorderTab = useCallback(
@@ -1058,6 +1152,31 @@ function ChatThreadRouteView() {
           </Suspense>
         </div>
       ) : null}
+      {openTabs.includes("threads") && serverThread ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", threadsOpen ? "flex" : "hidden")}>
+          <ProjectBoardPanel
+            environmentId={threadRef.environmentId}
+            threadId={threadRef.threadId}
+            projectId={serverThread.projectId}
+            onOpenThread={openThreadFromBoard}
+          />
+        </div>
+      ) : null}
+      {openTabs.includes("device") && serverThread && currentThreadKey !== null ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", deviceOpen ? "flex" : "hidden")}>
+          <Suspense
+            fallback={<p className="px-3 py-3 text-xs text-muted-foreground">Loading devices…</p>}
+          >
+            <DevicePanel
+              key={currentThreadKey}
+              environmentId={threadRef.environmentId}
+              threadId={threadRef.threadId}
+              threadKey={currentThreadKey}
+              visible={deviceOpen}
+            />
+          </Suspense>
+        </div>
+      ) : null}
       {openTabs.includes("sourceControl") ? (
         <div
           className={cn("h-full w-full min-w-0 flex-col", sourceControlOpen ? "flex" : "hidden")}
@@ -1145,6 +1264,18 @@ function ChatThreadRouteView() {
     </ChatRightPanel>
   );
 
+  const deviceFloatingWindow =
+    deviceFloat && deviceTabAvailable && serverThread && currentThreadKey !== null ? (
+      <Suspense fallback={null}>
+        <DeviceFloatingWindow
+          environmentId={threadRef.environmentId}
+          threadId={threadRef.threadId}
+          threadKey={currentThreadKey}
+          onOpenInPanel={openFloatingDeviceInPanel}
+        />
+      </Suspense>
+    ) : null;
+
   if (!shouldUseDiffSheet) {
     return (
       <>
@@ -1164,6 +1295,7 @@ function ChatThreadRouteView() {
               />
             </PullRequestHoverCardProvider>
           </ThreadPullRequestLinkContext.Provider>
+          {deviceFloatingWindow}
         </SidebarInset>
         <ChatRightPanelInlineSidebar
           open={sidebarVisible}
@@ -1195,6 +1327,7 @@ function ChatThreadRouteView() {
             />
           </PullRequestHoverCardProvider>
         </ThreadPullRequestLinkContext.Provider>
+        {deviceFloatingWindow}
       </SidebarInset>
       <RightPanelSheet
         open={sidebarVisible}

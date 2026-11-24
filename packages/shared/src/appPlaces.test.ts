@@ -46,6 +46,12 @@ describe("app places", () => {
       "[Settings › Threads › Rooms › Rooms](threadlines-place:threads.enableRooms)",
     );
     expect(placeIdFromHref("threadlines-place:threads.enableRooms")).toBe("threads.enableRooms");
+    expect(placeIdFromHref("threadlines-place:threads.claudeSuggestions")).toBe(
+      "providers.claudeSuggestions",
+    );
+    expect(placeIdFromHref("threadlines-place:threads.codexSuggestions")).toBe(
+      "providers.codexSuggestions",
+    );
     expect(placeIdFromHref("threadlines-place:nowhere.atAll")).toBeNull();
     expect(placeIdFromHref("https://example.com")).toBeNull();
   });

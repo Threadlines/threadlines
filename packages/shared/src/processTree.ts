@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
 /**
  * Live descendant pids of a process (children, grandchildren, …) from a
@@ -19,7 +19,62 @@ export function listDescendantProcessIds(rootPid: number): number[] {
   } catch {
     return [];
   }
+  return descendantsFromTable(table, rootPid);
+}
 
+/**
+ * listDescendantProcessIds without blocking the event loop: `ps` runs as a
+ * child process, given at most `timeoutMs`. Null when the table couldn't be
+ * read (it timed out or failed); empty on Windows, which has no `ps`.
+ */
+export function listDescendantProcessIdsAsync(
+  rootPid: number,
+  timeoutMs: number,
+): Promise<number[] | null> {
+  if (process.platform === "win32") return Promise.resolve([]);
+  return readParentTableAsync(timeoutMs).then((table) =>
+    table === null ? null : descendantsFromTable(table, rootPid),
+  );
+}
+
+/**
+ * Every process in the trees rooted at `rootPids`: the roots themselves and
+ * all their descendants, from one `ps` snapshot. Roots that have already
+ * exited are still listed. Null when the table couldn't be read; empty on
+ * Windows, which has no `ps`.
+ */
+export function listProcessTreesAsync(
+  rootPids: ReadonlyArray<number>,
+  timeoutMs: number,
+): Promise<number[] | null> {
+  if (process.platform === "win32") return Promise.resolve([]);
+  if (rootPids.length === 0) return Promise.resolve([]);
+  return readParentTableAsync(timeoutMs).then((table) => {
+    if (table === null) return null;
+    const members = new Set(rootPids);
+    for (const root of rootPids) {
+      for (const pid of descendantsFromTable(table, root)) members.add(pid);
+    }
+    return [...members];
+  });
+}
+
+/** A `ps -eo pid=,ppid=` table, or null when it couldn't be read in time. */
+function readParentTableAsync(timeoutMs: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      ["-eo", "pid=,ppid="],
+      { encoding: "utf8", timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 },
+      (error, stdout) => {
+        resolve(error === null ? stdout : null);
+      },
+    );
+  });
+}
+
+/** The descendants of `rootPid` in a `ps -eo pid=,ppid=` table. */
+export function descendantsFromTable(table: string, rootPid: number): number[] {
   const childrenByParent = new Map<number, number[]>();
   for (const line of table.split("\n")) {
     const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);

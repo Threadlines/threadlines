@@ -21,11 +21,12 @@ import type {
   OrchestrationThread,
   ThreadParticipantId,
 } from "@threadlines/contracts";
+import { liveSideTurns } from "@threadlines/shared/sideTurns";
 import { roomAgentKey } from "@threadlines/shared/threadParticipants";
 
 type AgentModelThread = Pick<
   OrchestrationThread,
-  "modelSelection" | "participants" | "sentModels" | "sideTurn"
+  "modelSelection" | "participants" | "sentModels" | "sideTurn" | "sideTurns"
 >;
 
 /** An agent's own model setting: what its next turn runs with. */
@@ -63,10 +64,11 @@ export function assistantMessageModel(
   author: ThreadParticipantId | null,
   sideTurnId: string | undefined,
 ): ModelSelection {
-  const sideTurn = thread.sideTurn;
-  return sideTurnId !== undefined &&
-    sideTurn?.sideTurnId === sideTurnId &&
-    sideTurn.modelSelection !== undefined
+  const sideTurn =
+    sideTurnId === undefined
+      ? undefined
+      : liveSideTurns(thread).find((entry) => entry.sideTurnId === sideTurnId);
+  return sideTurn?.modelSelection !== undefined
     ? sideTurn.modelSelection
     : sentAgentModel(thread, author);
 }

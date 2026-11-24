@@ -46,6 +46,7 @@ export const USAGE_PROVIDER_LABELS: Record<UsageProviderKind, string> = {
   muse: "Muse Code",
   opencode: "OpenCode",
   fx: "fx",
+  antigravity: "Antigravity",
 };
 
 /** For the narrow columns where the product name would not fit. */
@@ -57,6 +58,7 @@ export const USAGE_PROVIDER_SHORT_LABELS: Record<UsageProviderKind, string> = {
   muse: "Muse",
   opencode: "OpenCode",
   fx: "fx",
+  antigravity: "Antigravity",
 };
 
 /**
@@ -75,6 +77,7 @@ export const USAGE_PROVIDER_COLORS: Record<UsageProviderKind, string> = {
   muse: "var(--provider-muse)",
   opencode: "var(--provider-opencode)",
   fx: "var(--provider-fx)",
+  antigravity: "var(--provider-antigravity)",
 };
 
 /** Reading order for legends and rows: the same order every time. */
@@ -86,6 +89,7 @@ export const USAGE_PROVIDER_READING_ORDER: readonly UsageProviderKind[] = [
   "muse",
   "opencode",
   "fx",
+  "antigravity",
 ];
 
 /**
@@ -987,6 +991,10 @@ export interface UsagePlanLimitMeter {
   readonly usedPercent: number;
   readonly warning: boolean;
   readonly reachedLimit: boolean;
+  /** How much of the window has passed, for the pace mark; see the shared presentation. */
+  readonly elapsedPercent?: number;
+  /** The pace mark's hover text, set with `elapsedPercent`. */
+  readonly paceDetail?: string;
 }
 
 export interface UsagePlanLimitRow {
@@ -1007,6 +1015,7 @@ const USAGE_PROVIDER_BY_DRIVER: ReadonlyMap<ProviderDriverKind, UsageProviderKin
   [ProviderDriverKind.make("muse"), "muse"],
   [ProviderDriverKind.make("opencode"), "opencode"],
   [ProviderDriverKind.make("fx"), "fx"],
+  [ProviderDriverKind.make("antigravity"), "antigravity"],
 ]);
 
 /**
@@ -1031,6 +1040,9 @@ export function buildUsagePlanLimitRows(
       usedPercent: window.usedPercent,
       warning: window.warning,
       reachedLimit: window.reachedLimit,
+      ...(window.elapsedPercent !== undefined && window.paceDetail !== undefined
+        ? { elapsedPercent: window.elapsedPercent, paceDetail: window.paceDetail }
+        : {}),
     }));
     if (presentation.spendControl) {
       meters.push({

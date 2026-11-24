@@ -1,11 +1,16 @@
 /**
  * The line above a tab's output naming who holds the port its command found
  * taken (docs/terminal.md, "When a port is taken"). When another tab holds
- * it, Show goes there (in its own chat if need be) and Stop interrupts the
+ * it, Show goes there (in its own chat, or the Terminals page, if need be) and Stop interrupts the
  * job holding it, as Ctrl+C in that tab would.
  */
 import { scopeThreadRef } from "@threadlines/client-runtime";
-import { ThreadId, type ScopedThreadRef, type TerminalPortInUse } from "@threadlines/contracts";
+import {
+  type ScopedThreadRef,
+  TERMINALS_PAGE_THREAD_ID,
+  type TerminalPortInUse,
+  ThreadId,
+} from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { XIcon } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -111,10 +116,13 @@ export function TerminalPortNotice({
           (tab) => tab.terminalId === holderTab.terminalId,
         )?.number ?? null),
   );
-  const chatTitle = useThreadTitle(
+  // A tab on the Terminals page belongs to no chat.
+  const holderOnPage = holderTab?.threadId === TERMINALS_PAGE_THREAD_ID;
+  const holderThreadTitle = useThreadTitle(
     threadRef.environmentId,
-    holderTab === null || sameChat ? null : ThreadId.make(holderTab.threadId),
+    holderTab === null || sameChat || holderOnPage ? null : ThreadId.make(holderTab.threadId),
   );
+  const chatTitle = holderOnPage ? "the Terminals page" : holderThreadTitle;
   // Hidden here at once, by id: a newer notice for the same tab still shows.
   const [settledId, setSettledId] = useState<string | null>(null);
   // The notice whose Stop is under way: a newer one gets its own button.
@@ -151,10 +159,13 @@ export function TerminalPortNotice({
     useTerminalStateStore
       .getState()
       .ensureTerminal(holderRef, holderTab.terminalId, { active: true, open: true });
-    if (!sameChat) {
-      void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(holderRef) });
+    if (sameChat) return;
+    if (holderOnPage) {
+      void navigate({ to: "/terminals", search: { environment: holderRef.environmentId } });
+      return;
     }
-  }, [holderNumber, holderRef, holderTab, navigate, sameChat]);
+    void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(holderRef) });
+  }, [holderNumber, holderOnPage, holderRef, holderTab, navigate, sameChat]);
 
   if (first === undefined || settledId === portInUse.id) return null;
   const words = portNoticeWords(portInUse, {

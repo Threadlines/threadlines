@@ -1,3 +1,4 @@
+import { hasLiveSideTurn, liveSideTurns } from "@threadlines/shared/sideTurns";
 import { replaceAgentCheckBacks, sameCheckBacks } from "@threadlines/shared/checkBacks";
 import {
   applyLinkedPullRequestSwitches,
@@ -19,6 +20,7 @@ import type {
   OrchestrationCommandRequest,
   OrchestrationCommandRun,
   OrchestrationReadModel,
+  OrchestrationSecretRequest,
   OrchestrationSettingsChangeRequest,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamEvent,
@@ -40,6 +42,8 @@ import type {
   ScopedProjectRef,
   ScopedThreadRef,
   ThreadMovedFrom,
+  ThreadMoveOutcome,
+  ThreadPendingMove,
   ThreadRemoteOrigin,
 } from "@threadlines/contracts";
 import {
@@ -96,6 +100,13 @@ import {
 import { getThreadFromEnvironmentState } from "./threadDerivation";
 import { threadMoveStatus } from "./threadMove";
 import {
+  movedFromAfter,
+  nextThreadMoveState,
+  type ThreadMoveEvent,
+  type ThreadMoveState,
+} from "@threadlines/shared/threadMoveProjection";
+import { withQueuedFollowUp } from "@threadlines/shared/queuedFollowUps";
+import {
   roomSideModelSelection,
   roomSideRole,
   roomSlotModelSelection,
@@ -138,6 +149,10 @@ import {
   hasPendingSettingsChange,
   settingsChangeStateOn,
 } from "@threadlines/shared/settingsChangeState";
+import {
+  applySecretRequestEvent,
+  hasPendingSecretRequest,
+} from "@threadlines/shared/secretRequestState";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -210,6 +225,8 @@ export interface EnvironmentState {
   childRequestsByThreadId: Record<ThreadId, OrchestrationChildRequestState>;
   /** Settings changes agents asked for (docs/design/agent-settings-changes.md); absent until a thread's detail loads. */
   settingsRequestsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationSettingsChangeRequest>>;
+  /** Keys agents asked the user for (docs/design/secret-requests.md); absent until a thread's detail loads. Never a value. */
+  secretRequestsByThreadId?: Record<ThreadId, ReadonlyArray<OrchestrationSecretRequest>>;
 
   // ---------------------------------------------------------------------------
   // Sidebar summary — written by the shell stream and provisionally by the
@@ -224,6 +241,13 @@ export interface EnvironmentState {
    * summary written here carries it as `pendingScheduleApproval`.
    */
   scheduleApprovalThreadIds?: Record<ThreadId, true>;
+  /**
+   * How many whole shell snapshots this environment has applied: one on
+   * connect and one more on each reconnect. What changed with a snapshot
+   * happened out of sight, so the alert sound (lib/alertSound.ts) reads a
+   * change here as a fresh start rather than news.
+   */
+  shellSnapshotCount?: number;
 
   bootstrapComplete: boolean;
 }
@@ -256,6 +280,7 @@ const initialEnvironmentState: EnvironmentState = {
   threadDetailLoadedById: {},
   childRequestsByThreadId: {},
   settingsRequestsByThreadId: {},
+  secretRequestsByThreadId: {},
   sidebarThreadSummaryById: {},
   bootstrapComplete: false,
 };
@@ -406,7 +431,30 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     ...(message.trigger ? { trigger: message.trigger } : {}),
     ...(message.notSent ? { notSent: true as const } : {}),
     ...(message.imported ? { imported: true as const } : {}),
+    ...(message.afterMove ? { afterMove: true as const } : {}),
   };
+}
+
+/** The thread without the mark that keeps it under its starter's Stop (stopsWithParent). */
+function withoutStopsWithParent(thread: Thread): Thread {
+  if (thread.stopsWithParent === undefined) return thread;
+  const { stopsWithParent: _made, ...rest } = thread;
+  return rest;
+}
+
+/**
+ * A person wrote this message (the server's `personWrote`: it came from a
+ * composer or carries the device it was sent from), so the thread is theirs
+ * and leaves its starter's Stop. Every event that records such a message
+ * applies it: a message sent, queued, steered in or accepted.
+ */
+function madeOwnBy(
+  thread: Thread,
+  message: { readonly composer?: unknown; readonly sentFrom?: unknown },
+): Thread {
+  return message.composer !== undefined || message.sentFrom !== undefined
+    ? withoutStopsWithParent(thread)
+    : thread;
 }
 
 /**
@@ -417,6 +465,7 @@ function threadLineage(thread: {
   readonly parentThreadId?: ThreadId | null | undefined;
   readonly parentTurnId?: TurnId | null | undefined;
   readonly attachedToParent?: boolean | undefined;
+  readonly stopsWithParent?: true | undefined;
   readonly handedBackAt?: string | null | undefined;
   readonly handedBackTurnId?: TurnId | null | undefined;
   readonly scheduledRun?: ThreadScheduledRun | null | undefined;
@@ -427,6 +476,7 @@ function threadLineage(thread: {
   | "parentThreadId"
   | "parentTurnId"
   | "attachedToParent"
+  | "stopsWithParent"
   | "handedBackAt"
   | "handedBackTurnId"
   | "scheduledRun"
@@ -437,6 +487,7 @@ function threadLineage(thread: {
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
     attachedToParent: thread.attachedToParent ?? false,
+    ...(thread.stopsWithParent === true ? { stopsWithParent: true as const } : {}),
     handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
     scheduledRun: thread.scheduledRun ?? null,
@@ -478,6 +529,16 @@ function settingsChangePending(thread: {
   return thread.settingsRequests !== undefined
     ? hasPendingSettingsChange(thread.settingsRequests)
     : (thread.pendingSettingsChange ?? false);
+}
+
+/** Whether a key its agent asked for waits on the user, or is being saved: as settingsChangePending. */
+function secretRequestPending(thread: {
+  readonly secretRequests?: ReadonlyArray<OrchestrationSecretRequest> | undefined;
+  readonly pendingSecretRequest?: boolean | undefined;
+}): boolean {
+  return thread.secretRequests !== undefined
+    ? hasPendingSecretRequest(thread.secretRequests)
+    : (thread.pendingSecretRequest ?? false);
 }
 
 /**
@@ -607,12 +668,63 @@ function remoteChildStartsEqual(
  */
 function threadMoves(thread: {
   readonly move?: OrchestrationThreadMove | null | undefined;
+  readonly pendingMove?: ThreadPendingMove | null | undefined;
+  readonly lastMoveOutcome?: ThreadMoveOutcome | null | undefined;
   readonly movedFrom?: ThreadMovedFrom | null | undefined;
-}): Pick<ThreadShell, "move" | "movedFrom"> {
+}): Pick<ThreadShell, "move" | "pendingMove" | "lastMoveOutcome" | "movedFrom"> {
   return {
     ...(thread.move ? { move: thread.move } : {}),
+    ...(thread.pendingMove ? { pendingMove: thread.pendingMove } : {}),
+    ...(thread.lastMoveOutcome ? { lastMoveOutcome: thread.lastMoveOutcome } : {}),
     ...(thread.movedFrom ? { movedFrom: thread.movedFrom } : {}),
   };
+}
+
+/** Two copies of a thread's last move outcome. */
+function moveOutcomesEqual(
+  left: ThreadMoveOutcome | null | undefined,
+  right: ThreadMoveOutcome | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  return a === null || b === null
+    ? a === b
+    : a.result === b.result &&
+        a.target.environmentId === b.target.environmentId &&
+        a.target.label === b.target.label &&
+        a.requestId === b.requestId &&
+        a.transferId === b.transferId &&
+        a.batchId === b.batchId &&
+        a.words === b.words &&
+        a.reason === b.reason &&
+        a.at === b.at;
+}
+
+/** Two copies of a thread's waiting move, as the notice and the row read them. */
+function pendingMovesEqual(
+  left: ThreadPendingMove | null | undefined,
+  right: ThreadPendingMove | null | undefined,
+): boolean {
+  const a = left ?? null;
+  const b = right ?? null;
+  if (a === null || b === null) return a === b;
+  const aWaits = a.waitsFor ?? [];
+  const bWaits = b.waitsFor ?? [];
+  return (
+    a.requestId === b.requestId &&
+    a.target.environmentId === b.target.environmentId &&
+    a.target.label === b.target.label &&
+    a.mode === b.mode &&
+    a.stage === b.stage &&
+    a.batchId === b.batchId &&
+    a.requestedBy.kind === b.requestedBy.kind &&
+    (a.hold?.kind ?? null) === (b.hold?.kind ?? null) &&
+    (a.hold?.words ?? null) === (b.hold?.words ?? null) &&
+    aWaits.length === bWaits.length &&
+    aWaits.every(
+      (wait, index) => wait.code === bWaits[index]?.code && wait.words === bWaits[index]?.words,
+    )
+  );
 }
 
 function threadMovesEqual(
@@ -629,10 +741,13 @@ function threadMovesEqual(
         a.agent.instanceId === b.agent.instanceId &&
         a.agent.model === b.agent.model &&
         a.phase === b.phase &&
+        (a.waitingForTarget ?? false) === (b.waitingForTarget ?? false) &&
         a.sentBytes === b.sentBytes &&
         a.totalBytes === b.totalBytes &&
         a.cancelRequested === b.cancelRequested &&
         a.startedAt === b.startedAt &&
+        a.queuedRequestId === b.queuedRequestId &&
+        a.batchId === b.batchId &&
         a.movedAway?.threadId === b.movedAway?.threadId &&
         a.movedAway?.movedAt === b.movedAway?.movedAt;
 }
@@ -648,7 +763,9 @@ function movedFromEqual(
     : a.environmentId === b.environmentId &&
         a.label === b.label &&
         a.threadId === b.threadId &&
-        a.movedAt === b.movedAt;
+        a.movedAt === b.movedAt &&
+        a.fenced === b.fenced &&
+        JSON.stringify(a.pullRequestSwitches) === JSON.stringify(b.pullRequestSwitches);
 }
 
 /** The child-thread fields a sidebar row reads, from a shell or a loaded thread. */
@@ -658,6 +775,7 @@ function sidebarLineage(
     | "parentThreadId"
     | "parentTurnId"
     | "attachedToParent"
+    | "stopsWithParent"
     | "handedBackAt"
     | "handedBackTurnId"
     | "awaitedChildThreadCount"
@@ -671,12 +789,15 @@ function sidebarLineage(
     | "remoteChildStarts"
     | "localChildStarts"
     | "move"
+    | "pendingMove"
+    | "lastMoveOutcome"
   >,
 ): Pick<
   SidebarThreadSummary,
   | "parentThreadId"
   | "parentTurnId"
   | "attachedToParent"
+  | "stopsWithParent"
   | "handedBackAt"
   | "handedBackTurnId"
   | "awaitedChildThreadCount"
@@ -691,7 +812,7 @@ function sidebarLineage(
   | "localChildStarts"
   | "moveStatus"
 > {
-  const moveStatus = threadMoveStatus(thread.move);
+  const moveStatus = threadMoveStatus(thread);
   return {
     scheduledRun: thread.scheduledRun ?? null,
     worktreeOrigin: thread.worktreeOrigin ?? null,
@@ -699,6 +820,7 @@ function sidebarLineage(
     parentThreadId: thread.parentThreadId ?? null,
     parentTurnId: thread.parentTurnId ?? null,
     attachedToParent: thread.attachedToParent ?? false,
+    ...(thread.stopsWithParent === true ? { stopsWithParent: true as const } : {}),
     handedBackAt: thread.handedBackAt ?? null,
     handedBackTurnId: thread.handedBackTurnId ?? null,
     awaitedChildThreadCount: thread.awaitedChildThreadCount ?? 0,
@@ -760,6 +882,7 @@ function mapProject(
     updatedAt: project.updatedAt,
     scripts: mapProjectScripts(project.scripts),
     phoneAlertsMuted: project.phoneAlertsMuted === true,
+    leadThreadId: project.leadThreadId ?? null,
   };
 }
 
@@ -790,13 +913,15 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     ...outsideWorkField(thread.outsideWork),
     agentRequests: thread.agentRequests,
     childRequests: thread.childRequests,
     settingsRequests: thread.settingsRequests ?? [],
     pendingSettingsChange: hasPendingSettingsChange(thread.settingsRequests),
+    secretRequests: thread.secretRequests ?? [],
+    pendingSecretRequest: hasPendingSecretRequest(thread.secretRequests),
     ...threadLineage(thread),
     ...childRequestCounts(thread),
     ...(thread.remoteOrigin ? { remoteOrigin: thread.remoteOrigin } : {}),
@@ -849,13 +974,14 @@ function mapThreadShell(
     ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     ...outsideWorkField(thread.outsideWork),
     ...threadLineage(thread),
     awaitedChildThreadCount: thread.awaitedChildThreadCount,
     pendingChildApproval: thread.pendingChildApproval,
     pendingSettingsChange: thread.pendingSettingsChange,
+    pendingSecretRequest: thread.pendingSecretRequest,
     ...remoteFamily(thread),
     ...threadMoves(thread),
     doneOverride: thread.doneOverride,
@@ -900,13 +1026,14 @@ function mapThreadShell(
     cumulativeDiffStat: thread.cumulativeDiffStat,
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     roomSlotModelSelection: roomSlotModelSelection(thread),
     roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
     roomSideRole: roomSideRole(thread),
     pendingSettingsChange: thread.pendingSettingsChange,
+    pendingSecretRequest: thread.pendingSecretRequest,
     ...sidebarLineage(shell),
   };
   return {
@@ -937,12 +1064,13 @@ function toThreadShell(thread: Thread): ThreadShell {
     ...dismissedPullRequestsField(thread.dismissedPullRequests),
     queuedFollowUps: thread.queuedFollowUps ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     ...outsideWorkField(thread.outsideWork),
     ...threadLineage(thread),
     ...childRequestCounts(thread),
     pendingSettingsChange: settingsChangePending(thread),
+    pendingSecretRequest: secretRequestPending(thread),
     ...remoteFamily(thread),
     ...threadMoves(thread),
     doneOverride: thread.doneOverride,
@@ -977,12 +1105,14 @@ function latestIso(left: string | null, right: string | null): string | null {
  * When the latest message a person wrote was sent, in transcript order. One
  * pass, remembered per messages list: a summary is rebuilt on every streamed
  * event, and a reply streaming leaves the list's user messages as they were.
+ * The one Threadlines wrote for the agent after a move isn't a person's.
  */
 const latestUserWrittenMessageAt = keyedMemo((messages: Thread["messages"]): string | null => {
   let latest: ChatMessage | undefined;
   for (const message of messages) {
     if (
       isUserWrittenMessage(message) &&
+      message.afterMove !== true &&
       (latest === undefined || compareTranscriptOrder(message, latest) >= 0)
     ) {
       latest = message;
@@ -1057,13 +1187,14 @@ function toSidebarThreadSummary(
       : (previous?.cumulativeDiffStat ?? null),
     linkedPullRequests: thread.linkedPullRequests ?? [],
     participants: thread.participants ?? [],
-    sideTurn: thread.sideTurn ?? null,
+    sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
     roomSlotModelSelection: roomSlotModelSelection(thread),
     roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
     roomSideRole: roomSideRole(thread),
     pendingSettingsChange: settingsChangePending(thread),
+    pendingSecretRequest: secretRequestPending(thread),
     ...sidebarLineage({
       ...threadLineage(thread),
       ...childRequestCounts(thread),
@@ -1269,6 +1400,25 @@ function withScheduleApproval(
     : { ...summary, pendingScheduleApproval: pending };
 }
 
+/**
+ * Whether a thread reads the same in a list that dates and orders threads by
+ * their latest user message (the command palette's). A streamed reply moves
+ * `updatedAt` on every token, which such a list never shows for a thread the
+ * user has written in.
+ */
+export function sidebarThreadSummariesListEqual(
+  left: SidebarThreadSummary,
+  right: SidebarThreadSummary,
+): boolean {
+  if (left === right) return true;
+  const activityOnlyFromReplies =
+    left.latestUserMessageAt != null && left.latestUserMessageAt === right.latestUserMessageAt;
+  return sidebarThreadSummariesEqual(
+    left,
+    activityOnlyFromReplies ? { ...right, updatedAt: left.updatedAt } : right,
+  );
+}
+
 function sidebarThreadSummariesEqual(
   left: SidebarThreadSummary | undefined,
   right: SidebarThreadSummary,
@@ -1298,7 +1448,7 @@ function sidebarThreadSummariesEqual(
     threadDiffStatsEqual(left.cumulativeDiffStat, right.cumulativeDiffStat) &&
     linkedPullRequestsEqual(left.linkedPullRequests, right.linkedPullRequests) &&
     participantsEqual(left.participants, right.participants) &&
-    sideTurnsEqual(left.sideTurn, right.sideTurn) &&
+    sideTurnsEqual(left.sideTurns, right.sideTurns) &&
     (left.roomSlotModelSelection?.instanceId ?? null) ===
       (right.roomSlotModelSelection?.instanceId ?? null) &&
     (left.roomSlotModelSelection?.model ?? null) ===
@@ -1313,12 +1463,14 @@ function sidebarThreadSummariesEqual(
     (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
     (left.parentTurnId ?? null) === (right.parentTurnId ?? null) &&
     (left.attachedToParent ?? false) === (right.attachedToParent ?? false) &&
+    (left.stopsWithParent ?? false) === (right.stopsWithParent ?? false) &&
     (left.handedBackAt ?? null) === (right.handedBackAt ?? null) &&
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     checkBackListsEqual(left.checkBacks, right.checkBacks) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     (left.pendingSettingsChange ?? false) === (right.pendingSettingsChange ?? false) &&
+    (left.pendingSecretRequest ?? false) === (right.pendingSecretRequest ?? false) &&
     (left.pendingScheduleApproval ?? false) === (right.pendingScheduleApproval ?? false) &&
     (left.queuedFollowUpCount ?? 0) === (right.queuedFollowUpCount ?? 0) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
@@ -1370,19 +1522,25 @@ function outsideOriginsEqual(
 }
 
 function sideTurnsEqual(
-  left: OrchestrationSideTurn | null | undefined,
-  right: OrchestrationSideTurn | null | undefined,
+  left: ReadonlyArray<OrchestrationSideTurn> | undefined,
+  right: ReadonlyArray<OrchestrationSideTurn> | undefined,
 ): boolean {
-  const a = left ?? null;
-  const b = right ?? null;
-  return a === null || b === null
-    ? a === b
-    : a.sideTurnId === b.sideTurnId &&
+  const as = left ?? [];
+  const bs = right ?? [];
+  return (
+    as.length === bs.length &&
+    as.every((a, index) => {
+      const b = bs[index]!;
+      return (
+        a.sideTurnId === b.sideTurnId &&
         a.status === b.status &&
         a.participantId === b.participantId &&
         a.kind === b.kind &&
         a.askedBy?.participantId === b.askedBy?.participantId &&
-        a.requestId === b.requestId;
+        a.requestId === b.requestId
+      );
+    })
+  );
 }
 
 /**
@@ -1421,16 +1579,18 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     dismissedPullRequestsEqual(left.dismissedPullRequests, right.dismissedPullRequests) &&
     queuedFollowUpsEqual(left.queuedFollowUps, right.queuedFollowUps) &&
     participantsEqual(left.participants, right.participants) &&
-    sideTurnsEqual(left.sideTurn, right.sideTurn) &&
+    sideTurnsEqual(left.sideTurns, right.sideTurns) &&
     (left.agentRole ?? null) === (right.agentRole ?? null) &&
     (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
     (left.parentTurnId ?? null) === (right.parentTurnId ?? null) &&
     (left.attachedToParent ?? false) === (right.attachedToParent ?? false) &&
+    (left.stopsWithParent ?? false) === (right.stopsWithParent ?? false) &&
     (left.handedBackAt ?? null) === (right.handedBackAt ?? null) &&
     (left.handedBackTurnId ?? null) === (right.handedBackTurnId ?? null) &&
     (left.awaitedChildThreadCount ?? 0) === (right.awaitedChildThreadCount ?? 0) &&
     (left.pendingChildApproval ?? false) === (right.pendingChildApproval ?? false) &&
     (left.pendingSettingsChange ?? false) === (right.pendingSettingsChange ?? false) &&
+    (left.pendingSecretRequest ?? false) === (right.pendingSecretRequest ?? false) &&
     scheduledRunsEqual(left.scheduledRun, right.scheduledRun) &&
     worktreeOriginsEqual(left.worktreeOrigin, right.worktreeOrigin) &&
     outsideOriginsEqual(left.outsideOrigin, right.outsideOrigin) &&
@@ -1440,6 +1600,8 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     remoteChildStartsEqual(left.remoteChildStarts, right.remoteChildStarts) &&
     localChildStartsEqual(left.localChildStarts, right.localChildStarts) &&
     threadMovesEqual(left.move, right.move) &&
+    pendingMovesEqual(left.pendingMove, right.pendingMove) &&
+    moveOutcomesEqual(left.lastMoveOutcome, right.lastMoveOutcome) &&
     movedFromEqual(left.movedFrom, right.movedFrom) &&
     doneOverridesEqual(left.doneOverride, right.doneOverride) &&
     left.lastSeenAt === right.lastSeenAt &&
@@ -1462,8 +1624,12 @@ function checkBackListsEqual(
   const rightList = right ?? [];
   return (
     sameCheckBacks(leftList, rightList) &&
+    // The agent and the dormant mark too: a check-back whose runtime ended
+    // leaves the "Checking back" pill.
     leftList.every(
-      (checkBack, index) => checkBack.participantId === rightList[index]?.participantId,
+      (checkBack, index) =>
+        checkBack.participantId === rightList[index]?.participantId &&
+        checkBack.dormant === rightList[index]?.dormant,
     )
   );
 }
@@ -1804,6 +1970,19 @@ function writeThreadState(
     };
   }
 
+  if (
+    nextThread.secretRequests !== undefined &&
+    previousThread?.secretRequests !== nextThread.secretRequests
+  ) {
+    nextState = {
+      ...nextState,
+      secretRequestsByThreadId: {
+        ...nextState.secretRequestsByThreadId,
+        [nextThread.id]: nextThread.secretRequests,
+      },
+    };
+  }
+
   if (previousThread?.turnDiffSummaries !== nextThread.turnDiffSummaries) {
     const nextTurnDiffSlice = buildTurnDiffSlice(nextThread);
     nextState = {
@@ -1959,6 +2138,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     state.childRequestsByThreadId;
   const { [threadId]: _removedSettingsRequests, ...settingsRequestsByThreadId } =
     state.settingsRequestsByThreadId ?? {};
+  const { [threadId]: _removedSecretRequests, ...secretRequestsByThreadId } =
+    state.secretRequestsByThreadId ?? {};
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
     state.sidebarThreadSummaryById;
 
@@ -1984,6 +2165,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     threadDetailLoadedById,
     childRequestsByThreadId,
     settingsRequestsByThreadId,
+    secretRequestsByThreadId,
     sidebarThreadSummaryById,
   };
 }
@@ -2088,6 +2270,9 @@ function upsertThreadMessage(
     ...(message.fromThread !== undefined ? { fromThread: message.fromThread } : {}),
     ...(message.fromOutside !== undefined ? { fromOutside: message.fromOutside } : {}),
     ...(message.imported ? { imported: true as const } : {}),
+    ...(existingMessage.afterMove === true || message.afterMove === true
+      ? { afterMove: true as const }
+      : {}),
     // The write that created the message stamps it; an optimistic copy has
     // none, so the server's first write fills it in.
     ...(existingMessage.agentModels === undefined && message.agentModels !== undefined
@@ -2296,23 +2481,40 @@ function updateSettingsRequests(
   });
 }
 
-/**
- * Apply a step of one move to a thread's `move`: only while that move is the
- * thread's own, so a late step of a move that already ended changes nothing.
- * The change returns null to clear it (the move was dropped).
- */
-function updateThreadMove(
+/** Apply a change to one thread's requests for keys (agents' `secret_request`). */
+function updateSecretRequests(
   state: EnvironmentState,
   threadId: ThreadId,
-  transferId: OrchestrationThreadMove["transferId"],
-  change: (current: OrchestrationThreadMove) => OrchestrationThreadMove | null,
+  change: (
+    current: ReadonlyArray<OrchestrationSecretRequest>,
+  ) => ReadonlyArray<OrchestrationSecretRequest>,
 ): EnvironmentState {
   return updateThreadState(state, threadId, (thread) => {
-    if (!thread.move || thread.move.transferId !== transferId) return thread;
-    const next = change(thread.move);
-    if (next !== null) return { ...thread, move: next };
-    const { move: _dropped, ...rest } = thread;
-    return rest;
+    const current = thread.secretRequests ?? [];
+    const next = change(current);
+    return next === current ? thread : { ...thread, secretRequests: next };
+  });
+}
+
+/**
+ * Apply one move event (docs/design/fleet.md, Parts 3 to 3c) to a thread's
+ * queued move, move and last outcome by the server's own rule
+ * (@threadlines/shared/threadMoveProjection), so the store reads what the
+ * server projects, live. Each event names its request or transfer, so a late
+ * one from a move that already ended changes nothing. Nulls are left out, as
+ * the shell mapping leaves them out. Like a done mark, none moves `updatedAt`.
+ */
+function applyThreadMoveEvent(state: EnvironmentState, event: ThreadMoveEvent): EnvironmentState {
+  return updateThreadState(state, event.payload.threadId, (thread) => {
+    const before: ThreadMoveState = {
+      move: thread.move ?? null,
+      pendingMove: thread.pendingMove ?? null,
+      lastMoveOutcome: thread.lastMoveOutcome ?? null,
+    };
+    const after = nextThreadMoveState(before, event);
+    if (after === before) return thread;
+    const { move: _move, pendingMove: _pending, lastMoveOutcome: _outcome, ...rest } = thread;
+    return { ...rest, ...threadMoves(after) };
   });
 }
 
@@ -2410,6 +2612,11 @@ function syncEnvironmentShellSnapshot(
       state.settingsRequestsByThreadId ?? {},
       nextThreadIds,
     ),
+    secretRequestsByThreadId: retainThreadScopedRecord(
+      state.secretRequestsByThreadId ?? {},
+      nextThreadIds,
+    ),
+    shellSnapshotCount: (state.shellSnapshotCount ?? 0) + 1,
     bootstrapComplete: true,
   };
 
@@ -2564,6 +2771,9 @@ function applyEnvironmentOrchestrationEvent(
         ...(event.payload.phoneAlertsMuted !== undefined
           ? { phoneAlertsMuted: event.payload.phoneAlertsMuted }
           : {}),
+        ...(event.payload.leadThreadId !== undefined
+          ? { leadThreadId: event.payload.leadThreadId }
+          : {}),
         updatedAt: event.payload.updatedAt,
       };
       return {
@@ -2624,6 +2834,7 @@ function applyEnvironmentOrchestrationEvent(
           parentThreadId: event.payload.parentThreadId ?? null,
           parentTurnId: event.payload.parentTurnId ?? null,
           attachedToParent: event.payload.attachedToParent ?? false,
+          ...(event.payload.stopsWithParent === true ? { stopsWithParent: true as const } : {}),
           parentAttachmentEpoch: 0,
           handedBackAt: null,
           handedBackTurnId: null,
@@ -2682,6 +2893,9 @@ function applyEnvironmentOrchestrationEvent(
             autoFix,
             autoMerge,
           }),
+          ...(event.payload.clearsMovedSwitches === true
+            ? { movedFrom: movedFromAfter(thread.movedFrom, { clearsSwitches: true }) }
+            : {}),
           updatedAt: event.payload.updatedAt,
         }));
       }
@@ -2689,6 +2903,9 @@ function applyEnvironmentOrchestrationEvent(
         ...thread,
         ...(autoFix === undefined ? {} : { pullRequestAutoFix: autoFix }),
         ...(autoMerge === undefined ? {} : { pullRequestAutoMerge: autoMerge }),
+        ...(event.payload.clearsMovedSwitches === true
+          ? { movedFrom: movedFromAfter(thread.movedFrom, { clearsSwitches: true }) }
+          : {}),
         updatedAt: event.payload.updatedAt,
       }));
     }
@@ -2749,13 +2966,8 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.follow-up-queued":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        queuedFollowUps: [
-          ...(thread.queuedFollowUps ?? []).filter(
-            (queued) => queued.messageId !== event.payload.followUp.messageId,
-          ),
-          event.payload.followUp,
-        ],
+        ...madeOwnBy(thread, event.payload.followUp),
+        queuedFollowUps: withQueuedFollowUp(thread.queuedFollowUps ?? [], event.payload.followUp),
       }));
 
     case "thread.follow-up-unqueued":
@@ -2921,7 +3133,7 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.follow-up-submitted":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
+        ...madeOwnBy(thread, event.payload),
         updatedAt: event.payload.createdAt,
       }));
 
@@ -2948,7 +3160,7 @@ function applyEnvironmentOrchestrationEvent(
           updatedAt: event.payload.createdAt,
         });
         return {
-          ...thread,
+          ...madeOwnBy(thread, event.payload),
           messages: upsertThreadMessage(thread.messages, message),
           updatedAt: event.payload.createdAt,
         };
@@ -3016,6 +3228,8 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.sentFrom !== undefined ? { sentFrom: event.payload.sentFrom } : {}),
           ...(event.payload.trigger !== undefined ? { trigger: event.payload.trigger } : {}),
           ...(event.payload.imported ? { imported: true } : {}),
+          ...(event.payload.notSent === true ? { notSent: true as const } : {}),
+          ...(event.payload.afterMove ? { afterMove: true } : {}),
           turnId: event.payload.turnId,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
@@ -3073,7 +3287,7 @@ function applyEnvironmentOrchestrationEvent(
               })
             : thread.latestTurn;
         return {
-          ...thread,
+          ...(event.payload.role === "user" ? madeOwnBy(thread, event.payload) : thread),
           messages,
           turnDiffSummaries,
           latestTurn,
@@ -3451,32 +3665,47 @@ function applyEnvironmentOrchestrationEvent(
         ),
       }));
 
-    // A room's side answer in progress; see OrchestrationThread.sideTurn.
+    // A room's side answers in progress; see OrchestrationThread.sideTurns.
+    // The same steps as the server's projector: started appends, running and
+    // interrupt update by id, settled removes by id.
     case "thread.side-turn-started":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        sideTurn: event.payload.sideTurn,
-        updatedAt: event.occurredAt,
-      }));
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const sideTurns = liveSideTurns(thread);
+        if (sideTurns.some((entry) => entry.sideTurnId === event.payload.sideTurn.sideTurnId)) {
+          return thread;
+        }
+        return {
+          ...thread,
+          sideTurns: [...sideTurns, event.payload.sideTurn],
+          updatedAt: event.occurredAt,
+        };
+      });
 
     case "thread.side-turn-running":
     case "thread.side-turn-interrupt-requested":
     case "thread.side-turn-settled":
       return updateThreadState(state, event.payload.threadId, (thread) => {
-        const current = thread.sideTurn ?? null;
-        // Events for an answer that is no longer the current one change nothing.
-        if (current === null || current.sideTurnId !== event.payload.sideTurnId) {
+        const sideTurns = liveSideTurns(thread);
+        // Events for an answer that is no longer live change nothing.
+        if (!sideTurns.some((entry) => entry.sideTurnId === event.payload.sideTurnId)) {
           return thread;
         }
         return {
           ...thread,
-          sideTurn:
+          sideTurns:
             event.type === "thread.side-turn-settled"
-              ? null
-              : {
-                  ...current,
-                  status: event.type === "thread.side-turn-running" ? "running" : "cancelling",
-                },
+              ? sideTurns.filter((entry) => entry.sideTurnId !== event.payload.sideTurnId)
+              : sideTurns.map((entry) =>
+                  entry.sideTurnId !== event.payload.sideTurnId
+                    ? entry
+                    : {
+                        ...entry,
+                        status:
+                          event.type === "thread.side-turn-running" && entry.status !== "cancelling"
+                            ? "running"
+                            : "cancelling",
+                      },
+                ),
           updatedAt: event.occurredAt,
         };
       });
@@ -3536,7 +3765,9 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.agent-requests-held":
       return updateAgentRequestState(state, event.payload.threadId, (current) =>
-        agentRequestStateOn.held(current, event.payload.chainEpoch),
+        agentRequestStateOn.held(current, event.payload.chainEpoch, {
+          keepHold: event.payload.keepHold === true,
+        }),
       );
 
     case "thread.agent-requests-reset":
@@ -3570,7 +3801,26 @@ function applyEnvironmentOrchestrationEvent(
       );
 
     case "thread.child-requests-reset":
-      return updateChildRequestState(state, event.payload.threadId, childRequestStateOn.reset);
+      return updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.reset(current, event.payload),
+      );
+
+    case "thread.lead-pass-recorded": {
+      const next = updateChildRequestState(state, event.payload.threadId, (current) =>
+        childRequestStateOn.leadPass(current, event.payload),
+      );
+      // Refused right before it reached the agent: the message never ran.
+      return event.payload.kind !== "not-run"
+        ? next
+        : updateThreadState(next, event.payload.threadId, (thread) => ({
+            ...thread,
+            messages: thread.messages.map((message) =>
+              message.id === event.payload.messageId
+                ? { ...message, notSent: true as const }
+                : message,
+            ),
+          }));
+    }
 
     // Agents' settings changes (docs/design/agent-settings-changes.md),
     // folded through the reducer the server's projector uses.
@@ -3599,10 +3849,21 @@ function applyEnvironmentOrchestrationEvent(
         settingsChangeStateOn.notesDelivered(current, event.payload),
       );
 
+    // Agents' requests for keys (docs/design/secret-requests.md), folded
+    // through the reducer the server's projector uses. No event holds a value.
+    case "thread.secret-request-created":
+    case "thread.secret-request-claimed":
+    case "thread.secret-request-settled":
+    case "thread.secret-request-removed":
+    case "thread.secret-request-notes-delivered":
+      return updateSecretRequests(state, event.payload.threadId, (current) =>
+        applySecretRequestEvent(current, event),
+      );
+
     // Children on linked computers (docs/design/fleet.md), kept on the parent.
     case "thread.remote-child-updated":
       return updateChildRequestState(state, event.payload.threadId, (current) =>
-        childRequestStateOn.remoteChildUpdated(current, event.payload.child),
+        childRequestStateOn.remoteChildUpdated(current, event.payload.child, event.payload.removed),
       );
 
     case "thread.remote-cancel-queued":
@@ -3615,50 +3876,19 @@ function applyEnvironmentOrchestrationEvent(
         childRequestStateOn.remoteCancelsDelivered(current, event.payload.requestIds),
       );
 
-    // Moving to a linked computer (docs/design/fleet.md, Part 3). Each step
-    // names its move, so a late one from a move that already ended is
-    // dropped. Like a done mark, none moves `updatedAt`.
+    // Moving to a linked computer (docs/design/fleet.md, Part 3): its "Couldn't
+    // move" and "Didn't move" activities arrive on their own.
     case "thread.move-started":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        move: {
-          transferId: event.payload.transferId,
-          target: event.payload.target,
-          agent: event.payload.agent,
-          phase: "exporting",
-          cancelRequested: false,
-          startedAt: event.payload.startedAt,
-        },
-      }));
-
+    case "thread.move-queued":
+    case "thread.move-mode-set":
+    case "thread.move-quiescing":
+    case "thread.move-queue-status-set":
+    case "thread.move-queue-ended":
     case "thread.move-progressed":
-      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => {
-        const { sentBytes: _sent, totalBytes: _total, ...rest } = move;
-        return {
-          ...rest,
-          phase: event.payload.phase,
-          ...(event.payload.sentBytes !== undefined ? { sentBytes: event.payload.sentBytes } : {}),
-          ...(event.payload.totalBytes !== undefined
-            ? { totalBytes: event.payload.totalBytes }
-            : {}),
-        };
-      });
-
     case "thread.move-cancel-requested":
-      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => ({
-        ...move,
-        cancelRequested: true,
-      }));
-
-    // Its activity ("Couldn't move to …") arrives on its own.
     case "thread.move-aborted":
-      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, () => null);
-
     case "thread.moved-away":
-      return updateThreadMove(state, event.payload.threadId, event.payload.transferId, (move) => ({
-        ...move,
-        movedAway: { threadId: event.payload.movedThreadId, movedAt: event.payload.movedAt },
-      }));
+      return applyThreadMoveEvent(state, event);
 
     // The seed debt is the server's alone; nothing here shows it.
     case "thread.history-seed-delivered":
@@ -3678,12 +3908,28 @@ function applyEnvironmentOrchestrationEvent(
             },
       );
 
-    case "thread.parent-attachment-set":
+    case "thread.parent-attachment-set": {
+      // Taken back by the thread that started it over a link, which moved
+      // here: a child here now, no longer the other computer's.
+      const adoptedBy = event.payload.adoptedBy;
+      // Put back under its parent, a thread started without report back is
+      // the family's, not under Stop on its own any more.
       return updateThreadState(state, event.payload.threadId, (thread) =>
-        (thread.attachedToParent ?? false) === event.payload.attached
-          ? thread
-          : { ...thread, attachedToParent: event.payload.attached },
+        adoptedBy !== undefined
+          ? {
+              ...withoutStopsWithParent(thread),
+              attachedToParent: event.payload.attached,
+              parentThreadId: adoptedBy.parentThreadId,
+              remoteOrigin: null,
+            }
+          : (thread.attachedToParent ?? false) === event.payload.attached
+            ? thread
+            : {
+                ...(event.payload.attached ? withoutStopsWithParent(thread) : thread),
+                attachedToParent: event.payload.attached,
+              },
       );
+    }
 
     case "thread.approval-response-requested":
     case "thread.user-input-response-requested":
@@ -3849,6 +4095,19 @@ const sidebarThreadsOfEnvironment = keyedMemo(
     }),
 );
 
+/**
+ * Each environment's count of applied shell snapshots (EnvironmentState's
+ * `shellSnapshotCount`), by environment id. Read it through `useShallow`.
+ */
+export function selectShellSnapshotCounts(state: AppState): Record<string, number> {
+  return Object.fromEntries(
+    getEnvironmentEntries(state).map(([environmentId, environmentState]) => [
+      environmentId,
+      environmentState.shellSnapshotCount ?? 0,
+    ]),
+  );
+}
+
 let lastSidebarThreads: {
   readonly parts: ReadonlyArray<ReadonlyArray<SidebarThreadSummary>>;
   readonly threads: ReadonlyArray<SidebarThreadSummary>;
@@ -3904,7 +4163,7 @@ export function isSidebarThreadRunning(thread: SidebarThreadSummary): boolean {
     thread.session?.status === "running" ||
     thread.session?.orchestrationStatus === "running" ||
     isWaitingOnBackgroundTasks(thread.latestTurn, thread.session) ||
-    (thread.sideTurn ?? null) !== null
+    hasLiveSideTurn(thread)
   );
 }
 
@@ -3985,6 +4244,35 @@ export function selectThreadByRef(
   return ref
     ? getThreadFromEnvironmentState(selectEnvironmentState(state, ref.environmentId), ref.threadId)
     : undefined;
+}
+
+/**
+ * Waits until `ready` holds for this app's state: something the server just
+ * made (a project, a thread) arriving over its stream a moment after the
+ * command that made it returned. True once it holds; false if it hasn't by
+ * `timeoutMs`. Open a new thread or project through this, so its page finds it.
+ */
+export function waitForAppState(
+  ready: (state: AppState) => boolean,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (ready(useStore.getState())) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const unsubscribe = useStore.subscribe((state) => {
+      if (ready(state)) finish(true);
+    });
+    // It may have come in between the first look and the subscription.
+    if (ready(useStore.getState())) finish(true);
+  });
 }
 
 export function selectThreadExistsByRef(
