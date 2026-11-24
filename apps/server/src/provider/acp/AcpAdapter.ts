@@ -2645,6 +2645,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             cwd,
             model: boundModelSelection?.model,
             threadId: input.threadId,
+            providerThreadId: started.sessionId,
             resumeCursor: makeAcpResumeCursor(
               started.sessionId,
               history,

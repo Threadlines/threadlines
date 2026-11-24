@@ -10041,6 +10041,178 @@ describe("ProviderCommandReactor", () => {
     ).toBe(false);
   });
 
+  it("drops the old providerThreadId on handoff and rebinds a drifted projection when reusing a live runtime", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    // Start with a Codex session carrying a Codex providerThreadId.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-codex-initial"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerThreadId: "codex-native-thread-id",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    // Hand off to Claude. The new session has no providerThreadId yet, so the
+    // old Codex providerThreadId must not leak onto the Claude slot.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-handoff-claude"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-handoff-claude"),
+          role: "user",
+          text: "switch to claude",
+          attachments: [],
+        },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-4-6",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await harness.drain();
+
+    const afterHandoff = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(afterHandoff?.session?.providerName).toBe("claudeAgent");
+    expect(afterHandoff?.session?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
+    expect(afterHandoff?.session?.providerThreadId).toBeNull();
+
+    // Simulate a drifted projection (still naming codex) while the live
+    // runtime is claudeAgent. Sending another turn to claudeAgent must rebind
+    // the slot without restarting the session.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-drifted-codex"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerThreadId: "codex-native-thread-id",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    const startCountBeforeReuse = harness.startSession.mock.calls.length;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-reuse-rebind"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-reuse-rebind"),
+          role: "user",
+          text: "follow up on claude",
+          attachments: [],
+        },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-4-6",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    await harness.drain();
+
+    expect(harness.startSession.mock.calls.length).toBe(startCountBeforeReuse);
+    const afterReuse = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(afterReuse?.session?.providerName).toBe("claudeAgent");
+    expect(afterReuse?.session?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
+    expect(afterReuse?.session?.providerThreadId).toBeNull();
+    expect(afterReuse?.session?.status).toBe("running");
+
+    // Rebinding a drifted `ready` session that still carries an activeTurnId
+    // (for example on a goal update) must heal the provider without clearing
+    // the active turn id or leaking the old providerThreadId.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-meta-select-claude"),
+        threadId: ThreadId.make("thread-1"),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-4-6",
+        },
+      }),
+    );
+    const liveTurnId = asTurnId("turn-in-flight-on-claude");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-drifted-ready-with-active-turn"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          providerThreadId: "codex-stale-thread-id",
+          runtimeMode: "approval-required",
+          activeTurnId: liveTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.goal.set",
+        commandId: CommandId.make("cmd-goal-set-triggers-rebind"),
+        threadId: ThreadId.make("thread-1"),
+        objective: "verify rebind keeps activeTurnId",
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await waitFor(() => harness.setThreadGoal.mock.calls.length === 1);
+    await harness.drain();
+
+    expect(harness.startSession.mock.calls.length).toBe(startCountBeforeReuse);
+    const afterGoalRebind = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(afterGoalRebind?.session?.providerName).toBe("claudeAgent");
+    expect(afterGoalRebind?.session?.providerInstanceId).toBe(
+      ProviderInstanceId.make("claudeAgent"),
+    );
+    expect(afterGoalRebind?.session?.providerThreadId).toBeNull();
+    expect(afterGoalRebind?.session?.activeTurnId).toBe(liveTurnId);
+  });
+
   it("reacts to thread.turn.interrupt-requested by calling provider interrupt", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

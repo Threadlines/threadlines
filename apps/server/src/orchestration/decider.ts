@@ -712,6 +712,46 @@ function refuseSkippedSetup(
 }
 
 /**
+ * Checks whether a runtime-originated `thread.session.set` still belongs to
+ * the thread's current session slot. Rejects stale lifecycle events after a
+ * provider handoff, during an in-flight launch of another provider, or after a
+ * room handover.
+ */
+function runtimeSessionUpdateMatchesSlot(
+  current: OrchestrationSession | null,
+  incoming: OrchestrationSession,
+): boolean {
+  if (current === null) {
+    return true;
+  }
+  if (
+    incoming.participantId !== undefined &&
+    (current.participantId ?? null) !== (incoming.participantId ?? null)
+  ) {
+    return false;
+  }
+  const launchingInstanceId =
+    current.startup?.phase === "launching" ? current.startup.providerInstanceId : undefined;
+  if (
+    launchingInstanceId !== undefined &&
+    incoming.providerInstanceId !== undefined &&
+    launchingInstanceId !== incoming.providerInstanceId
+  ) {
+    return false;
+  }
+  if (current.providerName === null) {
+    return true;
+  }
+  if (current.providerInstanceId !== undefined && incoming.providerInstanceId !== undefined) {
+    return current.providerInstanceId === incoming.providerInstanceId;
+  }
+  if (current.providerInstanceId !== undefined && incoming.providerInstanceId === undefined) {
+    return incoming.providerName === current.providerName;
+  }
+  return true;
+}
+
+/**
  * Stamps which failure a session update holds (`lastErrorAt`) and whether the
  * user closed its notice (`lastErrorDismissedAt`). A different error is a new
  * failure, and so are the same words when the session lands in `error` from
@@ -5628,6 +5668,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        command.requireCurrentSession === true &&
+        !runtimeSessionUpdateMatchesSlot(thread.session, command.session)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Thread session has already moved to another provider or participant.",
+        });
+      }
       const project = yield* requireProject({
         readModel,
         command,

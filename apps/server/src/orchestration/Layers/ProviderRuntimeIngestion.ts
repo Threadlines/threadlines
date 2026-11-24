@@ -6,6 +6,7 @@ import {
   SECRET_HIDDEN_WARNING_KIND,
 } from "../../secrets/secretScrubberCore.ts";
 import {
+  type OrchestrationCommand,
   type OrchestrationSessionUsageLimit,
   CHECKPOINT_FILES_ACTIVITY_ID_PREFIX,
   type AssistantDeliveryMode,
@@ -223,6 +224,15 @@ function runtimeEventMatchesThreadSession(
 ): boolean {
   if (!session || session.providerName === null) {
     return true;
+  }
+  const launchingInstanceId =
+    session.startup?.phase === "launching" ? session.startup.providerInstanceId : undefined;
+  if (
+    launchingInstanceId !== undefined &&
+    event.providerInstanceId !== undefined &&
+    !sameId(launchingInstanceId, event.providerInstanceId)
+  ) {
+    return false;
   }
   if (session.providerInstanceId !== undefined && event.providerInstanceId !== undefined) {
     return sameId(session.providerInstanceId, event.providerInstanceId);
@@ -499,6 +509,9 @@ function sessionUpdateChangesNothing(
   return Object.entries(next).every(([key, value]) => {
     if (key === "updatedAt") {
       return true;
+    }
+    if (key === "participantId") {
+      return (current.participantId ?? null) === (value ?? null);
     }
     const held: unknown = current[key as keyof OrchestrationSession];
     return (
@@ -3067,6 +3080,31 @@ const make = Effect.gen(function* () {
       }
     });
 
+  const dispatchRuntimeSessionSet = (
+    command: Omit<
+      Extract<OrchestrationCommand, { type: "thread.session.set" }>,
+      "type" | "requireCurrentSession"
+    >,
+  ) =>
+    orchestrationEngine
+      .dispatch({
+        ...command,
+        type: "thread.session.set",
+        requireCurrentSession: true,
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+          Effect.logDebug("provider runtime ingestion skipped stale session update", {
+            commandId: command.commandId,
+            threadId: command.threadId,
+            providerName: command.session.providerName,
+            providerInstanceId: command.session.providerInstanceId,
+            detail: error.detail,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       // Realtime audio/item traffic is intentionally in-memory only. Keep this
@@ -3714,6 +3752,7 @@ const make = Effect.gen(function* () {
 
           const session = {
             threadId: thread.id,
+            participantId: event.participantId ?? null,
             status,
             providerName: event.provider,
             ...(event.providerInstanceId !== undefined
@@ -3747,8 +3786,7 @@ const make = Effect.gen(function* () {
               new Map(reports).set(thread.id, sessionUpdatedAt),
             );
           } else {
-            yield* orchestrationEngine.dispatch({
-              type: "thread.session.set",
+            const applied = yield* dispatchRuntimeSessionSet({
               commandId: providerCommandId(event, "thread-session-set"),
               threadId: thread.id,
               session,
@@ -3756,12 +3794,14 @@ const make = Effect.gen(function* () {
               ...turnStartFields(nextActiveTurnId),
               createdAt: now,
             });
-            yield* Ref.update(unstoredSessionReportAt, (reports) => {
-              if (!reports.has(thread.id)) return reports;
-              const next = new Map(reports);
-              next.delete(thread.id);
-              return next;
-            });
+            if (applied) {
+              yield* Ref.update(unstoredSessionReportAt, (reports) => {
+                if (!reports.has(thread.id)) return reports;
+                const next = new Map(reports);
+                next.delete(thread.id);
+                return next;
+              });
+            }
           }
         }
       }
@@ -3786,12 +3826,12 @@ const make = Effect.gen(function* () {
         thread.session.activeTurnId !== null &&
         event.createdAt >= (yield* latestSessionReportAt(thread.session))
       ) {
-        yield* orchestrationEngine.dispatch({
-          type: "thread.session.set",
+        yield* dispatchRuntimeSessionSet({
           commandId: providerCommandId(event, "thread-idle-session-set"),
           threadId: thread.id,
           session: {
             ...withoutLaunchMark(thread.session),
+            participantId: event.participantId ?? null,
             status: "ready",
             activeTurnId: null,
             lastError: null,
@@ -3825,12 +3865,12 @@ const make = Effect.gen(function* () {
           nextAwaitedTasks.length !== thread.session.awaitedBackgroundTaskCount ||
           !sameAwaitedBackgroundTasks(nextAwaitedTasks, thread.session.awaitedBackgroundTasks ?? [])
         ) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
+          yield* dispatchRuntimeSessionSet({
             commandId: providerCommandId(event, "task-snapshot-session-set"),
             threadId: thread.id,
             session: {
               ...withoutLaunchMark(thread.session),
+              participantId: event.participantId ?? null,
               pendingBackgroundTaskCount: nextPendingCount,
               awaitedBackgroundTaskCount: nextAwaitedTasks.length,
               awaitedBackgroundTasks: nextAwaitedTasks,
@@ -3866,12 +3906,12 @@ const make = Effect.gen(function* () {
             ? currentPendingCount + 1
             : Math.max(0, currentPendingCount - 1);
         if (nextPendingCount !== currentPendingCount) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
+          yield* dispatchRuntimeSessionSet({
             commandId: providerCommandId(event, "task-pending-session-set"),
             threadId: thread.id,
             session: {
               ...withoutLaunchMark(thread.session),
+              participantId: event.participantId ?? null,
               pendingBackgroundTaskCount: nextPendingCount,
               // Edges carry no intent, so every task is awaited, and no list:
               // with nothing describing them, the wait stays unspecific.
@@ -4386,14 +4426,24 @@ const make = Effect.gen(function* () {
                   detail: String(cause),
                 });
                 const latest = (yield* resolveThreadShell(thread.id))?.session;
-                if (!latest || latest.status === "running" || latest.status === "starting") {
+                if (
+                  !latest ||
+                  latest.status === "running" ||
+                  latest.status === "starting" ||
+                  (event.participantId ?? null) !== sessionSlotParticipantId(latest) ||
+                  !runtimeEventMatchesThreadSession(event, latest)
+                ) {
                   return;
                 }
-                yield* orchestrationEngine.dispatch({
-                  type: "thread.session.set",
+                yield* dispatchRuntimeSessionSet({
                   commandId: providerCommandId(event, "turn-resend-refused"),
                   threadId: thread.id,
-                  session: { ...withoutLaunchMark(latest), lastError: error, updatedAt: now },
+                  session: {
+                    ...withoutLaunchMark(latest),
+                    participantId: event.participantId ?? null,
+                    lastError: error,
+                    updatedAt: now,
+                  },
                   createdAt: now,
                 });
               }),
@@ -4409,12 +4459,12 @@ const make = Effect.gen(function* () {
           : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
 
         if (shouldApplyRuntimeError) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
+          yield* dispatchRuntimeSessionSet({
             commandId: providerCommandId(event, "runtime-error-session-set"),
             threadId: thread.id,
             session: {
               threadId: thread.id,
+              participantId: event.participantId ?? null,
               status: "error",
               providerName: event.provider,
               ...(event.providerInstanceId !== undefined

@@ -2969,6 +2969,113 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.session?.updatedAt).toBe(reboundAt);
   });
 
+  it("ignores outgoing provider session.exited while another provider instance is launching", async () => {
+    const harness = await createHarness();
+    const launchingAt = "2026-01-01T00:00:03.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-launching-handoff"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "starting",
+          providerName: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          startup: {
+            phase: "launching",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: launchingAt,
+          lastError: null,
+        },
+        createdAt: launchingAt,
+      }),
+    );
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-outgoing-claude-exited-during-launch"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      payload: {
+        reason: "stale provider stopped during handoff",
+        exitKind: "graceful",
+      },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.session?.status).toBe("starting");
+    expect(thread?.session?.startup).toEqual({
+      phase: "launching",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    expect(thread?.session?.updatedAt).toBe(launchingAt);
+  });
+
+  it("rejects stale guarded thread.session.set updates after the slot moved to another provider", async () => {
+    const harness = await createHarness();
+    const reboundAt = "2026-01-01T00:00:03.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-rebound-codex"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "starting",
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: reboundAt,
+          lastError: null,
+        },
+        createdAt: reboundAt,
+      }),
+    );
+
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-stale-claude-session-set"),
+          threadId: ThreadId.make("thread-1"),
+          requireCurrentSession: true,
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            participantId: null,
+            status: "stopped",
+            providerName: ProviderDriverKind.make("claudeAgent"),
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            updatedAt: "2026-01-01T00:00:04.000Z",
+            lastError: null,
+          },
+          createdAt: "2026-01-01T00:00:04.000Z",
+        }),
+      ),
+    );
+    expect(exit._tag).toBe("Failure");
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.session?.providerName).toBe("codex");
+    expect(thread?.session?.providerInstanceId).toBe("codex");
+    expect(thread?.session?.status).toBe("starting");
+  });
+
   /** Sets the thread's session: the provider instance holding it now and its conversation. */
   const holdThreadWith = (
     harness: Awaited<ReturnType<typeof createHarness>>,

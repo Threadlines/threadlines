@@ -2411,6 +2411,167 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("listSessions does not die while a replacement provider start is in flight", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-provider-replacement-in-flight");
+
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-provider-replacement-in-flight",
+        runtimeMode: "full-access",
+      });
+
+      const registered = yield* Deferred.make<void>();
+      const releaseStart = yield* Deferred.make<void>();
+      const startClaudeNormally = routing.claude.startSession.getMockImplementation()!;
+      routing.claude.startSession.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          const started = yield* startClaudeNormally(input);
+          yield* Deferred.succeed(registered, undefined);
+          yield* Deferred.await(releaseStart);
+          return started;
+        }),
+      );
+
+      const replacementFiber = yield* Effect.forkChild(
+        provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          cwd: "/tmp/project-provider-replacement-in-flight",
+          runtimeMode: "full-access",
+        }),
+      );
+
+      yield* Deferred.await(registered);
+      const midHandoffSessions = yield* provider.listSessions();
+      assert.deepEqual(
+        midHandoffSessions
+          .filter((session) => session.threadId === threadId)
+          .map((session) => session.provider),
+        ["codex"],
+      );
+
+      yield* Deferred.succeed(releaseStart, undefined);
+      yield* Fiber.join(replacementFiber);
+
+      const finalSessions = yield* provider.listSessions();
+      assert.deepEqual(
+        finalSessions
+          .filter((session) => session.threadId === threadId)
+          .map((session) => session.provider),
+        ["claudeAgent"],
+      );
+    }),
+  );
+
+  it.effect(
+    "listSessions does not die when a replacement handoff finishes between adapter snapshot and binding read",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId("thread-provider-replacement-completed-mid-list");
+
+        yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-provider-replacement-completed-mid-list",
+          runtimeMode: "full-access",
+        });
+
+        const codexSnapshotted = yield* Deferred.make<void>();
+        const releaseListing = yield* Deferred.make<void>();
+        const listClaudeNormally = routing.claude.listSessions.getMockImplementation()!;
+        routing.claude.listSessions.mockImplementationOnce(() =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(codexSnapshotted, undefined);
+            yield* Deferred.await(releaseListing);
+            return yield* listClaudeNormally();
+          }),
+        );
+
+        const listFiber = yield* Effect.forkChild(provider.listSessions());
+        yield* Deferred.await(codexSnapshotted);
+
+        // Complete the full handoff to Claude (including clearing the in-flight marker)
+        // before `listSessions()` reads the persisted bindings.
+        yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          cwd: "/tmp/project-provider-replacement-completed-mid-list",
+          runtimeMode: "full-access",
+        });
+
+        yield* Deferred.succeed(releaseListing, undefined);
+        const sessions = yield* Fiber.join(listFiber);
+        assert.deepEqual(
+          sessions
+            .filter((session) => session.threadId === threadId)
+            .map((session) => session.provider),
+          ["claudeAgent"],
+        );
+      }),
+  );
+
+  it.effect(
+    "listSessions still dies on unrelated binding corruption while another provider start is in flight",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const directory = yield* ProviderSessionDirectory;
+        const threadId = asThreadId("thread-unrelated-corruption-mid-start");
+
+        yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-unrelated-corruption-mid-start",
+          runtimeMode: "full-access",
+        });
+        // Corrupt the persisted binding to an unrelated provider (pi) while codex is live.
+        yield* directory.upsert({
+          threadId,
+          provider: ProviderDriverKind.make("pi"),
+          providerInstanceId: ProviderInstanceId.make("pi"),
+          runtimeMode: "full-access",
+        });
+
+        const registered = yield* Deferred.make<void>();
+        const releaseStart = yield* Deferred.make<void>();
+        const startClaudeNormally = routing.claude.startSession.getMockImplementation()!;
+        routing.claude.startSession.mockImplementationOnce((input) =>
+          Effect.gen(function* () {
+            const started = yield* startClaudeNormally(input);
+            yield* Deferred.succeed(registered, undefined);
+            yield* Deferred.await(releaseStart);
+            return started;
+          }),
+        );
+
+        const replacementFiber = yield* Effect.forkChild(
+          provider.startSession(threadId, {
+            provider: ProviderDriverKind.make("claudeAgent"),
+            providerInstanceId: claudeAgentInstanceId,
+            threadId,
+            cwd: "/tmp/project-unrelated-corruption-mid-start",
+            runtimeMode: "full-access",
+          }),
+        );
+
+        yield* Deferred.await(registered);
+        const exit = yield* Effect.exit(provider.listSessions());
+        assert.equal(Exit.hasDies(exit), true);
+
+        yield* Deferred.succeed(releaseStart, undefined);
+        yield* Fiber.join(replacementFiber);
+      }),
+  );
+
   it.effect("recovers stale sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

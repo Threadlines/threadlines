@@ -4838,6 +4838,13 @@ const ThreadSessionSetCommand = Schema.Struct({
   continueAfterUsageLimits: Schema.optional(Schema.Boolean),
   /** See TurnStartedBy. */
   turnStartedBy: Schema.optional(TurnStartedBy),
+  /**
+   * When true, this update is a runtime observation for a session that must
+   * still hold the thread's slot (same participant and provider instance, and
+   * not launching a different provider instance). If the slot has already moved
+   * on, the decider rejects the stale update instead of clobbering it.
+   */
+  requireCurrentSession: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
