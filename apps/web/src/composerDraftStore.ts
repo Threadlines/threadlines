@@ -34,12 +34,6 @@ import { DeepMutable } from "effect/Types";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import { useMemo } from "react";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
-import {
-  deleteAttachmentBlobs,
-  draftAttachmentBlobKey,
-  putAttachmentBlob,
-  readAttachmentBlob,
-} from "./lib/attachmentBlobStore";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
 import {
   DEFAULT_INTERACTION_MODE,
@@ -83,7 +77,14 @@ const isRuntimeMode = Schema.is(RuntimeMode);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "threadlines:composer-drafts:v1";
-const LEGACY_COMPOSER_DRAFT_STORAGE_KEYS = ["t3code:composer-drafts:v1"] as const;
+export const LEGACY_COMPOSER_DRAFT_STORAGE_KEYS = ["t3code:composer-drafts:v1"] as const;
+
+const draftAttachmentBlobKey = (attachmentId: string): string => `draft:${attachmentId}`;
+
+function deleteAttachmentBlobs(keys: ReadonlyArray<string>): void {
+  if (keys.length === 0) return;
+  void import("./lib/attachmentBlobStore").then((m) => m.deleteAttachmentBlobs(keys));
+}
 const COMPOSER_DRAFT_STORAGE_VERSION = 6;
 const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
@@ -1608,7 +1609,9 @@ function revokeDraftThreadPreviewUrls(draft: ComposerThreadDraftState | undefine
   }
 }
 
-function collectDraftAttachmentBlobKeys(draft: ComposerThreadDraftState | undefined): string[] {
+export function collectDraftAttachmentBlobKeys(
+  draft: ComposerThreadDraftState | undefined,
+): string[] {
   if (!draft) return [];
   const ids = new Set<string>();
   for (const attachment of draft.attachments) ids.add(attachment.id);
@@ -2668,70 +2671,36 @@ function normalizeCurrentPersistedComposerDraftStoreState(
   };
 }
 
-function readRawComposerDraftStorageValue(): {
-  readonly value: unknown;
-  readonly isLegacyKey: boolean;
-} | null {
-  const current = getLocalStorageItem(COMPOSER_DRAFT_STORAGE_KEY, Schema.Unknown);
-  if (current !== null) return { value: current, isLegacyKey: false };
-  for (const legacyKey of LEGACY_COMPOSER_DRAFT_STORAGE_KEYS) {
-    const legacy = getLocalStorageItem(legacyKey, Schema.Unknown);
-    if (legacy !== null) return { value: legacy, isLegacyKey: true };
-  }
-  return null;
-}
-
 function readPersistedAttachmentIdsFromStorage(threadKey: string): string[] {
-  if (threadKey.length === 0) {
-    return [];
-  }
+  if (threadKey.length === 0) return [];
   try {
-    const raw = readRawComposerDraftStorageValue();
-    if (!raw || !raw.value || typeof raw.value !== "object") {
-      return [];
-    }
-    const envelope = raw.value as { version?: unknown; state?: unknown };
-    if (raw.isLegacyKey) {
-      // A surviving pre-v6 `t3code` legacy payload is still durable if the
-      // first write to the current key hit quota: migrate it in memory to read
-      // its saved attachment ids rather than mistaking an older version for empty.
-      if (
-        typeof envelope.version !== "number" ||
-        !envelope.state ||
-        typeof envelope.state !== "object"
-      ) {
-        return [];
-      }
+    const current = getLocalStorageItem(COMPOSER_DRAFT_STORAGE_KEY, Schema.Unknown);
+    const isLegacy = current === null;
+    const raw = isLegacy
+      ? LEGACY_COMPOSER_DRAFT_STORAGE_KEYS.map((key) =>
+          getLocalStorageItem(key, Schema.Unknown),
+        ).find((value) => value !== null)
+      : current;
+    if (!raw || typeof raw !== "object") return [];
+    const { version, state } = raw as { version?: unknown; state?: unknown };
+    if (typeof version !== "number" || !state || typeof state !== "object") return [];
+    if (isLegacy) {
       const migrated =
-        envelope.version === COMPOSER_DRAFT_STORAGE_VERSION
-          ? normalizeCurrentPersistedComposerDraftStoreState(envelope.state)
-          : migratePersistedComposerDraftStoreState(envelope.state);
-      return (migrated.draftsByThreadKey[threadKey]?.attachments ?? []).map(
-        (attachment) => attachment.id,
-      );
+        version === COMPOSER_DRAFT_STORAGE_VERSION
+          ? normalizeCurrentPersistedComposerDraftStoreState(state)
+          : migratePersistedComposerDraftStoreState(state);
+      return (migrated.draftsByThreadKey[threadKey]?.attachments ?? []).map((a) => a.id);
     }
-    if (envelope.version !== COMPOSER_DRAFT_STORAGE_VERSION) {
-      return [];
-    }
-    const draftsByThreadKey =
-      envelope.state && typeof envelope.state === "object"
-        ? (envelope.state as { draftsByThreadKey?: unknown }).draftsByThreadKey
-        : null;
-    if (!draftsByThreadKey || typeof draftsByThreadKey !== "object") {
-      return [];
-    }
-    const draft = (draftsByThreadKey as Record<string, unknown>)[threadKey];
-    if (!draft || typeof draft !== "object") {
-      return [];
-    }
-    const rawAttachments = (draft as { attachments?: unknown }).attachments;
-    if (!Array.isArray(rawAttachments)) {
-      return [];
-    }
-    return rawAttachments.flatMap((entry) => {
-      const normalized = normalizePersistedAttachment(entry);
-      return normalized ? [normalized.id] : [];
-    });
+    if (version !== COMPOSER_DRAFT_STORAGE_VERSION) return [];
+    const drafts = (state as { draftsByThreadKey?: Record<string, { attachments?: unknown }> })
+      .draftsByThreadKey;
+    const list = drafts && typeof drafts === "object" ? drafts[threadKey]?.attachments : null;
+    return Array.isArray(list)
+      ? list.flatMap((entry) => {
+          const normalized = normalizePersistedAttachment(entry);
+          return normalized ? [normalized.id] : [];
+        })
+      : [];
   } catch {
     return [];
   }
@@ -3007,81 +2976,59 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
         },
       ): void => {
         const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
-        if (threadKey.length === 0) {
-          return;
-        }
-        const snapshot = options.snapshot;
+        if (threadKey.length === 0) return;
+        const { snapshot } = options;
         let removedBlobKeys: string[] = [];
         set((state) => {
           const current = state.draftsByThreadKey[threadKey];
-          if (!current) {
-            return state;
-          }
-          if (!snapshot) {
+          if (!current) return state;
+          const removedAttIds = snapshot ? new Set(snapshot.attachmentIds) : null;
+          if (removedAttIds) {
+            for (const att of current.attachments) {
+              if (removedAttIds.has(att.id)) revokeObjectPreviewUrl(att.previewUrl);
+            }
+            removedBlobKeys = Array.from(removedAttIds, draftAttachmentBlobKey);
+          } else {
             removedBlobKeys = collectDraftAttachmentBlobKeys(current);
-            const nextDraft: ComposerThreadDraftState = {
-              ...current,
-              prompt: "",
-              attachments: [],
-              nonPersistedAttachmentIds: [],
-              persistedAttachments: [],
-              hydratingAttachmentIds: [],
-              failedHydrationAttachmentIds: [],
-              terminalContexts: [],
-              transcriptHighlightContexts: [],
-              fileSelectionContexts: [],
-              pickedElementContexts: [],
-              ...(options.includeDrawingContexts ? { drawingContexts: [] } : {}),
-            };
-            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
-            if (shouldRemoveDraft(nextDraft)) {
-              delete nextDraftsByThreadKey[threadKey];
-            } else {
-              nextDraftsByThreadKey[threadKey] = nextDraft;
-            }
-            return { draftsByThreadKey: nextDraftsByThreadKey };
           }
-
-          const removedAttachmentIds = new Set(snapshot.attachmentIds);
-          const removedTerminalIds = new Set(snapshot.terminalContextIds);
-          const removedHighlightIds = new Set(snapshot.transcriptHighlightContextIds);
-          const removedFileSelectionIds = new Set(snapshot.fileSelectionContextIds);
-          const removedPickedElementIds = new Set(snapshot.pickedElementContextIds);
-          for (const attachment of current.attachments) {
-            if (removedAttachmentIds.has(attachment.id)) {
-              revokeObjectPreviewUrl(attachment.previewUrl);
-            }
-          }
-          removedBlobKeys = Array.from(removedAttachmentIds, draftAttachmentBlobKey);
+          const keepById = <T extends { id: string }>(
+            items: ReadonlyArray<T>,
+            dropIds?: ReadonlyArray<string>,
+          ): T[] => {
+            if (!dropIds) return [];
+            const drop = new Set(dropIds);
+            return items.filter((item) => !drop.has(item.id));
+          };
           const nextDraft: ComposerThreadDraftState = {
             ...current,
-            prompt: current.prompt === snapshot.prompt ? "" : current.prompt,
-            attachments: current.attachments.filter(
-              (attachment) => !removedAttachmentIds.has(attachment.id),
+            prompt: snapshot && current.prompt !== snapshot.prompt ? current.prompt : "",
+            attachments: removedAttIds
+              ? current.attachments.filter((a) => !removedAttIds.has(a.id))
+              : [],
+            nonPersistedAttachmentIds: removedAttIds
+              ? current.nonPersistedAttachmentIds.filter((id) => !removedAttIds.has(id))
+              : [],
+            persistedAttachments: removedAttIds
+              ? current.persistedAttachments.filter((a) => !removedAttIds.has(a.id))
+              : [],
+            hydratingAttachmentIds: removedAttIds
+              ? current.hydratingAttachmentIds.filter((id) => !removedAttIds.has(id))
+              : [],
+            failedHydrationAttachmentIds: removedAttIds
+              ? current.failedHydrationAttachmentIds.filter((id) => !removedAttIds.has(id))
+              : [],
+            terminalContexts: keepById(current.terminalContexts, snapshot?.terminalContextIds),
+            transcriptHighlightContexts: keepById(
+              current.transcriptHighlightContexts,
+              snapshot?.transcriptHighlightContextIds,
             ),
-            nonPersistedAttachmentIds: current.nonPersistedAttachmentIds.filter(
-              (id) => !removedAttachmentIds.has(id),
+            fileSelectionContexts: keepById(
+              current.fileSelectionContexts,
+              snapshot?.fileSelectionContextIds,
             ),
-            persistedAttachments: current.persistedAttachments.filter(
-              (attachment) => !removedAttachmentIds.has(attachment.id),
-            ),
-            hydratingAttachmentIds: current.hydratingAttachmentIds.filter(
-              (id) => !removedAttachmentIds.has(id),
-            ),
-            failedHydrationAttachmentIds: current.failedHydrationAttachmentIds.filter(
-              (id) => !removedAttachmentIds.has(id),
-            ),
-            terminalContexts: current.terminalContexts.filter(
-              (context) => !removedTerminalIds.has(context.id),
-            ),
-            transcriptHighlightContexts: current.transcriptHighlightContexts.filter(
-              (context) => !removedHighlightIds.has(context.id),
-            ),
-            fileSelectionContexts: current.fileSelectionContexts.filter(
-              (context) => !removedFileSelectionIds.has(context.id),
-            ),
-            pickedElementContexts: current.pickedElementContexts.filter(
-              (context) => !removedPickedElementIds.has(context.id),
+            pickedElementContexts: keepById(
+              current.pickedElementContexts,
+              snapshot?.pickedElementContextIds,
             ),
             ...(options.includeDrawingContexts ? { drawingContexts: [] } : {}),
           };
@@ -3094,7 +3041,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           return { draftsByThreadKey: nextDraftsByThreadKey };
         });
         if (removedBlobKeys.length > 0) {
-          void deleteAttachmentBlobs(removedBlobKeys);
+          deleteAttachmentBlobs(removedBlobKeys);
         }
       };
 
@@ -4629,74 +4576,33 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
 
 export const useComposerDraftStore = composerDraftStore;
 
-/**
- * Surgically updates persisted attachment entries in localStorage without
- * touching any draft's prompt, chips, or unrelated drafts written by other tabs.
- * When `COMPOSER_DRAFT_STORAGE_KEY` does not exist yet (upgrading from a legacy
- * key), writes the compacted store state and retires the legacy key.
- */
-function patchStoredDraftAttachmentsInStorage(
-  transform: (
-    threadKey: string,
-    attachments: ReadonlyArray<PersistedComposerAttachment>,
-  ) => PersistedComposerAttachment[] | null,
-): boolean {
-  try {
-    const raw = composerRawStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
-    if (typeof raw !== "string") {
-      // Loaded from a legacy key without copying on read: write the compacted
-      // current state to the primary key and retire the legacy key.
-      const serialized = JSON.stringify({
-        state: partializeComposerDraftStoreState(composerDraftStore.getState()),
-        version: COMPOSER_DRAFT_STORAGE_VERSION,
+function createDraftHydrationContext() {
+  return {
+    storageKey: COMPOSER_DRAFT_STORAGE_KEY,
+    storageVersion: COMPOSER_DRAFT_STORAGE_VERSION,
+    getRawStorageItem: (key: string) => composerRawStorage.getItem(key),
+    setRawStorageItem: (key: string, value: string) => composerRawStorage.setItem(key, value),
+    retireLegacyKeys: retireLegacyComposerDraftKeys,
+    getDrafts: () => composerDraftStore.getState().draftsByThreadKey,
+    partializeCurrentState: () => partializeComposerDraftStoreState(composerDraftStore.getState()),
+    normalizePersistedAttachment,
+    composerAttachmentFromFile,
+    hydratePersistedComposerAttachment,
+    revokePreviewUrl: revokeObjectPreviewUrl,
+    shouldRemoveDraft,
+    updateDraftsInternally: (
+      updater: (
+        draftsByThreadKey: Record<string, ComposerThreadDraftState>,
+      ) => Record<string, ComposerThreadDraftState> | null,
+    ) => {
+      runInternalHydrationUpdate(() => {
+        composerDraftStore.setState((state) => {
+          const next = updater(state.draftsByThreadKey);
+          return next ? { draftsByThreadKey: next } : state;
+        });
       });
-      composerRawStorage.setItem(COMPOSER_DRAFT_STORAGE_KEY, serialized);
-      retireLegacyComposerDraftKeys();
-      return true;
-    }
-    const parsed = JSON.parse(raw) as {
-      version?: unknown;
-      state?: { draftsByThreadKey?: Record<string, Record<string, unknown>> };
-    };
-    if (
-      !parsed ||
-      typeof parsed !== "object" ||
-      parsed.version !== COMPOSER_DRAFT_STORAGE_VERSION ||
-      !parsed.state ||
-      typeof parsed.state !== "object" ||
-      !parsed.state.draftsByThreadKey ||
-      typeof parsed.state.draftsByThreadKey !== "object"
-    ) {
-      return false;
-    }
-    let changed = false;
-    for (const [threadKey, draftRecord] of Object.entries(parsed.state.draftsByThreadKey)) {
-      if (
-        !draftRecord ||
-        typeof draftRecord !== "object" ||
-        !Array.isArray(draftRecord.attachments)
-      ) {
-        continue;
-      }
-      const normalized = draftRecord.attachments.flatMap((entry) => {
-        const item = normalizePersistedAttachment(entry);
-        return item ? [item] : [];
-      });
-      const updated = transform(threadKey, normalized);
-      if (updated !== null) {
-        draftRecord.attachments = updated;
-        changed = true;
-      }
-    }
-    if (!changed) {
-      return false;
-    }
-    composerRawStorage.setItem(COMPOSER_DRAFT_STORAGE_KEY, JSON.stringify(parsed));
-    retireLegacyComposerDraftKeys();
-    return true;
-  } catch {
-    return false;
-  }
+    },
+  };
 }
 
 async function hydrateDraftAttachmentsByKey(
@@ -4712,153 +4618,20 @@ async function hydrateDraftAttachmentsByKey(
 
   const initialDraft = composerDraftStore.getState().draftsByThreadKey[threadKey];
   if (!initialDraft) return;
-  const idsToLoad = [
-    ...initialDraft.hydratingAttachmentIds,
-    ...(options?.retryFailed ? initialDraft.failedHydrationAttachmentIds : []),
-  ];
-  if (idsToLoad.length === 0) return;
+  const hasWork =
+    initialDraft.hydratingAttachmentIds.length > 0 ||
+    (options?.retryFailed === true && initialDraft.failedHydrationAttachmentIds.length > 0);
+  if (!hasWork) return;
 
-  const uniqueIds = [...new Set(idsToLoad)];
-  const metaById = new Map(
-    initialDraft.persistedAttachments.map((attachment) => [attachment.id, attachment]),
-  );
-
-  const run = async () => {
-    const loadedById = new Map<string, ComposerAttachment>();
-    const notFoundIds = new Set<string>();
-    const errorIds = new Set<string>();
-    const processedIds = new Set<string>(uniqueIds);
-
-    await Promise.all(
-      uniqueIds.map(async (id) => {
-        const meta = metaById.get(id);
-        if (!meta) return;
-        const result = await readAttachmentBlob(draftAttachmentBlobKey(id));
-        if (result.status === "ok") {
-          const file = new File([result.blob], meta.name, { type: meta.mimeType });
-          loadedById.set(
-            id,
-            composerAttachmentFromFile({
-              id: meta.id,
-              name: meta.name,
-              mimeType: meta.mimeType,
-              sizeBytes: meta.sizeBytes,
-              file,
-            }),
-          );
-          return;
-        }
-        if (result.status === "not-found") {
-          notFoundIds.add(id);
-          return;
-        }
-        errorIds.add(id);
-      }),
-    );
-
-    const confirmedMissingIds = new Set<string>();
-    runInternalHydrationUpdate(() => {
-      composerDraftStore.setState((state) => {
-        const current = state.draftsByThreadKey[threadKey];
-        if (!current) {
-          for (const attachment of loadedById.values()) {
-            revokeObjectPreviewUrl(attachment.previewUrl);
-          }
-          return state;
-        }
-        const expectedIds = new Set<string>([
-          ...current.hydratingAttachmentIds,
-          ...(options?.retryFailed ? current.failedHydrationAttachmentIds : []),
-        ]);
-        const existingAttachmentIds = new Set(
-          current.attachments.map((attachment) => attachment.id),
-        );
-        for (const [id, attachment] of loadedById) {
-          if (!expectedIds.has(id) || existingAttachmentIds.has(id)) {
-            revokeObjectPreviewUrl(attachment.previewUrl);
-            loadedById.delete(id);
-          }
-        }
-        for (const id of notFoundIds) {
-          if (expectedIds.has(id) && !existingAttachmentIds.has(id)) {
-            confirmedMissingIds.add(id);
-          }
-        }
-        const confirmedErrorIds = new Set<string>();
-        for (const id of errorIds) {
-          if (expectedIds.has(id) && !existingAttachmentIds.has(id)) {
-            confirmedErrorIds.add(id);
-          }
-        }
-
-        const byId = new Map<string, ComposerAttachment>();
-        for (const attachment of current.attachments) byId.set(attachment.id, attachment);
-        for (const [id, attachment] of loadedById) byId.set(id, attachment);
-        const orderedAttachments: ComposerAttachment[] = [];
-        const placed = new Set<string>();
-        for (const persisted of current.persistedAttachments) {
-          const item = byId.get(persisted.id);
-          if (item && !placed.has(item.id)) {
-            orderedAttachments.push(item);
-            placed.add(item.id);
-          }
-        }
-        for (const attachment of current.attachments) {
-          if (!placed.has(attachment.id)) {
-            orderedAttachments.push(attachment);
-            placed.add(attachment.id);
-          }
-        }
-
-        const nextHydratingIds = current.hydratingAttachmentIds.filter(
-          (id) => !processedIds.has(id),
-        );
-        const nextFailedIds = [
-          ...new Set([
-            ...current.failedHydrationAttachmentIds.filter((id) => !processedIds.has(id)),
-            ...confirmedErrorIds,
-          ]),
-        ];
-        const nextPersistedAttachments =
-          confirmedMissingIds.size > 0
-            ? current.persistedAttachments.filter(
-                (attachment) => !confirmedMissingIds.has(attachment.id),
-              )
-            : current.persistedAttachments;
-
-        const nextDraft: ComposerThreadDraftState = {
-          ...current,
-          attachments: orderedAttachments,
-          persistedAttachments: nextPersistedAttachments,
-          hydratingAttachmentIds: nextHydratingIds,
-          failedHydrationAttachmentIds: nextFailedIds,
-        };
-        const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
-        if (shouldRemoveDraft(nextDraft)) {
-          delete nextDraftsByThreadKey[threadKey];
-        } else {
-          nextDraftsByThreadKey[threadKey] = nextDraft;
-        }
-        return { draftsByThreadKey: nextDraftsByThreadKey };
-      });
+  const promise = import("./lib/attachmentBlobMaintenance")
+    .then(({ runHydrateDraftAttachments }) =>
+      runHydrateDraftAttachments(createDraftHydrationContext(), threadKey, options),
+    )
+    .finally(() => {
+      if (hydrationInFlightByThreadKey.get(threadKey) === promise) {
+        hydrationInFlightByThreadKey.delete(threadKey);
+      }
     });
-
-    if (confirmedMissingIds.size > 0) {
-      patchStoredDraftAttachmentsInStorage((storedThreadKey, attachments) => {
-        if (storedThreadKey !== threadKey) return null;
-        const filtered = attachments.filter(
-          (attachment) => !confirmedMissingIds.has(attachment.id),
-        );
-        return filtered.length === attachments.length ? null : filtered;
-      });
-    }
-  };
-
-  const promise = run().finally(() => {
-    if (hydrationInFlightByThreadKey.get(threadKey) === promise) {
-      hydrationInFlightByThreadKey.delete(threadKey);
-    }
-  });
   hydrationInFlightByThreadKey.set(threadKey, promise);
   await promise;
 }
@@ -4877,118 +4650,21 @@ export async function ensureDraftAttachmentsHydrated(
   await hydrateDraftAttachmentsByKey(threadKey, options);
 }
 
-/**
- * Migrates legacy inline `dataUrl` draft attachments into IndexedDB in the
- * background and strips `dataUrl` from `localStorage` only after each blob
- * commits durably. Failed writes leave the inline `dataUrl` intact.
- */
-async function migrateLegacyDraftAttachmentsToBlobStore(): Promise<void> {
-  const drafts = composerDraftStore.getState().draftsByThreadKey;
-  const migratedIdsByThreadKey = new Map<string, Set<string>>();
-
-  for (const [threadKey, draft] of Object.entries(drafts)) {
-    const legacy = draft.persistedAttachments.filter(
-      (attachment) => typeof attachment.dataUrl === "string",
-    );
-    if (legacy.length === 0) continue;
-    const liveById = new Map(draft.attachments.map((attachment) => [attachment.id, attachment]));
-    for (const attachment of legacy) {
-      const file =
-        liveById.get(attachment.id)?.file ?? hydratePersistedComposerAttachment(attachment);
-      if (!file) continue;
-      let blob: Blob;
-      try {
-        const bytes = await file.arrayBuffer();
-        blob = new Blob([bytes], {
-          type: attachment.mimeType || file.type || "application/octet-stream",
-        });
-      } catch {
-        continue;
-      }
-      const written = await putAttachmentBlob(draftAttachmentBlobKey(attachment.id), blob);
-      if (!written) continue;
-
-      const currentDraft = composerDraftStore.getState().draftsByThreadKey[threadKey];
-      const stillReferenced =
-        currentDraft?.attachments.some((item) => item.id === attachment.id) ||
-        currentDraft?.persistedAttachments.some((item) => item.id === attachment.id);
-      if (!stillReferenced) {
-        void deleteAttachmentBlobs([draftAttachmentBlobKey(attachment.id)]);
-        continue;
-      }
-
-      let migratedSet = migratedIdsByThreadKey.get(threadKey);
-      if (!migratedSet) {
-        migratedSet = new Set<string>();
-        migratedIdsByThreadKey.set(threadKey, migratedSet);
-      }
-      migratedSet.add(attachment.id);
-    }
-  }
-
-  if (migratedIdsByThreadKey.size === 0) {
-    return;
-  }
-
-  runInternalHydrationUpdate(() => {
-    composerDraftStore.setState((state) => {
-      let anyChanged = false;
-      const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
-      for (const [threadKey, migratedIds] of migratedIdsByThreadKey) {
-        const current = nextDraftsByThreadKey[threadKey];
-        if (!current) continue;
-        let draftChanged = false;
-        const nextPersisted = current.persistedAttachments.map((attachment) => {
-          if (attachment.dataUrl === undefined || !migratedIds.has(attachment.id)) {
-            return attachment;
-          }
-          draftChanged = true;
-          return {
-            id: attachment.id,
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-          };
-        });
-        if (draftChanged) {
-          nextDraftsByThreadKey[threadKey] = {
-            ...current,
-            persistedAttachments: nextPersisted,
-          };
-          anyChanged = true;
-        }
-      }
-      return anyChanged ? { draftsByThreadKey: nextDraftsByThreadKey } : state;
-    });
-  });
-
-  patchStoredDraftAttachmentsInStorage((threadKey, attachments) => {
-    const migratedIds = migratedIdsByThreadKey.get(threadKey);
-    if (!migratedIds) return null;
-    let changed = false;
-    const next = attachments.map((attachment) => {
-      if (attachment.dataUrl === undefined || !migratedIds.has(attachment.id)) {
-        return attachment;
-      }
-      changed = true;
-      return {
-        id: attachment.id,
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        sizeBytes: attachment.sizeBytes,
-      };
-    });
-    return changed ? next : null;
-  });
-}
-
 function scheduleComposerDraftPostRehydrate(): Promise<void> {
   const run = async () => {
-    const threadKeys = Object.entries(composerDraftStore.getState().draftsByThreadKey)
+    const drafts = composerDraftStore.getState().draftsByThreadKey;
+    const threadKeys = Object.entries(drafts)
       .filter(([, draft]) => draft.hydratingAttachmentIds.length > 0)
       .map(([threadKey]) => threadKey);
+    const hasLegacy = Object.values(drafts).some((draft) =>
+      draft.persistedAttachments.some((attachment) => typeof attachment.dataUrl === "string"),
+    );
+    if (threadKeys.length === 0 && !hasLegacy) return;
     await Promise.all(threadKeys.map((threadKey) => hydrateDraftAttachmentsByKey(threadKey)));
-    await migrateLegacyDraftAttachmentsToBlobStore();
+    if (hasLegacy) {
+      const { runMigrateLegacyDraftAttachments } = await import("./lib/attachmentBlobMaintenance");
+      await runMigrateLegacyDraftAttachments(createDraftHydrationContext());
+    }
   };
   postRehydratePromise = postRehydratePromise.then(run, run);
   return postRehydratePromise;
@@ -4999,53 +4675,11 @@ export function waitForComposerDraftHydration(): Promise<void> {
   return postRehydratePromise;
 }
 
-/**
- * Collects all `draft:<id>` blob keys referenced by either this tab's in-memory
- * draft store or the latest `localStorage` draft payload. Returns `null` if
- * `localStorage` holds an unreadable payload so orphan GC can abort safely.
- */
-export function collectLiveComposerDraftBlobKeys(): ReadonlySet<string> | null {
-  const keys = new Set<string>();
-  for (const draft of Object.values(composerDraftStore.getState().draftsByThreadKey)) {
-    for (const key of collectDraftAttachmentBlobKeys(draft)) {
-      keys.add(key);
-    }
-  }
-  const storageKeys = [COMPOSER_DRAFT_STORAGE_KEY, ...LEGACY_COMPOSER_DRAFT_STORAGE_KEYS];
-  for (const storageKey of storageKeys) {
-    let raw: string | null | Promise<string | null>;
-    try {
-      raw = composerRawStorage.getItem(storageKey);
-    } catch {
-      return null;
-    }
-    if (typeof raw !== "string" || raw.length === 0) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-    const draftsByThreadKey =
-      parsed && typeof parsed === "object"
-        ? ((parsed as { state?: { draftsByThreadKey?: unknown; draftsByThreadId?: unknown } }).state
-            ?.draftsByThreadKey ??
-          (parsed as { state?: { draftsByThreadId?: unknown } }).state?.draftsByThreadId)
-        : null;
-    if (!draftsByThreadKey || typeof draftsByThreadKey !== "object") continue;
-    for (const draft of Object.values(draftsByThreadKey as Record<string, unknown>)) {
-      if (!draft || typeof draft !== "object") continue;
-      const attachments = (draft as { attachments?: unknown }).attachments;
-      if (!Array.isArray(attachments)) continue;
-      for (const entry of attachments) {
-        const id = entry && typeof entry === "object" ? (entry as { id?: unknown }).id : null;
-        if (typeof id === "string" && id.length > 0) {
-          keys.add(draftAttachmentBlobKey(id));
-        }
-      }
-    }
-  }
-  return keys;
+/** Reads a raw composer draft storage key for background maintenance. */
+export function readComposerDraftRawStorageItem(
+  key: string,
+): string | null | Promise<string | null> {
+  return composerRawStorage.getItem(key);
 }
 
 composerDraftStore.subscribe((state, previous) => {

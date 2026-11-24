@@ -2,7 +2,6 @@ import * as Schema from "effect/Schema";
 import { create } from "zustand";
 
 import {
-  collectLiveComposerDraftBlobKeys,
   hydratePersistedComposerAttachment,
   PersistedComposerAttachment,
   PersistedFileSelectionContextDraft,
@@ -11,12 +10,7 @@ import {
   PersistedTranscriptHighlightContextDraft,
   waitForComposerDraftHydration,
 } from "./composerDraftStore";
-import {
-  deleteAttachmentBlobs,
-  putAttachmentBlob,
-  stashAttachmentBlobKey,
-  sweepOrphanedAttachmentBlobs,
-} from "./lib/attachmentBlobStore";
+import { deleteAttachmentBlobs, stashAttachmentBlobKey } from "./lib/attachmentBlobStore";
 import type { FileSelectionContextDraft } from "./lib/fileSelectionContext";
 import type { PickedElementContextDraft } from "./lib/pickedElementContext";
 import { createMemoryStorage, type StateStorage } from "./lib/storage";
@@ -479,98 +473,23 @@ export const usePromptStashStore = create<PromptStashStoreState>()((set, get) =>
 
 let stashMigrationPromise: Promise<void> = Promise.resolve();
 
-/**
- * Moves legacy inline `dataUrl` attachments on stashed prompts into IndexedDB
- * and rewrites `localStorage` without `dataUrl` only after each blob commits.
- * Re-reads storage before rewriting so another tab's newer stash entries are
- * preserved.
- */
-async function migrateLegacyPromptStashAttachmentsToBlobStore(): Promise<void> {
-  const entries = usePromptStashStore.getState().entries;
-  const migratedByEntryId = new Map<string, Set<string>>();
-
-  for (const entry of entries) {
-    const legacy = entry.attachments.filter((attachment) => typeof attachment.dataUrl === "string");
-    if (legacy.length === 0) continue;
-    for (const attachment of legacy) {
-      const file = hydratePersistedComposerAttachment(attachment);
-      if (!file) continue;
-      let blob: Blob;
-      try {
-        const bytes = await file.arrayBuffer();
-        blob = new Blob([bytes], {
-          type: attachment.mimeType || file.type || "application/octet-stream",
-        });
-      } catch {
-        continue;
-      }
-      const key = stashAttachmentBlobKey(entry.id, attachment.id);
-      const written = await putAttachmentBlob(key, blob);
-      if (!written) continue;
-
-      const stillPresent = usePromptStashStore
-        .getState()
-        .entries.some(
-          (candidate) =>
-            candidate.id === entry.id &&
-            candidate.attachments.some((item) => item.id === attachment.id),
-        );
-      if (!stillPresent) {
-        void deleteAttachmentBlobs([key]);
-        continue;
-      }
-
-      let migratedSet = migratedByEntryId.get(entry.id);
-      if (!migratedSet) {
-        migratedSet = new Set<string>();
-        migratedByEntryId.set(entry.id, migratedSet);
-      }
-      migratedSet.add(attachment.id);
-    }
-  }
-
-  if (migratedByEntryId.size === 0) return;
-
-  const stripMigrated = (
-    list: ReadonlyArray<PromptStashEntry>,
-  ): { next: PromptStashEntry[]; changed: boolean } => {
-    let changed = false;
-    const next = list.map((entry) => {
-      const migratedIds = migratedByEntryId.get(entry.id);
-      if (!migratedIds) return entry;
-      let entryChanged = false;
-      const nextAttachments = entry.attachments.map((attachment) => {
-        if (attachment.dataUrl === undefined || !migratedIds.has(attachment.id)) {
-          return attachment;
-        }
-        entryChanged = true;
-        return {
-          id: attachment.id,
-          name: attachment.name,
-          mimeType: attachment.mimeType,
-          sizeBytes: attachment.sizeBytes,
-        };
+function createPromptStashMigrationContext() {
+  return {
+    getEntries: () => usePromptStashStore.getState().entries,
+    setEntries: (
+      updater: (entries: ReadonlyArray<PromptStashEntry>) => ReadonlyArray<PromptStashEntry> | null,
+    ) => {
+      usePromptStashStore.setState((state) => {
+        const next = updater(state.entries);
+        return next ? { entries: next } : state;
       });
-      if (!entryChanged) return entry;
-      changed = true;
-      return { ...entry, attachments: nextAttachments };
-    });
-    return { next, changed };
+    },
+    readPersistedEntries,
+    persistEntries,
+    hydratePersistedComposerAttachment,
+    collectLiveStashKeys: collectLivePromptStashBlobKeys,
+    waitForDraftHydration: waitForComposerDraftHydration,
   };
-
-  // Re-read storage before writing back so another tab's newer entries survive.
-  const latestStored = readPersistedEntries();
-  if (latestStored) {
-    const { next: nextStored, changed } = stripMigrated(latestStored);
-    if (changed) {
-      persistEntries(nextStored);
-    }
-  }
-
-  usePromptStashStore.setState((state) => {
-    const { next, changed } = stripMigrated(state.entries);
-    return changed ? { entries: next } : state;
-  });
 }
 
 /**
@@ -623,21 +542,10 @@ export function collectLivePromptStashBlobKeys(): ReadonlySet<string> | null {
   return keys;
 }
 
-export function collectAllLiveAttachmentBlobKeys(): ReadonlySet<string> | null {
-  const draftKeys = collectLiveComposerDraftBlobKeys();
-  if (draftKeys === null) return null;
-  const stashKeys = collectLivePromptStashBlobKeys();
-  if (stashKeys === null) return null;
-  const combined = new Set<string>(draftKeys);
-  for (const key of stashKeys) combined.add(key);
-  return combined;
-}
-
 function schedulePromptStashStartupMaintenance(): void {
   const run = async () => {
-    await migrateLegacyPromptStashAttachmentsToBlobStore();
-    await waitForComposerDraftHydration();
-    await sweepOrphanedAttachmentBlobs(collectAllLiveAttachmentBlobKeys);
+    const { runPromptStashStartupMaintenance } = await import("./lib/attachmentBlobMaintenance");
+    await runPromptStashStartupMaintenance(createPromptStashMigrationContext());
   };
   stashMigrationPromise = stashMigrationPromise.then(run, run);
 }
@@ -661,8 +569,16 @@ export function writePromptStashStorageForTest(raw: string): void {
   usePromptStashStore.setState({ entries: readPersistedEntries() ?? [] });
   if (typeof window !== "undefined" && raw.length > 0) {
     stashMigrationPromise = stashMigrationPromise.then(
-      migrateLegacyPromptStashAttachmentsToBlobStore,
-      migrateLegacyPromptStashAttachmentsToBlobStore,
+      async () => {
+        const { runMigrateLegacyPromptStashAttachments } =
+          await import("./lib/attachmentBlobMaintenance");
+        await runMigrateLegacyPromptStashAttachments(createPromptStashMigrationContext());
+      },
+      async () => {
+        const { runMigrateLegacyPromptStashAttachments } =
+          await import("./lib/attachmentBlobMaintenance");
+        await runMigrateLegacyPromptStashAttachments(createPromptStashMigrationContext());
+      },
     );
   }
 }

@@ -8,6 +8,14 @@
  * clearing a draft never deletes a stashed prompt's copy, or vice versa.
  */
 
+export function draftAttachmentBlobKey(attachmentId: string): string {
+  return `draft:${attachmentId}`;
+}
+
+export function stashAttachmentBlobKey(entryId: string, attachmentId: string): string {
+  return `stash:${entryId}:${attachmentId}`;
+}
+
 const DATABASE_NAME = "threadlines-draft-attachments";
 const DATABASE_VERSION = 1;
 const STORE_NAME = "blobs";
@@ -18,14 +26,6 @@ const STORE_NAME = "blobs";
  * before its debounced `localStorage` metadata flushed.
  */
 export const ORPHAN_ATTACHMENT_BLOB_GRACE_MS = 10 * 60 * 1000;
-
-export function draftAttachmentBlobKey(attachmentId: string): string {
-  return `draft:${attachmentId}`;
-}
-
-export function stashAttachmentBlobKey(entryId: string, attachmentId: string): string {
-  return `stash:${entryId}:${attachmentId}`;
-}
 
 export type AttachmentBlobReadResult =
   | { readonly status: "ok"; readonly blob: Blob }
