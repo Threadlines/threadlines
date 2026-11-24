@@ -38,25 +38,61 @@ const repoRoot = NodeURL.fileURLToPath(new URL("..", import.meta.url));
 const gh = (args: ReadonlyArray<string>): string =>
   NodeChildProcess.execFileSync("gh", args, { cwd: repoRoot, encoding: "utf8" }).trim();
 
+const CANDIDATE_RUNS_PER_EVENT = 15;
+
+type ListedRun = {
+  readonly databaseId: number;
+  readonly createdAt: string;
+  readonly headSha: string;
+  readonly headBranch: string;
+};
+
+const isOnOriginMain = (sha: string): boolean => {
+  const result = NodeChildProcess.spawnSync(
+    "git",
+    ["merge-base", "--is-ancestor", sha, "origin/main"],
+    {
+      cwd: repoRoot,
+      stdio: "ignore",
+    },
+  );
+  return result.status === 0;
+};
+
 const givenRunIds = process.argv.slice(3);
-const runIds =
-  givenRunIds.length > 0
-    ? givenRunIds
-    : gh([
+let candidates: ReadonlyArray<{ readonly runId: string; readonly headSha?: string }>;
+if (givenRunIds.length > 0) {
+  candidates = givenRunIds.map((runId) => ({ runId }));
+} else {
+  // Fetch origin/main so we only sample merge_group runs whose commit actually
+  // landed on main (ignoring green queue runs that were later dequeued).
+  NodeChildProcess.execFileSync("git", ["fetch", "--quiet", "origin", "main"], { cwd: repoRoot });
+
+  const listRuns = (extraArgs: ReadonlyArray<string>): ReadonlyArray<ListedRun> =>
+    JSON.parse(
+      gh([
         "run",
         "list",
         "--workflow=ci.yml",
-        "--branch=main",
-        "--event=push",
         "--status=success",
-        `--limit=${RUNS_TO_READ}`,
-        "--json=databaseId",
-        "--jq=.[].databaseId",
-      ])
-        .split("\n")
-        .filter(Boolean);
-if (runIds.length === 0) {
-  throw new Error("Found no green CI run on main to read test timings from.");
+        `--limit=${CANDIDATE_RUNS_PER_EVENT}`,
+        "--json=databaseId,createdAt,headSha,headBranch",
+        ...extraArgs,
+      ]),
+    ) as ReadonlyArray<ListedRun>;
+
+  // Query merge_group and main push separately so PR runs never crowd them out.
+  candidates = [
+    ...listRuns(["--event=merge_group"]).filter(
+      (run) => run.headBranch.startsWith("gh-readonly-queue/main/") && isOnOriginMain(run.headSha),
+    ),
+    ...listRuns(["--branch=main", "--event=push"]),
+  ]
+    .toSorted((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    .map((run) => ({ runId: String(run.databaseId), headSha: run.headSha }));
+}
+if (candidates.length === 0) {
+  throw new Error("Found no green CI run on main or landed merge_group to read test timings from.");
 }
 
 const downloadDir = NodeFS.mkdtempSync(
@@ -64,15 +100,34 @@ const downloadDir = NodeFS.mkdtempSync(
 );
 // One map of file -> seconds per run, newest run first.
 const runs: Array<Map<string, number>> = [];
+const sampledShas = new Set<string>();
 try {
-  for (const runId of runIds) {
+  for (const { runId, headSha } of candidates) {
+    if (givenRunIds.length === 0 && runs.length >= RUNS_TO_READ) {
+      break;
+    }
+    if (headSha && sampledShas.has(headSha)) {
+      continue;
+    }
     const runDir = NodePath.join(downloadDir, runId);
-    gh(["run", "download", runId, `--pattern=${suite.artifacts}`, `--dir=${runDir}`]);
+    try {
+      gh(["run", "download", runId, `--pattern=${suite.artifacts}`, `--dir=${runDir}`]);
+    } catch (error) {
+      // Skipped push runs on main upload no timings artifacts; keep scanning
+      // unless the caller explicitly asked for this run id.
+      if (givenRunIds.length > 0) {
+        throw error;
+      }
+      continue;
+    }
     const reports = NodeFS.readdirSync(runDir, { recursive: true, encoding: "utf8" }).filter(
       (entry) => NodePath.basename(entry) === TIMINGS_FILE,
     );
     if (reports.length === 0) {
-      throw new Error(`CI run ${runId} has no ${suiteName} test timings.`);
+      if (givenRunIds.length > 0) {
+        throw new Error(`CI run ${runId} has no ${suiteName} test timings.`);
+      }
+      continue;
     }
     const timings = new Map<string, number>();
     for (const entry of reports) {
@@ -82,10 +137,16 @@ try {
       for (const [file, seconds] of Object.entries(report)) timings.set(file, seconds);
     }
     runs.push(timings);
+    if (headSha) {
+      sampledShas.add(headSha);
+    }
     console.log(`Read ${reports.length} shard reports from CI run ${runId}.`);
   }
 } finally {
   NodeFS.rmSync(downloadDir, { recursive: true, force: true });
+}
+if (runs.length === 0) {
+  throw new Error(`Found no green CI run with ${suiteName} test timings.`);
 }
 
 const median = (values: ReadonlyArray<number>): number => {
