@@ -260,7 +260,8 @@ export async function checkShowcaseRepository(
       } catch {
         // A new folder.
       }
-      if (before !== null && readMeta(before).meta.sharedBy?.toLowerCase() !== author) {
+      const beforeMeta = before === null ? null : readMeta(before).meta;
+      if (beforeMeta !== null && beforeMeta.sharedBy?.toLowerCase() !== author) {
         note(`themes/${slug}`, "Only the person who shared a theme may change it.");
       }
       const theme = themes.get(slug);
@@ -276,7 +277,9 @@ export async function checkShowcaseRepository(
           `meta.json says @${theme.meta.sharedBy} shared it, but @${options.author} opened this.`,
         );
       }
-      if (theme.meta.featured) note(`themes/${slug}`, "Only maintainers feature a theme.");
+      if (theme.meta.featured !== (beforeMeta?.featured ?? false)) {
+        note(`themes/${slug}`, "Only maintainers feature a theme.");
+      }
     }
   }
   return found;

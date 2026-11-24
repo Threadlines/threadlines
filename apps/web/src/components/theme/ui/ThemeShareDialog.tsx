@@ -17,12 +17,15 @@ import {
   type EnvironmentId,
   type ReportProblemAccount,
   type ThemeManifest,
+  type ThemeShowcaseEntry,
   ThemeShowcaseError,
   type ThemeShowcasePreparation,
+  type ThemeShowcaseSlug,
   type ThemeShowcaseSubmission,
 } from "@threadlines/contracts";
+import { showcaseSlugFor } from "@threadlines/shared/themeShowcase";
 import * as Schema from "effect/Schema";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { openExternalUrl } from "~/lib/externalLinks";
 import {
@@ -36,6 +39,7 @@ import {
   newShowcaseSubmissionId,
   prepareShowcaseShare,
   readShowcaseAccount,
+  readShowcaseEntries,
   submitShowcaseShare,
   takeBackShowcaseShare,
 } from "~/themeLibrary/themeShowcase";
@@ -50,6 +54,8 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../../ui/dialog";
+import { LabeledField } from "../../ui/labeled-field";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Spinner } from "../../ui/spinner";
 import { toastManager } from "../../ui/toast";
 import { useThemeCreditsDraft } from "./ThemeCreditsFields";
@@ -74,6 +80,8 @@ const messageOf = (cause: unknown, fallback: string) =>
   cause instanceof Error && cause.message.trim() !== "" ? cause.message : fallback;
 
 const isShowcaseError = Schema.is(ThemeShowcaseError);
+/** Sentinel for "Share as a new theme": underscores can't appear in a `ThemeShowcaseSlug`. */
+const NEW_SHOWCASE_TARGET = "__new__";
 
 /** Why a share failed, and whether GitHub may have taken part of it (sending again checks). */
 function describeShareFailure(cause: unknown): {
@@ -191,6 +199,8 @@ function AccountLine({
 export function ThemeShareDialog({
   environmentId,
   keepsEmailPrivate,
+  supportsUpdate = true,
+  listedSlug,
   entryId,
   name,
   manifest,
@@ -203,18 +213,75 @@ export function ThemeShareDialog({
    * (`themeShowcaseTakeBack`). An older one publishes it, and the dialog says so.
    */
   readonly keepsEmailPrivate: boolean;
+  /** That server can update an already-listed Showcase theme in place (`themeShowcaseUpdate`). */
+  readonly supportsUpdate?: boolean;
+  /** The folder this theme was previously listed under, if known on any connected computer. */
+  readonly listedSlug?: ThemeShowcaseSlug;
   readonly entryId: string;
   readonly name: string;
   /** The theme as the library holds it, for its credits and prompt. */
   readonly manifest: ThemeManifest;
   readonly onClose: () => void;
 }) {
-  const credits = useThemeCreditsDraft(manifest, "It keeps its credit.");
   const [includePrompt, setIncludePrompt] = useState(false);
   const { account, check } = useGitHubAccount(environmentId);
-  const [submissionId] = useState(newShowcaseSubmissionId);
+  const [submissionId, setSubmissionId] = useState(newShowcaseSubmissionId);
   const [prepared, setPrepared] = useState<Prepared>({ state: "loading" });
   const [sending, setSending] = useState<Sending>({ state: "idle", error: null, uncertain: false });
+  const [loadedEntries, setLoadedEntries] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly items: ReadonlyArray<ThemeShowcaseEntry>;
+  } | null>(null);
+  const [pickedTarget, setPickedTarget] = useState<
+    ThemeShowcaseSlug | typeof NEW_SHOWCASE_TARGET | null
+  >(null);
+
+  // Fetch the Showcase list so an edited theme you already shared updates in place instead of creating <slug>-2.
+  useEffect(() => {
+    if (!supportsUpdate) return;
+    let active = true;
+    void readShowcaseEntries(environmentId).then((items) => {
+      if (active) setLoadedEntries({ environmentId, items });
+    });
+    return () => {
+      active = false;
+    };
+  }, [environmentId, supportsUpdate]);
+
+  const entriesReady = !supportsUpdate || loadedEntries?.environmentId === environmentId;
+  const entries = useMemo(
+    () =>
+      supportsUpdate && loadedEntries?.environmentId === environmentId ? loadedEntries.items : [],
+    [environmentId, loadedEntries, supportsUpdate],
+  );
+
+  const owned = useMemo(() => {
+    if (!supportsUpdate || account.status !== "signedIn") return [];
+    const login = account.login.toLowerCase();
+    return entries.filter(
+      (entry) => entry.sharedBy !== null && entry.sharedBy.toLowerCase() === login,
+    );
+  }, [account, entries, supportsUpdate]);
+
+  const defaultTarget = useMemo(() => {
+    if (owned.length === 0) return null;
+    if (listedSlug !== undefined) {
+      const byListed = owned.find((entry) => entry.id === listedSlug);
+      if (byListed !== undefined) return byListed;
+    }
+    const baseSlug = showcaseSlugFor(name, new Set());
+    return owned.find((entry) => entry.id === baseSlug) ?? null;
+  }, [listedSlug, name, owned]);
+
+  const target = useMemo(() => {
+    if (pickedTarget === NEW_SHOWCASE_TARGET) return null;
+    if (pickedTarget !== null) {
+      return owned.find((entry) => entry.id === pickedTarget) ?? defaultTarget;
+    }
+    return defaultTarget;
+  }, [defaultTarget, owned, pickedTarget]);
+
+  const credits = useThemeCreditsDraft(manifest, "It keeps its credit.", target?.credits ?? null);
 
   // What would be published: worked out again when the license or the prompt changes
   // (the picture is drawn once). The name and link only need to be well formed.
@@ -243,8 +310,10 @@ export function ThemeShareDialog({
   const preparation = prepared.state === "ready" ? prepared.preparation : null;
   const problems = preparation?.problems ?? [];
   const uncertain = sending.state === "idle" && sending.uncertain;
+  const isUpdate = target !== null || (!entriesReady && supportsUpdate && listedSlug !== undefined);
   const canShare =
     account.status === "signedIn" &&
+    entriesReady &&
     preparation !== null &&
     problems.length === 0 &&
     credits.valid &&
@@ -260,6 +329,7 @@ export function ThemeShareDialog({
       includePrompt,
       submissionId,
       login: account.login,
+      ...(target !== null ? { updateSlug: target.id } : {}),
     })
       .then((submission) => setSending({ state: "sent", submission }))
       .catch((cause: unknown) => {
@@ -273,13 +343,16 @@ export function ThemeShareDialog({
   };
 
   if (sending.state === "sent") {
+    const sentUpdate = sending.submission.isUpdate === true;
     return (
       <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
         <DialogPopup className="max-w-md" data-testid="theme-share-dialog">
           <DialogHeader>
             <DialogTitle>Sent for review</DialogTitle>
             <DialogDescription>
-              {name} goes into the Showcase once it's reviewed. Its tile here says how it's going.
+              {sentUpdate
+                ? `${target?.name ?? name}'s update goes into the Showcase once it's reviewed. Its tile here says how it's going.`
+                : `${name} goes into the Showcase once it's reviewed. Its tile here says how it's going.`}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -300,9 +373,15 @@ export function ThemeShareDialog({
     <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
       <DialogPopup className="max-w-md" data-testid="theme-share-dialog">
         <DialogHeader>
-          <DialogTitle>Share {name} to the Showcase</DialogTitle>
+          <DialogTitle>
+            {isUpdate
+              ? `Update ${target?.name ?? name} in the Showcase`
+              : `Share ${name} to the Showcase`}
+          </DialogTitle>
           <DialogDescription>
-            Anyone using Threadlines can try it once it's added. It never says which thread made it.
+            {isUpdate
+              ? "Your changes replace the current version once they're reviewed. It never says which thread made it."
+              : "Anyone using Threadlines can try it once it's added. It never says which thread made it."}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="grid gap-4">
@@ -338,6 +417,47 @@ export function ThemeShareDialog({
               ) : null}
             </div>
           </div>
+          {owned.length > 0 ? (
+            <LabeledField
+              label="Showcase"
+              hint={
+                target !== null
+                  ? `Replaces ${target.name} once reviewed.`
+                  : "Adds this as a separate theme in the Showcase."
+              }
+            >
+              <Select
+                value={target?.id ?? NEW_SHOWCASE_TARGET}
+                disabled={uncertain || sending.state === "sending"}
+                onValueChange={(next) => {
+                  if (next === null || uncertain || sending.state === "sending") return;
+                  setPickedTarget(
+                    next === NEW_SHOWCASE_TARGET
+                      ? NEW_SHOWCASE_TARGET
+                      : (next as ThemeShowcaseSlug),
+                  );
+                  if (sending.state === "idle") {
+                    setSubmissionId(newShowcaseSubmissionId());
+                    setSending({ state: "idle", error: null, uncertain: false });
+                  }
+                }}
+              >
+                <SelectTrigger size="sm" aria-label="Showcase target">
+                  <SelectValue>
+                    {target !== null ? `Update ${target.name}` : "Share as a new theme"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  <SelectItem value={NEW_SHOWCASE_TARGET}>Share as a new theme</SelectItem>
+                  {owned.map((entry) => (
+                    <SelectItem key={entry.id} value={entry.id}>
+                      Update {entry.name}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </LabeledField>
+          ) : null}
           {credits.fields}
           <ThemePromptSwitch
             prompt={manifest.prompt}
@@ -376,7 +496,13 @@ export function ThemeShareDialog({
           </Button>
           <Button disabled={!canShare} onClick={share}>
             {sending.state === "sending" ? <Spinner className="size-3.5" /> : null}
-            {uncertain ? "Check and share" : "Share"}
+            {isUpdate
+              ? uncertain
+                ? "Check and update"
+                : "Update"
+              : uncertain
+                ? "Check and share"
+                : "Share"}
           </Button>
         </DialogFooter>
       </DialogPopup>
@@ -404,6 +530,7 @@ export function ThemeTakeBackDialog({
 }) {
   const [taking, setTaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isUpdate = submission.isUpdate === true;
   const takeBack = () => {
     setTaking(true);
     setError(null);
@@ -412,7 +539,12 @@ export function ThemeTakeBackDialog({
         // A maintainer may have closed it first: then it wasn't taken back, and the tile says so.
         toastManager.add(
           taken.takenBack === true
-            ? { type: "success", title: `${name} was taken back from the Showcase` }
+            ? {
+                type: "success",
+                title: isUpdate
+                  ? `Update to ${name} was taken back`
+                  : `${name} was taken back from the Showcase`,
+              }
             : { type: "info", title: `${name}'s pull request was already closed` },
         );
         onClose();
@@ -430,10 +562,13 @@ export function ThemeTakeBackDialog({
     <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
       <DialogPopup className="max-w-md" data-testid="theme-take-back-dialog">
         <DialogHeader>
-          <DialogTitle>Take {name} back?</DialogTitle>
+          <DialogTitle>
+            {isUpdate ? `Take back update to ${name}?` : `Take ${name} back?`}
+          </DialogTitle>
           <DialogDescription>
-            It won't be added to the Showcase, and you can share it again any time. Its closed pull
-            request stays on GitHub.
+            {isUpdate
+              ? "The current version stays in the Showcase, and you can send an update again any time. Its closed pull request stays on GitHub."
+              : "It won't be added to the Showcase, and you can share it again any time. Its closed pull request stays on GitHub."}
           </DialogDescription>
         </DialogHeader>
         {error !== null ? (
