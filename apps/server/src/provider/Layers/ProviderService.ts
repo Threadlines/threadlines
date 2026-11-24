@@ -471,6 +471,33 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   };
   /** Early sessions that finished starting, kept for whoever adopts them. */
   const earlyStartedSessions = new Map<string, ProviderSession>();
+  /**
+   * Sessions mid-handoff/start whose adapter may already list the new runtime
+   * before `stopStaleSessionsForThread` and `upsertSessionBinding` finish.
+   */
+  const startingInstancesByThread = new Map<
+    ThreadId,
+    {
+      readonly fromInstanceId: ProviderInstanceId | undefined;
+      readonly toInstanceId: ProviderInstanceId;
+    }
+  >();
+  /**
+   * Monotonic counter and last completed handoff per thread so a `listSessions`
+   * call that snapshotted adapters before a handoff finished can distinguish a
+   * stale outgoing runtime from genuine binding corruption.
+   */
+  const handoffEpochByThread = new Map<ThreadId, number>();
+  const lastHandoffByThread = new Map<
+    ThreadId,
+    {
+      readonly fromInstanceId: ProviderInstanceId | undefined;
+      readonly toInstanceId: ProviderInstanceId;
+    }
+  >();
+  const bumpHandoffEpoch = (threadId: ThreadId) => {
+    handoffEpochByThread.set(threadId, (handoffEpochByThread.get(threadId) ?? 0) + 1);
+  };
   const awaitEarlyGate = (threadId: string): Effect.Effect<void> => {
     const gate = earlyGates.get(threadId);
     return gate === undefined ? Effect.void : Deferred.await(gate);
@@ -1166,76 +1193,97 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       // The cursor the adapter gets is the one decided above, never the
       // caller's as given: a forgotten conversation's must not get through.
       const { resumeCursor: _requestedCursor, ...startInput } = input;
-      const session = yield* adapter.startSession(
-        yield* withProjectInstructions({
-          ...startInput,
-          providerInstanceId: resolvedInstanceId,
-          ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-          ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
-          // An early start reopens the conversation or fails: starting it fresh
-          // instead is left to the ordinary start, which tells the thread.
-          ...(early ? { resumePolicy: "required" as const } : {}),
-        }),
-      );
-
-      if (session.provider !== adapter.provider) {
-        return yield* toValidationError(
-          "ProviderService.startSession",
-          `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
+      const inFlightHandoff = {
+        fromInstanceId: persistedBinding?.providerInstanceId,
+        toInstanceId: resolvedInstanceId,
+      } as const;
+      const { sessionWithInstance, sessionStart } = yield* Effect.gen(function* () {
+        yield* Effect.sync(() => {
+          bumpHandoffEpoch(threadId);
+          startingInstancesByThread.set(threadId, inFlightHandoff);
+        });
+        const session = yield* adapter.startSession(
+          yield* withProjectInstructions({
+            ...startInput,
+            providerInstanceId: resolvedInstanceId,
+            ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+            ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
+            // An early start reopens the conversation or fails: starting it fresh
+            // instead is left to the ordinary start, which tells the thread.
+            ...(early ? { resumePolicy: "required" as const } : {}),
+          }),
         );
-      }
-      const sessionStart = {
-        kind: classifyProviderSessionStart({
-          hasPreviousBinding: persistedBinding !== undefined,
-          previousProvider: persistedBinding?.provider,
-          previousInstanceId: persistedBinding?.providerInstanceId,
-          nextProvider: resolvedProvider,
-          nextInstanceId: resolvedInstanceId,
-          hasContextSeed: input.contextSeed !== undefined,
-          hasResumeCursor: effectiveResumeCursor !== undefined,
-        }),
-        startMs: yield* millisSince(startBeganNanos),
-      };
-      turnLatency.sessionStarted(threadId, {
-        beganAtMs: startBeganAtMs,
-        atMs: yield* Clock.currentTimeMillis,
-        instanceId: resolvedInstanceId,
-        timing: sessionStart,
-      });
-      const sessionWithInstance = {
-        ...session,
-        providerInstanceId: resolvedInstanceId,
-        // It reopened the conversation its cursor named: the adapter took a
-        // cursor and didn't report that it couldn't (resumeFailed).
-        ...(effectiveResumeCursor !== undefined &&
-        effectiveResumeCursor !== null &&
-        session.resumeFailed !== true
-          ? { resumed: true }
-          : {}),
-        ...(owesHistorySeed ? { resumeFailed: true } : {}),
-      };
 
-      yield* stopStaleSessionsForThread({
-        threadId,
-        currentInstanceId: resolvedInstanceId,
-      });
-      // A fresh early start's conversation exists only once something uses
-      // it; until then a later start must not try to resume it.
-      const fresh =
-        effectiveResumeCursor === undefined &&
-        input.contextSeed === undefined &&
-        input.forkFrom === undefined;
-      yield* upsertSessionBinding(sessionWithInstance, threadId, {
-        modelSelection: input.modelSelection,
-        earlyUnused: early && fresh,
-        // Owed until a send carries it: the forgotten conversation's, the
-        // seed this start handed over (an adapter may hold it until a send),
-        // or the history of a conversation the adapter couldn't reopen.
-        ...(historyOwed || input.contextSeed !== undefined || session.resumeFailed === true
-          ? { historyOwed: true }
-          : {}),
-        startedWith: { guideTools: input.guideTools === true },
-      });
+        if (session.provider !== adapter.provider) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
+          );
+        }
+        const sessionStart = {
+          kind: classifyProviderSessionStart({
+            hasPreviousBinding: persistedBinding !== undefined,
+            previousProvider: persistedBinding?.provider,
+            previousInstanceId: persistedBinding?.providerInstanceId,
+            nextProvider: resolvedProvider,
+            nextInstanceId: resolvedInstanceId,
+            hasContextSeed: input.contextSeed !== undefined,
+            hasResumeCursor: effectiveResumeCursor !== undefined,
+          }),
+          startMs: yield* millisSince(startBeganNanos),
+        };
+        turnLatency.sessionStarted(threadId, {
+          beganAtMs: startBeganAtMs,
+          atMs: yield* Clock.currentTimeMillis,
+          instanceId: resolvedInstanceId,
+          timing: sessionStart,
+        });
+        const sessionWithInstance = {
+          ...session,
+          providerInstanceId: resolvedInstanceId,
+          // It reopened the conversation its cursor named: the adapter took a
+          // cursor and didn't report that it couldn't (resumeFailed).
+          ...(effectiveResumeCursor !== undefined &&
+          effectiveResumeCursor !== null &&
+          session.resumeFailed !== true
+            ? { resumed: true }
+            : {}),
+          ...(owesHistorySeed ? { resumeFailed: true } : {}),
+        };
+
+        yield* stopStaleSessionsForThread({
+          threadId,
+          currentInstanceId: resolvedInstanceId,
+        });
+        // A fresh early start's conversation exists only once something uses
+        // it; until then a later start must not try to resume it.
+        const fresh =
+          effectiveResumeCursor === undefined &&
+          input.contextSeed === undefined &&
+          input.forkFrom === undefined;
+        yield* upsertSessionBinding(sessionWithInstance, threadId, {
+          modelSelection: input.modelSelection,
+          earlyUnused: early && fresh,
+          // Owed until a send carries it: the forgotten conversation's, the
+          // seed this start handed over (an adapter may hold it until a send),
+          // or the history of a conversation the adapter couldn't reopen.
+          ...(historyOwed || input.contextSeed !== undefined || session.resumeFailed === true
+            ? { historyOwed: true }
+            : {}),
+          startedWith: { guideTools: input.guideTools === true },
+        });
+        return { sessionWithInstance, sessionStart } as const;
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (startingInstancesByThread.get(threadId) === inFlightHandoff) {
+              startingInstancesByThread.delete(threadId);
+              lastHandoffByThread.set(threadId, inFlightHandoff);
+              bumpHandoffEpoch(threadId);
+            }
+          }),
+        ),
+      );
       yield* analytics.record("provider.session.started", {
         ...analyticsAgentProperties({
           provider: sessionWithInstance.provider,
@@ -2868,6 +2916,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const listSessions: ProviderServiceShape["listSessions"] = Effect.fn("listSessions")(
     function* () {
+      const handoffEpochBefore = new Map(handoffEpochByThread);
       const currentAdapters = yield* getAdapterEntries;
       const sessionsByProvider = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
         adapter.listSessions().pipe(
@@ -2918,14 +2967,41 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "ProviderService.listSessions",
           binding,
         );
-        if (binding.provider !== session.provider) {
-          return yield* Effect.die(
-            new Error(
-              `ProviderService.listSessions: thread '${session.threadId}' is active on provider '${session.provider}' but persisted binding names provider '${binding.provider}'.`,
-            ),
-          );
-        }
-        if (overrides.providerInstanceId !== session.providerInstanceId) {
+        if (
+          binding.provider !== session.provider ||
+          overrides.providerInstanceId !== session.providerInstanceId
+        ) {
+          // A replacement start registers the new runtime before stopping the
+          // outgoing session and updating the persisted binding. Omit only the
+          // mismatched half belonging to that transition (in flight, or
+          // completed between our adapter snapshot and binding read) so real
+          // out-of-band binding corruption still dies loudly.
+          const inFlight = startingInstancesByThread.get(session.threadId);
+          const matchesInFlightHandoff =
+            inFlight !== undefined &&
+            ((session.providerInstanceId === inFlight.toInstanceId &&
+              overrides.providerInstanceId === inFlight.fromInstanceId) ||
+              (session.providerInstanceId === inFlight.fromInstanceId &&
+                overrides.providerInstanceId === inFlight.toInstanceId));
+          const completedDuringSnapshot =
+            handoffEpochByThread.get(session.threadId) !== handoffEpochBefore.get(session.threadId);
+          const lastHandoff = completedDuringSnapshot
+            ? lastHandoffByThread.get(session.threadId)
+            : undefined;
+          const matchesCompletedHandoff =
+            lastHandoff !== undefined &&
+            session.providerInstanceId === lastHandoff.fromInstanceId &&
+            overrides.providerInstanceId === lastHandoff.toInstanceId;
+          if (matchesInFlightHandoff || matchesCompletedHandoff) {
+            continue;
+          }
+          if (binding.provider !== session.provider) {
+            return yield* Effect.die(
+              new Error(
+                `ProviderService.listSessions: thread '${session.threadId}' is active on provider '${session.provider}' but persisted binding names provider '${binding.provider}'.`,
+              ),
+            );
+          }
           return yield* Effect.die(
             new Error(
               `ProviderService.listSessions: thread '${session.threadId}' is active on provider instance '${session.providerInstanceId}' but persisted binding names '${overrides.providerInstanceId}'.`,

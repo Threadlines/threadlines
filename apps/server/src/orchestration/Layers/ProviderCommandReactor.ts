@@ -1121,15 +1121,21 @@ const make = Effect.gen(function* () {
     readonly participantId: ThreadParticipantId | null;
     readonly providerInstanceId: ProviderInstanceId;
     readonly launch: SessionLaunch;
+    /** A cross-provider handoff on a ready thread (e.g. goal change) still needs the launch mark to block the outgoing provider's exit event. */
+    readonly allowReadyHandoff?: boolean;
   }) =>
     Effect.gen(function* () {
       if (input.launch.providerInstanceId === input.providerInstanceId) {
         return;
       }
       const session = (yield* resolveThread(input.threadId))?.session;
+      const canMarkReadyHandoff =
+        input.allowReadyHandoff === true &&
+        session?.status === "ready" &&
+        session.providerInstanceId !== input.providerInstanceId;
       if (
         !session ||
-        session.status !== "starting" ||
+        (session.status !== "starting" && !canMarkReadyHandoff) ||
         sessionSlotParticipantId(session) !== input.participantId
       ) {
         return;
@@ -1826,6 +1832,7 @@ const make = Effect.gen(function* () {
         participantId,
         providerInstanceId: desiredInstanceId,
         launch,
+        allowReadyHandoff: startKind === "handoff",
       }).pipe(
         Effect.andThen(
           providerService.startSession(sessionKey, sessionStartInput(input)).pipe(
@@ -1886,9 +1893,11 @@ const make = Effect.gen(function* () {
 
     // `adopting`: the session was started early, so the slot still describes
     // an older runtime, and a turn waiting on it must keep its "starting".
+    // `preserveActiveTurn`: rebinding a drifted projection to the live runtime
+    // must keep an already-running turn id intact.
     const bindSessionToThread = (
       session: ProviderSession,
-      bindOptions?: { readonly adopting?: boolean },
+      bindOptions?: { readonly adopting?: boolean; readonly preserveActiveTurn?: boolean },
     ) =>
       Effect.gen(function* () {
         if (session.providerInstanceId === undefined) {
@@ -1916,40 +1925,55 @@ const make = Effect.gen(function* () {
           (options?.preservePendingTurnStartup === true || bindOptions?.adopting === true) &&
           latestSession?.status === "starting" &&
           mappedStatus === "ready";
+        const shouldPreserveActiveTurn =
+          bindOptions?.preserveActiveTurn === true &&
+          latestSession !== null &&
+          latestSession.activeTurnId !== null &&
+          latestSession.status !== "stopped" &&
+          latestSession.status !== "interrupted";
+        const shouldPreserveRunningStatus =
+          shouldPreserveActiveTurn && latestSession.status === "running";
         // Provider-side identifiers can arrive through runtime ingestion or
         // directly on the started session. Prefer the durable projection, but
         // let the runtime heal an older missing value. Projected identifiers
-        // only survive while the same provider instance remains selected.
+        // only survive while the same provider instance and driver remain selected.
         const continuesSameInstance =
-          latestSession?.providerInstanceId === session.providerInstanceId;
+          latestSession?.providerInstanceId === session.providerInstanceId &&
+          (latestSession.providerName === null || latestSession.providerName === session.provider);
         yield* setThreadSession({
           threadId,
           session: {
             threadId,
             participantId,
-            status: shouldPreservePendingTurnStartup ? "starting" : mappedStatus,
+            status: shouldPreserveRunningStatus
+              ? "running"
+              : shouldPreservePendingTurnStartup
+                ? "starting"
+                : mappedStatus,
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
             providerSessionId: continuesSameInstance
               ? (latestSession?.providerSessionId ?? null)
               : null,
-            providerThreadId:
-              continuesSameInstance && bindOptions?.adopting !== true
-                ? (latestSession?.providerThreadId ?? session.providerThreadId ?? null)
-                : (session.providerThreadId ?? latestSession?.providerThreadId ?? null),
+            providerThreadId: continuesSameInstance
+              ? bindOptions?.adopting === true
+                ? (session.providerThreadId ?? latestSession?.providerThreadId ?? null)
+                : (latestSession?.providerThreadId ?? session.providerThreadId ?? null)
+              : (session.providerThreadId ?? null),
             runtimeMode: desiredRuntimeMode,
             // Checkout the runtime actually started in. The next turn compares
             // it against the thread's target checkout to decide whether the
             // session has to be cycled into a different worktree.
             checkoutCwd: session.cwd ?? effectiveCwd ?? null,
             // Provider turn ids are not orchestration turn ids.
-            activeTurnId: null,
+            activeTurnId: shouldPreserveActiveTurn ? latestSession.activeTurnId : null,
             // The program has started: the launch, if this was one, is over.
             startup: null,
             lastError: session.lastError ?? null,
-            updatedAt: shouldPreservePendingTurnStartup
-              ? (latestSession?.updatedAt ?? session.updatedAt)
-              : session.updatedAt,
+            updatedAt:
+              shouldPreserveActiveTurn || shouldPreservePendingTurnStartup
+                ? (latestSession?.updatedAt ?? session.updatedAt)
+                : session.updatedAt,
           },
           createdAt,
         });
@@ -2083,13 +2107,20 @@ const make = Effect.gen(function* () {
 
       // A handover blanks the slot's provider ids and checkout (the decider
       // can not know them); an agent resuming a runtime that is still alive
-      // restores them from it. Only right after a handover: at any other time
-      // the slot is current, and rebinding would clear a running turn.
+      // restores them from it. Also heal a slot whose projected provider
+      // drifted from the live runtime, so runtime ingestion does not drop the
+      // reused session's events as stale.
       const slotBlankedByHandover =
         projectedSession !== null &&
         projectedSession.status === "starting" &&
         (projectedSession.providerThreadId ?? null) === null &&
         (projectedSession.checkoutCwd ?? null) === null;
+      const projectedSessionDisagreesWithRuntime =
+        activeSession !== undefined &&
+        (thread.session === null ||
+          (projectedSession !== null &&
+            (projectedSession.providerName !== activeSession.provider ||
+              projectedSession.providerInstanceId !== activeSession.providerInstanceId)));
       // An adopted early runtime is bound now, as a fresh start would have
       // been, with whatever its start owes the next turn.
       const rebindAfterHandover =
@@ -2099,7 +2130,9 @@ const make = Effect.gen(function* () {
             )
           : inRoom && activeSession !== undefined && slotBlankedByHandover
             ? bindSessionToThread(activeSession)
-            : Effect.void;
+            : projectedSessionDisagreesWithRuntime && activeSession !== undefined
+              ? bindSessionToThread(activeSession, { preserveActiveTurn: true })
+              : Effect.void;
 
       // A runtime started before its thread became a room, or before invites
       // were turned on, or behind a fence that has lifted since, has no room
