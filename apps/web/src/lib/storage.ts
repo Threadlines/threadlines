@@ -9,6 +9,7 @@ export interface StateStorage<R = unknown> {
 
 export interface DebouncedPersistStorage<S> extends PersistStorage<S> {
   flush: () => void;
+  cancel: () => void;
 }
 
 export function createMemoryStorage(): StateStorage {
@@ -44,18 +45,27 @@ export function withLegacyFallbackStorage<R = unknown>(
   baseStorage: StateStorage<R>,
   key: string,
   legacyKeys: readonly string[],
+  options?: {
+    /**
+     * Whether reading from a legacy key immediately copies the raw payload into
+     * `key`. Disable when the legacy payload may be large and needs compaction
+     * before being written under `key` (otherwise copying can overflow quota).
+     */
+    readonly copyOnRead?: boolean;
+  },
 ): StateStorage<R> {
+  const copyOnRead = options?.copyOnRead ?? true;
   return {
     getItem: (name) => {
       const current = baseStorage.getItem(name);
       if (current instanceof Promise) {
         return current.then((value) => {
           if (value !== null || name !== key) return value;
-          return readLegacyStorageValue(baseStorage, key, legacyKeys);
+          return readLegacyStorageValue(baseStorage, key, legacyKeys, copyOnRead);
         });
       }
       if (current !== null || name !== key) return current;
-      return readLegacyStorageValue(baseStorage, key, legacyKeys);
+      return readLegacyStorageValue(baseStorage, key, legacyKeys, copyOnRead);
     },
     setItem: (name, value) => baseStorage.setItem(name, value),
     removeItem: (name) => baseStorage.removeItem(name),
@@ -66,18 +76,31 @@ function readLegacyStorageValue<R>(
   storage: StateStorage<R>,
   key: string,
   legacyKeys: readonly string[],
+  copyOnRead: boolean,
 ): string | null | Promise<string | null> {
   for (const legacyKey of legacyKeys) {
     const legacyValue = storage.getItem(legacyKey);
     if (legacyValue instanceof Promise) {
       return legacyValue.then((resolvedLegacyValue) => {
         if (resolvedLegacyValue === null) return null;
-        storage.setItem(key, resolvedLegacyValue);
+        if (copyOnRead) {
+          try {
+            storage.setItem(key, resolvedLegacyValue);
+          } catch {
+            // Quota full: still return the legacy payload so callers can compact it.
+          }
+        }
         return resolvedLegacyValue;
       });
     }
     if (legacyValue === null) continue;
-    storage.setItem(key, legacyValue);
+    if (copyOnRead) {
+      try {
+        storage.setItem(key, legacyValue);
+      } catch {
+        // Quota full: still return the legacy payload so callers can compact it.
+      }
+    }
     return legacyValue;
   }
   return null;
@@ -180,6 +203,8 @@ export function createDebouncedJSONStorage<S>(
 
   return {
     getItem: (name) => {
+      // Loading from storage supersedes any queued pre-rehydrate write.
+      debouncedSetItem.cancel();
       // What this tab loads is what storage holds: in step with the last writer.
       if (merge) knownStamps.set(name, readStamp(name));
       const raw = resolvedStorage.getItem(name);
@@ -196,6 +221,9 @@ export function createDebouncedJSONStorage<S>(
     },
     flush: () => {
       debouncedSetItem.flush();
+    },
+    cancel: () => {
+      debouncedSetItem.cancel();
     },
   };
 }

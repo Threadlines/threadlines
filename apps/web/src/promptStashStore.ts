@@ -2,12 +2,21 @@ import * as Schema from "effect/Schema";
 import { create } from "zustand";
 
 import {
+  collectLiveComposerDraftBlobKeys,
+  hydratePersistedComposerAttachment,
   PersistedComposerAttachment,
   PersistedFileSelectionContextDraft,
   PersistedPickedElementContextDraft,
   PersistedTerminalContextDraft,
   PersistedTranscriptHighlightContextDraft,
+  waitForComposerDraftHydration,
 } from "./composerDraftStore";
+import {
+  deleteAttachmentBlobs,
+  putAttachmentBlob,
+  stashAttachmentBlobKey,
+  sweepOrphanedAttachmentBlobs,
+} from "./lib/attachmentBlobStore";
 import type { FileSelectionContextDraft } from "./lib/fileSelectionContext";
 import type { PickedElementContextDraft } from "./lib/pickedElementContext";
 import { createMemoryStorage, type StateStorage } from "./lib/storage";
@@ -18,17 +27,55 @@ export const PROMPT_STASH_STORAGE_KEY = "threadlines:prompt-stash:v1";
 const PROMPT_STASH_STORAGE_VERSION = 1;
 
 export const MAX_STASH_ENTRIES = 20;
+
+export function stashEntryBlobKeys(entry: Pick<PromptStashEntry, "id" | "attachments">): string[] {
+  return entry.attachments.map((attachment) => stashAttachmentBlobKey(entry.id, attachment.id));
+}
+
+export function deleteStashEntryBlobs(
+  entry: Pick<PromptStashEntry, "id" | "attachments">,
+): Promise<void> {
+  return deleteAttachmentBlobs(stashEntryBlobKeys(entry));
+}
+
+const pendingStashRestoresByTargetKey = new Map<string, Set<Promise<void>>>();
+
 /**
- * Budget for an entry's serialized attachment payload. localStorage is a
- * ~5MB origin-wide quota shared with the composer draft store, so oversized
- * attachments are dropped (tracked in `droppedAttachmentNames`) rather than
- * persisted.
- *
- * Sized to hold two images at the per-image compression budget
- * (`MAX_STASH_IMAGE_DATA_URL_CHARS`) so a typical before/after screenshot
- * pair survives intact.
+ * Registers an in-flight async stash restore for a composer target so pressing
+ * Send on that target waits for restored text, chips, and files to land first.
  */
-export const MAX_STASH_ENTRY_ATTACHMENT_CHARS = 2_700_000;
+export function trackPendingStashRestore(targetKey: string, promise: Promise<void>): void {
+  let set = pendingStashRestoresByTargetKey.get(targetKey);
+  if (!set) {
+    set = new Set();
+    pendingStashRestoresByTargetKey.set(targetKey, set);
+  }
+  const settled = promise.then(
+    () => undefined,
+    () => undefined,
+  );
+  set.add(settled);
+  void settled.finally(() => {
+    const current = pendingStashRestoresByTargetKey.get(targetKey);
+    if (!current) return;
+    current.delete(settled);
+    if (current.size === 0) {
+      pendingStashRestoresByTargetKey.delete(targetKey);
+    }
+  });
+}
+
+export function hasPendingStashRestore(targetKey: string): boolean {
+  return (pendingStashRestoresByTargetKey.get(targetKey)?.size ?? 0) > 0;
+}
+
+export async function waitForPendingStashRestore(targetKey: string): Promise<void> {
+  for (;;) {
+    const pending = pendingStashRestoresByTargetKey.get(targetKey);
+    if (!pending || pending.size === 0) return;
+    await Promise.all(pending);
+  }
+}
 
 /**
  * Terminal chips carry their captured text in the stash, unlike the draft
@@ -233,31 +280,6 @@ function clearOrphanedPendingAttachments(
 }
 
 /**
- * Splits candidate attachments into a persistable set within the entry
- * budget plus the names of any that had to be dropped. Attachments are
- * admitted in order so the earliest-added ones win.
- */
-export function partitionStashAttachments(
-  attachments: ReadonlyArray<PersistedComposerAttachment>,
-): {
-  kept: PersistedComposerAttachment[];
-  droppedNames: string[];
-} {
-  const kept: PersistedComposerAttachment[] = [];
-  const droppedNames: string[] = [];
-  let usedChars = 0;
-  for (const attachment of attachments) {
-    if (usedChars + attachment.dataUrl.length > MAX_STASH_ENTRY_ATTACHMENT_CHARS) {
-      droppedNames.push(attachment.name);
-      continue;
-    }
-    usedChars += attachment.dataUrl.length;
-    kept.push(attachment);
-  }
-  return { kept, droppedNames };
-}
-
-/**
  * Reading the `localStorage` property itself can throw `SecurityError` when
  * storage is blocked by policy or the page is a sandboxed iframe, so the
  * access has to be guarded, not just the get/set calls on it. Otherwise
@@ -368,10 +390,28 @@ interface PromptStashStoreState {
   ) => { attached: boolean; durable: boolean };
 }
 
+/** Whether the prompt stash's `localStorage` backing is durable (not memory-only). */
+export function isPromptStashStorageDurable(): boolean {
+  return storageIsDurable;
+}
+
+/**
+ * Reads the freshest entry list from storage before mutating, so a second tab
+ * stashing or deleting an entry never overwrites or resurrects another tab's
+ * changes. Falls back to `inMemory` when storage is memory-only or unreadable.
+ */
+function readLatestEntriesForMutation(
+  inMemory: ReadonlyArray<PromptStashEntry>,
+): ReadonlyArray<PromptStashEntry> {
+  if (!storageIsDurable) return inMemory;
+  return readPersistedEntries() ?? inMemory;
+}
+
 export const usePromptStashStore = create<PromptStashStoreState>()((set, get) => ({
   entries: [],
   stashEntry: (entry) => {
-    const nextEntries = [entry, ...get().entries];
+    const baseEntries = readLatestEntriesForMutation(get().entries);
+    const nextEntries = [entry, ...baseEntries];
     const evicted = nextEntries.length > MAX_STASH_ENTRIES ? (nextEntries.pop() ?? null) : null;
     const { written, durable } = persistEntries(nextEntries);
     // A rejected write must not leave the entry visible either: the caller
@@ -384,20 +424,30 @@ export const usePromptStashStore = create<PromptStashStoreState>()((set, get) =>
     return { evicted, written: true, durable };
   },
   takeEntry: (entryId) => {
-    const entries = get().entries;
+    const entries = readLatestEntriesForMutation(get().entries);
     const entry = entries.find((candidate) => candidate.id === entryId) ?? null;
-    if (!entry) return { entry: null, durable: true };
+    if (!entry) {
+      if (entries !== get().entries) {
+        set(() => ({ entries }));
+      }
+      return { entry: null, durable: true };
+    }
     const nextEntries = entries.filter((candidate) => candidate.id !== entryId);
     const { durable } = persistEntries(nextEntries);
     set(() => ({ entries: nextEntries }));
     return { entry, durable };
   },
   finalizeEntryAttachments: (entryId, incoming) => {
-    const entries = get().entries;
+    const entries = readLatestEntriesForMutation(get().entries);
     const index = entries.findIndex((candidate) => candidate.id === entryId);
     const existing = index === -1 ? undefined : entries[index];
-    // Restored or deleted mid-encode: nothing to attach to.
-    if (!existing) return { attached: false, durable: true };
+    // Restored or deleted mid-encode (including in another tab): nothing to attach to.
+    if (!existing) {
+      if (entries !== get().entries) {
+        set(() => ({ entries }));
+      }
+      return { attached: false, durable: true };
+    }
     const nextEntries = [...entries];
     nextEntries[index] = {
       ...existing,
@@ -412,13 +462,193 @@ export const usePromptStashStore = create<PromptStashStoreState>()((set, get) =>
   },
 }));
 
-// Hydrate once at startup. Like the app's other persisted stores, tabs are
-// last-write-wins: no cross-tab merging or storage-event syncing.
+// Hydrate once at startup and keep tabs in step when another tab stashes,
+// restores, or deletes an entry.
 {
   const persisted = readPersistedEntries();
   if (persisted) {
     usePromptStashStore.setState({ entries: persisted });
   }
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("storage", (event: StorageEvent) => {
+      if (event.key !== PROMPT_STASH_STORAGE_KEY) return;
+      usePromptStashStore.setState({ entries: readPersistedEntries() ?? [] });
+    });
+  }
+}
+
+let stashMigrationPromise: Promise<void> = Promise.resolve();
+
+/**
+ * Moves legacy inline `dataUrl` attachments on stashed prompts into IndexedDB
+ * and rewrites `localStorage` without `dataUrl` only after each blob commits.
+ * Re-reads storage before rewriting so another tab's newer stash entries are
+ * preserved.
+ */
+async function migrateLegacyPromptStashAttachmentsToBlobStore(): Promise<void> {
+  const entries = usePromptStashStore.getState().entries;
+  const migratedByEntryId = new Map<string, Set<string>>();
+
+  for (const entry of entries) {
+    const legacy = entry.attachments.filter((attachment) => typeof attachment.dataUrl === "string");
+    if (legacy.length === 0) continue;
+    for (const attachment of legacy) {
+      const file = hydratePersistedComposerAttachment(attachment);
+      if (!file) continue;
+      let blob: Blob;
+      try {
+        const bytes = await file.arrayBuffer();
+        blob = new Blob([bytes], {
+          type: attachment.mimeType || file.type || "application/octet-stream",
+        });
+      } catch {
+        continue;
+      }
+      const key = stashAttachmentBlobKey(entry.id, attachment.id);
+      const written = await putAttachmentBlob(key, blob);
+      if (!written) continue;
+
+      const stillPresent = usePromptStashStore
+        .getState()
+        .entries.some(
+          (candidate) =>
+            candidate.id === entry.id &&
+            candidate.attachments.some((item) => item.id === attachment.id),
+        );
+      if (!stillPresent) {
+        void deleteAttachmentBlobs([key]);
+        continue;
+      }
+
+      let migratedSet = migratedByEntryId.get(entry.id);
+      if (!migratedSet) {
+        migratedSet = new Set<string>();
+        migratedByEntryId.set(entry.id, migratedSet);
+      }
+      migratedSet.add(attachment.id);
+    }
+  }
+
+  if (migratedByEntryId.size === 0) return;
+
+  const stripMigrated = (
+    list: ReadonlyArray<PromptStashEntry>,
+  ): { next: PromptStashEntry[]; changed: boolean } => {
+    let changed = false;
+    const next = list.map((entry) => {
+      const migratedIds = migratedByEntryId.get(entry.id);
+      if (!migratedIds) return entry;
+      let entryChanged = false;
+      const nextAttachments = entry.attachments.map((attachment) => {
+        if (attachment.dataUrl === undefined || !migratedIds.has(attachment.id)) {
+          return attachment;
+        }
+        entryChanged = true;
+        return {
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+        };
+      });
+      if (!entryChanged) return entry;
+      changed = true;
+      return { ...entry, attachments: nextAttachments };
+    });
+    return { next, changed };
+  };
+
+  // Re-read storage before writing back so another tab's newer entries survive.
+  const latestStored = readPersistedEntries();
+  if (latestStored) {
+    const { next: nextStored, changed } = stripMigrated(latestStored);
+    if (changed) {
+      persistEntries(nextStored);
+    }
+  }
+
+  usePromptStashStore.setState((state) => {
+    const { next, changed } = stripMigrated(state.entries);
+    return changed ? { entries: next } : state;
+  });
+}
+
+/**
+ * Collects every `stash:<entryId>:<attachmentId>` key referenced in memory or
+ * in the latest `localStorage` stash payload. Returns `null` if storage cannot
+ * be read/parsed so orphan GC can abort safely.
+ */
+export function collectLivePromptStashBlobKeys(): ReadonlySet<string> | null {
+  const keys = new Set<string>();
+  for (const entry of usePromptStashStore.getState().entries) {
+    for (const key of stashEntryBlobKeys(entry)) {
+      keys.add(key);
+    }
+  }
+  let raw: string | null | Promise<string | null>;
+  try {
+    raw = baseStashStorage.getItem(PROMPT_STASH_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+  if (typeof raw === "string" && raw.length > 0) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    const entries =
+      parsed && typeof parsed === "object"
+        ? (parsed as { state?: { entries?: unknown } }).state?.entries
+        : null;
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        if (!entry || typeof entry !== "object") continue;
+        const entryId = (entry as { id?: unknown }).id;
+        const attachments = (entry as { attachments?: unknown }).attachments;
+        if (typeof entryId !== "string" || !Array.isArray(attachments)) continue;
+        for (const attachment of attachments) {
+          const id =
+            attachment && typeof attachment === "object"
+              ? (attachment as { id?: unknown }).id
+              : null;
+          if (typeof id === "string" && id.length > 0) {
+            keys.add(stashAttachmentBlobKey(entryId, id));
+          }
+        }
+      }
+    }
+  }
+  return keys;
+}
+
+export function collectAllLiveAttachmentBlobKeys(): ReadonlySet<string> | null {
+  const draftKeys = collectLiveComposerDraftBlobKeys();
+  if (draftKeys === null) return null;
+  const stashKeys = collectLivePromptStashBlobKeys();
+  if (stashKeys === null) return null;
+  const combined = new Set<string>(draftKeys);
+  for (const key of stashKeys) combined.add(key);
+  return combined;
+}
+
+function schedulePromptStashStartupMaintenance(): void {
+  const run = async () => {
+    await migrateLegacyPromptStashAttachmentsToBlobStore();
+    await waitForComposerDraftHydration();
+    await sweepOrphanedAttachmentBlobs(collectAllLiveAttachmentBlobKeys);
+  };
+  stashMigrationPromise = stashMigrationPromise.then(run, run);
+}
+
+if (typeof window !== "undefined") {
+  schedulePromptStashStartupMaintenance();
+}
+
+/** Waits for startup legacy prompt-stash migration and orphan sweep. */
+export function waitForPromptStashMigration(): Promise<void> {
+  return stashMigrationPromise;
 }
 
 /**
@@ -429,6 +659,12 @@ export const usePromptStashStore = create<PromptStashStoreState>()((set, get) =>
 export function writePromptStashStorageForTest(raw: string): void {
   baseStashStorage.setItem(PROMPT_STASH_STORAGE_KEY, raw);
   usePromptStashStore.setState({ entries: readPersistedEntries() ?? [] });
+  if (typeof window !== "undefined" && raw.length > 0) {
+    stashMigrationPromise = stashMigrationPromise.then(
+      migrateLegacyPromptStashAttachmentsToBlobStore,
+      migrateLegacyPromptStashAttachmentsToBlobStore,
+    );
+  }
 }
 
 /**
