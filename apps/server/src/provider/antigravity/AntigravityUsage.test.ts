@@ -162,7 +162,12 @@ const makeProfile = Effect.promise(() => fs.mkdtemp(join(tmpdir(), "threadlines-
 
 const writeToken = (
   profileDir: string,
-  overrides: { expiry?: string; refresh?: string; email?: string | null } = {},
+  overrides: {
+    accessToken?: string;
+    expiry?: string | null;
+    refresh?: string | null;
+    email?: string | null;
+  } = {},
 ) =>
   Effect.promise(async () => {
     const path = antigravityTokenPath(profileDir);
@@ -171,10 +176,10 @@ const writeToken = (
       path,
       JSON.stringify({
         token: {
-          access_token: ACCESS_TOKEN,
+          access_token: overrides.accessToken ?? ACCESS_TOKEN,
           token_type: "Bearer",
-          refresh_token: overrides.refresh ?? REFRESH_TOKEN,
-          expiry: overrides.expiry ?? "2099-01-01T00:00:00Z",
+          refresh_token: overrides.refresh === undefined ? REFRESH_TOKEN : overrides.refresh,
+          expiry: overrides.expiry === undefined ? "2099-01-01T00:00:00Z" : overrides.expiry,
         },
         auth_method: "consumer",
         ...(overrides.email === null
@@ -277,7 +282,8 @@ describe("Antigravity plan limits", () => {
       assert.equal(snapshot.auth.email, "someone@example.com");
       assert.equal(snapshot.auth.capabilities?.usage, undefined);
 
-      // Both hosts, our own name, the token only as a Bearer header, nowhere else.
+      // Both hosts, Antigravity's client User-Agent (Cloud Code gates on it),
+      // the token only as a Bearer header, nowhere else.
       assert.deepEqual(google.sent.map((request) => new URL(request.url).host).toSorted(), [
         "cloudcode-pa.googleapis.com",
         "daily-cloudcode-pa.googleapis.com",
@@ -286,7 +292,7 @@ describe("Antigravity plan limits", () => {
         assert.equal(request.method, "POST");
         assert.equal(request.body, "{}");
         assert.equal(request.headers["user-agent"], ANTIGRAVITY_USAGE_USER_AGENT);
-        assert.match(request.headers["user-agent"]!, /^Threadlines\/\d/);
+        assert.match(request.headers["user-agent"]!, /^antigravity\/hub\/2\.24\.0 \(aidev_client;/);
         assert.equal(request.headers.authorization, `Bearer ${ACCESS_TOKEN}`);
       }
       assert.notInclude(JSON.stringify(snapshot), ACCESS_TOKEN);
@@ -455,6 +461,7 @@ describe("Antigravity plan limits", () => {
       const userinfo = google.sent.find((request) => request.url.includes("userinfo"))!;
       assert.equal(userinfo.method, "GET");
       assert.equal(new URL(userinfo.url).host, "www.googleapis.com");
+      assert.match(userinfo.headers["user-agent"]!, /^Threadlines\/\d/);
     }),
   );
 
@@ -760,5 +767,171 @@ describe("Antigravity plan limits", () => {
         assert.equal(request.body, JSON.stringify({ project: "acme-enterprise-proj" }));
       }
     }),
+  );
+
+  it.effect("decodes token files with null optional fields", () =>
+    Effect.gen(function* () {
+      const { readOnce } = yield* setup({
+        token: { refresh: null, expiry: "2099-01-01T00:00:00Z", email: "someone@example.com" },
+        route: googleRoute({ summary: { body: SUMMARY } }),
+      });
+      const snapshot = yield* readOnce;
+      assert.equal(snapshot.auth.email, "someone@example.com");
+      assert.isDefined(snapshot.accountUsage);
+    }),
+  );
+
+  it.effect("re-reads right away on refresh when the CLI renews the access token on disk", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-10-09T12:00:00Z"));
+      const { reader, profileDir, google, current } = yield* setup({
+        token: { accessToken: "ya29.expired", expiry: "2026-10-09T11:00:00Z" },
+        route: googleRoute({ summary: { body: SUMMARY } }),
+      });
+      // Expired at first: no request, notice says to start a chat.
+      const before = yield* reader.status;
+      assert.equal(before.usage?.detail, ANTIGRAVITY_USAGE_EXPIRED_DETAIL);
+      assert.equal(google.sent.length, 0);
+
+      // The CLI renews the token on disk while running a chat; `refresh` reads right away.
+      yield* writeToken(profileDir, {
+        accessToken: "ya29.renewed",
+        expiry: "2026-10-09T13:00:00Z",
+      });
+      yield* reader.refresh;
+      yield* Effect.promise(() => new Promise((done) => setTimeout(done, 50)));
+      const after = yield* current;
+      assert.isDefined(after.accountUsage);
+      assert.equal(after.auth.capabilities?.usage, undefined);
+      assert.isTrue(
+        google.sent.some((request) => request.headers.authorization === "Bearer ya29.renewed"),
+      );
+    }),
+  );
+
+  it.effect(
+    "replaces an in-flight read when a renewed token arrives without refresh token or email",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-10-09T12:00:00Z"));
+        let hanging = true;
+        const okRoute = googleRoute({ summary: { body: SUMMARY } });
+        const { reader, profileDir, google, current } = yield* setup({
+          token: {
+            accessToken: "ya29.old-token",
+            refresh: null,
+            email: null,
+            expiry: "2026-10-09T13:00:00Z",
+          },
+          route: (url) => (hanging ? "hang" : okRoute(url)),
+        });
+        yield* reader.status;
+        yield* Effect.yieldNow;
+        assert.isTrue(
+          google.sent.some((request) => request.headers.authorization === "Bearer ya29.old-token"),
+        );
+
+        // Renewed token on disk within the 2-minute window interrupts the hanging read.
+        hanging = false;
+        yield* writeToken(profileDir, {
+          accessToken: "ya29.new-token",
+          refresh: null,
+          email: null,
+          expiry: "2026-10-09T14:00:00Z",
+        });
+        yield* reader.refresh;
+        yield* Effect.promise(() => new Promise((done) => setTimeout(done, 50)));
+        assert.isAbove(google.aborted.length, 0);
+        const after = yield* current;
+        assert.isDefined(after.accountUsage);
+        assert.isTrue(
+          google.sent.some((request) => request.headers.authorization === "Bearer ya29.new-token"),
+        );
+      }),
+  );
+
+  it.effect("keeps previous rows when a host returns a 200 payload with no quota fields", () =>
+    Effect.gen(function* () {
+      let prodMalformed = false;
+      const { readOnce } = yield* setup({
+        route: googleRoute({
+          summary: (host) =>
+            host === "daily-cloudcode-pa.googleapis.com"
+              ? { body: { groups: [SUMMARY.groups[0]!] } }
+              : prodMalformed
+                ? { body: { error: "unavailable" } }
+                : { body: SUMMARY_WITHOUT_GEMINI },
+        }),
+      });
+      const first = yield* readOnce;
+      const shared = first.accountUsage!.limits[0]!.scoped!.filter(
+        (window) => window.scopeLabel === "Claude & GPT",
+      );
+      assert.lengthOf(shared, 2);
+
+      prodMalformed = true;
+      yield* TestClock.adjust("3 minutes");
+      const second = yield* readOnce;
+      const scoped = second.accountUsage!.limits[0]!.scoped!;
+      assert.deepEqual(
+        scoped.filter((window) => window.scopeLabel === "Claude & GPT"),
+        shared,
+      );
+      assert.equal(second.auth.capabilities?.usage?.detail, ANTIGRAVITY_USAGE_FAILED_DETAIL);
+    }),
+  );
+
+  it.effect(
+    "reconcile folds a landed read onto pending snapshots and overrides a stale account probe",
+    () =>
+      Effect.gen(function* () {
+        const { reader, profileDir, setSnapshot } = yield* setup({
+          route: googleRoute({ summary: { body: SUMMARY } }),
+        });
+        // While model discovery runs, the snapshot is still unauthenticated/pending,
+        // so `patchSnapshot` ignores the landed read.
+        yield* setSnapshot({
+          enabled: true,
+          auth: { status: "unknown" },
+        } as unknown as ServerProvider);
+        const probeStatus = yield* reader.status;
+        assert.equal(probeStatus.accountUsage, undefined);
+        // Let the background read finish and land.
+        yield* Effect.promise(() => new Promise((done) => setTimeout(done, 50)));
+
+        // When discovery finishes, `reconcile` folds the landed read onto the checked snapshot.
+        const checked = withAntigravityUsage(signedInSnapshot("oauth-personal"), probeStatus);
+        assert.equal(checked.accountUsage, undefined);
+        const reconciled = reader.reconcile(checked);
+        assert.isDefined(reconciled.accountUsage);
+        assert.equal(reconciled.auth.email, "someone@example.com");
+
+        // A stale probe snapshot from an earlier account receives the newer landed account instead.
+        const staleOtherAccount = {
+          ...checked,
+          auth: {
+            ...checked.auth,
+            accountId: "stale-account-a",
+            email: "stale@example.com",
+          },
+        };
+        const overridden = reader.reconcile(staleOtherAccount);
+        assert.equal(overridden.auth.accountId, reconciled.auth.accountId);
+        assert.equal(overridden.auth.email, "someone@example.com");
+        assert.isDefined(overridden.accountUsage);
+
+        // Switching to a new expired account clears the previous landed read.
+        yield* writeToken(profileDir, {
+          refresh: "1//account-b",
+          email: null,
+          expiry: "2020-01-01T00:00:00Z",
+        });
+        const switchedStatus = yield* reader.status;
+        const switchedSnapshot = withAntigravityUsage(
+          signedInSnapshot("oauth-personal"),
+          switchedStatus,
+        );
+        assert.equal(reader.reconcile(switchedSnapshot).accountUsage, undefined);
+      }),
   );
 });

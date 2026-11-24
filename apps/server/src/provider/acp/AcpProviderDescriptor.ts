@@ -800,6 +800,12 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    * snapshot is built. Must be cheap and never throw.
    */
   readonly snapshotExtras?: () => Partial<Pick<ServerProvider, "community">>;
+  /**
+   * Folds out-of-band state (e.g. a background usage read that finished while
+   * model discovery was still running) into a freshly checked snapshot inside
+   * the same atomic commit. Must be cheap and never throw.
+   */
+  readonly reconcileSnapshot?: (previous: ServerProvider, next: ServerProvider) => ServerProvider;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   /** Message shown when the binary cannot be spawned. */
   readonly notInstalledMessage: string;

@@ -23,6 +23,7 @@ import {
   useUsageEnvironmentTargets,
 } from "../../lib/usageReactQuery";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { readLocalApi } from "../../localApi";
 import { useServerProviders } from "../../rpc/serverState";
 import { RelativeTimeLabel } from "../RelativeTimeLabel";
 import { PageTitlebar } from "../PageTitlebar";
@@ -272,7 +273,12 @@ export function UsageView() {
                 isFetching={usageQuery.isFetching}
                 disabled={!view}
                 onWindowChange={setSelectedWindow}
-                onRefresh={() => void usageQuery.refetch()}
+                onRefresh={() => {
+                  void usageQuery.refetch();
+                  void readLocalApi()
+                    ?.server.refreshProviders()
+                    .catch(() => undefined);
+                }}
               />
             ) : null}
           </div>

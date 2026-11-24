@@ -349,18 +349,19 @@ Google account's email (blurred until you show it).
 
 The numbers come from Google, not from Antigravity: Threadlines asks Google's Cloud Code service
 (`retrieveUserQuotaSummary`, the call Google's own Antigravity apps make) with the sign-in
-Antigravity saved in this account's profile, under Threadlines' own name. Google doesn't publish
-this API, so it can change or stop answering; the row then says it couldn't read the limits and
-keeps the last numbers.
+Antigravity saved in this account's profile, using Antigravity's client User-Agent (Cloud Code
+gates quota responses on it). Google doesn't publish this API, so it can change or stop answering;
+the row then says it couldn't read the limits and keeps the last numbers.
 
 When the numbers can be stale:
 
-- They are read every few minutes, when the provider status refreshes, so a chat's usage shows up
-  within about five minutes. When one of Google's two hosts doesn't answer, the rows only it gave
-  stay from the last read, with their age.
+- They are read when the provider status refreshes and after Antigravity starts a session or
+  finishes a prompt (at most every two minutes unless the CLI renewed the token). When one of
+  Google's two hosts doesn't answer, the rows only it gave stay from the last read, with their age.
 - Threadlines never renews the sign-in itself. Antigravity renews it while it runs, so after an
   hour or so without a chat the saved sign-in lapses. The last numbers stay, with their age, and a
-  line says to start a chat to refresh them.
+  line says to start a chat to refresh them; starting a chat triggers a fresh read as soon as
+  Antigravity renews the token on disk.
 - A Gemini API key or Vertex AI bills per request and has no plan to meter, even if an earlier
   Google sign-in is still in the profile.
 

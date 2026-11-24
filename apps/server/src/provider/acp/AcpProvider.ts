@@ -671,6 +671,13 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
   readonly snapshot: ServerProvider;
   readonly maintenanceCapabilities: ProviderMaintenanceCapabilities;
   readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
+  /**
+   * Patches the current live snapshot in place so out-of-band patches
+   * (e.g. background usage readings) that landed while enrichment ran survive.
+   */
+  readonly updateSnapshot?: (
+    update: (current: ServerProvider) => ServerProvider,
+  ) => Effect.Effect<void>;
   readonly stampIdentity: (snapshot: ServerProvider) => ServerProvider;
   readonly httpClient: HttpClient.HttpClient;
   /** The status checks' catalog: its options are probed once per read. */
@@ -678,6 +685,13 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
 }): Effect.Effect<void, never, ChildProcessSpawner.ChildProcessSpawner> => {
   const { descriptor, settings, snapshot, publishSnapshot, stampIdentity } = input;
   const displayName = descriptor.presentation.displayName;
+  const applyUpdate = (
+    fallbackBase: ServerProvider,
+    update: (current: ServerProvider) => ServerProvider,
+  ) =>
+    input.updateSnapshot
+      ? input.updateSnapshot((current) => stampIdentity(update(current)))
+      : publishSnapshot(stampIdentity(update(fallbackBase)));
 
   const enrichVersionAdvisory = enrichProviderSnapshotWithVersionAdvisory(
     snapshot,
@@ -685,7 +699,10 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
   ).pipe(
     Effect.provideService(HttpClient.HttpClient, input.httpClient),
     Effect.flatMap((enriched) =>
-      publishSnapshot(stampIdentity(enriched)).pipe(Effect.as(enriched)),
+      applyUpdate(snapshot, (current) => ({
+        ...current,
+        ...(enriched.versionAdvisory ? { versionAdvisory: enriched.versionAdvisory } : {}),
+      })).pipe(Effect.as(enriched)),
     ),
     Effect.catchCause((cause) =>
       Effect.logWarning(`${displayName} version advisory enrichment failed`, {
@@ -730,17 +747,13 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
             return Effect.void;
           }
           if (claim !== "none") input.catalog?.rememberCapabilities(claim, capabilitiesBySlug);
-          return publishSnapshot(
-            stampIdentity({
-              ...baseSnapshot,
-              models: baseSnapshot.models.map((model) => {
-                const capabilities = model.isCustom
-                  ? undefined
-                  : capabilitiesBySlug.get(model.slug);
-                return capabilities ? { ...model, capabilities } : model;
-              }),
+          return applyUpdate(baseSnapshot, (current) => ({
+            ...current,
+            models: current.models.map((model) => {
+              const capabilities = model.isCustom ? undefined : capabilitiesBySlug.get(model.slug);
+              return capabilities ? { ...model, capabilities } : model;
             }),
-          );
+          }));
         }),
         Effect.catchCause((cause) =>
           Effect.logWarning(`${displayName} ACP background capability enrichment failed`, {

@@ -1216,7 +1216,11 @@ export function makeAntigravityDescriptor(
     // Each launch shows as a subagent, read from the CLI's own records.
     subagents: antigravitySubagents(paths.profileDir),
     // Work that outlives a prompt, steering, hidden failures, turn tokens.
-    ...antigravityTurnBehavior<AntigravitySettings>(paths.profileDir, usage?.usageLimitFor),
+    ...antigravityTurnBehavior<AntigravitySettings>(
+      paths.profileDir,
+      usage?.usageLimitFor,
+      usage?.refresh,
+    ),
     planMode: {
       promptPrefix: "/plan ",
       isPlanFile: (toolCall, sessionId) =>
@@ -1251,6 +1255,7 @@ export function makeAntigravityDescriptor(
     isolateTextGeneration: true,
     onSessionConfigOptions: (settings, configOptions) =>
       Effect.gen(function* () {
+        if (usage) yield* usage.refresh;
         const agentVersion = yield* agentTag(settings);
         const next = nextAntigravityCatalog(yield* readCatalog(agentVersion), configOptions);
         if (!next) return;
@@ -1260,6 +1265,7 @@ export function makeAntigravityDescriptor(
           ...(agentVersion ? { agentVersion } : {}),
         });
       }),
+    ...(usage ? { reconcileSnapshot: (_previous, next) => usage.reconcile(next) } : {}),
     notInstalledMessage: NOT_INSTALLED_MESSAGE,
     // The same test the probe makes: a custom binary only has to exist; the
     // managed runtime is found when a complete copy is on disk. Both read the
@@ -1380,6 +1386,7 @@ export function makeAntigravityDescriptor(
     discoverModelOptions: (acp) =>
       Effect.gen(function* () {
         const probed = yield* probeAntigravityModelOptions(acp);
+        if (usage) yield* usage.refresh;
         if (!probed) return undefined;
         const init = yield* acp.getInitializeResult;
         const agentVersion = lastAgentTag ?? init?.agentInfo?.version?.trim() ?? undefined;
