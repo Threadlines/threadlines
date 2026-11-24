@@ -61,4 +61,33 @@ describe("estimatePartialFileChangeStat", () => {
     expect(estimate?.stat.additions).toBe(1);
     expect(estimate?.stat.deletions).toBe(0);
   });
+
+  it("handles dangling escapes and many escaped newlines cleanly", () => {
+    const lines = Array.from({ length: 50 }, (_, index) => `const x${index} = "v${index}";`);
+    const escaped = lines.map((line) => line.replaceAll('"', '\\"')).join("\\n");
+    const buffer = `{"file_path":"/tmp/many.ts","content":"${escaped}\\`;
+    const estimate = estimatePartialFileChangeStat("Write", buffer);
+    expect(estimate?.stat).toEqual({
+      path: "/tmp/many.ts",
+      kind: "update",
+      additions: 50,
+      deletions: 0,
+    });
+  });
+
+  it("handles large escape-free MultiEdit inputs in linear time", () => {
+    const count = 4_000;
+    const edits = Array.from(
+      { length: count },
+      (_, index) => `{"old_string":"old_${index}","new_string":"new_${index}"}`,
+    ).join(",");
+    const buffer = `{"file_path":"/tmp/big.ts","edits":[${edits}`;
+    const estimate = estimatePartialFileChangeStat("MultiEdit", buffer);
+    expect(estimate?.stat).toEqual({
+      path: "/tmp/big.ts",
+      kind: "update",
+      additions: count,
+      deletions: count,
+    });
+  });
 });

@@ -90,13 +90,11 @@ export const makeProjectSetupSource = Effect.gen(function* () {
   /** The project, its repository root and its place there. */
   const where = (projectId: ProjectId) =>
     Effect.gen(function* () {
-      const model = yield* snapshots
-        .getCommandReadModel()
+      const found = yield* snapshots
+        .getProjectShellById(projectId)
         .pipe(Effect.mapError(() => failure("This computer's projects couldn't be read.")));
-      const project = model.projects.find(
-        (entry) => entry.id === projectId && entry.deletedAt === null,
-      );
-      if (project === undefined) return yield* failure("That project isn't on this computer.");
+      if (Option.isNone(found)) return yield* failure("That project isn't on this computer.");
+      const project = found.value;
       if (project.kind === "general-chat") {
         return yield* failure("General chats don't belong to a project to copy.");
       }

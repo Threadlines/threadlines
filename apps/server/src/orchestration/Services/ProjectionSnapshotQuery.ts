@@ -8,6 +8,7 @@
  */
 import type {
   CheckpointRef,
+  IsoDateTime,
   MessageId,
   OrchestrationMessage,
   OrchestrationCheckpointSummary,
@@ -20,6 +21,7 @@ import type {
   OrchestrationSideTurn,
   OrchestrationThread,
   OrchestrationThreadActivity,
+  OrchestrationThreadMove,
   OrchestrationThreadShell,
   OutsideAgentConnectionId,
   ProjectId,
@@ -91,6 +93,28 @@ export interface ProjectionThreadTurnOverlap {
   readonly workspaceRoot: string;
   readonly worktreePath: string | null;
   readonly effectiveCwd: string | null;
+}
+
+/**
+ * Minimal active-thread state needed to guard and route high-frequency
+ * `content.delta` runtime events without hydrating full thread shells or
+ * computing diff-stat rollups.
+ */
+export interface ProjectionThreadIngestionContext {
+  readonly id: ThreadId;
+  readonly session: OrchestrationSession | null;
+  readonly sideTurn: OrchestrationSideTurn | null;
+  readonly sideTurns: ReadonlyArray<OrchestrationSideTurn>;
+}
+
+/**
+ * Narrow move record for startup recovery and cleanup, avoiding a full
+ * read-model hydration when scanning for in-flight or completed moves.
+ */
+export interface ProjectionThreadMoveSummary {
+  readonly threadId: ThreadId;
+  readonly deletedAt: IsoDateTime | null;
+  readonly move: OrchestrationThreadMove;
 }
 
 /**
@@ -313,6 +337,31 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadShellById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
+
+  /**
+   * Read the minimal active-thread state needed for high-frequency runtime
+   * delta ingestion (session slot/instance guards and live side-turns).
+   */
+  readonly getThreadIngestionContext: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<ProjectionThreadIngestionContext>, ProjectionRepositoryError>;
+
+  /**
+   * List threads that currently carry a move record (in-flight or moved-away),
+   * including deleted rows so startup can clean up stale export directories.
+   */
+  readonly listThreadsWithMove: () => Effect.Effect<
+    ReadonlyArray<ProjectionThreadMoveSummary>,
+    ProjectionRepositoryError
+  >;
+
+  /**
+   * Whether any non-deleted thread currently uses `path` as its worktree or
+   * effective working directory.
+   */
+  readonly isThreadWorkspacePathInUse: (
+    path: string,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
 
   /**
    * Read a single active thread detail snapshot by id; with

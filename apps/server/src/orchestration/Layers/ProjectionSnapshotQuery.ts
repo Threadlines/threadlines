@@ -141,6 +141,8 @@ import {
   type ProjectionFullThreadDiffContext,
   type ProjectionSnapshotCounts,
   type ProjectionThreadCheckpointContext,
+  type ProjectionThreadIngestionContext,
+  type ProjectionThreadMoveSummary,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
 
@@ -455,6 +457,21 @@ const ThreadIdLookupInput = Schema.Struct({
 const ThreadRowLookupInput = Schema.Struct({
   threadId: ThreadId,
   includeArchived: Schema.optional(Schema.Boolean),
+});
+const WorkspacePathLookupInput = Schema.Struct({
+  path: Schema.String,
+});
+const WorkspacePathInUseRowSchema = Schema.Struct({
+  inUse: Schema.Number,
+});
+const ProjectionThreadIngestionRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  sideTurns: Schema.optional(Schema.NullOr(ProjectionSideTurnsJson)),
+});
+const ProjectionThreadMoveSummaryDbRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  deletedAt: Schema.NullOr(IsoDateTime),
+  move: Schema.fromJsonString(OrchestrationThreadMove),
 });
 const TurnActivityLookupInput = Schema.Struct({
   threadId: ThreadId,
@@ -1659,10 +1676,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     GROUP BY thread_id
   `;
 
-  const listThreadDiffStatRows = SqlSchema.findAll({
+  const listActiveThreadDiffStatRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionThreadDiffStatDbRowSchema,
-    execute: () => threadDiffStatQuery(sql``),
+    execute: () =>
+      threadDiffStatQuery(sql`WHERE threads.deleted_at IS NULL AND threads.archived_at IS NULL`),
+  });
+
+  const listArchivedThreadDiffStatRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadDiffStatDbRowSchema,
+    execute: () =>
+      threadDiffStatQuery(
+        sql`WHERE threads.deleted_at IS NULL AND threads.archived_at IS NOT NULL`,
+      ),
   });
 
   const getThreadDiffStatRow = SqlSchema.findOneOption({
@@ -3400,7 +3427,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listThreadDiffStatRows(undefined).pipe(
+          listActiveThreadDiffStatRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getShellSnapshot:listThreadDiffStats:query",
@@ -3529,7 +3556,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listThreadDiffStatRows(undefined).pipe(
+          listArchivedThreadDiffStatRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getArchivedShellSnapshot:listThreadDiffStats:query",
@@ -4035,6 +4062,50 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const getActiveThreadIngestionRowById = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadIngestionRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          side_turn AS "sideTurns"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+          AND deleted_at IS NULL
+          AND archived_at IS NULL
+        LIMIT 1
+      `,
+  });
+
+  const listThreadMoveSummaryRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadMoveSummaryDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          deleted_at AS "deletedAt",
+          move_json AS "move"
+        FROM projection_threads
+        WHERE move_json IS NOT NULL
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
+  const getThreadWorkspacePathInUseRow = SqlSchema.findOneOption({
+    Request: WorkspacePathLookupInput,
+    Result: WorkspacePathInUseRowSchema,
+    execute: ({ path }) =>
+      sql`
+        SELECT 1 AS "inUse"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND (worktree_path = ${path} OR effective_cwd = ${path})
+        LIMIT 1
+      `,
+  });
+
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
       const [threadRow, latestTurnRow, sessionRow, diffStatRow] = yield* Effect.all([
@@ -4084,6 +4155,68 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         }),
       );
     });
+
+  const getThreadIngestionContext: ProjectionSnapshotQueryShape["getThreadIngestionContext"] = (
+    threadId,
+  ) =>
+    Effect.gen(function* () {
+      const threadRow = yield* getActiveThreadIngestionRowById({ threadId }).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getThreadIngestionContext:getThread:query",
+            "ProjectionSnapshotQuery.getThreadIngestionContext:getThread:decodeRow",
+          ),
+        ),
+      );
+      if (Option.isNone(threadRow)) {
+        return Option.none<ProjectionThreadIngestionContext>();
+      }
+      const sessionRow = yield* getThreadSessionRowByThread({ threadId }).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getThreadIngestionContext:getSession:query",
+            "ProjectionSnapshotQuery.getThreadIngestionContext:getSession:decodeRow",
+          ),
+        ),
+      );
+      const sideTurns = threadRow.value.sideTurns ?? [];
+      return Option.some<ProjectionThreadIngestionContext>({
+        id: threadRow.value.threadId,
+        session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
+        sideTurn: sideTurns[0] ?? null,
+        sideTurns,
+      });
+    });
+
+  const listThreadsWithMove: ProjectionSnapshotQueryShape["listThreadsWithMove"] = () =>
+    listThreadMoveSummaryRows(undefined).pipe(
+      Effect.map((rows): ReadonlyArray<ProjectionThreadMoveSummary> =>
+        rows.map((row) => ({
+          threadId: row.threadId,
+          deletedAt: row.deletedAt,
+          move: row.move,
+        })),
+      ),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listThreadsWithMove:query",
+          "ProjectionSnapshotQuery.listThreadsWithMove:decodeRows",
+        ),
+      ),
+    );
+
+  const isThreadWorkspacePathInUse: ProjectionSnapshotQueryShape["isThreadWorkspacePathInUse"] = (
+    path,
+  ) =>
+    getThreadWorkspacePathInUseRow({ path }).pipe(
+      Effect.map(Option.isSome),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.isThreadWorkspacePathInUse:query",
+          "ProjectionSnapshotQuery.isThreadWorkspacePathInUse:decodeRow",
+        ),
+      ),
+    );
 
   const getThreadMessage: ProjectionSnapshotQueryShape["getThreadMessage"] = (input) =>
     getThreadMessageRow(input).pipe(
@@ -4341,6 +4474,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     listSecretRequests,
     listThreadShells,
     getThreadShellById,
+    getThreadIngestionContext,
+    listThreadsWithMove,
+    isThreadWorkspacePathInUse,
     getThreadDetailById,
     getTurnActivities,
     getThreadMessage,

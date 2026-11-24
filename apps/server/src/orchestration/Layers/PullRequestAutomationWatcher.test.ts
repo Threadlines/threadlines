@@ -446,6 +446,9 @@ function makeSnapshotQuery(input: {
     getTurnActivities: () => Effect.succeed([]),
     getThreadMessage: () => Effect.succeed(Option.none()),
     hasAssistantMessageForTurn: () => Effect.succeed(false),
+    getThreadIngestionContext: () => Effect.succeed(Option.none()),
+    listThreadsWithMove: () => Effect.succeed([]),
+    isThreadWorkspacePathInUse: () => Effect.succeed(false),
     getThreadDetailById: () => Effect.succeed(Option.none()),
   };
 }

@@ -17,6 +17,7 @@ import { normalizeGitRemoteUrl } from "@threadlines/shared/git";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -112,20 +113,18 @@ function testLayer(
             }),
         }),
         Layer.mock(ProjectionSnapshotQuery)({
-          getCommandReadModel: () =>
-            Effect.succeed({
-              threads: [],
-              projects: [
-                {
-                  id: PROJECT_A,
-                  kind: "workspace",
-                  title: "App",
-                  workspaceRoot: repos.a,
-                  scripts: SCRIPTS,
-                  deletedAt: null,
-                },
-              ],
-            } as never),
+          getProjectShellById: (projectId) =>
+            Effect.succeed(
+              projectId === PROJECT_A
+                ? Option.some({
+                    id: PROJECT_A,
+                    kind: "workspace",
+                    title: "App",
+                    workspaceRoot: repos.a,
+                    scripts: SCRIPTS,
+                  } as never)
+                : Option.none(),
+            ),
           getProjectCatalog: () =>
             Effect.succeed({
               snapshotSequence: 0,

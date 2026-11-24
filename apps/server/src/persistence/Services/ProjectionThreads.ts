@@ -257,6 +257,12 @@ export const GetProjectionThreadInput = Schema.Struct({
 });
 export type GetProjectionThreadInput = typeof GetProjectionThreadInput.Type;
 
+export const TouchProjectionThreadUpdatedAtInput = Schema.Struct({
+  threadId: ThreadId,
+  updatedAt: IsoDateTime,
+});
+export type TouchProjectionThreadUpdatedAtInput = typeof TouchProjectionThreadUpdatedAtInput.Type;
+
 export const DeleteProjectionThreadInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -288,6 +294,15 @@ export interface ProjectionThreadRepositoryShape {
    * Upserts by `threadId`.
    */
   readonly upsert: (thread: ProjectionThread) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Update only `updated_at` for an existing projected thread row.
+   *
+   * Returns `true` when a row was updated, `false` when no row matched.
+   */
+  readonly touchUpdatedAt: (
+    input: TouchProjectionThreadUpdatedAtInput,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
 
   /**
    * Read a projected thread row by id.

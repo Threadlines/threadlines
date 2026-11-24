@@ -72,55 +72,79 @@ function collectJsonStringValues(
   const valuesByKey = new Map<string, JsonStringValue[]>();
   let currentKey: string | undefined;
   let index = 0;
+  // Track the next backslash across the whole buffer so escape-free strings
+  // (e.g. large MultiEdit payloads) never rescan the remaining suffix per token.
+  let nextSlash = buffer.indexOf("\\", 0);
 
   while (index < buffer.length) {
-    if (buffer[index] !== '"') {
-      index += 1;
-      continue;
+    const openQuote = buffer.indexOf('"', index);
+    if (openQuote === -1) {
+      break;
     }
-    index += 1;
+    index = openQuote + 1;
 
     let text = "";
+    let chunkStart = index;
     let terminated = false;
+    let nextQuote = buffer.indexOf('"', index);
     while (index < buffer.length) {
-      const char = buffer[index]!;
-      if (char === '"') {
-        terminated = true;
-        index += 1;
+      if (nextQuote !== -1 && nextQuote < index) {
+        nextQuote = buffer.indexOf('"', index);
+      }
+      if (nextSlash !== -1 && nextSlash < index) {
+        nextSlash = buffer.indexOf("\\", index);
+      }
+      if (nextQuote === -1 && nextSlash === -1) {
+        if (chunkStart < buffer.length) {
+          text += buffer.slice(chunkStart);
+        }
+        index = buffer.length;
         break;
       }
-      if (char === "\\") {
-        const escape = buffer[index + 1];
-        if (escape === undefined) {
-          // Dangling escape at the buffer end: the pair completes next delta.
+      if (nextQuote !== -1 && (nextSlash === -1 || nextQuote < nextSlash)) {
+        if (nextQuote > chunkStart) {
+          text += buffer.slice(chunkStart, nextQuote);
+        }
+        terminated = true;
+        index = nextQuote + 1;
+        break;
+      }
+      if (nextSlash > chunkStart) {
+        text += buffer.slice(chunkStart, nextSlash);
+      }
+      const escape = buffer[nextSlash + 1];
+      if (escape === undefined) {
+        // Dangling escape at the buffer end: the pair completes next delta.
+        index = buffer.length;
+        break;
+      }
+      if (escape === "u") {
+        const hex = buffer.slice(nextSlash + 2, nextSlash + 6);
+        if (!/^[0-9a-fA-F]{4}$/u.test(hex)) {
           index = buffer.length;
           break;
         }
-        if (escape === "u") {
-          const hex = buffer.slice(index + 2, index + 6);
-          if (!/^[0-9a-fA-F]{4}$/u.test(hex)) {
-            index = buffer.length;
-            break;
-          }
-          text += String.fromCharCode(Number.parseInt(hex, 16));
-          index += 6;
-          continue;
-        }
-        text += JSON_ESCAPE_MAP[escape] ?? escape;
-        index += 2;
+        text += String.fromCharCode(Number.parseInt(hex, 16));
+        index = nextSlash + 6;
+        chunkStart = index;
         continue;
       }
-      text += char;
-      index += 1;
+      text += JSON_ESCAPE_MAP[escape] ?? escape;
+      index = nextSlash + 2;
+      chunkStart = index;
     }
 
     let isKey = false;
     if (terminated) {
       let lookahead = index;
-      while (lookahead < buffer.length && /\s/u.test(buffer[lookahead]!)) {
+      while (lookahead < buffer.length) {
+        const code = buffer.charCodeAt(lookahead);
+        if (code !== 32 && code !== 9 && code !== 10 && code !== 13) {
+          break;
+        }
         lookahead += 1;
       }
-      isKey = buffer[lookahead] === ":";
+      isKey = buffer.charCodeAt(lookahead) === 58;
     }
 
     if (isKey) {

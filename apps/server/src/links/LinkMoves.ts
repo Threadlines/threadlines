@@ -1065,14 +1065,8 @@ const make = Effect.gen(function* () {
    * touch it. Null when that couldn't be read.
    */
   const pathInUse = (path: string) =>
-    snapshots.getCommandReadModel().pipe(
-      Effect.map((model): boolean | null =>
-        model.threads.some(
-          (thread) =>
-            thread.deletedAt === null &&
-            (thread.worktreePath === path || thread.effectiveCwd === path),
-        ),
-      ),
+    snapshots.isThreadWorkspacePathInUse(path).pipe(
+      Effect.map((inUse): boolean | null => inUse),
       Effect.orElseSucceed((): boolean | null => null),
     );
 

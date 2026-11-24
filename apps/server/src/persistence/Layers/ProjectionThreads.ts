@@ -2,6 +2,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
@@ -16,6 +17,7 @@ import {
   ProjectionThread,
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
+  TouchProjectionThreadUpdatedAtInput,
   sideTurnsColumnValue,
 } from "../Services/ProjectionThreads.ts";
 import {
@@ -497,6 +499,18 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       `,
   });
 
+  const touchProjectionThreadUpdatedAtRow = SqlSchema.findOneOption({
+    Request: TouchProjectionThreadUpdatedAtInput,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ threadId, updatedAt }) =>
+      sql`
+        UPDATE projection_threads
+        SET updated_at = ${updatedAt}
+        WHERE thread_id = ${threadId}
+        RETURNING thread_id AS "threadId"
+      `,
+  });
+
   const deleteProjectionThreadRow = SqlSchema.void({
     Request: DeleteProjectionThreadInput,
     execute: ({ threadId }) =>
@@ -509,6 +523,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
   const upsert: ProjectionThreadRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadRow(row).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.upsert:query")),
+    );
+
+  const touchUpdatedAt: ProjectionThreadRepositoryShape["touchUpdatedAt"] = (input) =>
+    touchProjectionThreadUpdatedAtRow(input).pipe(
+      Effect.map(Option.isSome),
+      Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.touchUpdatedAt:query")),
     );
 
   const getById: ProjectionThreadRepositoryShape["getById"] = (input) =>
@@ -552,6 +572,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
 
   return {
     upsert,
+    touchUpdatedAt,
     getById,
     listByProjectId,
     listIdsByRemoteLink,

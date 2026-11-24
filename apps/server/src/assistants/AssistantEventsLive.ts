@@ -233,6 +233,9 @@ const make = Effect.gen(function* () {
           // the record read what happened, behind the rows due before it.
           if (outcome === "stale") {
             yield* repo.defer(row.subjectKey, iso(now + STALE_RETRY_MS));
+            // Non-actionable domain events do not wake discovery; nudge it now
+            // so the cursor advances past them instead of waiting for the idle timer.
+            yield* Queue.offer(discoveryBell, undefined);
           }
           return outcome === "recorded";
         }
@@ -307,7 +310,11 @@ const make = Effect.gen(function* () {
   const start: AssistantEventsShape["start"] = () =>
     Effect.gen(function* () {
       const ring = () => Queue.offer(discoveryBell, undefined);
-      yield* Effect.forkScoped(Stream.runForEach(engine.streamDomainEvents, ring));
+      yield* Effect.forkScoped(
+        Stream.runForEach(engine.streamDomainEvents, (event) =>
+          assistantEventActionsForEvent(event).length > 0 ? ring() : Effect.void,
+        ),
+      );
       if (Option.isSome(assistants)) {
         // A connection made or removed turns the record on or off.
         yield* Effect.forkScoped(Stream.runForEach(assistants.value.changes, ring));

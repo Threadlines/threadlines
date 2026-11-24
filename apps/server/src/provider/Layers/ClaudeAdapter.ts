@@ -3890,7 +3890,11 @@ function exitPlanCaptureKey(input: {
 }
 
 function tryParseJsonRecord(value: string): Record<string, unknown> | undefined {
-  const result = decodeUnknownJsonStringExit(value);
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return undefined;
+  }
+  const result = decodeUnknownJsonStringExit(trimmed);
   if (!Exit.isSuccess(result)) {
     return undefined;
   }
@@ -5198,20 +5202,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     tool: ToolInFlight,
     message: SDKMessage,
   ) {
+    const previousEmit = tool.partialStatsEmit;
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    if (previousEmit && nowMs - previousEmit.atMs < PARTIAL_FILE_CHANGE_EMIT_INTERVAL_MS) {
+      return;
+    }
     const estimate = estimatePartialFileChangeStat(tool.toolName, tool.partialInputJson);
     if (!estimate) {
       return;
     }
-    const previousEmit = tool.partialStatsEmit;
     if (
       previousEmit &&
       previousEmit.additions === estimate.stat.additions &&
       previousEmit.deletions === estimate.stat.deletions
     ) {
-      return;
-    }
-    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-    if (previousEmit && nowMs - previousEmit.atMs < PARTIAL_FILE_CHANGE_EMIT_INTERVAL_MS) {
       return;
     }
 

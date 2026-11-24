@@ -10,6 +10,7 @@ import * as Cache from "effect/Cache";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import { identity } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
@@ -19,7 +20,7 @@ import * as Stream from "effect/Stream";
 import * as Reactivity from "effect/reactivity/Reactivity";
 import * as Client from "effect/sql/SqlClient";
 import type { Connection } from "effect/sql/SqlConnection";
-import { ConnectionError, SqlError, classifySqliteError } from "effect/sql/SqlError";
+import { SqlError, classifySqliteError } from "effect/sql/SqlError";
 import * as Statement from "effect/sql/Statement";
 
 import { timeDatabaseCall } from "../observability/databaseCallTime.ts";
@@ -105,20 +106,22 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
       return value;
     };
 
-    const prepareCache = yield* Cache.make({
-      capacity: options.prepareCacheSize ?? 200,
-      timeToLive: options.prepareCacheTTL ?? Duration.minutes(10),
-      lookup: (sql: string) =>
-        Effect.try({
-          try: () => timeDatabaseCall(() => db.prepare(sql)),
-          catch: (cause) =>
-            new SqlError({
-              reason: classifySqliteError(cause, {
-                message: "Failed to prepare statement",
-                operation: "prepare",
-              }),
+    const prepare = (sql: string) =>
+      Effect.try({
+        try: () => timeDatabaseCall(() => db.prepare(sql)),
+        catch: (cause) =>
+          new SqlError({
+            reason: classifySqliteError(cause, {
+              message: "Failed to prepare statement",
+              operation: "prepare",
             }),
-        }),
+          }),
+      });
+
+    const prepareCacheTTL = options.prepareCacheTTL ?? Duration.minutes(10);
+    const prepareCache = yield* Cache.makeWith(prepare, {
+      capacity: options.prepareCacheSize ?? 1024,
+      timeToLive: (exit) => (Exit.isSuccess(exit) ? prepareCacheTTL : Duration.zero),
     });
 
     const runStatement = (statement: StatementSync, params: ReadonlyArray<unknown>, raw: boolean) =>
@@ -179,7 +182,12 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
           }),
       );
 
-    const connection = identity<Connection>({
+    interface SqliteConnection extends Connection {
+      readonly isTransaction: () => boolean;
+    }
+
+    const connection = identity<SqliteConnection>({
+      isTransaction: () => db.isTransaction,
       execute(sql, params, rowTransform) {
         return rowTransform ? Effect.map(run(sql, params), rowTransform) : run(sql, params);
       },
@@ -190,16 +198,13 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
         return runValues(sql, params);
       },
       executeValuesUnprepared(sql, params) {
-        return runValuesStatement(
-          timeDatabaseCall(() => db.prepare(sql)),
-          params ?? [],
+        return Effect.flatMap(prepare(sql), (statement) =>
+          runValuesStatement(statement, params ?? []),
         );
       },
       executeUnprepared(sql, params, rowTransform) {
-        const effect = runStatement(
-          timeDatabaseCall(() => db.prepare(sql)),
-          params ?? [],
-          false,
+        const effect = Effect.flatMap(prepare(sql), (statement) =>
+          runStatement(statement, params ?? [], false),
         );
         return rowTransform ? Effect.map(effect, rowTransform) : effect;
       },
@@ -207,93 +212,28 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
         return Stream.die("executeStream not implemented");
       },
     });
-    return { connection, isTransaction: () => db.isTransaction };
+    return connection;
   });
 
   const semaphore = yield* Semaphore.make(1);
-  const { connection, isTransaction } = yield* makeConnection;
-
-  // SQLite can keep a transaction open after COMMIT fails (a deferred foreign
-  // key violation, for one). `onCommitFailure` rolls it back before anyone
-  // else gets the connection. If that ROLLBACK fails too, the connection stays
-  // marked: every later statement and transaction retries the ROLLBACK first
-  // and fails until it works, so nothing lands in the dead transaction.
-  let needsRollback = false;
-  const rollbackOpenTransaction = Effect.suspend(() =>
-    isTransaction()
-      ? Effect.asVoid(connection.executeUnprepared("ROLLBACK", [], undefined))
-      : Effect.void,
-  );
-  const onCommitFailure = () =>
-    rollbackOpenTransaction.pipe(
-      Effect.tapCause(() =>
-        Effect.sync(() => {
-          needsRollback = true;
-        }),
-      ),
-    );
-  const ensureUsable = Effect.suspend(() =>
-    needsRollback
-      ? rollbackOpenTransaction.pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              needsRollback = false;
-            }),
-          ),
-          Effect.mapError(
-            (cause) =>
-              new SqlError({
-                reason: new ConnectionError({
-                  message: "SQLite connection cannot be reused after failed COMMIT cleanup",
-                  operation: "rollback",
-                  cause,
-                }),
-              }),
-          ),
-        )
-      : Effect.void,
-  );
-
-  // Plain statements and transactions share the one connection, so each holds
-  // it for its whole run: a plain statement while it executes, a transaction
-  // until COMMIT or ROLLBACK. A statement that let go of the connection before
-  // running could land inside another fiber's open transaction, where a
-  // rollback silently undid an acknowledged write. Upstream fixed the same race
-  // in effect 4.0.3 (Effect-TS/effect#8927).
-  //
-  // `withPermits` waits interruptibly and registers the release in the same
-  // step that takes the permit. The statement is built inside it because the
-  // unprepared methods call `db.prepare` as soon as they are called. Statements
-  // inside a transaction run on the bare connection the transaction holds.
-  const holdConnection = <A>(statement: () => Effect.Effect<A, SqlError>) =>
-    semaphore.withPermits(1)(Effect.andThen(ensureUsable, Effect.suspend(statement)));
-  const plainConnection = identity<Connection>({
-    execute: (sql, params, rowTransform) =>
-      holdConnection(() => connection.execute(sql, params, rowTransform)),
-    executeRaw: (sql, params) => holdConnection(() => connection.executeRaw(sql, params)),
-    executeValues: (sql, params) => holdConnection(() => connection.executeValues(sql, params)),
-    executeValuesUnprepared: (sql, params) =>
-      holdConnection(() => connection.executeValuesUnprepared(sql, params)),
-    executeUnprepared: (sql, params, rowTransform) =>
-      holdConnection(() => connection.executeUnprepared(sql, params, rowTransform)),
-    // Not implemented. A real stream would hold the connection until it ends.
-    executeStream: (sql, params, rowTransform) =>
-      connection.executeStream(sql, params, rowTransform),
-  });
-  // Taken without interruption, so the permit is never counted without its
-  // release. `withTransaction` masks interruption here anyway; the one cost is
-  // that a waiting `sql.reserve` (unused here) cannot be cancelled.
-  const transactionAcquirer = Effect.acquireRelease(semaphore.take(1), () =>
-    semaphore.release(1),
-  ).pipe(Effect.andThen(ensureUsable), Effect.as(connection));
+  const connection = yield* makeConnection;
+  const { acquirer, borrower, isTransaction, onCommitFailure, transactionAcquirer } =
+    Client.makeSqliteAcquirers({
+      connection: Effect.succeed(connection),
+      semaphore,
+      isTransaction: (conn) => conn.isTransaction(),
+    });
 
   return yield* Client.make({
     driver: "sqlite-node",
-    acquirer: Effect.succeed(plainConnection),
+    acquirer,
+    borrower,
     compiler,
     transactionAcquirer,
     onCommitFailure,
     isTransaction,
+    prepareTransactionControls: true,
+    releaseSavepoint: (name) => `RELEASE SAVEPOINT ${name}`,
     spanAttributes: [
       ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
       [ATTR_DB_SYSTEM_NAME, "sqlite"],

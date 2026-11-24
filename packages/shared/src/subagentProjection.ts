@@ -514,6 +514,22 @@ function linkTaskTranscript(
   return next;
 }
 
+/** Whether an activity can change a thread's subagent roster. */
+export function activityMayAffectSubagents(
+  activity: Pick<OrchestrationThreadActivity, "kind" | "payload">,
+): boolean {
+  if (
+    activity.kind === "task.started" ||
+    activity.kind === "task.progress" ||
+    activity.kind === "task.completed" ||
+    activity.kind === "subagent.metadata"
+  ) {
+    return true;
+  }
+  const payload = record(activity.payload);
+  return text(payload?.itemType) === "collab_agent_tool_call";
+}
+
 /** Fold one timeline activity into the uncapped durable child-agent roster. */
 export function projectSubagentActivity(
   current: ReadonlyArray<OrchestrationSubagent>,

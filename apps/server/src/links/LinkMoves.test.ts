@@ -267,7 +267,7 @@ function testLayer(
             ),
         }),
         Layer.mock(ProjectionSnapshotQuery)({
-          getCommandReadModel: () => Effect.succeed({ threads: [], projects: [] } as never),
+          isThreadWorkspacePathInUse: () => Effect.succeed(false),
           getProjectCatalog: () =>
             Effect.succeed({
               projects:
