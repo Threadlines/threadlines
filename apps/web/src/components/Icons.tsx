@@ -368,6 +368,7 @@ export const FxIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+/** Google Antigravity's full-color mark, from its press kit. */
 export const AntigravityIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 128 128" fill="none">
     <image href={antigravityIconUrl} width="128" height="128" />
