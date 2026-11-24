@@ -99,6 +99,16 @@ import {
 } from "./Drivers/CodexHomeLayout.ts";
 import { buildCodexInitializeParams } from "./Layers/CodexProvider.ts";
 import { deriveProviderInstanceConfigMap } from "./Layers/ProviderInstanceRegistryHydration.ts";
+import {
+  findRepositoryRoot,
+  isExternalOpenCodeConfig,
+  isPathWithinBoundary,
+  readOtherProviderInventory,
+  resolveOtherProviderEnabled,
+  resolveOtherProviderSkillRoots,
+  setOtherProviderSkillEnabled,
+  syncOtherProviderAfterSkillMutation,
+} from "./otherProviderExtensions.ts";
 import { mergeProviderInstanceEnvironment } from "./ProviderInstanceEnvironment.ts";
 import { spawnAndCollect } from "./providerSnapshot.ts";
 import { planCliSpawn } from "../cliSpawn.ts";
@@ -1341,21 +1351,41 @@ const isProviderExtensionsError = Schema.is(ProviderExtensionsError);
  * whether the store was included), so a filtered load, another client, or the composer's skill
  * lookup cannot revoke paths that a view loaded earlier is still showing.
  */
-const MAX_REPORTED_EXTENSION_PATH_SCOPES = 32;
+const MAX_REPORTED_EXTENSION_PATH_SCOPES = 64;
 const reportedExtensionPaths = new Map<
   string,
-  { readonly skillPaths: Set<string>; readonly pluginIconPaths: Set<string> }
+  {
+    readonly instanceId: string;
+    readonly skillPaths: Map<string, { readonly boundary?: string | undefined }>;
+    readonly pluginIconPaths: Set<string>;
+  }
 >();
 
 function recordReportedExtensionPaths(
   scope: string,
   providers: ReadonlyArray<ProviderExtensionProviderInventory>,
+  projectBoundary?: string | undefined,
 ): void {
   for (const provider of providers) {
-    const key = JSON.stringify([String(provider.instanceId), scope]);
+    const instanceId = String(provider.instanceId);
+    const key = JSON.stringify([instanceId, scope]);
     reportedExtensionPaths.delete(key);
+    const skillPaths = new Map<string, { readonly boundary?: string | undefined }>();
+    for (const skill of provider.skills) {
+      if (!skill.path || skill.canRead === false) continue;
+      // Confine non-Codex/Claude project skills to the canonical project boundary on read.
+      const enforceBoundary =
+        projectBoundary !== undefined &&
+        skill.scope?.trim().toLowerCase() === "project" &&
+        provider.driver !== CODEX_DRIVER &&
+        provider.driver !== CLAUDE_DRIVER
+          ? projectBoundary
+          : undefined;
+      skillPaths.set(skill.path, enforceBoundary ? { boundary: enforceBoundary } : {});
+    }
     reportedExtensionPaths.set(key, {
-      skillPaths: new Set(provider.skills.flatMap((skill) => (skill.path ? [skill.path] : []))),
+      instanceId,
+      skillPaths,
       pluginIconPaths: new Set(
         provider.plugins.flatMap((plugin) => (plugin.iconPath ? [plugin.iconPath] : [])),
       ),
@@ -1378,11 +1408,25 @@ export function isCurrentProviderExtensionPluginIconPath(filePath: string): bool
   return false;
 }
 
-export function isCurrentProviderExtensionSkillPath(filePath: string): boolean {
+function findReportedExtensionSkillEntry(
+  filePath: string,
+  providerInstanceId?: ProviderInstanceId | string,
+): { readonly boundary?: string | undefined } | null {
+  const expectedInstance =
+    providerInstanceId !== undefined ? String(providerInstanceId) : undefined;
   for (const entry of reportedExtensionPaths.values()) {
-    if (entry.skillPaths.has(filePath)) return true;
+    if (expectedInstance !== undefined && entry.instanceId !== expectedInstance) continue;
+    const found = entry.skillPaths.get(filePath);
+    if (found !== undefined) return found;
   }
-  return false;
+  return null;
+}
+
+export function isCurrentProviderExtensionSkillPath(
+  filePath: string,
+  providerInstanceId?: ProviderInstanceId | string,
+): boolean {
+  return findReportedExtensionSkillEntry(filePath, providerInstanceId) !== null;
 }
 
 function recordProviderExtensionOperation(
@@ -4026,12 +4070,30 @@ function fallbackSkillsFromSnapshot(
   }));
 }
 
+const CODEX_CAPABILITIES = {
+  plugins: true,
+  mcpServers: true,
+  apps: true,
+  hooks: true,
+  skillCreate: true,
+} as const;
+
+const CLAUDE_CAPABILITIES = {
+  plugins: true,
+  mcpServers: true,
+  apps: false,
+  hooks: true,
+  skillCreate: true,
+} as const;
+
 const readProviderInventory = Effect.fn("providerExtensions.readProviderInventory")(
   function* (input: {
     readonly instanceId: ProviderInstanceId;
     readonly config: ProviderInstanceConfig;
     readonly snapshot: ServerProvider | undefined;
     readonly cwd: string;
+    readonly projectCwd?: string | undefined;
+    readonly stateDir?: string | undefined;
     readonly providerThreadId?: string | undefined;
     readonly includeMcpServers?: boolean | undefined;
     readonly includeApps?: boolean | undefined;
@@ -4059,6 +4121,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
           ...base,
           status: "disabled",
           message: "Provider is disabled.",
+          capabilities: CODEX_CAPABILITIES,
           plugins: [],
           marketplaces: [],
           skills: fallbackSkillsFromSnapshot(input.snapshot),
@@ -4085,6 +4148,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
       return {
         ...base,
         ...inventory,
+        capabilities: CODEX_CAPABILITIES,
         skills:
           inventory.skills.length > 0
             ? inventory.skills
@@ -4107,6 +4171,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
           ...base,
           status: "disabled",
           message: "Provider is disabled.",
+          capabilities: CLAUDE_CAPABILITIES,
           plugins: [],
           marketplaces: [],
           skills: [],
@@ -4125,19 +4190,21 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
           ? { includePluginCatalog: input.includePluginCatalog }
           : {}),
       });
-      return { ...base, ...inventory } satisfies ProviderExtensionProviderInventory;
+      return {
+        ...base,
+        ...inventory,
+        capabilities: CLAUDE_CAPABILITIES,
+      } satisfies ProviderExtensionProviderInventory;
     }
 
-    return {
-      ...base,
-      status: "unsupported",
-      message: "Extension inventory is only implemented for Codex and Claude.",
-      plugins: [],
-      marketplaces: [],
-      skills: [],
-      mcpServers: [],
-      apps: [],
-    } satisfies ProviderExtensionProviderInventory;
+    return yield* readOtherProviderInventory({
+      instanceId: input.instanceId,
+      config: input.config,
+      snapshot: input.snapshot,
+      processEnv,
+      ...(input.projectCwd !== undefined ? { projectCwd: input.projectCwd } : {}),
+      ...(input.stateDir !== undefined ? { stateDir: input.stateDir } : {}),
+    });
   },
 );
 
@@ -4419,13 +4486,18 @@ interface ProviderSkillRoots {
   readonly driver: string;
   /** Where `createProviderExtensionSkill` scaffolds. User scope only in v1. */
   readonly userSkillsRoot: string;
-  /** Every root a skill may be deleted from, user and project. */
-  readonly writableRoots: ReadonlyArray<string>;
+  /** User-configured roots a skill may be deleted from (may intentionally be symlinked). */
+  readonly userWritableRoots: ReadonlyArray<string>;
+  /** Project-scoped roots a skill may be deleted from (confined to `projectBoundary` when set). */
+  readonly projectWritableRoots: ReadonlyArray<string>;
+  /** Canonical boundary confining `projectWritableRoots`. */
+  readonly projectBoundary?: string | undefined;
 }
 
 const resolveProviderSkillRoots = Effect.fn("providerExtensions.resolveProviderSkillRoots")(
   function* (input: {
     readonly cwd?: string | undefined;
+    readonly stateDir?: string | undefined;
     readonly providerInstanceId: ProviderInstanceId;
     readonly settings: ServerSettings;
   }): Effect.fn.Return<
@@ -4434,7 +4506,8 @@ const resolveProviderSkillRoots = Effect.fn("providerExtensions.resolveProviderS
     FileSystem.FileSystem | Path.Path
   > {
     const path = yield* Path.Path;
-    const cwd = input.cwd ?? machineScopeCwd();
+    const projectCwd = optionalText(input.cwd);
+    const cwd = projectCwd ?? machineScopeCwd();
     const providerConfig = yield* resolveProviderActionConfig(input);
 
     if (providerConfig.driver === CLAUDE_DRIVER) {
@@ -4457,7 +4530,10 @@ const resolveProviderSkillRoots = Effect.fn("providerExtensions.resolveProviderS
       return {
         driver: providerConfig.driver,
         userSkillsRoot: claudeUserSkillsRoot(path, claudeConfigDir),
-        writableRoots: roots.map((root) => root.root),
+        userWritableRoots: roots.filter((root) => root.scope === "user").map((root) => root.root),
+        projectWritableRoots: roots
+          .filter((root) => root.scope === "project")
+          .map((root) => root.root),
       };
     }
 
@@ -4478,12 +4554,26 @@ const resolveProviderSkillRoots = Effect.fn("providerExtensions.resolveProviderS
       return {
         driver: providerConfig.driver,
         userSkillsRoot: roots[0]!,
-        writableRoots: roots,
+        userWritableRoots: roots,
+        projectWritableRoots: [],
       };
     }
 
+    if (!resolveOtherProviderEnabled(providerConfig, undefined)) {
+      return yield* new ProviderExtensionsError({ message: "Provider is disabled." });
+    }
+    const processEnv = mergeProviderInstanceEnvironment(providerConfig.environment ?? []);
+    const otherRoots = yield* resolveOtherProviderSkillRoots({
+      instanceId: input.providerInstanceId,
+      config: providerConfig,
+      processEnv,
+      projectCwd,
+      stateDir: input.stateDir,
+    });
+    if (otherRoots) return otherRoots;
+
     return yield* new ProviderExtensionsError({
-      message: "Managing skills is only available for Codex and Claude providers.",
+      message: `Managing skills is not supported for ${providerConfig.displayName ?? String(providerConfig.driver)}.`,
     });
   },
 );
@@ -4512,6 +4602,7 @@ export const createProviderExtensionSkill = Effect.fn(
 )(function* (input: {
   readonly request: ProviderExtensionSkillCreateInput;
   readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
 }): Effect.fn.Return<
   ProviderExtensionSkillCreateResult,
   ProviderExtensionsError,
@@ -4531,6 +4622,7 @@ export const createProviderExtensionSkill = Effect.fn(
 
   const roots = yield* resolveProviderSkillRoots({
     cwd: input.request.cwd,
+    stateDir: input.stateDir,
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
@@ -4559,6 +4651,18 @@ export const createProviderExtensionSkill = Effect.fn(
         }),
     ),
   );
+  const createdProvider = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  }).pipe(Effect.catch(() => Effect.succeed(null)));
+  if (createdProvider) {
+    yield* syncOtherProviderAfterSkillMutation({
+      instanceId: input.request.providerInstanceId,
+      config: createdProvider,
+      processEnv: mergeProviderInstanceEnvironment(createdProvider.environment, process.env),
+      stateDir: input.stateDir,
+    });
+  }
   return { path: skillPath };
 });
 
@@ -4567,6 +4671,7 @@ export const deleteProviderExtensionSkill = Effect.fn(
 )(function* (input: {
   readonly request: ProviderExtensionSkillDeleteInput;
   readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
 }): Effect.fn.Return<
   ProviderExtensionSkillDeleteResult,
   ProviderExtensionsError,
@@ -4575,7 +4680,7 @@ export const deleteProviderExtensionSkill = Effect.fn(
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const skillPath = input.request.path;
-  if (!isCurrentProviderExtensionSkillPath(skillPath)) {
+  if (!isCurrentProviderExtensionSkillPath(skillPath, input.request.providerInstanceId)) {
     return yield* new ProviderExtensionsError({
       message: "Skill is not in the current provider extensions inventory.",
     });
@@ -4588,6 +4693,7 @@ export const deleteProviderExtensionSkill = Effect.fn(
 
   const roots = yield* resolveProviderSkillRoots({
     cwd: input.request.cwd,
+    stateDir: input.stateDir,
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
@@ -4595,7 +4701,10 @@ export const deleteProviderExtensionSkill = Effect.fn(
   const linkTarget = yield* fileSystem
     .readLink(skillPath)
     .pipe(Effect.catch(() => Effect.succeed(null)));
-  if (linkTarget !== null) {
+  const dirLinkTarget = yield* fileSystem
+    .readLink(path.dirname(path.resolve(skillPath)))
+    .pipe(Effect.catch(() => Effect.succeed(null)));
+  if (linkTarget !== null || dirLinkTarget !== null) {
     return yield* new ProviderExtensionsError({
       message: "Skill could not be deleted because the inventory entry is not a regular file.",
     });
@@ -4611,8 +4720,9 @@ export const deleteProviderExtensionSkill = Effect.fn(
     });
   }
 
-  // Compare real paths so a symlinked skills root (the Codex shadow home) resolves to the same
-  // place as the shared one, and so no `..` segment can walk out of a root.
+  // Compare real paths so a symlinked user skills root (dotfiles or Codex shadow home) resolves
+  // to the same place as the shared one. Project roots are additionally confined to the repository
+  // boundary so a symlinked project directory cannot authorize deleting outside the checkout.
   const realDirectory = yield* fileSystem
     .realPath(path.dirname(path.resolve(skillPath)))
     .pipe(
@@ -4620,12 +4730,25 @@ export const deleteProviderExtensionSkill = Effect.fn(
         () => new ProviderExtensionsError({ message: "Skill directory could not be resolved." }),
       ),
     );
-  const realRoots = yield* Effect.forEach(roots.writableRoots, (root) =>
+  const realUserRoots = yield* Effect.forEach(roots.userWritableRoots, (root) =>
+    fileSystem.realPath(root).pipe(Effect.catch(() => Effect.succeed(null))),
+  );
+  const realProjectRoots = yield* Effect.forEach(roots.projectWritableRoots, (root) =>
     fileSystem.realPath(root).pipe(Effect.catch(() => Effect.succeed(null))),
   );
   const parent = normalizedPathKey(path.dirname(realDirectory));
-  const insideRoot = realRoots.some((root) => root !== null && normalizedPathKey(root) === parent);
-  if (!insideRoot) {
+  const insideUserRoot = realUserRoots.some(
+    (root) => root !== null && normalizedPathKey(root) === parent,
+  );
+  const insideProjectRoot = realProjectRoots.some((root) => {
+    if (root === null || normalizedPathKey(root) !== parent) return false;
+    if (!roots.projectBoundary) return true;
+    return (
+      isPathWithinBoundary(path, roots.projectBoundary, root) &&
+      isPathWithinBoundary(path, roots.projectBoundary, realDirectory)
+    );
+  });
+  if (!insideUserRoot && !insideProjectRoot) {
     return yield* new ProviderExtensionsError({
       message: "Skill is not in a skills folder Threadlines manages.",
     });
@@ -4641,19 +4764,35 @@ export const deleteProviderExtensionSkill = Effect.fn(
     ),
   );
   forgetReportedSkillPath(skillPath);
+  const deletedProvider = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  }).pipe(Effect.catch(() => Effect.succeed(null)));
+  if (deletedProvider) {
+    yield* syncOtherProviderAfterSkillMutation({
+      instanceId: input.request.providerInstanceId,
+      config: deletedProvider,
+      processEnv: mergeProviderInstanceEnvironment(deletedProvider.environment, process.env),
+      stateDir: input.stateDir,
+    });
+  }
   return { deleted: true };
 });
 
 /**
- * Codex has a first-class per-skill toggle. Claude has no skill toggle, but it auto-loads each
- * folder in the user skills dir as a `<name>@skills-dir` plugin, so the normal plugin
- * enable/disable path reaches it.
+ * Toggles a skill's enabled state using each provider's native or profile mechanism:
+ * - Codex: first-class `skills/config/write`
+ * - Claude: `<name>@skills-dir` plugin enable/disable for personal skills
+ * - Grok: `[skills] ignore` in `<grokHome>/config.toml`
+ * - Local OpenCode: `policies` (`action: "skill.use"`) in `<openCodeConfigDir>/opencode.json`
+ * - Antigravity: per-skill profile symlinks in Threadlines' isolated `GEMINI_HOME`
  */
 export const setProviderExtensionSkillEnabled = Effect.fn(
   "providerExtensions.setProviderExtensionSkillEnabled",
 )(function* (input: {
   readonly request: ProviderExtensionSkillToggleInput;
   readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
 }): Effect.fn.Return<
   ProviderExtensionSkillToggleResult,
   ProviderExtensionsError,
@@ -4687,6 +4826,26 @@ export const setProviderExtensionSkillEnabled = Effect.fn(
       `${path.basename(directory)}${CLAUDE_SKILLS_DIR_PLUGIN_SUFFIX}`,
     ]);
     return { effectiveEnabled: input.request.enabled };
+  }
+
+  if (providerConfig.driver !== CODEX_DRIVER) {
+    const skillPath = optionalText(input.request.path);
+    if (!skillPath) {
+      return yield* new ProviderExtensionsError({
+        message: "Skill path is required.",
+      });
+    }
+    const effectiveEnabled = yield* setOtherProviderSkillEnabled({
+      instanceId: input.request.providerInstanceId,
+      config: providerConfig,
+      snapshot: undefined,
+      processEnv: mergeProviderInstanceEnvironment(providerConfig.environment, process.env),
+      projectCwd: optionalText(input.request.cwd),
+      stateDir: input.stateDir,
+      skillPath,
+      enabled: input.request.enabled,
+    }).pipe(Effect.mapError((message) => new ProviderExtensionsError({ message })));
+    return { effectiveEnabled };
   }
 
   const params = codexSkillConfigWriteParams(input.request);
@@ -4751,19 +4910,29 @@ export const readProviderExtensionSkill = Effect.fn(
 }): Effect.fn.Return<
   ProviderExtensionSkillReadResult,
   ProviderExtensionsError,
-  FileSystem.FileSystem
+  FileSystem.FileSystem | Path.Path
 > {
-  yield* resolveProviderActionConfig({
+  const providerConfig = yield* resolveProviderActionConfig({
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
-  if (!isCurrentProviderExtensionSkillPath(input.request.path)) {
+  if (isExternalOpenCodeConfig(providerConfig)) {
+    return yield* new ProviderExtensionsError({
+      message: "Remote OpenCode skills cannot be read from this machine.",
+    });
+  }
+  const reportedEntry = findReportedExtensionSkillEntry(
+    input.request.path,
+    input.request.providerInstanceId,
+  );
+  if (!reportedEntry) {
     return yield* new ProviderExtensionsError({
       message: "Skill is not in the current provider extensions inventory.",
     });
   }
 
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const linkTarget = yield* fileSystem
     .readLink(input.request.path)
     .pipe(Effect.catch(() => Effect.succeed(null)));
@@ -4772,6 +4941,16 @@ export const readProviderExtensionSkill = Effect.fn(
       message:
         "Skill contents could not be read because the inventory entry is not a regular file.",
     });
+  }
+  if (reportedEntry.boundary) {
+    const realTarget = yield* fileSystem
+      .realPath(input.request.path)
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+    if (!realTarget || !isPathWithinBoundary(path, reportedEntry.boundary, realTarget)) {
+      return yield* new ProviderExtensionsError({
+        message: "Skill contents could not be read outside the project boundary.",
+      });
+    }
   }
 
   const stat = yield* fileSystem
@@ -5364,30 +5543,46 @@ export const readProviderExtensionsInventory = Effect.fn(
   readonly request: ProviderExtensionsInventoryInput;
   readonly settings: ServerSettings;
   readonly providers: ReadonlyArray<ServerProvider>;
+  readonly stateDir?: string | undefined;
 }): Effect.fn.Return<
   ProviderExtensionsInventoryResult,
   ProviderExtensionsError,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
   const generatedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
-  const cwd = input.request.cwd ?? machineScopeCwd();
+  const projectCwd = optionalText(input.request.cwd);
+  const cwd = projectCwd ?? machineScopeCwd();
   const configMap = deriveProviderInstanceConfigMap(input.settings);
   const snapshotsByInstanceId = new Map(
     input.providers.map((provider) => [provider.instanceId, provider]),
   );
+  const requestedInstanceId =
+    input.request.providerInstanceId !== undefined
+      ? String(input.request.providerInstanceId)
+      : undefined;
   const providerEntries = Object.entries(configMap)
     .map(([id, config]) => ({
       instanceId: ProviderInstanceId.make(id),
       config,
     }))
-    .filter(
-      (entry) => entry.config.driver === CODEX_DRIVER || entry.config.driver === CLAUDE_DRIVER,
-    )
-    .filter(
-      (entry) =>
-        input.request.providerInstanceId === undefined ||
-        String(entry.instanceId) === String(input.request.providerInstanceId),
-    );
+    .filter((entry) => {
+      if (requestedInstanceId !== undefined) {
+        return String(entry.instanceId) === requestedInstanceId;
+      }
+      if (entry.config.driver === CODEX_DRIVER || entry.config.driver === CLAUDE_DRIVER) {
+        return true;
+      }
+      const snapshot = snapshotsByInstanceId.get(entry.instanceId);
+      if (!resolveOtherProviderEnabled(entry.config, snapshot)) {
+        return false;
+      }
+      // On unfiltered machine views, omit non-Codex/Claude providers that are not installed/ready
+      // so uninstalled drivers do not clutter the provider picker with empty rows.
+      if (snapshot && snapshot.status === "error" && !snapshot.installed) {
+        return false;
+      }
+      return true;
+    });
 
   const [providers, instructionFiles] = yield* Effect.all(
     [
@@ -5396,8 +5591,7 @@ export const readProviderExtensionsInventory = Effect.fn(
         (entry) => {
           const scopedProviderThreadId =
             input.request.providerThreadId !== undefined &&
-            (input.request.providerInstanceId === undefined ||
-              String(input.request.providerInstanceId) === String(entry.instanceId))
+            (requestedInstanceId === undefined || String(entry.instanceId) === requestedInstanceId)
               ? input.request.providerThreadId
               : undefined;
           return readProviderInventory({
@@ -5405,6 +5599,8 @@ export const readProviderExtensionsInventory = Effect.fn(
             config: entry.config,
             snapshot: snapshotsByInstanceId.get(entry.instanceId),
             cwd,
+            projectCwd,
+            stateDir: input.stateDir,
             providerThreadId: scopedProviderThreadId,
             includeMcpServers: input.request.includeMcpServers,
             includeApps: input.request.includeApps,
@@ -5419,24 +5615,34 @@ export const readProviderExtensionsInventory = Effect.fn(
                 message: error.message,
                 plugins: [],
                 marketplaces: [],
-                skills: fallbackSkillsFromSnapshot(snapshotsByInstanceId.get(entry.instanceId)),
+                skills:
+                  entry.config.driver === CODEX_DRIVER || entry.config.driver === CLAUDE_DRIVER
+                    ? fallbackSkillsFromSnapshot(snapshotsByInstanceId.get(entry.instanceId))
+                    : [],
                 mcpServers: [],
                 apps: [],
               }),
             ),
           );
         },
-        { concurrency: 3 },
+        { concurrency: 6 },
       ),
       readInstructionFiles(cwd),
     ],
     { concurrency: "unbounded" },
   );
 
+  const fileSystem = yield* FileSystem.FileSystem;
+  const repoRoot = projectCwd ? yield* findRepositoryRoot(projectCwd) : undefined;
+  const projectBoundary = repoRoot
+    ? yield* fileSystem.realPath(repoRoot).pipe(Effect.catch(() => Effect.succeed(repoRoot)))
+    : undefined;
+
   recordReportedExtensionPaths(
     // A store load reports icons an installed-only load does not, so they keep separate entries.
     `${cwd}\u0000${input.request.includePluginCatalog === false ? "installed" : "catalog"}`,
     providers,
+    projectBoundary,
   );
 
   return {

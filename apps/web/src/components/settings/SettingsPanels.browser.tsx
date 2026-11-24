@@ -113,6 +113,7 @@ import {
   openConnectComputerDialog,
 } from "./connections/JoinComputerDialog";
 import { DiagnosticsSettingsPanel } from "./DiagnosticsSettings";
+import { ExtensionsSettingsPanel } from "./ExtensionsSettings";
 import { ThreadCpuUsageSection } from "./ThreadCpuUsageSection";
 import { AppearanceSettingsPanel } from "./AppearanceSettings";
 import { GeneralSettingsPanel, ProviderSettingsPanel } from "./SettingsPanels";
@@ -8015,5 +8016,278 @@ describe("ProviderSettingsPanel suggestions", () => {
     await vi.waitFor(() =>
       expect(updateSettings).toHaveBeenCalledWith({ antigravitySuggestions: false }),
     );
+  });
+});
+
+describe("ExtensionsSettingsPanel multi-provider support", () => {
+  const envId = EnvironmentId.make("env-ext-local");
+
+  beforeEach(async () => {
+    resetAppAtomRegistryForTests();
+    resetServerStateForTests();
+    __resetEnvironmentApiOverridesForTests();
+    await __resetLocalApiForTests();
+    await resetTestPage();
+    writePrimaryEnvironmentDescriptor({
+      environmentId: envId,
+      label: "This device",
+      platform: { os: "darwin", arch: "arm64" },
+      serverVersion: "0.11.0",
+      capabilities: { repositoryIdentity: true },
+    });
+  });
+
+  afterEach(async () => {
+    __resetEnvironmentApiOverridesForTests();
+    resetPrimaryEnvironmentDescriptorForTests();
+    resetServerStateForTests();
+    await __resetLocalApiForTests();
+    await resetTestPage();
+  });
+
+  it("lists all enabled providers, hides unsupported plugin controls, and renders shared-path skills across providers", async () => {
+    const sharedSkillPath = "/Users/will/claude-dotfiles/skills/gemini-frontend-design/SKILL.md";
+    const providers: ReadonlyArray<ServerProvider> = [
+      { ...createOutdatedProvider("codex"), displayName: "Codex" },
+      { ...createOutdatedProvider("claudeAgent"), displayName: "Claude" },
+      { ...createOutdatedProvider("antigravity"), displayName: "Antigravity" },
+      { ...createOutdatedProvider("grok"), displayName: "Grok" },
+      { ...createOutdatedProvider("cursor"), displayName: "Cursor" },
+    ];
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers,
+    });
+
+    const fullInventory = {
+      generatedAt: "2026-11-24T12:00:00.000Z",
+      instructionFiles: [],
+      providers: [
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Codex",
+          status: "ready" as const,
+          capabilities: {
+            plugins: true,
+            mcpServers: true,
+            apps: true,
+            hooks: true,
+            skillCreate: true,
+          },
+          plugins: [],
+          marketplaces: [],
+          skills: [],
+          mcpServers: [],
+          mcpServersStatus: "ready" as const,
+          apps: [],
+          appsStatus: "ready" as const,
+          appsCatalogStatus: "ready" as const,
+        },
+        {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          displayName: "Claude",
+          status: "ready" as const,
+          capabilities: {
+            plugins: true,
+            mcpServers: true,
+            apps: false,
+            hooks: true,
+            skillCreate: true,
+          },
+          plugins: [],
+          marketplaces: [],
+          skills: [
+            {
+              name: "gemini-frontend-design",
+              path: sharedSkillPath,
+              scope: "user",
+              enabled: true,
+              canToggle: true,
+              canDelete: true,
+            },
+          ],
+          mcpServers: [],
+          mcpServersStatus: "ready" as const,
+          apps: [],
+        },
+        {
+          instanceId: ProviderInstanceId.make("antigravity"),
+          driver: ProviderDriverKind.make("antigravity"),
+          displayName: "Antigravity",
+          status: "ready" as const,
+          capabilities: {
+            plugins: false,
+            mcpServers: false,
+            apps: false,
+            hooks: false,
+            skillCreate: true,
+          },
+          plugins: [],
+          marketplaces: [],
+          skills: [
+            {
+              name: "gemini-frontend-design",
+              path: "/Users/will/.gemini/config/skills/gemini-frontend-design/SKILL.md",
+              resolvedPath: sharedSkillPath,
+              scope: "user",
+              enabled: true,
+              canToggle: true,
+              canDelete: true,
+              toggleNotice:
+                "Applies inside Threadlines only. Terminal agy sessions still load ~/.gemini/config/skills.",
+            },
+          ],
+          mcpServers: [],
+          apps: [],
+        },
+        {
+          instanceId: ProviderInstanceId.make("grok"),
+          driver: ProviderDriverKind.make("grok"),
+          displayName: "Grok",
+          status: "ready" as const,
+          capabilities: {
+            plugins: false,
+            mcpServers: false,
+            apps: false,
+            hooks: false,
+            skillCreate: true,
+          },
+          plugins: [],
+          marketplaces: [],
+          skills: [
+            {
+              name: "gemini-frontend-design",
+              path: "/Users/will/.grok/skills/gemini-frontend-design/SKILL.md",
+              resolvedPath: sharedSkillPath,
+              configPath: "/Users/will/.grok/config.toml",
+              scope: "user",
+              enabled: true,
+              canToggle: true,
+              canDelete: true,
+            },
+          ],
+          mcpServers: [],
+          apps: [],
+        },
+        {
+          instanceId: ProviderInstanceId.make("cursor"),
+          driver: ProviderDriverKind.make("cursor"),
+          displayName: "Cursor",
+          status: "ready" as const,
+          capabilities: {
+            plugins: false,
+            mcpServers: true,
+            apps: false,
+            hooks: false,
+            skillCreate: true,
+          },
+          plugins: [],
+          marketplaces: [],
+          skills: [
+            {
+              name: "cursor-only-skill",
+              path: "/Users/will/.cursor/skills/cursor-only-skill/SKILL.md",
+              scope: "user",
+              enabled: true,
+              canDelete: true,
+            },
+          ],
+          mcpServers: [
+            {
+              name: "supabase",
+              origin: { kind: "user" as const },
+              transport: "http",
+              status: "Configured",
+              detail: "https://mcp.supabase.com/mcp",
+            },
+          ],
+          mcpServersStatus: "ready" as const,
+          apps: [],
+        },
+      ],
+    };
+
+    __setEnvironmentApiOverrideForTests(envId, {
+      providers: {
+        getExtensions: vi.fn(async (input: { readonly providerInstanceId?: string }) => ({
+          ...fullInventory,
+          providers: input.providerInstanceId
+            ? fullInventory.providers.filter(
+                (entry) => String(entry.instanceId) === input.providerInstanceId,
+              )
+            : fullInventory.providers,
+        })),
+        readExtensionSkill: vi.fn(async () => ({
+          contents: "# Skill body",
+          truncated: false,
+        })),
+      },
+    } as unknown as EnvironmentApi);
+
+    await renderWithTestRouter(
+      <TestAppProviders>
+        <ExtensionsSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    // Five enabled providers render as a dropdown (`> 3`) and surface Cursor's MCP connection.
+    const providerSelect = page.getByRole("combobox", { name: "Provider" });
+    await expect.element(providerSelect).toBeInTheDocument();
+    await expect.element(page.getByText("supabase")).toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Browse catalog" })).toBeInTheDocument();
+
+    // Filtering to Antigravity hides Browse catalog and explains plugin/MCP capability cleanly.
+    await providerSelect.click();
+    await page.getByRole("option", { name: "Antigravity" }).click();
+    await expect
+      .element(page.getByText("Antigravity does not manage plugins here."))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByText("Antigravity does not report MCP connections here."))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Browse catalog" }))
+      .not.toBeInTheDocument();
+
+    // Switching back to All providers on the Skills tab shows interactive switches for Claude,
+    // Antigravity, and Grok, plus a disabled switch with tooltip for Cursor's disk-loaded skill.
+    await providerSelect.click();
+    await page.getByRole("option", { name: "All providers" }).click();
+    await page.getByRole("tab", { name: /Skills/i }).click();
+    await vi.waitFor(() => {
+      const matches = [...document.querySelectorAll("button")].filter((el) =>
+        el.textContent?.includes("gemini-frontend-design"),
+      );
+      expect(matches.length).toBe(3);
+      const switches = [...document.querySelectorAll('[role="switch"]')];
+      expect(switches.length).toBe(4);
+      const disabledSwitches = switches.filter(
+        (el) => el.getAttribute("aria-disabled") === "true" || el.hasAttribute("data-disabled"),
+      );
+      expect(disabledSwitches.length).toBe(1);
+    });
+
+    // Hovering Cursor's disabled switch explains how to manage it.
+    const lockedSwitch = page.getByRole("switch", {
+      name: /cursor-only-skill \(enabled, cannot be toggled\)/i,
+    });
+    await lockedSwitch.hover();
+    await expect
+      .element(page.getByText("Cursor loads this skill from disk. Click to reveal or remove."))
+      .toBeInTheDocument();
+
+    // Clicking Grok's skill opens the detail modal with Links to, Open config, and Reveal in folder.
+    const grokSkillButton = [...document.querySelectorAll("button")].find((el) =>
+      el.textContent?.includes("/Users/will/.grok/skills/gemini-frontend-design/SKILL.md"),
+    );
+    expect(grokSkillButton).toBeTruthy();
+    grokSkillButton!.click();
+    await expect.element(page.getByRole("button", { name: "Open config" })).toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Reveal in folder" }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText(/Shared through a symlink\./i)).toBeInTheDocument();
   });
 });

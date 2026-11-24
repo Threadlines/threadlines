@@ -2335,6 +2335,7 @@ const makeCoreRpcLayer = (
                 request: input,
                 settings,
                 providers,
+                stateDir: config.stateDir,
               });
             }),
             { "rpc.aggregate": "server" },
@@ -2368,9 +2369,11 @@ const makeCoreRpcLayer = (
             WS_METHODS.serverSetProviderExtensionSkillEnabled,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* setProviderExtensionSkillEnabled({ request: input, settings }).pipe(
-                Effect.tap(() => noteExtensionsChanged(input)),
-              );
+              return yield* setProviderExtensionSkillEnabled({
+                request: input,
+                settings,
+                stateDir: config.stateDir,
+              }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -2388,9 +2391,11 @@ const makeCoreRpcLayer = (
             WS_METHODS.serverCreateProviderExtensionSkill,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* createProviderExtensionSkill({ request: input, settings }).pipe(
-                Effect.tap(() => noteExtensionsChanged(input)),
-              );
+              return yield* createProviderExtensionSkill({
+                request: input,
+                settings,
+                stateDir: config.stateDir,
+              }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -2399,9 +2404,11 @@ const makeCoreRpcLayer = (
             WS_METHODS.serverDeleteProviderExtensionSkill,
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
-              return yield* deleteProviderExtensionSkill({ request: input, settings }).pipe(
-                Effect.tap(() => noteExtensionsChanged(input)),
-              );
+              return yield* deleteProviderExtensionSkill({
+                request: input,
+                settings,
+                stateDir: config.stateDir,
+              }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
             }),
             { "rpc.aggregate": "server" },
           ),

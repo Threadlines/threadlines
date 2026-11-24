@@ -19,6 +19,7 @@ import type * as CodexSchema from "effect-codex-app-server/schema";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
+  type ServerProvider,
   ServerSettings,
   type ServerSettings as ServerSettingsContract,
 } from "@threadlines/contracts";
@@ -3096,5 +3097,554 @@ Per-component (rounded)
       );
       assert.equal(yield* fileSystem.exists(path.join(cwd, symlinkTarget)), false);
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "discovers skills and read-only MCP servers for Grok, Cursor, Antigravity, local OpenCode, and Pi while confining external OpenCode and project symlinks",
+    () => {
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.succeed(makeProcessResult("", "unexpected spawn", 1)),
+      );
+      const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+      return Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-other-providers-",
+        });
+        const home = path.join(root, "home");
+        const project = path.join(root, "repo");
+        const outside = path.join(root, "outside");
+        const stateDir = path.join(root, "state");
+
+        // Create a git marker so repo confinement resolves cleanly to `project`.
+        yield* fileSystem.makeDirectory(path.join(project, ".git"), { recursive: true });
+        yield* fileSystem.makeDirectory(path.join(outside, "escape-skill"), { recursive: true });
+        yield* fileSystem.writeFileString(
+          path.join(outside, "escape-skill", "SKILL.md"),
+          "---\nname: escape-skill\ndescription: Outside repo\n---\n",
+        );
+
+        // Grok user + project skills
+        const grokHome = path.join(home, ".grok");
+        yield* fileSystem.makeDirectory(path.join(grokHome, "skills", "grok-user"), {
+          recursive: true,
+        });
+        yield* fileSystem.writeFileString(
+          path.join(grokHome, "skills", "grok-user", "SKILL.md"),
+          "---\nname: grok-user\ndescription: User Grok skill\n---\nBody\n",
+        );
+        yield* fileSystem.makeDirectory(path.join(project, ".grok", "skills", "grok-proj"), {
+          recursive: true,
+        });
+        yield* fileSystem.writeFileString(
+          path.join(project, ".grok", "skills", "grok-proj", "SKILL.md"),
+          "---\nname: grok-proj\ndescription: Project Grok skill\n---\nBody\n",
+        );
+
+        // Cursor user skill + MCP config
+        yield* fileSystem.makeDirectory(path.join(home, ".cursor", "skills", "cursor-user"), {
+          recursive: true,
+        });
+        yield* fileSystem.writeFileString(
+          path.join(home, ".cursor", "skills", "cursor-user", "SKILL.md"),
+          "---\nname: cursor-user\ndescription: Cursor skill\n---\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(home, ".cursor", "mcp.json"),
+          JSON.stringify({
+            mcpServers: {
+              supabase: { url: "https://mcp.supabase.com/mcp" },
+              localTools: { command: "npx", args: ["-y", "demo-mcp"] },
+            },
+          }),
+        );
+
+        // Antigravity user skill
+        yield* fileSystem.makeDirectory(
+          path.join(home, ".gemini", "config", "skills", "gemini-design"),
+          { recursive: true },
+        );
+        yield* fileSystem.writeFileString(
+          path.join(home, ".gemini", "config", "skills", "gemini-design", "SKILL.md"),
+          "---\nname: gemini-design\ndescription: Gemini frontend design\n---\n",
+        );
+
+        // Pi user skill via PI_CODING_AGENT_DIR
+        const piAgent = path.join(root, "custom-pi");
+        yield* fileSystem.makeDirectory(path.join(piAgent, "skills", "pi-skill"), {
+          recursive: true,
+        });
+        yield* fileSystem.writeFileString(
+          path.join(piAgent, "skills", "pi-skill", "SKILL.md"),
+          "---\nname: pi-skill\ndescription: Pi custom dir skill\n---\n",
+        );
+
+        // Project symlink escaping the repo boundary under `.cursor/skills`
+        yield* fileSystem.makeDirectory(path.join(project, ".cursor", "skills"), {
+          recursive: true,
+        });
+        yield* fileSystem
+          .symlink(
+            path.join(outside, "escape-skill"),
+            path.join(project, ".cursor", "skills", "escape-skill"),
+          )
+          .pipe(Effect.catch(() => Effect.void));
+
+        const envEntries = [
+          { name: "HOME", value: home },
+          { name: "USERPROFILE", value: home },
+        ];
+        const settings = makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: false },
+            cursor: { enabled: true },
+            opencode: { enabled: false },
+          },
+          providerInstances: {
+            grok: {
+              driver: "grok",
+              displayName: "Grok",
+              enabled: true,
+              config: { enabled: true },
+              environment: [...envEntries, { name: "GROK_HOME", value: grokHome }],
+            },
+            cursor: {
+              driver: "cursor",
+              displayName: "Cursor",
+              enabled: true,
+              config: { enabled: true },
+              environment: envEntries,
+            },
+            antigravity: {
+              driver: "antigravity",
+              displayName: "Antigravity",
+              enabled: true,
+              config: { enabled: true },
+              environment: envEntries,
+            },
+            pi: {
+              driver: "pi",
+              displayName: "Pi",
+              enabled: true,
+              config: { enabled: true },
+              environment: [...envEntries, { name: "PI_CODING_AGENT_DIR", value: piAgent }],
+            },
+            "opencode-remote": {
+              driver: "opencode",
+              displayName: "Remote OpenCode",
+              enabled: true,
+              config: { enabled: true, serverUrl: "http://remote.example:4096" },
+              environment: envEntries,
+            },
+          },
+        });
+
+        const remoteSnapshot = {
+          instanceId: ProviderInstanceId.make("opencode-remote"),
+          provider: "opencode",
+          driverKind: "opencode",
+          displayName: "Remote OpenCode",
+          enabled: true,
+          installed: true,
+          version: "2.0.0",
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-11-24T00:00:00.000Z",
+          models: [],
+          slashCommands: [],
+          skills: [
+            {
+              name: "remote-only",
+              path: path.join(grokHome, "skills", "grok-user", "SKILL.md"),
+              scope: "user",
+              enabled: true,
+              description: "Lives on remote host",
+            },
+          ],
+        } as unknown as ServerProvider;
+
+        const inventory = yield* readProviderExtensionsInventory({
+          request: { cwd: project },
+          settings,
+          providers: [remoteSnapshot],
+          stateDir,
+        });
+
+        const grok = inventory.providers.find((p) => String(p.instanceId) === "grok");
+        const cursor = inventory.providers.find((p) => String(p.instanceId) === "cursor");
+        const antigravity = inventory.providers.find((p) => String(p.instanceId) === "antigravity");
+        const pi = inventory.providers.find((p) => String(p.instanceId) === "pi");
+        const remoteOpenCode = inventory.providers.find(
+          (p) => String(p.instanceId) === "opencode-remote",
+        );
+
+        assert.deepEqual(
+          grok?.skills.map((s) => s.name),
+          ["grok-proj", "grok-user"],
+        );
+        assert.equal(grok?.capabilities?.plugins, false);
+        assert.equal(grok?.capabilities?.skillCreate, true);
+
+        // Escaping symlink skill must NOT be admitted for Cursor.
+        assert.deepEqual(
+          cursor?.skills.map((s) => s.name),
+          ["cursor-user"],
+        );
+        assert.deepEqual(
+          cursor?.mcpServers.map((m) => [m.name, m.transport, m.status]),
+          [
+            ["localTools", "stdio", "Configured"],
+            ["supabase", "http", "Configured"],
+          ],
+        );
+        assert.equal(cursor?.capabilities?.mcpServers, true);
+
+        assert.deepEqual(
+          antigravity?.skills.map((s) => s.name),
+          ["gemini-design"],
+        );
+        assert.equal(antigravity?.capabilities?.skillCreate, true);
+
+        assert.deepEqual(
+          pi?.skills.map((s) => s.name),
+          ["pi-skill"],
+        );
+
+        // External OpenCode skill must be metadata-only and refused by local read.
+        assert.equal(remoteOpenCode?.skills[0]?.canRead, false);
+        assert.equal(remoteOpenCode?.capabilities?.skillCreate, false);
+        const remoteReadError = yield* readProviderExtensionSkill({
+          request: {
+            providerInstanceId: ProviderInstanceId.make("opencode-remote"),
+            path: path.join(grokHome, "skills", "grok-user", "SKILL.md"),
+          },
+          settings,
+        }).pipe(Effect.flip);
+        assert.match(remoteReadError.message, /Remote OpenCode skills cannot be read/i);
+
+        // Grok can read, create, and delete skills in its managed folder.
+        const created = yield* createProviderExtensionSkill({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("grok"),
+            name: "new-grok-skill",
+            description: "Test creation",
+          },
+          settings,
+          stateDir,
+        });
+        assert.equal(yield* fileSystem.exists(created.path), true);
+
+        // Re-scan and delete the created Grok skill cleanly.
+        yield* readProviderExtensionsInventory({
+          request: { cwd: project, providerInstanceId: ProviderInstanceId.make("grok") },
+          settings,
+          providers: [],
+          stateDir,
+        });
+        const deleted = yield* deleteProviderExtensionSkill({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("grok"),
+            path: created.path,
+          },
+          settings,
+          stateDir,
+        });
+        assert.equal(deleted.deleted, true);
+        assert.equal(yield* fileSystem.exists(created.path), false);
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+    },
+  );
+
+  it.effect(
+    "toggles Grok, local OpenCode, and Antigravity skills natively while preserving boundaries",
+    () => {
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.die("Non-Codex/Claude toggles must not spawn subprocesses"),
+      );
+      const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+      return Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-hybrid-toggles-",
+        });
+        const home = path.join(root, "home");
+        const grokHome = path.join(home, ".grok");
+        const xdgConfig = path.join(root, "xdg");
+        const project = path.join(root, "repo");
+        const stateDir = path.join(root, "state");
+
+        yield* fileSystem.makeDirectory(path.join(project, ".git"), { recursive: true });
+        yield* fileSystem.makeDirectory(path.join(project, ".grok", "skills", "review"), {
+          recursive: true,
+        });
+        yield* fileSystem.makeDirectory(path.join(grokHome, "skills", "review"), {
+          recursive: true,
+        });
+        yield* fileSystem.makeDirectory(path.join(xdgConfig, "opencode", "skills", "oc-user"), {
+          recursive: true,
+        });
+        yield* fileSystem.makeDirectory(path.join(xdgConfig, "opencode", "skills", "oc-locked"), {
+          recursive: true,
+        });
+        yield* fileSystem.makeDirectory(path.join(home, ".gemini", "config", "skills", "alpha"), {
+          recursive: true,
+        });
+        yield* fileSystem.makeDirectory(path.join(home, ".gemini", "config", "skills", "beta"), {
+          recursive: true,
+        });
+        yield* fileSystem.makeDirectory(path.join(project, ".gemini", "skills", "proj-only"), {
+          recursive: true,
+        });
+
+        yield* fileSystem.writeFileString(
+          path.join(grokHome, "config.toml"),
+          "# Keep my comment\n[ui]\nyolo = false\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(project, ".grok", "skills", "review", "SKILL.md"),
+          "---\nname: review\ndescription: Project review\n---\nBody\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(grokHome, "skills", "review", "SKILL.md"),
+          "---\nname: review\ndescription: Personal review\n---\nBody\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(xdgConfig, "opencode", "skills", "oc-user", "SKILL.md"),
+          "---\nname: oc-user\ndescription: OpenCode user skill\n---\nBody\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(xdgConfig, "opencode", "skills", "oc-locked", "SKILL.md"),
+          "---\nname: oc-locked\ndescription: Denied by project\n---\nBody\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(project, "opencode.json"),
+          JSON.stringify({
+            policies: [{ action: "skill.use", resource: "oc-locked", effect: "deny" }],
+          }),
+        );
+        yield* fileSystem.writeFileString(
+          path.join(home, ".gemini", "config", "skills", "alpha", "SKILL.md"),
+          "---\nname: alpha\ndescription: Alpha skill\n---\nBody\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(home, ".gemini", "config", "skills", "beta", "SKILL.md"),
+          "---\nname: beta\ndescription: Beta skill\n---\nBody\n",
+        );
+        yield* fileSystem.writeFileString(
+          path.join(project, ".gemini", "skills", "proj-only", "SKILL.md"),
+          "---\nname: proj-only\ndescription: Project skill\n---\nBody\n",
+        );
+
+        const envEntries = [
+          { name: "HOME", value: home },
+          { name: "USERPROFILE", value: home },
+          { name: "GROK_HOME", value: grokHome },
+          { name: "XDG_CONFIG_HOME", value: xdgConfig },
+        ];
+        const settings = makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: false },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+          providerInstances: {
+            grok: {
+              driver: "grok",
+              displayName: "Grok",
+              enabled: true,
+              config: { enabled: true },
+              environment: envEntries,
+            },
+            opencode: {
+              driver: "opencode",
+              displayName: "OpenCode",
+              enabled: true,
+              config: { enabled: true, serverUrl: "" },
+              environment: envEntries,
+            },
+            "opencode-remote": {
+              driver: "opencode",
+              displayName: "Remote OpenCode",
+              enabled: true,
+              config: { enabled: true, serverUrl: "http://remote.example:4096" },
+              environment: envEntries,
+            },
+            antigravity: {
+              driver: "antigravity",
+              displayName: "Antigravity",
+              enabled: true,
+              config: { enabled: true },
+              environment: envEntries,
+            },
+          },
+        });
+
+        const before = yield* readProviderExtensionsInventory({
+          request: { cwd: project },
+          settings,
+          providers: [],
+          stateDir,
+        });
+
+        // 1. Grok: disabling project `review` preserves comments in config.toml and exposes fallback personal `review`.
+        const grokBefore = before.providers.find((p) => String(p.instanceId) === "grok");
+        const projectReview = grokBefore?.skills.find((s) => s.scope === "project");
+        assert.equal(projectReview?.canToggle, true);
+        assert.equal(projectReview?.enabled, true);
+
+        const grokDisabled = yield* setProviderExtensionSkillEnabled({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("grok"),
+            path: projectReview!.path,
+            enabled: false,
+          },
+          settings,
+          stateDir,
+        });
+        assert.equal(grokDisabled.effectiveEnabled, false);
+        const tomlAfter = yield* fileSystem.readFileString(path.join(grokHome, "config.toml"));
+        assert.match(tomlAfter, /# Keep my comment/);
+        assert.match(tomlAfter, /\[skills\]/);
+
+        const grokAfterDisable = yield* readProviderExtensionsInventory({
+          request: { cwd: project, providerInstanceId: ProviderInstanceId.make("grok") },
+          settings,
+          providers: [],
+          stateDir,
+        });
+        const grokSkills = grokAfterDisable.providers[0]?.skills ?? [];
+        assert.equal(grokSkills.length, 2);
+        assert.equal(grokSkills.find((s) => s.scope === "project")?.enabled, false);
+        assert.equal(grokSkills.find((s) => s.scope === "user")?.enabled, true);
+
+        yield* setProviderExtensionSkillEnabled({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("grok"),
+            path: projectReview!.path,
+            enabled: true,
+          },
+          settings,
+          stateDir,
+        });
+        const grokReenabled = yield* readProviderExtensionsInventory({
+          request: { cwd: project, providerInstanceId: ProviderInstanceId.make("grok") },
+          settings,
+          providers: [],
+          stateDir,
+        });
+        assert.equal(grokReenabled.providers[0]?.skills.length, 1);
+        assert.equal(grokReenabled.providers[0]?.skills[0]?.enabled, true);
+
+        // 2. Local OpenCode: user policy toggles `oc-user`, while project-denied `oc-locked` is locked and never mutated.
+        const ocBefore = before.providers.find((p) => String(p.instanceId) === "opencode");
+        const ocUser = ocBefore?.skills.find((s) => s.name === "oc-user");
+        const ocLocked = ocBefore?.skills.find((s) => s.name === "oc-locked");
+        assert.equal(ocUser?.canToggle, true);
+        assert.equal(ocUser?.enabled, true);
+        assert.equal(ocLocked?.enabled, false);
+        assert.equal(ocLocked?.canToggle, undefined);
+        assert.match(ocLocked?.toggleNotice ?? "", /project's opencode\.json/i);
+
+        yield* setProviderExtensionSkillEnabled({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            path: ocUser!.path,
+            enabled: false,
+          },
+          settings,
+          stateDir,
+        });
+        const ocAfterDisable = yield* readProviderExtensionsInventory({
+          request: { cwd: project, providerInstanceId: ProviderInstanceId.make("opencode") },
+          settings,
+          providers: [],
+          stateDir,
+        });
+        assert.equal(
+          ocAfterDisable.providers[0]?.skills.find((s) => s.name === "oc-user")?.enabled,
+          false,
+        );
+
+        const ocLockedError = yield* setProviderExtensionSkillEnabled({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            path: ocLocked!.path,
+            enabled: true,
+          },
+          settings,
+          stateDir,
+        }).pipe(Effect.flip);
+        assert.match(ocLockedError.message, /project's opencode\.json/i);
+
+        // External OpenCode refuses toggles.
+        const remoteToggleError = yield* setProviderExtensionSkillEnabled({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("opencode-remote"),
+            path: ocUser!.path,
+            enabled: false,
+          },
+          settings,
+          stateDir,
+        }).pipe(Effect.flip);
+        assert.match(remoteToggleError.message, /not in this provider's current scope/i);
+
+        // 3. Antigravity: personal skill toggles via profile split links; project skill stays locked.
+        const agyBefore = before.providers.find((p) => String(p.instanceId) === "antigravity");
+        const agyBeta = agyBefore?.skills.find((s) => s.name === "beta");
+        const agyProj = agyBefore?.skills.find((s) => s.name === "proj-only");
+        assert.equal(agyBeta?.canToggle, true);
+        assert.equal(agyProj?.canToggle, undefined);
+
+        yield* setProviderExtensionSkillEnabled({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("antigravity"),
+            path: agyBeta!.path,
+            enabled: false,
+          },
+          settings,
+          stateDir,
+        });
+        const agyAfterDisable = yield* readProviderExtensionsInventory({
+          request: { cwd: project, providerInstanceId: ProviderInstanceId.make("antigravity") },
+          settings,
+          providers: [],
+          stateDir,
+        });
+        assert.equal(
+          agyAfterDisable.providers[0]?.skills.find((s) => s.name === "beta")?.enabled,
+          false,
+        );
+        assert.equal(
+          agyAfterDisable.providers[0]?.skills.find((s) => s.name === "alpha")?.enabled,
+          true,
+        );
+
+        const agyProjError = yield* setProviderExtensionSkillEnabled({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("antigravity"),
+            path: agyProj!.path,
+            enabled: false,
+          },
+          settings,
+          stateDir,
+        }).pipe(Effect.flip);
+        assert.match(agyProjError.message, /does not support toggling/i);
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+    },
   );
 });
