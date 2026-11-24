@@ -333,6 +333,8 @@ function ThemeTileMenu({
   tile,
   inUse,
   systemModes,
+  shareLabel,
+  takeBackLabel,
   onRename,
   onExport,
   onShare,
@@ -343,6 +345,8 @@ function ThemeTileMenu({
   readonly inUse: boolean;
   /** The modes System shows it in now (it isn't offered for those). */
   readonly systemModes: readonly ThemeBase[];
+  readonly shareLabel: string;
+  readonly takeBackLabel: string;
   readonly onRename: () => void;
   readonly onExport: () => void;
   /** Null when no computer holding it can share (an older Threadlines). */
@@ -404,9 +408,9 @@ function ThemeTileMenu({
             {library ? <MenuItem onClick={onRename}>Rename</MenuItem> : null}
             <MenuItem onClick={duplicate}>Duplicate</MenuItem>
             <MenuItem onClick={onExport}>Export file…</MenuItem>
-            {library && onShare ? <MenuItem onClick={onShare}>Share to Showcase…</MenuItem> : null}
+            {library && onShare ? <MenuItem onClick={onShare}>{shareLabel}</MenuItem> : null}
             {library && onTakeBack ? (
-              <MenuItem onClick={onTakeBack}>Take back from Showcase…</MenuItem>
+              <MenuItem onClick={onTakeBack}>{takeBackLabel}</MenuItem>
             ) : null}
             <MenuItem
               onClick={() =>
@@ -601,6 +605,12 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
         environment.environmentId === environmentId &&
         environment.capabilities.themeShowcaseTakeBack === true,
     );
+  const updatesShowcase = (environmentId: EnvironmentId) =>
+    sharing.some(
+      (environment) =>
+        environment.environmentId === environmentId &&
+        environment.capabilities.themeShowcaseUpdate === true,
+    );
   const [takingBack, setTakingBack] = useState<(ShowcaseShare & { readonly name: string }) | null>(
     null,
   );
@@ -700,6 +710,16 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
                     tile={tile}
                     inUse={choiceUsesTile(committed, tile)}
                     systemModes={systemModes}
+                    shareLabel={
+                      sharer !== null && share?.listedSlug !== undefined && updatesShowcase(sharer)
+                        ? "Update in Showcase…"
+                        : "Share to Showcase…"
+                    }
+                    takeBackLabel={
+                      share?.submission.isUpdate === true
+                        ? "Take back update…"
+                        : "Take back from Showcase…"
+                    }
                     onRename={() => setRenaming(tile)}
                     onExport={() => exportTile(tile)}
                     onShare={sharer === null ? null : () => shareTile(tile, sharer)}
@@ -729,6 +749,10 @@ function OwnThemes({ switcher }: { readonly switcher: ReactNode }) {
         <ThemeShareDialog
           {...sharingTile}
           keepsEmailPrivate={takesBack(sharingTile.environmentId)}
+          supportsUpdate={updatesShowcase(sharingTile.environmentId)}
+          {...(shares.get(sharingTile.entryId)?.listedSlug !== undefined
+            ? { listedSlug: shares.get(sharingTile.entryId)!.listedSlug }
+            : {})}
           onClose={() => setSharingTile(null)}
         />
       ) : null}

@@ -49,7 +49,7 @@ function ShowcaseTile({
   readonly entry: ThemeShowcaseEntry;
   readonly selected: boolean;
 }) {
-  const picture = useShowcasePicture(environmentId, entry.id);
+  const picture = useShowcasePicture(environmentId, entry.id, entry.thumbnail.sha256);
   const [opening, setOpening] = useState(false);
   return (
     <ThemeTileView

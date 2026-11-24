@@ -148,6 +148,11 @@ export const ThemeShowcaseSubmitInput = Schema.Struct({
   submissionId: ThemeShowcaseSubmissionId,
   /** The account the person saw; the server refuses to post as anyone else. */
   login: GitHubLogin,
+  /**
+   * When updating a theme already in the Showcase, its folder (`id` in the
+   * Showcase list). Omitted for a new share.
+   */
+  updateSlug: Schema.optional(ThemeShowcaseSlug),
 });
 export type ThemeShowcaseSubmitInput = typeof ThemeShowcaseSubmitInput.Type;
 
@@ -162,11 +167,15 @@ export const ThemeShowcaseSubmission = Schema.Struct({
   /** The library theme it came from, and the file it published (credits and still added). */
   sourceHash: ThemeContentHash,
   publishedHash: ThemeContentHash,
+  /** The Showcase folder this share targeted; older servers omit it. */
+  slug: Schema.optional(ThemeShowcaseSlug),
   login: GitHubLogin,
   pullRequestUrl: Schema.String,
   state: ThemeShowcaseSubmissionState,
   /** Not added because the person who shared it closed its pull request (Take back, or on GitHub). */
   takenBack: Schema.optional(Schema.Boolean),
+  /** True when this share updates an already-listed Showcase theme instead of adding one. */
+  isUpdate: Schema.optional(Schema.Boolean),
   createdAt: Schema.String,
 });
 export type ThemeShowcaseSubmission = typeof ThemeShowcaseSubmission.Type;

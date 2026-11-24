@@ -41,6 +41,13 @@ export const ThemeShowcaseSubmissionRow = Schema.Struct({
    * its pull request. Null while that isn't known (or doesn't apply).
    */
   takenBack: Schema.NullOr(Schema.BooleanFromBit),
+  /**
+   * For a share that updates an already-listed Showcase theme: the SHA-256 of
+   * the theme file on `main` when the update started. Null for new themes.
+   */
+  updateBaseSha: Schema.NullOr(Schema.String),
+  /** SHA-256 of the exact `theme.threadlines-theme` bytes this share writes; null on older rows. */
+  publishedFileSha: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   /** When the pull request's state was last looked up. */
   checkedAt: Schema.NullOr(Schema.String),
@@ -88,6 +95,8 @@ const make = Effect.gen(function* () {
       pull_request_url AS "pullRequestUrl",
       state AS "state",
       taken_back AS "takenBack",
+      update_base_sha AS "updateBaseSha",
+      published_file_sha AS "publishedFileSha",
       created_at AS "createdAt",
       checked_at AS "checkedAt"
     FROM theme_showcase_submissions
@@ -114,7 +123,8 @@ const make = Effect.gen(function* () {
     sql`
       INSERT INTO theme_showcase_submissions (
         submission_id, entry_id, source_hash, published_hash, slug, login,
-        pull_request_number, pull_request_url, state, taken_back, created_at, checked_at
+        pull_request_number, pull_request_url, state, taken_back, update_base_sha,
+        published_file_sha, created_at, checked_at
       ) VALUES (
         ${row.submissionId},
         ${row.entryId},
@@ -126,6 +136,8 @@ const make = Effect.gen(function* () {
         ${row.pullRequestUrl},
         ${row.state},
         ${row.takenBack === null ? null : row.takenBack ? 1 : 0},
+        ${row.updateBaseSha},
+        ${row.publishedFileSha},
         ${row.createdAt},
         ${row.checkedAt}
       )
@@ -139,6 +151,8 @@ const make = Effect.gen(function* () {
         pull_request_url = excluded.pull_request_url,
         state = excluded.state,
         taken_back = excluded.taken_back,
+        update_base_sha = excluded.update_base_sha,
+        published_file_sha = excluded.published_file_sha,
         created_at = excluded.created_at,
         checked_at = excluded.checked_at
     `.pipe(Effect.asVoid, wrap("put"));

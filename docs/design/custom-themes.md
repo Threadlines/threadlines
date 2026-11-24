@@ -996,6 +996,23 @@ that do this, and that share without the email, report
 `themeShowcaseTakeBack`; for an older one the menu item is hidden and the
 share dialog adds a line saying the email shows.
 
+**Updating a listed theme** (`ThemeShowcaseSubmitInput.updateSlug`, capability
+`themeShowcaseUpdate`, `update_base_sha` and `published_file_sha` in migration
+125). When the signed-in GitHub account already owns themes in the Showcase
+(`sharedBy` matches), the share dialog offers a Showcase picker defaulting to
+updating the matching folder (by the entry's prior listed submission or by its
+base slug) while still letting the user share as a new theme. A library theme
+already listed shows Update in Showcase… in its menu. An update commit touches
+only `themes/<slug>/theme.threadlines-theme` and `themes/<slug>/thumbnail.png`,
+leaving `meta.json` (`sharedBy`, `featured`) and `NOTICE.md` intact on main,
+and refuses if nothing changed on disk or another account owns the folder.
+Recording both the pre-update digest (`update_base_sha`) and the submitted file
+digest (`published_file_sha`) keeps an in-review update (even a rename-only or
+prompt-only one) in review until its own merge and index rebuild land, and
+Take back update… closes only the update pull request without affecting the
+live theme. Showcase tiles key their cached thumbnail by `(slug, digest)` so an
+updated theme's new thumbnail appears as soon as the index refreshes.
+
 **Takedown.** An issue form in the repository; maintainers remove the folder.
 
 ## Editing colors

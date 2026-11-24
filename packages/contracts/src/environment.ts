@@ -85,6 +85,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * the GitHub account's email. Absent on servers from before both.
    */
   themeShowcaseTakeBack: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The server updates an already-listed Showcase theme in place
+   * (`ThemeShowcaseSubmitInput.updateSlug`). Absent on older servers, which
+   * always open a new folder.
+   */
+  themeShowcaseUpdate: Schema.optionalKey(Schema.Boolean),
   /** The server searches the Open VSX store for VS Code themes (`themeVsCode.*`). */
   themeVsCode: Schema.optionalKey(Schema.Boolean),
   /** The server moves threads to linked computers. Absent until a server ships it. */

@@ -155,6 +155,8 @@ const github = {
     number: number;
     url: string;
     head: string;
+    title?: string;
+    body?: string;
     state: string;
     merged: boolean;
     closedBy?: string;
@@ -227,6 +229,8 @@ const execute: GitHubCli.GitHubCliShape["execute"] = (input) => {
       number,
       url: `https://github.com/Threadlines/themes/pull/${number}`,
       head: body.head,
+      title: body.title,
+      body: body.body,
       state: "open",
       merged: false,
     };
@@ -539,6 +543,8 @@ it.layer(TestLayer)("ThemeShowcase", (it) => {
         pullRequestUrl: null,
         state: "inReview",
         takenBack: null,
+        updateBaseSha: null,
+        publishedFileSha: null,
         createdAt: "2026-11-09T12:00:00.000Z",
         checkedAt: null,
       });
@@ -755,5 +761,182 @@ it.layer(TestLayer)("ThemeShowcase", (it) => {
       });
       assert.isTrue(ready.problems.some((problem) => problem.includes("VS Code")));
     }),
+  );
+
+  it.effect(
+    "updates an already-listed Showcase theme in place without touching meta.json, and tracks review until rebuilt",
+    () =>
+      Effect.gen(function* () {
+        const showcase = yield* ThemeShowcase;
+        const library = yield* ThemeLibrary;
+        const original: ThemeManifest = {
+          ...harbor,
+          name: "Harbor Glow",
+          colors: { ...harbor.colors, accent: "#3b9eff" },
+          credits: { author: "Octo", license: "CC-BY-4.0" },
+        };
+        const saved = yield* library.save({ manifest: original });
+        const originalFile = new TextEncoder().encode(`${JSON.stringify(original, null, 2)}\n`);
+        const listedEntry = {
+          ...(yield* Effect.promise(() => entryFor("harbor-glow", original, originalFile))),
+          sharedBy: "octocat",
+          featured: true,
+        };
+        const someoneElses = {
+          ...(yield* Effect.promise(() =>
+            entryFor(
+              "other-glow",
+              { ...original, name: "Other Glow", colors: { ...harbor.colors, accent: "#ff77aa" } },
+              originalFile,
+            ),
+          )),
+          sharedBy: "sam",
+        };
+        setIndex([listedEntry, someoneElses]);
+
+        // Unchanged theme is refused without opening a pull request.
+        const writesBefore = github.writes.length;
+        const unchanged = yield* failure(
+          showcase.submit({
+            entryId: saved.entryId,
+            credits: null,
+            includePrompt: false,
+            submissionId: "update000001",
+            login: "octocat",
+            updateSlug: "harbor-glow",
+          }),
+        );
+        assert.match(unchanged.detail, /already up to date/);
+        assert.deepStrictEqual(github.writes.slice(writesBefore), []);
+
+        // Updating another account's folder is refused before writing anything.
+        const notOwner = yield* failure(
+          showcase.submit({
+            entryId: saved.entryId,
+            credits: null,
+            includePrompt: false,
+            submissionId: "update000002",
+            login: "octocat",
+            updateSlug: "other-glow",
+          }),
+        );
+        assert.match(notOwner.detail, /Only @sam can update Other Glow/);
+        assert.deepStrictEqual(github.writes.slice(writesBefore), []);
+
+        // Updating a missing folder is refused.
+        const missing = yield* failure(
+          showcase.submit({
+            entryId: saved.entryId,
+            credits: null,
+            includePrompt: false,
+            submissionId: "update000003",
+            login: "octocat",
+            updateSlug: "gone-theme",
+          }),
+        );
+        assert.match(missing.detail, /isn't in the Showcase anymore/);
+
+        // Edit the accent color and update in place.
+        const edited: ThemeManifest = {
+          ...original,
+          colors: { ...original.colors, accent: "#3b76ff" },
+        };
+        yield* library.replace({ entryId: saved.entryId, manifest: edited });
+        const treesBefore = github.trees.length;
+        const updated = yield* showcase.submit({
+          entryId: saved.entryId,
+          credits: null,
+          includePrompt: false,
+          submissionId: "update000004",
+          login: "octocat",
+          updateSlug: "harbor-glow",
+        });
+        assert.strictEqual(updated.state, "inReview");
+        assert.strictEqual(updated.slug, "harbor-glow");
+        assert.strictEqual(updated.isUpdate, true);
+        const tree = github.trees[treesBefore]!;
+        assert.deepStrictEqual(
+          tree.tree.map((item) => item.path),
+          ["themes/harbor-glow/theme.threadlines-theme", "themes/harbor-glow/thumbnail.png"],
+        );
+        const pull = github.pulls.find((candidate) => candidate.url === updated.pullRequestUrl)!;
+        assert.strictEqual(pull.title, "Update Harbor Glow");
+        assert.match(pull.body ?? "", /^Updates \*\*Harbor Glow\*\* in the Showcase/);
+        assert.deepInclude(recorded.at(-1), { event: "theme.showcase.shared" });
+        assert.strictEqual((recorded.at(-1)?.properties as { updated?: boolean }).updated, true);
+
+        // Merged, before the index rebuilds: still in review because the old file digest is still on main.
+        pull.state = "closed";
+        pull.merged = true;
+        clock += 10 * 60_000;
+        const beforeRebuild = (yield* showcase.submissions).submissions.find(
+          (row) => row.submissionId === "update000004",
+        )!;
+        assert.strictEqual(beforeRebuild.state, "inReview");
+
+        // Taking back an already-merged update says the update is already in the Showcase.
+        const alreadyMerged = yield* failure(showcase.takeBack({ submissionId: "update000004" }));
+        assert.match(alreadyMerged.detail, /update is already in the Showcase/);
+
+        // Once the index rebuilds with the new file digest, the update becomes listed.
+        const editedFile = github.blobs.find((b) => b.sha === tree.tree[0]!.sha)!.bytes;
+        const rebuiltEntry = {
+          ...(yield* Effect.promise(() => entryFor("harbor-glow", edited, editedFile))),
+          sharedBy: "octocat",
+          featured: true,
+        };
+        setIndex([rebuiltEntry]);
+        clock += 40 * 60_000;
+        const afterRebuild = (yield* showcase.submissions).submissions.find(
+          (row) => row.submissionId === "update000004",
+        )!;
+        assert.strictEqual(afterRebuild.state, "listed");
+
+        // A rename-only update keeps the same content hash but changes the file digest:
+        // it must stay in review while open, even if another rename lands on main.
+        yield* library.rename({ entryId: saved.entryId, name: "Harbor Deep" });
+        const renamed = yield* showcase.submit({
+          entryId: saved.entryId,
+          credits: null,
+          includePrompt: false,
+          submissionId: "update000005",
+          login: "octocat",
+          updateSlug: "harbor-glow",
+        });
+        assert.strictEqual(renamed.state, "inReview");
+        assert.strictEqual(renamed.publishedHash, rebuiltEntry.hash);
+        const otherRenameFile = new TextEncoder().encode(
+          `${JSON.stringify({ ...edited, name: "Harbor Other" }, null, 2)}\n`,
+        );
+        const otherRenameEntry = {
+          ...(yield* Effect.promise(() =>
+            entryFor("harbor-glow", { ...edited, name: "Harbor Other" }, otherRenameFile),
+          )),
+          sharedBy: "octocat",
+          featured: true,
+        };
+        setIndex([otherRenameEntry]);
+        clock += 40 * 60_000;
+        const renameStillOpen = (yield* showcase.submissions).submissions.find(
+          (row) => row.submissionId === "update000005",
+        )!;
+        assert.strictEqual(renameStillOpen.state, "inReview");
+
+        // A second rename while the first rename PR is open opens a new PR instead of returning the first.
+        yield* library.rename({ entryId: saved.entryId, name: "Harbor Midnight" });
+        const renamedAgain = yield* showcase.submit({
+          entryId: saved.entryId,
+          credits: null,
+          includePrompt: false,
+          submissionId: "update000006",
+          login: "octocat",
+          updateSlug: "harbor-glow",
+        });
+        assert.notStrictEqual(renamedAgain.pullRequestUrl, renamed.pullRequestUrl);
+
+        // Taking back the open rename update closes only the update PR.
+        const takenBack = yield* showcase.takeBack({ submissionId: "update000005" });
+        assert.deepInclude(takenBack, { state: "notAdded", takenBack: true, isUpdate: true });
+      }),
   );
 });
