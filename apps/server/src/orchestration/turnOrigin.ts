@@ -1,4 +1,14 @@
-import type { OrchestrationMessage, ProviderTurnOrigin } from "@threadlines/contracts";
+import type {
+  OrchestrationMessage,
+  OrchestrationThread,
+  ProviderTurnOrigin,
+  ThreadMessageOrigin,
+  ThreadParticipantId,
+} from "@threadlines/contracts";
+import { isAttachedChild } from "@threadlines/shared/childThreads";
+
+import { isContinueTrigger } from "./continueTurns.ts";
+import { isOutsideMarked } from "./outsideTurns.ts";
 
 /**
  * Who the message that starts a turn came from (ProviderTurnOrigin), read
@@ -36,4 +46,61 @@ export function turnMessageOrigin(input: {
     return "person";
   }
   return "automatic";
+}
+
+/**
+ * Whether a completed turn's reply will wait for a person in the composer, so
+ * Codex or Antigravity should sample a next-message suggestion.
+ *
+ * A person's own message always qualifies. On a top-level user thread (not an
+ * attached child, remote child, scheduled run, outside-agent thread, or an
+ * agent answering a hand-off), turns that finish back to the user also qualify:
+ * a child thread's report waking its parent (such as a Lead chat), a room
+ * hand-off or review reply returning control to the agent, or an automatic
+ * continue after a server restart or usage-limit reset.
+ */
+export function shouldSuggestNextMessage(input: {
+  readonly origin: ProviderTurnOrigin;
+  readonly message: Pick<
+    OrchestrationMessage,
+    "fromThread" | "fromAgent" | "requestKind" | "trigger"
+  >;
+  readonly fromThread?: ThreadMessageOrigin | undefined;
+  readonly participantId?: ThreadParticipantId | null | undefined;
+  readonly thread: Pick<
+    OrchestrationThread,
+    | "parentThreadId"
+    | "attachedToParent"
+    | "remoteOrigin"
+    | "scheduledRun"
+    | "outsideOrigin"
+    | "outsideWork"
+    | "agentRequests"
+  >;
+}): boolean {
+  if (input.origin === "person") return true;
+
+  const targetParticipantId = input.participantId ?? null;
+  if (
+    isAttachedChild(input.thread) ||
+    (input.thread.remoteOrigin ?? null) !== null ||
+    (input.thread.scheduledRun ?? null) !== null ||
+    (input.thread.outsideOrigin ?? null) !== null ||
+    isOutsideMarked(input.thread, targetParticipantId)
+  ) {
+    return false;
+  }
+
+  const answeringHandOff = input.thread.agentRequests.open.some(
+    (request) =>
+      request.kind === "hand_off" && (request.to.participantId ?? null) === targetParticipantId,
+  );
+  if (answeringHandOff) return false;
+
+  const effectiveFromThread = input.fromThread ?? input.message.fromThread;
+  if (effectiveFromThread?.kind === "report") return true;
+  if (input.message.fromAgent !== undefined && input.message.requestKind === "reply") return true;
+  if (input.origin === "automatic" && isContinueTrigger(input.message.trigger)) return true;
+
+  return false;
 }
