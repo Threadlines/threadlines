@@ -2128,6 +2128,10 @@ describe("a thread moving across its link (Part 3f, (h))", () => {
         environmentLabel: "Windows PC",
         threadId: PARENT_THERE,
         threadTitle: "Ship it",
+        launchedAccess: {
+          runtimeMode: "auto-accept-edits",
+          interactionMode: "default",
+        },
       });
       assert.equal(imported.movedFrom.environmentId, WINDOWS);
       assert.equal(imported.movedFrom.environmentPinned, true);

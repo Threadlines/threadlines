@@ -549,6 +549,16 @@ describe("ChatView (full app): sidebar", () => {
     const mounted = await mountFamily(null);
     try {
       useComposerDraftStore.getState().setPrompt(childRef, "half-written reply");
+      // The child is open while its parent is deleted from the sidebar.
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: childId },
+      });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${childId}`),
+        "The child should be open.",
+      );
       const row = await waitForElement(
         () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
         "The parent's sidebar row should be on screen.",
@@ -565,16 +575,22 @@ describe("ChatView (full app): sidebar", () => {
       await page.getByRole("button", { name: "Delete", exact: true }).click();
       await page.getByTestId("thread-delete-with-children").click();
       await page.getByTestId("thread-delete-confirm").click();
+      // It names the threads the dialog counted, so the server deletes those
+      // and keeps one started since; withChildren stays for an older server.
       await vi.waitFor(() => {
         expect(
-          wsRequests.some(
+          wsRequests.filter(
             (request) =>
               request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
-              request.type === "thread.delete" &&
-              request.threadId === THREAD_ID &&
-              request.withChildren === true,
+              request.type === "thread.delete",
           ),
-        ).toBe(true);
+        ).toEqual([
+          expect.objectContaining({
+            threadId: THREAD_ID,
+            withChildren: true,
+            alsoDelete: [childId],
+          }),
+        ]);
       });
 
       // The server decides which children go. This one is still here (it was
@@ -592,6 +608,8 @@ describe("ChatView (full app): sidebar", () => {
       expect(useComposerDraftStore.getState().getComposerDraft(childRef)?.prompt).toBe(
         "half-written reply",
       );
+      // Nor is its chat left: only the thread's real removal does that.
+      expect(mounted.router.state.location.pathname.endsWith(`/${childId}`)).toBe(true);
       // The thread the user named is wound down here as before.
       expect(
         wsRequests.some(

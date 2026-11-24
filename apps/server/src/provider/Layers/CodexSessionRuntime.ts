@@ -98,6 +98,19 @@ import {
 } from "../codexAppServerArgs.ts";
 
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+const SIGNAL_EXIT_PATTERN = /receipt of signal:\s*'([^']+)'/i;
+
+function formatCodexExitError(error: unknown): string {
+  const detail =
+    error instanceof Error
+      ? `${error.message} ${error.cause instanceof Error ? error.cause.message : ""}`
+      : String(error);
+  const match = SIGNAL_EXIT_PATTERN.exec(detail);
+  if (match?.[1]) {
+    return `Codex App Server exited with signal ${match[1]}.`;
+  }
+  return "Codex App Server exited unexpectedly.";
+}
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
   EffectCodexSchema.V2ReviewStartResponse,
@@ -2906,26 +2919,24 @@ const makeCodexSessionRuntimeIn = (
     );
 
     yield* child.exitCode.pipe(
-      Effect.flatMap((exitCode) =>
+      Effect.result,
+      Effect.flatMap((result) =>
         Ref.get(closedRef).pipe(
           Effect.flatMap((closed) => {
             if (closed) {
               return Effect.void;
             }
+            const exitCode = Result.isSuccess(result) ? Number(result.success) : undefined;
             const nextStatus = exitCode === 0 ? "closed" : "error";
+            const reason = Result.isSuccess(result)
+              ? exitCode === 0
+                ? "Codex App Server exited."
+                : `Codex App Server exited with code ${exitCode}.`
+              : formatCodexExitError(result.failure);
             return updateSession(sessionRef, {
               status: nextStatus,
               activeTurnId: undefined,
-            }).pipe(
-              Effect.andThen(
-                emitSessionEvent(
-                  "session/exited",
-                  exitCode === 0
-                    ? "Codex App Server exited."
-                    : `Codex App Server exited with code ${exitCode}.`,
-                ),
-              ),
-            );
+            }).pipe(Effect.andThen(emitSessionEvent("session/exited", reason)));
           }),
         ),
       ),

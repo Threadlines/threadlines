@@ -60,7 +60,7 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { hasLiveCheckBack } from "@threadlines/shared/checkBacks";
-import { sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
+import { requestCeilingRefusal, sameRemoteThreadFiling } from "@threadlines/shared/childThreads";
 import { remoteThreadFilingOf } from "@threadlines/shared/threadFiling";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -928,6 +928,10 @@ const make = Effect.gen(function* () {
             environmentLabel: input.parent.environmentLabel,
             threadId: input.parent.threadId,
             threadTitle: input.parent.threadTitle,
+            launchedAccess: {
+              runtimeMode: launch.runtimeMode,
+              interactionMode: launch.interactionMode,
+            },
           };
           // Still open, and the link still lets it go on; a link that no
           // longer does ends it here, with the reason.
@@ -956,6 +960,10 @@ const make = Effect.gen(function* () {
                 requestId,
                 kind: "request",
                 environmentId: input.parent.environmentId,
+              },
+              requestCeiling: {
+                runtimeMode: launch.runtimeMode,
+                interactionMode: launch.interactionMode,
               },
               createdAt: row.createdAt,
               checkpoint: () => mayGoOn,
@@ -1130,6 +1138,7 @@ const make = Effect.gen(function* () {
             kind: "request",
             environmentId: origin.environmentId,
           },
+          ...(input.ceiling !== undefined ? { requestCeiling: input.ceiling } : {}),
           createdAt: row.createdAt,
         },
         "queue a linked computer's message",
@@ -1269,6 +1278,8 @@ const make = Effect.gen(function* () {
       const stopped = yield* engine
         .dispatch({
           type: "thread.session.stop",
+          // A link's stop leaves no Stop hold here.
+          cause: "cleanup",
           commandId: CommandId.make(
             `server:link-stop:${deviceId}:${thread.id}:${turnKeyOf(thread)}${
               retry === undefined ? "" : `:retry:${retry}`
@@ -1340,6 +1351,7 @@ const make = Effect.gen(function* () {
         const stopped = yield* dispatchUnlessRefused(
           {
             type: "thread.session.stop",
+            cause: "cleanup",
             commandId: linkCommandId(
               deviceId,
               row.requestId,
@@ -1917,6 +1929,7 @@ const make = Effect.gen(function* () {
         end: input.end,
         pendingMessageId: input.pendingMessageId,
         awaitedBackgroundTaskCount: input.child.session?.awaitedBackgroundTaskCount ?? 0,
+        continuesWaitingAnswer: true,
       });
       if (delivery === null) return;
       const row = rows.find((entry) => entry.requestId === delivery.requestId);
@@ -2122,13 +2135,26 @@ const make = Effect.gen(function* () {
           const deviceId = thread?.remoteOrigin?.linkDeviceId;
           if (thread === undefined || deviceId === undefined) return;
           const rows = yield* openRowsForThread(thread);
+          const storedMessage = thread.messages.find(
+            (entry) => entry.id === event.payload.messageId,
+          );
+          const ceilingRefusal = !thread.agentRequests.hold
+            ? requestCeilingRefusal(
+                storedMessage?.requestCeiling ?? thread.remoteOrigin?.launchedAccess,
+                thread,
+              )
+            : null;
           for (const row of rows) {
             if (row.messageId !== event.payload.messageId) continue;
-            yield* settle(
-              row,
-              "cancelled",
-              `Your message to '${thread.title}' on ${ownLabel()} was taken back before it ran.`,
-            );
+            if (ceilingRefusal !== null) {
+              yield* settle(row, "failed", ceilingRefusal);
+            } else {
+              yield* settle(
+                row,
+                "cancelled",
+                `Your message to '${thread.title}' on ${ownLabel()} was taken back before it ran.`,
+              );
+            }
           }
           return;
         }
@@ -2306,11 +2332,17 @@ const make = Effect.gen(function* () {
       const childTurns = yield* turns
         .listByThreadId({ threadId: thread.id })
         .pipe(Effect.mapError(() => peerError(`${ownLabel()} couldn't read the thread's turns.`)));
-      const finishedTurnId = finishedTurnAfterRestart(childTurns, {
-        ...request,
-        status: row.status === "awaiting_background" ? "awaiting_background" : "running",
+      const finishedTurnId = finishedTurnAfterRestart(
+        childTurns,
+        {
+          ...request,
+          status: row.status === "awaiting_background" ? "awaiting_background" : "running",
+        },
+        { continuesWaitingAnswer: true },
+      );
+      const delivery = childDeliveryAfterRestart(thread, request, finishedTurnId, {
+        continuesWaitingAnswer: true,
       });
-      const delivery = childDeliveryAfterRestart(thread, request, finishedTurnId);
       yield* settleOrFail(
         row,
         toOutcome(delivery.type === "thread.child-request.settle" ? delivery.outcome : "failed"),

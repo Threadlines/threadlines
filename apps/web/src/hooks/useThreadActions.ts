@@ -55,26 +55,35 @@ async function confirmOrphanedWorktreeDeletion(worktreePath: string): Promise<bo
 }
 
 /**
- * The threads a delete "with its threads" should take along: the thread's
+ * The threads a delete "with its threads" offers to take along: the thread's
  * attached children that are not archived, as this device knows them. The
- * server applies the same rule to its own state, so the count the user is
- * shown matches what goes. It can still differ when a child leaves the family
- * in the meantime, so this list only decides the count and where to navigate.
- * The server cleans up each thread it actually deletes (ThreadDeletionReactor)
- * and each client forgets it when its removal arrives.
+ * dialog counts these and the delete names them (`alsoDelete`), so the server
+ * deletes exactly what the user was shown: one still attached and unarchived
+ * when it decides. A thread started after the dialog counted is separated and
+ * kept. The server cleans up each thread it actually deletes
+ * (ThreadDeletionReactor) and each client forgets it when its removal arrives.
  */
-function selectDeletableChildThreads(target: ScopedThreadRef): Thread[] {
-  return selectThreadsForEnvironment(useStore.getState(), target.environmentId).filter(
-    (thread) =>
-      thread.parentThreadId === target.threadId &&
-      thread.attachedToParent === true &&
-      thread.archivedAt === null,
-  );
+export function deletableChildThreadIds(target: ScopedThreadRef): ThreadId[] {
+  return selectThreadsForEnvironment(useStore.getState(), target.environmentId)
+    .filter(
+      (thread) =>
+        thread.parentThreadId === target.threadId &&
+        thread.attachedToParent === true &&
+        thread.archivedAt === null,
+    )
+    .map((thread) => thread.id);
 }
 
-/** How many threads a delete "with its threads" would take along; see selectDeletableChildThreads. */
-export function countAttachedChildThreads(target: ScopedThreadRef): number {
-  return selectDeletableChildThreads(target).length;
+/**
+ * What `thread.delete` says about the family: with its threads, naming the
+ * ones the dialog listed. `withChildren` stays for a server that predates
+ * `alsoDelete`, where it means every attached child, one level.
+ */
+function familyDeleteFields(alsoDelete: ReadonlyArray<ThreadId> | undefined): {
+  readonly withChildren?: true;
+  readonly alsoDelete?: ThreadId[];
+} {
+  return alsoDelete === undefined ? {} : { withChildren: true, alsoDelete: [...alsoDelete] };
 }
 
 /**
@@ -241,8 +250,11 @@ export function useThreadActions() {
       target: ScopedThreadRef,
       opts: {
         deletedThreadKeys?: ReadonlySet<string>;
-        /** Child threads: delete the threads in its family too, instead of separating them. */
-        withChildren?: boolean;
+        /**
+         * Child threads: delete these threads in its family too, the ones the
+         * dialog listed (deletableChildThreadIds), instead of separating them.
+         */
+        alsoDelete?: ReadonlyArray<ThreadId>;
       } = {},
     ) => {
       const api = readEnvironmentApi(target.environmentId);
@@ -272,22 +284,15 @@ export function useThreadActions() {
           (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
 
         // An archived parent can still have live threads in its family. The
-        // server winds down and deletes the ones it takes along.
-        const deletedChildren = opts.withChildren ? selectDeletableChildThreads(target) : [];
+        // server winds down and deletes the ones it takes along; a child open
+        // here leaves the chat when its removal arrives (the thread route).
         await api.orchestration.dispatchCommand({
           type: "thread.delete",
           commandId: newCommandId(),
           threadId: target.threadId,
-          ...(opts.withChildren ? { withChildren: true } : {}),
+          ...familyDeleteFields(opts.alsoDelete),
         });
         refreshArchivedThreadsForEnvironment(target.environmentId);
-        const currentRouteThreadRef = getCurrentRouteThreadRef();
-        if (
-          currentRouteThreadRef?.environmentId === target.environmentId &&
-          deletedChildren.some((child) => child.id === currentRouteThreadRef.threadId)
-        ) {
-          await router.navigate({ to: "/", replace: true });
-        }
 
         if (shouldDeleteWorktree && orphanedWorktreePath && projectCwd) {
           await removeOrphanedWorktree({
@@ -334,20 +339,20 @@ export function useThreadActions() {
         threadProject !== undefined &&
         (await confirmOrphanedWorktreeDeletion(orphanedWorktreePath));
 
-      // Its family goes with it when asked. The server decides which children
-      // that is and winds each one down; this device only steers away from them.
-      const deletedChildren = opts.withChildren ? selectDeletableChildThreads(threadRef) : [];
+      // Its family goes with it when asked: the threads the dialog listed. The
+      // server winds each one down and may keep one that left the family
+      // since, so a child open here is left to its removal (the thread route
+      // goes home when it arrives). Only the fallback avoids the listed ones.
       await windDownThreadBeforeDelete(api, threadRef.environmentId, thread);
 
       const deletedThreadIds = new Set<ThreadId>([
         ...(deletedIds ?? []),
-        ...deletedChildren.map((child) => child.id),
+        ...(opts.alsoDelete ?? []),
       ]);
       const currentRouteThreadRef = getCurrentRouteThreadRef();
       const shouldNavigateToFallback =
         currentRouteThreadRef?.environmentId === threadRef.environmentId &&
-        (currentRouteThreadRef.threadId === threadRef.threadId ||
-          deletedChildren.some((child) => child.id === currentRouteThreadRef.threadId));
+        currentRouteThreadRef.threadId === threadRef.threadId;
       const fallbackThreadId = getFallbackThreadIdAfterDelete({
         threads,
         deletedThreadId: threadRef.threadId,
@@ -357,7 +362,7 @@ export function useThreadActions() {
         type: "thread.delete",
         commandId: newCommandId(),
         threadId: threadRef.threadId,
-        ...(opts.withChildren ? { withChildren: true } : {}),
+        ...familyDeleteFields(opts.alsoDelete),
       });
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
       forgetDeletedThread(threadRef.environmentId, thread);
@@ -411,17 +416,17 @@ export function useThreadActions() {
       const localApi = readLocalApi();
       const resolved = resolveThreadTarget(target);
       const title = opts.title ?? resolved?.thread.title;
-      const childCount = countAttachedChildThreads(target);
+      const childIds = deletableChildThreadIds(target);
 
-      if (confirmThreadDelete && childCount > 0) {
+      if (confirmThreadDelete && childIds.length > 0) {
         const answer = await confirmThreadDeleteWithChildren({
           title: title ?? "this thread",
-          childCount,
+          childCount: childIds.length,
         });
         if (answer === null) {
           return;
         }
-        await deleteThread(target, { withChildren: answer.withChildren });
+        await deleteThread(target, answer.withChildren ? { alsoDelete: childIds } : {});
         return;
       }
 

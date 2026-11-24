@@ -214,7 +214,12 @@ import {
   TranscriptHighlightContextCard,
 } from "./TranscriptHighlightContextCard";
 import { TooltipProvider, TooltipWrapper } from "../ui/tooltip";
-import { describeCheckBack, formatCheckBackTime, nextCheckBack } from "./checkBacks";
+import {
+  describeCheckBack,
+  formatCheckBackTime,
+  liveCheckBacks,
+  nextCheckBack,
+} from "./checkBacks";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import {
   deriveDisplayedUserMessageState,
@@ -4601,7 +4606,7 @@ function CheckBackTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "chec
   const { label, when } = describeCheckBack(soonest, nowMs);
   // In a room, the line says which agent will come back.
   const agentName = roomAgents?.get(roomAgentKey(soonest.participantId))?.name ?? null;
-  const others = row.checkBacks.filter((checkBack) => checkBack !== soonest);
+  const others = liveCheckBacks(row.checkBacks).filter((checkBack) => checkBack !== soonest);
   return (
     <div className="py-1" data-check-back-row="true">
       <p className="flex min-w-0 items-center gap-1.5 pl-1 text-xs leading-4 text-muted-foreground">

@@ -11,13 +11,21 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  attachedDescendantsOf,
   childAttachRefusal,
   childRequestStateOn,
   childSendRefusal,
   childStartRefusal,
+  effectiveRequestCeiling,
   isHandedBackCompletion,
+  isStillGoing,
+  isWidestMode,
   remoteChildrenOf,
   remoteChildStartsOf,
+  requestCeilingRefusal,
+  stillGoingInputOfShell,
+  stopReachOf,
+  type StillGoingInput,
 } from "./childThreads.ts";
 
 const PARENT = ThreadId.make("parent");
@@ -244,5 +252,162 @@ describe("isHandedBackCompletion", () => {
         latestTurn: { turnId: TurnId.make("later"), state: "completed" },
       }),
     ).toBe(false);
+  });
+});
+
+describe("family walks", () => {
+  const member = (
+    id: string,
+    parent: string | null,
+    createdAt: string,
+    extra: { attached?: boolean; stopsWithParent?: true; deletedAt?: string } = {},
+  ) => ({
+    id: ThreadId.make(id),
+    parentThreadId: parent === null ? null : ThreadId.make(parent),
+    attachedToParent: extra.attached ?? parent !== null,
+    ...(extra.stopsWithParent ? { stopsWithParent: extra.stopsWithParent } : {}),
+    deletedAt: extra.deletedAt ?? null,
+    createdAt,
+  });
+  const ids = (walk: ReadonlyArray<{ thread: { id: string }; level: number }>) =>
+    walk.map((entry) => `${entry.thread.id}@${entry.level}`);
+
+  it("lists a family in tree order with levels, and leaves out separated and deleted threads", () => {
+    const threads = [
+      member("root", null, "2026-11-23T10:00:00.000Z"),
+      member("m2", "root", "2026-11-23T10:02:00.000Z"),
+      member("m1", "root", "2026-11-23T10:01:00.000Z"),
+      member("g1", "m1", "2026-11-23T10:03:00.000Z"),
+      member("separated", "root", "2026-11-23T10:04:00.000Z", { attached: false }),
+      member("deleted", "m2", "2026-11-23T10:05:00.000Z", {
+        deletedAt: "2026-11-23T11:00:00.000Z",
+      }),
+      member("loose", "m2", "2026-11-23T10:06:00.000Z", { attached: false, stopsWithParent: true }),
+      member("under-loose", "loose", "2026-11-23T10:07:00.000Z"),
+    ];
+    expect(ids(attachedDescendantsOf(threads, ThreadId.make("root")))).toEqual([
+      "m1@1",
+      "g1@2",
+      "m2@1",
+    ]);
+    // Stop also takes a thread started without report back, and what is under it.
+    expect(ids(stopReachOf(threads, ThreadId.make("root")))).toEqual([
+      "m1@1",
+      "g1@2",
+      "m2@1",
+      "loose@2",
+      "under-loose@3",
+    ]);
+  });
+
+  it("never loops on a cycle in bad data", () => {
+    const threads = [
+      member("a", "b", "2026-11-23T10:00:00.000Z"),
+      member("b", "a", "2026-11-23T10:01:00.000Z"),
+    ];
+    expect(ids(attachedDescendantsOf(threads, ThreadId.make("a")))).toEqual(["b@1"]);
+  });
+});
+
+describe("isStillGoing", () => {
+  const idle: StillGoingInput = {
+    turnInFlight: false,
+    queuedCount: 0,
+    waitsOnUser: false,
+    backgroundWork: false,
+    openRequestCount: 0,
+    waitsForReset: false,
+    sideAnswerRunning: false,
+  };
+
+  it("is false for an idle open session, and true for each kind of work", () => {
+    expect(isStillGoing(idle)).toBe(false);
+    for (const going of [
+      { turnInFlight: true },
+      { queuedCount: 1 },
+      { waitsOnUser: true },
+      { backgroundWork: true },
+      { openRequestCount: 1 },
+      { waitsForReset: true },
+      { sideAnswerRunning: true },
+    ]) {
+      expect(isStillGoing({ ...idle, ...going })).toBe(true);
+    }
+  });
+
+  it("counts a check-back, saved or not, until it is dormant", () => {
+    expect(isStillGoing({ ...idle, checkBacks: [{}] })).toBe(true);
+    expect(isStillGoing({ ...idle, checkBacks: [{ dormant: true }] })).toBe(false);
+  });
+
+  it("reads a shell: an open session with nothing in it is not going", () => {
+    const shell = {
+      session: { status: "ready" },
+      latestTurn: { state: "completed" },
+      queuedFollowUps: [],
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      awaitedChildThreadCount: 0,
+      pendingChildApproval: false,
+    };
+    expect(isStillGoing(stillGoingInputOfShell(shell))).toBe(false);
+    expect(
+      isStillGoing(stillGoingInputOfShell({ ...shell, session: { status: "starting" } })),
+    ).toBe(true);
+    expect(isStillGoing(stillGoingInputOfShell({ ...shell, pendingChildApproval: true }))).toBe(
+      true,
+    );
+  });
+});
+
+describe("request ceiling helpers", () => {
+  it("refuses a send when the child has more access than its parent", () => {
+    const parent = caller({ runtimeMode: "auto-accept-edits", interactionMode: "default" });
+    const wideChild = {
+      id: CHILD,
+      title: "Worker",
+      parentThreadId: PARENT,
+      attachedToParent: true,
+      archivedAt: null,
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+    };
+    expect(childSendRefusal(parent, wideChild, { from: PRIMARY, callerTurnId: TURN })).toEqual({
+      outcome: "not_allowed",
+      detail:
+        "'Worker' has more access than this thread has now. Do the work here, or tell the user, who can send it there.",
+    });
+    expect(
+      childSendRefusal(
+        parent,
+        { ...wideChild, runtimeMode: "approval-required" },
+        { from: PRIMARY, callerTurnId: TURN },
+      ),
+    ).toBeNull();
+  });
+
+  it("narrows effectiveRequestCeiling by passCeiling and detects widest access", () => {
+    expect(
+      effectiveRequestCeiling({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        childRequests: {
+          ...EMPTY_CHILD_REQUEST_STATE,
+          passCeiling: { runtimeMode: "auto-accept-edits", interactionMode: "plan" },
+        },
+      }),
+    ).toEqual({ runtimeMode: "auto-accept-edits", interactionMode: "plan" });
+    expect(isWidestMode({ runtimeMode: "full-access", interactionMode: "default" })).toBe(true);
+    expect(isWidestMode({ runtimeMode: "full-access", interactionMode: "plan" })).toBe(false);
+    expect(isWidestMode({ runtimeMode: "auto-accept-edits", interactionMode: "default" })).toBe(
+      false,
+    );
+    expect(
+      requestCeilingRefusal(
+        { runtimeMode: "auto-accept-edits", interactionMode: "default" },
+        { title: "Worker", runtimeMode: "full-access", interactionMode: "default" },
+      ),
+    ).toContain("'Worker' has more access");
   });
 });

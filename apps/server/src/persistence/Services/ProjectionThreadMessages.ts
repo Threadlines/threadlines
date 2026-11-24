@@ -17,6 +17,7 @@ import {
   ThreadParticipantId,
   TurnId,
   IsoDateTime,
+  MessageAccessFields,
   MessageAgentModel,
   MessageComposer,
   MessageSentFrom,
@@ -83,6 +84,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   notSent: Schema.optional(Schema.Literal(true)),
   /** See OrchestrationMessage.afterMove. Once set, kept. */
   afterMove: Schema.optional(Schema.Literal(true)),
+  /** See MessageAccessFields. Written with the message and kept. */
+  ...MessageAccessFields,
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

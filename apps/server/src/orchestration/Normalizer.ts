@@ -182,6 +182,14 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       });
     }
 
+    // Nor say why a session stops: only the server stops one with its family
+    // or as cleanup, which leaves no Stop hold.
+    if (command.type === "thread.session.stop" && command.cause !== undefined) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Only the server can stop a thread with its family or as cleanup.",
+      });
+    }
+
     // Nor speak for a parent's agent: its thread_wrap is checked as the agent's.
     if (command.type === "thread.done-override.set" && command.byParentAgent !== undefined) {
       return yield* new OrchestrationDispatchCommandError({

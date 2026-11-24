@@ -566,6 +566,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             parentThreadId: event.payload.parentThreadId ?? null,
             parentTurnId: event.payload.parentTurnId ?? null,
             attachedToParent: event.payload.attachedToParent === true ? 1 : 0,
+            stopsWithParent: event.payload.stopsWithParent === true ? 1 : null,
+            ...(event.payload.reportsTo !== undefined
+              ? {
+                  childRequests: {
+                    ...EMPTY_CHILD_REQUEST_STATE,
+                    reportsTo: event.payload.reportsTo,
+                  },
+                }
+              : {}),
             remoteOrigin: event.payload.remoteOrigin ?? null,
             scheduledRun: event.payload.scheduledRun ?? null,
             worktreeOrigin: event.payload.worktreeOrigin ?? null,
@@ -896,7 +905,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                       event.payload.outcome,
                     )
                   : event.type === "thread.agent-requests-held"
-                    ? agentRequestStateOn.held(state, event.payload.chainEpoch)
+                    ? agentRequestStateOn.held(state, event.payload.chainEpoch, {
+                        keepHold: event.payload.keepHold === true,
+                      })
                     : agentRequestStateOn.reset(state);
           yield* projectionThreadRepository.upsert({ ...existingRow.value, agentRequests });
           return;
@@ -908,6 +919,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.child-notes-delivered":
         case "thread.child-deliveries-cancelled":
         case "thread.child-requests-reset":
+        case "thread.child-report-dropped":
         case "thread.lead-pass-recorded":
         case "thread.remote-child-updated":
         case "thread.remote-cancel-queued":
@@ -945,7 +957,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                               )
                             : event.type === "thread.lead-pass-recorded"
                               ? childRequestStateOn.leadPass(state, event.payload)
-                              : childRequestStateOn.reset(state, event.payload);
+                              : event.type === "thread.child-report-dropped"
+                                ? childRequestStateOn.owedRemoved(state, event.payload.owed)
+                                : childRequestStateOn.reset(state, event.payload);
           if (childRequests !== state) {
             yield* projectionThreadRepository.upsert({ ...existingRow.value, childRequests });
           }
@@ -1005,10 +1019,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   ...existingRow.value,
                   handedBackAt: event.payload.handedBackAt,
                   handedBackTurnId: event.payload.turnId,
+                  // See the in-memory projector: the report it owed went up.
+                  ...(event.payload.owedReport !== undefined
+                    ? {
+                        childRequests: childRequestStateOn.owedRemoved(
+                          existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+                          event.payload.owedReport,
+                        ),
+                      }
+                    : {}),
                 }
               : {
                   ...existingRow.value,
+                  // See the in-memory projector: a moved epoch ends what it owed.
+                  ...(existingRow.value.parentAttachmentEpoch !== event.payload.attachmentEpoch &&
+                  existingRow.value.childRequests != null
+                    ? {
+                        childRequests: childRequestStateOn.owedCleared(
+                          existingRow.value.childRequests,
+                        ),
+                      }
+                    : {}),
                   attachedToParent: event.payload.attached ? 1 : 0,
+                  ...(event.payload.attached ? { stopsWithParent: null } : {}),
                   parentAttachmentEpoch: event.payload.attachmentEpoch,
                   // See the in-memory projector: taken back over its link.
                   ...(event.payload.adoptedBy !== undefined
@@ -1119,6 +1152,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     participantId,
                     event.payload.fromOutside,
                     event.payload.createdAt,
+                  ),
+                }
+              : {}),
+            // See the in-memory projector: a turn that owes its parent a report.
+            ...(event.payload.owesReport !== undefined
+              ? {
+                  childRequests: childRequestStateOn.owedAdded(
+                    existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE,
+                    {
+                      messageId: event.payload.messageId,
+                      ...event.payload.owesReport,
+                      createdAt: event.payload.createdAt,
+                    },
                   ),
                 }
               : {}),
@@ -1359,9 +1405,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             return;
           }
           const { followUp } = event.payload;
+          const madeOwn = followUp.composer !== undefined || followUp.sentFrom !== undefined;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             queuedFollowUps: withQueuedFollowUp(existingRow.value.queuedFollowUps ?? [], followUp),
+            ...(madeOwn ? { stopsWithParent: null } : {}),
             updatedAt: event.occurredAt,
           });
           return;
@@ -1395,8 +1443,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const madeOwn =
+            (event.type === "thread.message-sent" &&
+              event.payload.role === "user" &&
+              (event.payload.composer !== undefined || event.payload.sentFrom !== undefined)) ||
+            ((event.type === "thread.follow-up-submitted" ||
+              event.type === "thread.follow-up-accepted") &&
+              (event.payload.composer !== undefined || event.payload.sentFrom !== undefined));
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
+            ...(madeOwn ? { stopsWithParent: null } : {}),
             updatedAt: event.occurredAt,
             // An outside answer marks the agent that asked (see the projector).
             ...(event.type === "thread.user-input-response-requested" &&
@@ -1454,6 +1510,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId: nextLatestTurnId,
+            // See the in-memory projector: a provider-started turn's report,
+            // and the turn claiming its message's report.
+            ...(event.payload.owedReport !== undefined ||
+            event.payload.owedReportBinds !== undefined
+              ? {
+                  childRequests: ((state) => {
+                    const owedReport = event.payload.owedReport;
+                    const binds = event.payload.owedReportBinds;
+                    const added =
+                      owedReport === undefined
+                        ? state
+                        : childRequestStateOn.owedAdded(state, owedReport);
+                    return binds === undefined
+                      ? added
+                      : childRequestStateOn.owedBound(added, binds.messageId, binds.turnId);
+                  })(existingRow.value.childRequests ?? EMPTY_CHILD_REQUEST_STATE),
+                }
+              : {}),
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
@@ -1756,6 +1830,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { requestError: event.payload.requestError }
               : {}),
             ...(event.payload.afterMove === true ? { afterMove: true as const } : {}),
+            ...(event.payload.requestCeiling !== undefined
+              ? { requestCeiling: event.payload.requestCeiling }
+              : {}),
+            ...(event.payload.passBlocked === true ? { passBlocked: true as const } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -2267,6 +2345,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const applyThreadTurnsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadTurnsProjection",
     )(function* (event, _attachmentSideEffects) {
+      // A start whose message went back on the queue, or was marked not run,
+      // is gone: its row must never bind to a later turn.
+      const startTakenBack =
+        event.type === "thread.continue-at-reset-skipped"
+          ? { threadId: event.payload.threadId, messageId: event.payload.messageId }
+          : event.type === "thread.follow-up-queued" && event.payload.followUp.putBack === true
+            ? { threadId: event.payload.threadId, messageId: event.payload.followUp.messageId }
+            : null;
+      if (startTakenBack !== null) {
+        const { threadId } = startTakenBack;
+        const pending = yield* projectionTurnRepository.getPendingTurnStartByThreadId({ threadId });
+        if (Option.isSome(pending) && pending.value.messageId === startTakenBack.messageId) {
+          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({ threadId });
+        }
+        return;
+      }
       switch (event.type) {
         case "thread.turn-start-requested": {
           yield* projectionTurnRepository.replacePendingTurnStart({
@@ -2318,9 +2412,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             turnId,
           });
-          const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
-            threadId: event.payload.threadId,
-          });
+          // The pending message becomes this turn's only when the writer that
+          // marked it running named it. A turn the provider started (a
+          // check-back, a background agent finishing) leaves the message
+          // waiting for its own turn, and an update that names nothing (a
+          // task count, a repeat) changes nothing.
+          const startedBy = event.payload.turnStartedBy;
+          const pendingTurnStart = Option.filter(
+            yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            }),
+            (pending) =>
+              startedBy !== undefined &&
+              "messageId" in startedBy &&
+              startedBy.messageId === pending.messageId,
+          );
           if (Option.isSome(existingTurn)) {
             const nextState =
               existingTurn.value.state === "completed" || existingTurn.value.state === "error"
@@ -2384,9 +2490,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             });
           }
 
-          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
-            threadId: event.payload.threadId,
-          });
+          if (Option.isSome(pendingTurnStart)) {
+            yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            });
+          }
           return;
         }
 

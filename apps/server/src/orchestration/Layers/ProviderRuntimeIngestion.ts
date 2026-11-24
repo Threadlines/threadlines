@@ -25,6 +25,7 @@ import {
   type OrchestrationSideTurnOutcome,
   TurnId,
   type TurnTrigger,
+  type TurnStartedBy,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
   type OrchestrationThread,
@@ -43,7 +44,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { countUnifiedDiffStats, type DiffLineStats } from "@threadlines/shared/diffStats";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
-import { sameCheckBacks } from "@threadlines/shared/checkBacks";
+import { markCheckBacksDormant, sameCheckBacks } from "@threadlines/shared/checkBacks";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { ASSISTANT_STREAM_FLUSH_INTERVAL_MS } from "@threadlines/shared/threadLimits";
 import {
@@ -81,7 +82,7 @@ import {
   type ProviderActivityStreamSnapshot,
 } from "./ProviderActivityProjection.ts";
 import { handOffReplyText } from "../agentRequestDecisions.ts";
-import { childDeliveryForTurnEnd } from "../childThreadDelivery.ts";
+import { childDeliveryForEndedTurn, staleOwedReports } from "../childThreadDelivery.ts";
 import { RemoteRequestTurnEnds } from "../Services/RemoteRequestTurnEnds.ts";
 import { ScheduledRunTurnEnds } from "../Services/ScheduledRunTurnEnds.ts";
 import { RealtimeVoiceDevices } from "../Services/RealtimeVoiceDevices.ts";
@@ -2707,9 +2708,12 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => undefined),
       );
     // The message that started this turn. Only that one goes again; a turn
-    // whose message isn't known (one the provider started) sends nothing
-    // again, and the line tells the user to.
+    // whose message isn't known (one the provider started) or that the user
+    // already stopped sends nothing again, and the line tells the user to.
     const startedBy = endedTurn?.pendingMessageId ?? undefined;
+    const stoppedByUser =
+      input.thread.agentRequests.hold || input.thread.session?.stopRequestedTurnId === input.turnId;
+    const resendMessageId = stoppedByUser ? undefined : startedBy;
     if (rejected) {
       // Off the ingestion queue: ending the session waits for its process,
       // whose last events come through here.
@@ -2722,7 +2726,9 @@ const make = Effect.gen(function* () {
               commandId: providerCommandId(input.event, "native-session-fall-back"),
               threadId: input.thread.id,
               reason: "turn_failed",
-              ...(startedBy !== undefined ? { resendMessageId: startedBy } : {}),
+              ...(resendMessageId !== undefined
+                ? { resendMessageId, chainEpoch: input.thread.agentRequests.chainEpoch }
+                : {}),
               ...(input.participantId !== null ? { participantId: input.participantId } : {}),
               createdAt: input.now,
             }),
@@ -2759,13 +2765,15 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Child threads: a child's turn ended and its words were just flushed. If
-   * that turn answers a request its parent's agent made (the request's message
-   * started it, or it is the follow-up its own background work started), the
-   * answer goes back in one decider step that settles the request, writes the
-   * report into the parent and queues it for the agent that asked. With
-   * background work still owed, the answer waits for it. Never on the session
-   * going idle, which comes before buffered text is final.
+   * Child threads: a child's turn ended and its words were just flushed (or
+   * its runtime exited with the turn). If that turn answers a request its
+   * parent's agent made (the request's message started it), the answer goes
+   * back in one decider step that settles the request, writes the report into
+   * the parent and queues it for the agent that asked; with background work
+   * still owed, the answer waits for it. If the turn owed its parent a report
+   * (docs/design/agent-autonomy-no-limits.md, rule 2), that report is settled
+   * the same way. Never on the session going idle, which comes before
+   * buffered text is final.
    */
   const routeChildReport = Effect.fn("routeChildReport")(function* (input: {
     readonly threadId: ThreadId;
@@ -2808,7 +2816,7 @@ const make = Effect.gen(function* () {
         : parent.childRequests.open.filter(
             (request) => request.childThreadId === child.id && request.remote === undefined,
           );
-    if (parent === undefined || parent === null || owned.length === 0) {
+    if (owned.length === 0 && (child.childRequests.owedReports ?? []).length === 0) {
       return;
     }
     const turn = yield* projectionTurnRepository
@@ -2817,7 +2825,7 @@ const make = Effect.gen(function* () {
         Effect.map(Option.getOrUndefined),
         Effect.orElseSucceed(() => undefined),
       );
-    const delivery = childDeliveryForTurnEnd({
+    const delivery = childDeliveryForEndedTurn({
       owned,
       child,
       end: { turnId: input.turnId, outcome: input.outcome, error: input.error },
@@ -2828,16 +2836,57 @@ const make = Effect.gen(function* () {
       return;
     }
     yield* orchestrationEngine
-      .dispatch({ ...delivery, threadId: parent.id, createdAt: input.createdAt })
+      .dispatch(
+        delivery.type === "thread.child-report.settle"
+          ? { ...delivery, threadId: child.id, createdAt: input.createdAt }
+          : { ...delivery, threadId: child.parentThreadId, createdAt: input.createdAt },
+      )
       .pipe(
         Effect.catch((error) =>
           Effect.logInfo("provider runtime ingestion could not deliver a child thread's answer", {
             threadId: input.threadId,
-            requestId: delivery.requestId,
+            turnId: input.turnId,
             detail: String(error),
           }),
         ),
       );
+  });
+
+  /**
+   * Child threads: a turn is starting in `threadId`, and this handler has
+   * already taken every earlier turn's end, so a report the thread still owes
+   * for an earlier turn will never be settled by one (a lost turn end). It is
+   * settled now, as a turn that ended without being stopped (docs/design/
+   * agent-autonomy-no-limits.md, rule 3). The starting turn's own entry is
+   * kept, and so is the entry of a message still waiting to start (its turn
+   * claims it when it starts). Only this handler sweeps: a writer outside it
+   * could run ahead of a turn end it hasn't taken yet.
+   */
+  const sweepOwedReports = Effect.fn("sweepOwedReports")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly pendingMessageId: MessageId | null;
+    readonly createdAt: string;
+  }) {
+    const child = yield* resolveThreadDetail(input.threadId);
+    if (child === undefined || child === null) return;
+    if ((child.childRequests.owedReports ?? []).length === 0) return;
+    const stale = staleOwedReports(child, {
+      turnId: input.turnId,
+      messageIds: input.pendingMessageId === null ? [] : [input.pendingMessageId],
+    });
+    for (const delivery of stale) {
+      yield* orchestrationEngine
+        .dispatch({ ...delivery, threadId: child.id, createdAt: input.createdAt })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logInfo("provider runtime ingestion could not settle a child's lost report", {
+              threadId: input.threadId,
+              detail: String(error),
+            }),
+          ),
+        );
+    }
   });
 
   /**
@@ -2957,10 +3006,12 @@ const make = Effect.gen(function* () {
       const next = event.payload.partial
         ? [
             ...reported,
-            ...current.filter(
-              (listed) =>
-                listed.durable && !reported.some((checkBack) => checkBack.id === listed.id),
-            ),
+            ...current
+              .filter(
+                (listed) =>
+                  listed.durable && !reported.some((checkBack) => checkBack.id === listed.id),
+              )
+              .map(({ dormant: _dormant, ...listed }) => listed),
           ].toSorted((left, right) => left.scheduledFor.localeCompare(right.scheduledFor))
         : reported;
       if (!sameCheckBacks(current, next)) {
@@ -3044,6 +3095,41 @@ const make = Effect.gen(function* () {
           ),
         );
         return;
+      }
+      // A runtime that ended can no longer fire any check-back still listed
+      // for its agent (saved jobs stay listed as dormant; session-only ones
+      // drop). Handle before the slot, active-session, and archive guards so
+      // non-slot room agents, switched providers, and archived threads never
+      // leave saved check-backs looking live.
+      if (event.type === "session.exited") {
+        const exitThread =
+          thread ??
+          Option.getOrUndefined(
+            yield* projectionSnapshotQuery
+              .getThreadDetailById(event.threadId, { includeArchived: true })
+              .pipe(Effect.orElseSucceed(() => Option.none())),
+          );
+        if (exitThread !== undefined) {
+          const participantId = event.participantId ?? null;
+          const current = (exitThread.checkBacks ?? []).filter(
+            (checkBack) => checkBack.participantId === participantId,
+          );
+          if (current.length > 0) {
+            const dormant = markCheckBacksDormant(exitThread.checkBacks ?? [], participantId);
+            if (!sameCheckBacks(current, dormant)) {
+              yield* orchestrationEngine
+                .dispatch({
+                  type: "thread.check-backs.set",
+                  commandId: providerCommandId(event, "check-backs-dormant"),
+                  threadId: exitThread.id,
+                  participantId,
+                  checkBacks: dormant,
+                  createdAt: event.createdAt,
+                })
+                .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+            }
+          }
+        }
       }
       if (!thread) return;
       if (event.sideTurnId !== undefined) {
@@ -3399,6 +3485,25 @@ const make = Effect.gen(function* () {
         }
       }
 
+      // A turn that starts now is recorded as the provider's, provisionally:
+      // this handler can't tell a message's turn from one the provider
+      // started (a check-back, a goal, background work that finished), so it
+      // never names a message. The reactor, which sent the message, names it
+      // with the turn's id once the provider took it, and that corrects this
+      // ("Restart and turn binding", rule B). The pending start is read only
+      // so the sweep leaves that message's report alone.
+      const pendingTurnStart =
+        event.type === "turn.started"
+          ? yield* projectionTurnRepository
+              .getPendingTurnStartByThreadId({ threadId: thread.id })
+              .pipe(Effect.orElseSucceed(() => Option.none()))
+          : Option.none();
+      const turnStartFields = (nextActiveTurnId: TurnId | null) =>
+        event.type !== "turn.started" ||
+        nextActiveTurnId === null ||
+        (activeTurnId !== null && sameId(activeTurnId, nextActiveTurnId))
+          ? {}
+          : { turnStartedBy: { provider: true } satisfies TurnStartedBy };
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
       const missingTurnForActiveTurn = activeTurnId !== null && eventTurnId === undefined;
@@ -3577,6 +3682,16 @@ const make = Effect.gen(function* () {
               };
 
         if (shouldApplyThreadLifecycle) {
+          if (event.type === "turn.started" && eventTurnId !== undefined) {
+            yield* sweepOwedReports({
+              threadId: thread.id,
+              turnId: eventTurnId,
+              pendingMessageId: Option.isSome(pendingTurnStart)
+                ? pendingTurnStart.value.messageId
+                : null,
+              createdAt: now,
+            });
+          }
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
               acceptedTurnStartedSourcePlan.sourceThreadId,
@@ -3638,6 +3753,7 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               session,
               ...usageLimitFields,
+              ...turnStartFields(nextActiveTurnId),
               createdAt: now,
             });
             yield* Ref.update(unstoredSessionReportAt, (reports) => {
@@ -4230,6 +4346,23 @@ const make = Effect.gen(function* () {
           });
         }
         yield* clearTurnStateForSession(thread.id);
+        // A runtime that exits mid-turn takes the turn with it, and may never
+        // end it: its end goes to the child's parent here, before the next
+        // event can start a new session (docs/design/agent-autonomy-no-limits.md,
+        // rule 6). A turn whose message is sent again on a new runtime goes on.
+        if (
+          activeTurnId !== null &&
+          shouldApplyThreadLifecycle &&
+          event.payload.resendTurn === undefined
+        ) {
+          yield* routeChildReport({
+            threadId: thread.id,
+            turnId: activeTurnId,
+            outcome: "interrupted",
+            error: event.payload.reason ?? "its session exited",
+            createdAt: now,
+          });
+        }
       }
 
       if (event.type === "session.exited" && event.payload.resendTurn !== undefined) {

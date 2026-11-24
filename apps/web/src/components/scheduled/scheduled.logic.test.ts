@@ -423,12 +423,22 @@ describe("check-backs on the Scheduled page", () => {
         archivedAt: "2026-10-21T07:00:00.000Z",
         checkBacks: [checkBack("gone", "2026-10-21T08:30:00.000Z")],
       },
+      {
+        // Its runtime ended: the dormant one is neither the next nor one more.
+        title: "Paused",
+        archivedAt: null,
+        checkBacks: [
+          { ...checkBack("dormant", "2026-10-21T11:00:00.000Z"), dormant: true as const },
+          checkBack("live", "2026-10-21T12:00:00.000Z"),
+        ],
+      },
     ]);
     expect(
       listed.map((entry) => [entry.thread.title, entry.soonest.id, entry.more] as const),
     ).toEqual([
       ["Docs", "docs", 0],
       ["Deploy", "soon", 1],
+      ["Paused", "live", 0],
     ]);
   });
 });

@@ -2016,6 +2016,90 @@ describe("incremental orchestration updates", () => {
     expect(sidebarThreads[0]?.remoteOrigin?.threadId).toBe("thread-on-mac");
   });
 
+  it("takes a thread started without report back out of its starter's Stop once a person writes in it", () => {
+    const threadId = ThreadId.make("thread-1");
+    const threadRef = scopeThreadRef(localEnvironmentId, threadId);
+    const base = makeState(makeThread({ id: threadId }));
+    const environment = base.environmentStateById[localEnvironmentId]!;
+    const loose: AppState = {
+      ...base,
+      environmentStateById: {
+        ...base.environmentStateById,
+        [localEnvironmentId]: {
+          ...environment,
+          threadShellById: {
+            ...environment.threadShellById,
+            [threadId]: {
+              ...environment.threadShellById[threadId]!,
+              parentThreadId: ThreadId.make("thread-lead"),
+              attachedToParent: false,
+              stopsWithParent: true,
+            },
+          },
+        },
+      },
+    };
+    const flagOf = (state: AppState) => selectThreadByRef(state, threadRef)?.stopsWithParent;
+    expect(flagOf(loose)).toBe(true);
+    const queued = (origin: { composer?: "typed"; fromAgentThread?: true }) =>
+      applyOrchestrationEvent(
+        loose,
+        makeEvent("thread.follow-up-queued", {
+          threadId,
+          followUp: {
+            messageId: MessageId.make("message-queued"),
+            text: "and the tests too",
+            attachments: [],
+            ...(origin.composer !== undefined ? { composer: origin.composer } : {}),
+            ...(origin.fromAgentThread
+              ? {
+                  fromThread: {
+                    threadId: ThreadId.make("thread-lead"),
+                    requestId: ChildRequestId.make("request-1"),
+                    kind: "request" as const,
+                  },
+                }
+              : {}),
+            runtimeMode: DEFAULT_COMPOSER_RUNTIME_MODE,
+            interactionMode: DEFAULT_INTERACTION_MODE,
+            createdAt: "2026-02-27T00:00:01.000Z",
+          },
+        }),
+        localEnvironmentId,
+      );
+    // Queued behind a running turn, steered in, or accepted: each is the person writing.
+    expect(flagOf(queued({ composer: "typed" }))).toBeUndefined();
+    const steer = {
+      threadId,
+      turnId: TurnId.make("turn-1"),
+      messageId: MessageId.make("message-steer"),
+      role: "user" as const,
+      text: "steer it",
+      sentFrom: { kind: "phone" as const },
+      createdAt: "2026-02-27T00:00:02.000Z",
+    };
+    expect(
+      flagOf(
+        applyOrchestrationEvent(
+          loose,
+          makeEvent("thread.follow-up-submitted", steer),
+          localEnvironmentId,
+        ),
+      ),
+    ).toBeUndefined();
+    expect(
+      flagOf(
+        applyOrchestrationEvent(
+          loose,
+          makeEvent("thread.follow-up-accepted", steer),
+          localEnvironmentId,
+        ),
+      ),
+    ).toBeUndefined();
+    // The agent that started it writing there leaves it under that agent's Stop.
+    expect(flagOf(queued({ fromAgentThread: true }))).toBe(true);
+  });
+
   it("adds accepted follow-ups as inline user messages", () => {
     const threadId = ThreadId.make("thread-1");
     const turnId = TurnId.make("turn-1");

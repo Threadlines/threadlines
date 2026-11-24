@@ -38,10 +38,25 @@ export function sameCheckBacks(
         checkBack.description === other.description &&
         checkBack.prompt === other.prompt &&
         checkBack.cron === other.cron &&
-        checkBack.durable === other.durable
+        checkBack.durable === other.durable &&
+        (checkBack.dormant === true) === (other.dormant === true)
       );
     })
   );
+}
+
+/**
+ * The agent's check-backs after its runtime ended: jobs that die with the
+ * runtime are gone, and saved jobs stay listed as dormant so they no longer
+ * count as live until that agent runs again and reports its list afresh.
+ */
+export function markCheckBacksDormant(
+  current: ReadonlyArray<OrchestrationCheckBack>,
+  participantId: ThreadParticipantId | null,
+): ReadonlyArray<OrchestrationCheckBack> {
+  return current
+    .filter((checkBack) => checkBack.participantId === participantId && checkBack.durable)
+    .map((checkBack) => (checkBack.dormant === true ? checkBack : { ...checkBack, dormant: true }));
 }
 
 /**
@@ -94,11 +109,12 @@ export function runtimeCheckBackOwed(
 /**
  * Whether one of the thread's agents can still wake itself up. A job saved
  * to the project counts too: in a room, the thread's session says nothing of
- * the other agents' runtimes, where it may still fire. A stop counts it as
+ * the other agents' runtimes, where it may still fire. One marked dormant
+ * can't: the runtime that could fire it has ended. A stop counts the rest as
  * work to stop.
  */
 export function hasLiveCheckBack(thread: {
-  readonly checkBacks?: ReadonlyArray<OrchestrationCheckBack> | undefined;
+  readonly checkBacks?: ReadonlyArray<Pick<OrchestrationCheckBack, "dormant">> | undefined;
 }): boolean {
-  return (thread.checkBacks ?? []).length > 0;
+  return (thread.checkBacks ?? []).some((checkBack) => checkBack.dormant !== true);
 }

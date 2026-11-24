@@ -108,9 +108,15 @@ import { makeSingleFlight } from "../orchestration/Layers/BootstrapTurnStartRuns
 import { ForwardedGrantCap } from "./forwardedCalls.ts";
 import { type FoundComputer, type OtherComputersShape, peerAgentOf } from "./OtherComputers.ts";
 import {
+  isStillGoing,
+  stillGoingInputOfShell,
+  stopReachOf,
+} from "@threadlines/shared/childThreads";
+import {
   OUTSIDE_ALREADY_QUEUED,
   outsideCeilingDetail,
   outsideQueuedOf,
+  outsideStopRefusal,
   outsideTurnBusy,
 } from "../orchestration/outsideTurns.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -2343,20 +2349,37 @@ export const makeConnectToolHandlers = (
           request === null
             ? Effect.succeed(result)
             : forget(caller, request.requestId).pipe(Effect.as(result));
+        const origin = outsideOrigin(caller, gated.grant);
         const stopped = yield* deps.engine
           .dispatch({
             type: "thread.turn.interrupt",
             commandId,
             threadId: thread.id,
             ...(turnId !== undefined ? { turnId } : {}),
-            fromOutside: outsideOrigin(caller, gated.grant),
+            fromOutside: origin,
             createdAt: isoOf(yield* nowMillis),
           })
           .pipe(Effect.result);
         if (stopped._tag === "Success") {
+          // Threads under this one above this agent's limit were left running
+          // by the decider; name them in the answer.
+          const projectThreads = yield* deps
+            .listThreads({ projectIds: [thread.projectId] })
+            .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<OrchestrationThreadShell>));
+          const leftRunning = stopReachOf(projectThreads, thread.id)
+            .map((entry) => entry.thread)
+            .filter(
+              (child) =>
+                isStillGoing(stillGoingInputOfShell(child)) &&
+                outsideStopRefusal(child, origin) !== null,
+            );
+          const detail =
+            leftRunning.length === 0
+              ? "Stopped. A later thread_send starts it again."
+              : `Stopped. Left running (above your access limit): ${leftRunning.map((entry) => `'${entry.title}'`).join(", ")}.`;
           return yield* answered({
             outcome: "stopped",
-            detail: "Stopped. A later thread_send starts it again.",
+            detail,
             threadId: thread.id,
           });
         }

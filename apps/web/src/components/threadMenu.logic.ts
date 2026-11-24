@@ -1,6 +1,9 @@
-import type { ContextMenuItem } from "@threadlines/contracts";
+import type { ContextMenuItem, ThreadId } from "@threadlines/contracts";
+import { type FamilyMember, isStillGoing, stopReachOf } from "@threadlines/shared/childThreads";
 
 import { LEAD_MENU_SUBLABEL, leadMenuLabel, type LeadMenuState } from "../leadChat";
+import type { SidebarThreadSummary } from "../types";
+import { stillGoingInputOfSummary } from "./Sidebar.logic";
 
 /** Everything a thread's menu can do. Every surface that offers it offers the same. */
 export type ThreadMenuAction =
@@ -32,8 +35,11 @@ export interface ThreadMenuFacts {
   readonly attachedChild: boolean;
   /** A separated child whose parent could take it back; `refusal` says why it can't now. */
   readonly putBack: { readonly parentTitle: string; readonly refusal: string | null } | null;
-  /** Threads it started that are still at work. */
-  readonly workingChildCount: number;
+  /**
+   * Threads its Stop would stop (`countThreadsToStop`): one that only checks
+   * back, one started without report back, and one on a linked computer included.
+   */
+  readonly stopCount: number;
   readonly moveOffered: boolean;
   /** Its agent is mid-turn: archiving waits until it stops. */
   readonly running: boolean;
@@ -44,6 +50,50 @@ export interface ThreadMenuFacts {
     readonly canMoveUp: boolean;
     readonly canMoveDown: boolean;
   } | null;
+}
+
+/**
+ * How many threads "Stop N working threads" and the family row's Stop button
+ * stop: what an id-less `thread.children.stop` on `thread` targets.
+ * - Every thread its Stop reaches on this computer that is still going, by
+ *   the server's own walk (`stopReachOf`) and test (`isStillGoing`), threads
+ *   started without report back that the user hasn't written in included.
+ * - Each child on a linked computer it has a request open with: that request
+ *   is settled and the child stopped there.
+ * - Each child started here that is still being set up, with no thread yet.
+ * `threads` is every thread the app holds.
+ */
+export function countThreadsToStop(
+  threads: Iterable<SidebarThreadSummary>,
+  thread: Pick<
+    SidebarThreadSummary,
+    "environmentId" | "id" | "remoteChildren" | "localChildStarts"
+  >,
+  now: string,
+): number {
+  const members: FamilyMember[] = [];
+  const summaries = new Map<ThreadId, SidebarThreadSummary>();
+  for (const candidate of threads) {
+    if (candidate.environmentId !== thread.environmentId) continue;
+    summaries.set(candidate.id, candidate);
+    members.push({
+      id: candidate.id,
+      parentThreadId: candidate.parentThreadId ?? null,
+      attachedToParent: candidate.attachedToParent ?? false,
+      stopsWithParent: candidate.stopsWithParent,
+      createdAt: candidate.createdAt,
+    });
+  }
+  const here = stopReachOf(members, thread.id).filter((member) => {
+    const summary = summaries.get(member.thread.id);
+    return summary !== undefined && isStillGoing(stillGoingInputOfSummary(summary, now));
+  }).length;
+  // Absent `followed` is an older server's: it says nothing, so the request is taken as open.
+  const linked = (thread.remoteChildren ?? []).filter((child) => child.followed !== false).length;
+  const settingUp = (thread.localChildStarts ?? []).filter(
+    (start) => !summaries.has(start.childThreadId),
+  ).length;
+  return here + linked + settingUp;
 }
 
 /**
@@ -121,10 +171,10 @@ export function describeThreadMenu(facts: ThreadMenuFacts): ContextMenuItem<Thre
       disabled: refusal !== null,
     });
   }
-  if (facts.workingChildCount > 0) {
+  if (facts.stopCount > 0) {
     family.push({
       id: "stop-children",
-      label: `Stop ${facts.workingChildCount} working ${facts.workingChildCount === 1 ? "thread" : "threads"}`,
+      label: `Stop ${facts.stopCount} working ${facts.stopCount === 1 ? "thread" : "threads"}`,
     });
   }
   items.push(...asGroup(family));
