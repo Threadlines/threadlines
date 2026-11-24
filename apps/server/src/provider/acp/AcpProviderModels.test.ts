@@ -79,6 +79,125 @@ describe("GENERIC_ACP_MODEL_OPTION_MAPPING", () => {
       ]),
     ).toEqual([{ configId: "provider", value: "codex" }]);
   });
+
+  it("keeps recognized thought_level ids and normalizes custom ACP thought_level ids onto reasoningEffort", () => {
+    const antigravityOptions = [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "gemini-4-neon",
+        options: [{ value: "gemini-4-neon", name: "Gemini 4 Neon" }],
+      },
+      {
+        id: "thought_level",
+        name: "Thinking Level",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { value: "xhigh", name: "Extra" },
+          { value: "high", name: "High" },
+          { value: "medium", name: "Medium" },
+          { value: "low", name: "Low" },
+        ],
+      },
+    ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+
+    const capabilities =
+      GENERIC_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(antigravityOptions);
+    const descriptor = capabilities.optionDescriptors?.[0];
+    expect(descriptor).toEqual({
+      id: "thought_level",
+      label: "Thinking Level",
+      type: "select",
+      currentValue: "high",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High", isDefault: true },
+        { id: "xhigh", label: "Extra" },
+      ],
+    });
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(antigravityOptions, [
+        { id: "thought_level", value: "xhigh" },
+      ]),
+    ).toEqual([{ configId: "thought_level", value: "xhigh" }]);
+
+    const vendorEffortOptions = [
+      {
+        id: "reasoning_effort",
+        name: "Reasoning Effort",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { value: "high", name: "High" },
+          { value: "low", name: "Low" },
+        ],
+      },
+    ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(
+        vendorEffortOptions,
+      ).optionDescriptors?.map((entry) => entry.id),
+    ).toEqual(["reasoningEffort"]);
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(vendorEffortOptions, [
+        { id: "reasoningEffort", value: "low" },
+      ]),
+    ).toEqual([{ configId: "reasoning_effort", value: "low" }]);
+    // Saved selections written under the raw vendor id still apply.
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(vendorEffortOptions, [
+        { id: "reasoning_effort", value: "high" },
+      ]),
+    ).toEqual([{ configId: "reasoning_effort", value: "high" }]);
+  });
+
+  it("drops a single-choice thought_level option and keeps already-known reasoning ids", () => {
+    const singleChoice = [
+      {
+        id: "thought_level",
+        name: "Thinking Level",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: [{ value: "high", name: "High" }],
+      },
+    ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(singleChoice)
+        .optionDescriptors,
+    ).toEqual([]);
+
+    const customCommunity = [
+      {
+        id: "thinking_budget",
+        name: "Thinking",
+        category: "thought_level",
+        type: "select",
+        currentValue: "medium",
+        options: [
+          { value: "low", name: "Low" },
+          { value: "medium", name: "Medium" },
+          { value: "high", name: "High" },
+        ],
+      },
+    ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+    expect(
+      NATIVE_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(
+        customCommunity,
+      ).optionDescriptors?.map((d) => d.id),
+    ).toEqual(["reasoningEffort"]);
+    expect(
+      NATIVE_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(customCommunity, [
+        { id: "reasoningEffort", value: "high" },
+      ]),
+    ).toEqual([{ configId: "thinking_budget", value: "high" }]);
+  });
 });
 
 describe("buildAcpModelsFromConfigOptions", () => {

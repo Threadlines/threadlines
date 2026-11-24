@@ -122,10 +122,16 @@ import type {
   AcpProviderProbeOutcome,
 } from "./AcpProviderDescriptor.ts";
 import {
+  acpThoughtLevelDescriptorId,
   flattenSessionConfigSelectOptions,
+  hasAcpModelCapabilities,
   selectConfigOptionCurrentValue,
 } from "./AcpProviderModels.ts";
-import { type AcpToolCallState, findModelConfigOption } from "./AcpRuntimeModel.ts";
+import {
+  type AcpToolCallState,
+  findModelConfigOption,
+  findThoughtLevelConfigOption,
+} from "./AcpRuntimeModel.ts";
 import type { AcpSessionRuntimeShape } from "./AcpSessionRuntime.ts";
 import { ProviderSetupError } from "../Errors.ts";
 
@@ -339,13 +345,23 @@ export function antigravityModelsFromChoices(
 const modelChoices = (configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>) =>
   flattenSessionConfigSelectOptions(findModelConfigOption(configOptions));
 
+/**
+ * Whether a model list has at least one family split into multiple
+ * effort-suffixed entries ("Gemini 3.8 Flash (High)" and "(Low)"). A modern
+ * catalog with a single unrelated entry like "GPT-OSS 120B (Medium)" is not
+ * a legacy effort-in-name catalog.
+ */
+function hasFoldableAntigravityModels(choices: ReadonlyArray<AntigravityModelChoice>): boolean {
+  return foldAntigravityModels(choices).some(
+    (family) => family.variants.filter((variant) => variant.effort !== "").length >= 2,
+  );
+}
+
 /** The session's `thought_level` option: the selected model's reasoning levels. */
 export function antigravityThoughtLevels(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
 ): AntigravityThoughtLevels | undefined {
-  const option = configOptions.find(
-    (candidate) => candidate.category === "thought_level" && candidate.type === "select",
-  );
+  const option = findThoughtLevelConfigOption(configOptions);
   const options = flattenSessionConfigSelectOptions(option);
   if (!option || options.length === 0) return undefined;
   const currentValue = selectConfigOptionCurrentValue(option);
@@ -364,8 +380,9 @@ function thoughtLevelCapabilities(levels: AntigravityThoughtLevels | null): Mode
   return createModelCapabilities({
     optionDescriptors: [
       {
-        // The session option's own id: the generic mapping sends a selection back to it.
-        id: levels.configId,
+        // Canonical reasoning id so EffortMeter and reasoning helpers recognize it;
+        // GENERIC_ACP_MODEL_OPTION_MAPPING maps selections back onto `levels.configId`.
+        id: acpThoughtLevelDescriptorId(levels.configId),
         label: levels.name,
         type: "select",
         options: levels.options.map((option) =>
@@ -440,9 +457,10 @@ export function nextAntigravityCatalog(
  */
 export function isAntigravityCatalogComplete(catalog: AntigravityCatalogCache): boolean {
   if (catalog.probed === true) return true;
-  if (catalog.choices.some((choice) => EFFORT_NAME.test(choice.name.trim()))) return true;
   const levels = catalog.thoughtLevels;
-  if (!levels) return false;
+  if (!levels || Object.keys(levels).length === 0) {
+    return hasFoldableAntigravityModels(catalog.choices);
+  }
   return catalog.choices.every((choice) => choice.value in levels);
 }
 
@@ -460,7 +478,12 @@ export const probeAntigravityModelOptions = (
     const modelOption = findModelConfigOption(initialOptions);
     const choices = flattenSessionConfigSelectOptions(modelOption);
     if (!modelOption || choices.length === 0) return undefined;
-    if (choices.some((choice) => EFFORT_NAME.test(choice.name.trim()))) return undefined;
+    if (
+      antigravityThoughtLevels(initialOptions) === undefined &&
+      hasFoldableAntigravityModels(choices)
+    ) {
+      return undefined;
+    }
 
     const currentValue = selectConfigOptionCurrentValue(modelOption);
     const modelOptions: Array<AcpModelOptions> = [];
@@ -1370,15 +1393,15 @@ export function makeAntigravityDescriptor(
         return probed.modelOptions;
       }),
     // Older agents name the level in the model: fold those. Newer agents are
-    // probed once per catalog in `listModelOptions` and read from disk thereafter.
-    enrichDiscoveredModels: (models) =>
-      Effect.succeed(
-        models.some((model) => EFFORT_NAME.test(model.name.trim()))
-          ? antigravityModelsFromChoices(
-              models.map((model) => ({ value: model.slug, name: model.name })),
-            )
+    // probed once per catalog in `discoverModelOptions` and read from disk thereafter.
+    enrichDiscoveredModels: (models) => {
+      const choices = models.map((model) => ({ value: model.slug, name: model.name }));
+      return Effect.succeed(
+        !models.some(hasAcpModelCapabilities) && hasFoldableAntigravityModels(choices)
+          ? antigravityModelsFromChoices(choices)
           : models,
-      ),
+      );
+    },
     modelCapabilitiesVaryByModel: false,
     resolveModelId: resolveAntigravityModelId,
   };

@@ -64,6 +64,7 @@ const REASONING_LEVEL_RANK: ReadonlyMap<string, number> = new Map([
   ["xhigh", 5],
   ["extrahigh", 5],
   ["max", 6],
+  ["ultra", 7],
 ]);
 
 const reasoningLevelRank = (id: string) =>
@@ -345,6 +346,9 @@ export function getProviderOptionCurrentLabel(
   return descriptor.options.find((option) => option.id === currentValue)?.label;
 }
 
+/** Canonical option id for reasoning effort when normalizing provider options. */
+export const CANONICAL_REASONING_OPTION_ID = "reasoningEffort";
+
 /** The option each provider keeps its reasoning level in. */
 const REASONING_OPTION_IDS: ReadonlySet<string> = new Set([
   "reasoningEffort",
@@ -366,6 +370,11 @@ export function findReasoningOptionDescriptor(
     (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
       descriptor.type === "select" && REASONING_OPTION_IDS.has(descriptor.id),
   );
+}
+
+/** Whether an option id is one of Threadlines' recognized reasoning level controls. */
+export function isReasoningOptionId(id: string): boolean {
+  return REASONING_OPTION_IDS.has(id);
 }
 
 /** The reasoning level among a selection's options; undefined when its provider picks. */

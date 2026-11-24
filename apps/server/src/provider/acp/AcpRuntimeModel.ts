@@ -174,6 +174,22 @@ export function isModeConfigOption(option: EffectAcpSchema.SessionConfigOption):
 }
 
 /**
+ * The config option that selects the agent's reasoning / thinking level, by
+ * ACP's standard `thought_level` category. Only select options qualify.
+ */
+export function findThoughtLevelConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): EffectAcpSchema.SessionConfigOption | undefined {
+  if (!configOptions) return undefined;
+  return configOptions.find(
+    (option) =>
+      option.category === "thought_level" &&
+      option.type === "select" &&
+      option.id.trim().length > 0,
+  );
+}
+
+/**
  * The older `modes` and `models` session fields as config options, each only
  * where the agent lists no option of its own for it. Agents driven through
  * their own controls (`sessionControls: "native"`) then need one code path:

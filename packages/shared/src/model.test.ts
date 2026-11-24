@@ -316,6 +316,51 @@ describe("descriptor helpers", () => {
     ).toEqual([{ id: "effort", value: "ultracode" }]);
   });
 
+  it("recognizes thought_level as a reasoning option", () => {
+    const antigravityCaps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "thought_level",
+          label: "Thinking Level",
+          type: "select",
+          options: [
+            { id: "high", label: "High", isDefault: true },
+            { id: "low", label: "Low" },
+          ],
+          currentValue: "high",
+        },
+      ],
+    });
+    expect(findReasoningOptionDescriptor(antigravityCaps.optionDescriptors ?? [])?.id).toBe(
+      "thought_level",
+    );
+    expect(offersSelectedReasoning(antigravityCaps, [{ id: "thought_level", value: "low" }])).toBe(
+      true,
+    );
+  });
+
+  it("orders ultra above max in ascending reasoning levels", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "ultra", label: "Ultra" },
+            { id: "low", label: "Low" },
+            { id: "max", label: "Max" },
+          ],
+          currentValue: "max",
+        },
+      ],
+    });
+    const descriptor = caps.optionDescriptors?.[0];
+    expect(
+      descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [],
+    ).toEqual(["low", "max", "ultra"]);
+  });
+
   it("builds wire-format option selections from descriptors", () => {
     const descriptors = getProviderOptionDescriptors({
       caps: codexCaps,
