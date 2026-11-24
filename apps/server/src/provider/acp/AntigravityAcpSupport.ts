@@ -1204,6 +1204,7 @@ export function makeAntigravityDescriptor(
     classifyPermissionRequest: antigravityQuestion,
     classifyElicitationForm: extractAntigravityElicitationForm,
     permissionOptionWarning: antigravityOptionWarning,
+    clientSessionApprovals: true,
     onEphemeralSessionClosed: (sessionId) =>
       removeAntigravitySessionFiles(paths.profileDir, sessionId),
     cancellationNotice: "The request was cancelled by the client.",

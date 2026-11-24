@@ -564,7 +564,7 @@ const program = Effect.gen(function* () {
               { optionId: "deny", name: "Deny", kind: "reject_once" },
             ],
           });
-        // Threadlines room tool: auto-approved once even in Supervised mode.
+        // Threadlines room tool (legacy call_mcp_tool wrapper): auto-approved once even in Supervised mode.
         yield* ask({
           toolCallId: "call_room",
           title: "MCP Tool room_ask",
@@ -576,7 +576,23 @@ const program = Effect.gen(function* () {
             Arguments: { agent: "Codex", question: "Ready?" },
           },
         });
-        // Threadlines browser tool: must still ask in Supervised mode.
+        // Direct HTTP MCP room tool (`agy acp` 1.5 shape): auto-approved once without asking.
+        yield* ask({
+          toolCallId: "call_room_direct",
+          title: "Run mcp_threadlines_room_room_diff",
+          kind: "other",
+          status: "pending",
+          rawInput: { view: "status", toolSummary: "Check git status" },
+        });
+        // Direct HTTP MCP browser tool: must still ask in Supervised mode.
+        yield* ask({
+          toolCallId: "call_browser_direct",
+          title: "Run mcp_threadlines_browser_browser_snapshot",
+          kind: "other",
+          status: "pending",
+          rawInput: { toolSummary: "Read page" },
+        });
+        // Threadlines browser tool (wrapper): must still ask in Supervised mode.
         yield* ask({
           toolCallId: "call_browser",
           title: "MCP Tool browser_status",
@@ -601,6 +617,102 @@ const program = Effect.gen(function* () {
           },
         });
         yield* say(sessionId, "Done.");
+        yield* modelCallEnds(sessionId);
+        return { stopReason: "end_turn" as const };
+      }
+      if (scenario === "session-approvals") {
+        const ask = (
+          toolCall: AcpSchema.ToolCallUpdate,
+          warning?: { readonly title: string; readonly message: string },
+        ) =>
+          agent.client.requestPermission({
+            sessionId,
+            toolCall,
+            options: [
+              {
+                optionId: "allow",
+                name: "Allow",
+                kind: "allow_once",
+                ...(warning ? { _meta: { "agy.security.warning": warning } } : {}),
+              },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          });
+        if (promptsSeen === 1) {
+          yield* ask(
+            {
+              toolCallId: "call_gh_view_1",
+              title: "gh pr view 101 --json state",
+              kind: "execute",
+              status: "pending",
+              rawInput: { CommandLine: "gh pr view 101 --json state" },
+            },
+            { title: "Network access", message: "Runs outside the terminal sandbox." },
+          );
+          // Covered by the `gh pr view` session grant.
+          yield* ask({
+            toolCallId: "call_gh_view_2",
+            title: "gh pr view 102 --json body",
+            kind: "execute",
+            status: "pending",
+            rawInput: { CommandLine: "gh pr view 102 --json body" },
+          });
+          // Mutating sibling: must still ask.
+          yield* ask({
+            toolCallId: "call_gh_merge",
+            title: "gh pr merge 101 --squash",
+            kind: "execute",
+            status: "pending",
+            rawInput: { CommandLine: "gh pr merge 101 --squash" },
+          });
+          // Two concurrent browser_snapshot calls: granting the first resolves both.
+          yield* Effect.all(
+            [
+              ask({
+                toolCallId: "call_snap_1",
+                title: "Run mcp_threadlines_browser_browser_snapshot",
+                kind: "other",
+                status: "pending",
+                rawInput: { tabId: "t1" },
+              }),
+              ask({
+                toolCallId: "call_snap_2",
+                title: "Run mcp_threadlines_browser_browser_snapshot",
+                kind: "other",
+                status: "pending",
+                rawInput: { tabId: "t2" },
+              }),
+            ],
+            { concurrency: "unbounded" },
+          );
+          // Subsequent browser_snapshot is auto-approved; browser_click still asks.
+          yield* ask({
+            toolCallId: "call_snap_3",
+            title: "Run mcp_threadlines_browser_browser_snapshot",
+            kind: "other",
+            status: "pending",
+            rawInput: { tabId: "t3" },
+          });
+          yield* ask({
+            toolCallId: "call_click",
+            title: "Run mcp_threadlines_browser_browser_click",
+            kind: "other",
+            status: "pending",
+            rawInput: { target: "btn" },
+          });
+          yield* say(sessionId, "Turn 1 done.");
+          yield* modelCallEnds(sessionId);
+          return { stopReason: "end_turn" as const };
+        }
+        // Second turn (sent in plan mode): prior `gh pr view` grant must not auto-approve.
+        yield* ask({
+          toolCallId: "call_gh_view_plan",
+          title: "gh pr view 103 --json state",
+          kind: "execute",
+          status: "pending",
+          rawInput: { CommandLine: "gh pr view 103 --json state" },
+        });
+        yield* say(sessionId, "Plan turn done.");
         yield* modelCallEnds(sessionId);
         return { stopReason: "end_turn" as const };
       }

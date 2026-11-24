@@ -112,6 +112,7 @@ import {
   isAcpAuthRequiredError,
   mapAcpToAdapterError,
 } from "./AcpAdapterSupport.ts";
+import { acpSessionApprovalGrantKey, isAcpSessionApprovalGranted } from "./AcpSessionApprovals.ts";
 import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
@@ -277,6 +278,8 @@ export interface AcpAdapterOptions<Settings extends AcpProviderSettings> {
 interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
   readonly kind: string | "unknown";
+  /** Re-checks if a client-side session grant added by another approval covers this pending card. */
+  readonly grantIfCovered?: () => Effect.Effect<void>;
 }
 
 interface PendingUserInput {
@@ -334,6 +337,10 @@ interface AcpSessionContext {
   readonly acpSessionId: string;
   /** Attached Threadlines MCP servers pre-approved without asking (room, pages, commands, device). */
   readonly preapprovedMcpServers: ReadonlySet<string>;
+  /** Client-side session approval grants remembered in memory (`descriptor.clientSessionApprovals`). */
+  readonly sessionApprovalGrants: Set<string>;
+  /** Interaction mode of the active prompt (`plan` disables client-side session approval auto-grants). */
+  activeInteractionMode: ProviderInteractionMode | undefined;
   /** What the agent's `initialize` answer says it reads in a prompt. */
   readonly promptCapabilities: EffectAcpSchema.PromptCapabilities | null | undefined;
   /** The subagents this session's tool calls launched (`subagents`), as the thread shows them. */
@@ -2369,13 +2376,32 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       (option) => !descriptor.isLastingPermissionOption!(option),
                     )
                   : params.options;
+                // Require an explicit allow_once option (never a synthetic fallback
+                // for an empty options list) and no agent-native allow_always.
+                const hasExplicitAllowOnce = offered.some(
+                  (option) => option.kind === "allow_once" && option.optionId.trim().length > 0,
+                );
+                const clientSessionApprovalEligible =
+                  descriptor.clientSessionApprovals === true &&
+                  ownSession &&
+                  ctx.activeInteractionMode !== "plan" &&
+                  !offered.some((option) => option.kind === "allow_always") &&
+                  hasExplicitAllowOnce;
+                const sessionGranted =
+                  clientSessionApprovalEligible &&
+                  isAcpSessionApprovalGranted(
+                    permissionRequest,
+                    ctx.sessionApprovalGrants,
+                    ctx.cwdRoots,
+                  );
                 // Full access answers each request once: an "always" option
                 // would leave a standing rule behind in the agent's own store.
                 // A request with no "once" to give goes to the user instead.
                 if (
                   input.runtimeMode === "full-access" ||
                   planFileWrite ||
-                  preapprovedThreadlinesMcpCall
+                  preapprovedThreadlinesMcpCall ||
+                  sessionGranted
                 ) {
                   const once = acpPermissionOptionId("accept", offered);
                   if (once !== undefined) return selected(once);
@@ -2387,25 +2413,65 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                   requestId: ApprovalRequestId.make(crypto.randomUUID()),
                   permissionRequest,
                 };
-                pendingApprovals.set(card.requestId, { decision, kind: permissionRequest.kind });
+                const grantIfCovered =
+                  clientSessionApprovalEligible && ctx !== undefined
+                    ? () =>
+                        ctx.activeInteractionMode !== "plan" &&
+                        isAcpSessionApprovalGranted(
+                          card.permissionRequest,
+                          ctx.sessionApprovalGrants,
+                          ctx.cwdRoots,
+                        )
+                          ? Deferred.succeed(decision, "accept").pipe(Effect.asVoid)
+                          : Effect.void
+                    : undefined;
+                pendingApprovals.set(card.requestId, {
+                  decision,
+                  kind: permissionRequest.kind,
+                  ...(grantIfCovered ? { grantIfCovered } : {}),
+                });
                 const warningFor = (kind: EffectAcpSchema.PermissionOption["kind"]) => {
                   const option = offered.find((candidate) => candidate.kind === kind);
                   return option ? descriptor.permissionOptionWarning?.(option) : undefined;
                 };
                 const acceptForSessionWarning = warningFor("allow_always");
                 const acceptWarning = warningFor("allow_once");
-                const decisionWarnings =
-                  acceptForSessionWarning || acceptWarning
-                    ? {
-                        ...(acceptWarning ? { accept: acceptWarning } : {}),
-                        ...(acceptForSessionWarning
-                          ? { acceptForSession: acceptForSessionWarning }
-                          : {}),
-                      }
-                    : undefined;
-                const availableDecisions = acpAvailableDecisions(offered);
+                const baseDecisions = acpAvailableDecisions(offered);
+                const decisionsForCard = () => {
+                  if (
+                    !baseDecisions ||
+                    !clientSessionApprovalEligible ||
+                    baseDecisions.includes("acceptForSession") ||
+                    acpSessionApprovalGrantKey(card.permissionRequest, ctx.cwdRoots) === undefined
+                  ) {
+                    return baseDecisions;
+                  }
+                  return [
+                    ...baseDecisions.filter((candidate) => candidate !== "accept"),
+                    "acceptForSession" as const,
+                    ...(baseDecisions.includes("accept") ? (["accept"] as const) : []),
+                  ];
+                };
                 const openCard = (turnId: TurnId | undefined) =>
                   Effect.gen(function* () {
+                    const availableDecisions = decisionsForCard();
+                    // A synthesized session grant authorizes the same `allow_once`
+                    // option, so it must carry any warning attached to `allow_once`.
+                    const effectiveSessionWarning =
+                      acceptForSessionWarning ??
+                      (clientSessionApprovalEligible &&
+                      availableDecisions?.includes("acceptForSession")
+                        ? acceptWarning
+                        : undefined);
+                    const decisionWarnings =
+                      effectiveSessionWarning || acceptWarning
+                        ? {
+                            ...(acceptWarning ? { accept: acceptWarning } : {}),
+                            ...(effectiveSessionWarning
+                              ? { acceptForSession: effectiveSessionWarning }
+                              : {}),
+                          }
+                        : undefined;
                     yield* offerRuntimeEvent(
                       makeAcpRequestOpenedEvent({
                         stamp: yield* makeEventStamp(),
@@ -2454,7 +2520,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       );
                       card.requestId = ApprovalRequestId.make(crypto.randomUUID());
                       card.permissionRequest = next;
-                      pendingApprovals.set(card.requestId, { decision, kind: next.kind });
+                      pendingApprovals.set(card.requestId, {
+                        decision,
+                        kind: next.kind,
+                        ...(grantIfCovered ? { grantIfCovered } : {}),
+                      });
                       yield* openCard(turnId);
                     }),
                 };
@@ -2472,6 +2542,21 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     }),
                   ),
                 );
+                if (
+                  resolved === "acceptForSession" &&
+                  clientSessionApprovalEligible &&
+                  ctx.activeInteractionMode !== "plan"
+                ) {
+                  const grantKey = acpSessionApprovalGrantKey(card.permissionRequest, ctx.cwdRoots);
+                  if (grantKey !== undefined) {
+                    ctx.sessionApprovalGrants.add(grantKey);
+                    for (const [otherId, other] of pendingApprovals) {
+                      if (otherId !== card.requestId && other.grantIfCovered) {
+                        yield* other.grantIfCovered();
+                      }
+                    }
+                  }
+                }
                 const turnId = yield* Deferred.await(shown);
                 yield* offerRuntimeEvent(
                   makeAcpRequestResolvedEvent({
@@ -2615,6 +2700,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             lastContextUsageKey: undefined,
             acpSessionId: started.sessionId,
             preapprovedMcpServers,
+            sessionApprovalGrants: new Set(),
+            activeInteractionMode: undefined,
             promptCapabilities: started.initializeResult.agentCapabilities?.promptCapabilities,
             subagentRoster:
               descriptor.subagents === undefined
@@ -4106,6 +4193,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         }
         // The mode and model the message asks for, set before its prompt goes out.
         const configure = Effect.gen(function* () {
+          ctx.activeInteractionMode = input.interactionMode;
           yield* applyRequestedSessionConfiguration({
             runtime: ctx.acp,
             threadId: input.threadId,

@@ -218,13 +218,19 @@ turn stays open (see Turns above).
 
 ### Tool rows
 
-- An MCP tool the agent reaches through `call_mcp_tool` shows as that tool (server and name), not
-  as a shell command, and doesn't hold the turn like a command. Only a call that is plainly that
-  wrapper does: one that also carries a command or an edit stays a command or an edit. Threadlines'
-  own room, page, command, and device tools are approved once without asking (matching Claude and
-  Codex); browser tools and other MCP servers still ask in Supervised mode, naming the server, the
-  tool, and its arguments. If a later update shows the call is something else, it goes back to what
-  that update says.
+- An MCP tool the agent reaches through `call_mcp_tool` or as a direct Threadlines MCP tool (`Run
+  mcp_<server>_<tool>`) shows as that tool (server and name), not as a shell command, and doesn't
+  hold the turn like a command. Only a call that is plainly that wrapper or a known Threadlines MCP
+  tool does: one that also carries an unexpected command or an edit stays a command or an edit.
+  Threadlines' own room, page, command, and device tools are approved once without asking (matching
+  Claude and Codex); browser tools and other MCP servers still ask in Supervised and Auto modes,
+  naming the server, the tool, and its arguments. If a later update shows the call is something
+  else, it goes back to what that update says.
+- `agy acp` sends only allow-once and deny options on permission requests. Threadlines adds Always
+  allow this session in memory for the open session (scoped to the MCP tool, strictly read-only
+  `git`/`gh` subcommand in the same working directory, exact command in the same working directory,
+  or verified workspace edit) and answers matching requests once automatically; grants clear when
+  the session ends, are never written to disk, and stay off in Plan mode.
 - An approval shows everything known about its call, even when Antigravity's request names only
   the call. If an update while you decide shows the approval is for something else, the card is
   withdrawn and asked again in the new words; the old card can't be answered.

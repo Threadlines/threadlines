@@ -17,9 +17,28 @@
  *
  * @module provider/antigravity/AntigravityToolCalls
  */
+import {
+  AGENT_PAGE_PREVIEW_TOOL_NAME,
+  AGENT_PAGE_SHOW_TOOL_NAME,
+} from "@threadlines/shared/agentPages";
 import * as Schema from "effect/Schema";
 import * as EffectAcpSchema from "effect-acp/schema";
 
+import { BrowserScreenshotToolkit, BrowserStandardToolkit } from "../../mcp/browserTools.ts";
+import { ASK_USER_TO_RUN_TOOL_NAME, COMMANDS_MCP_SERVER_NAME } from "../../mcp/commandTools.ts";
+import { DEVICE_MCP_SERVER_NAME, DEVICE_TOOLS } from "../../mcp/deviceTools.ts";
+import { BROWSER_MCP_SERVER_NAME } from "../../mcp/McpHttpServer.ts";
+import { PAGES_MCP_SERVER_NAME } from "../../mcp/pageTools.ts";
+import {
+  ROOM_MCP_SERVER_NAME,
+  ROOM_TOOL_NAMES,
+  SCHEDULED_RUN_TOOL_NAME,
+} from "../../mcp/roomToolAccess.ts";
+import {
+  THEME_FIND_VSCODE_TOOL_NAME,
+  THEME_PREVIEW_TOOL_NAME,
+  THEME_SHOW_TOOL_NAME,
+} from "../../mcp/themeTools.ts";
 import { type AcpToolCallState, makeToolCallState } from "../acp/AcpRuntimeModel.ts";
 
 /** The most characters one tool text field keeps, its cut marker included. */
@@ -40,6 +59,7 @@ const COMMAND_LINE_FIELDS = new Set([
   "commandLine",
   "command",
   "cmd",
+  "executable",
 ]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -274,16 +294,78 @@ export interface AntigravityToolCallUpdate {
 /** The input of a `call_mcp_tool` call holds these and nothing else. */
 const WRAPPER_INPUT_KEYS = new Set(["ServerName", "ToolName", "Arguments"]);
 
-/** A sign that the call runs a command or changes a file: never an MCP wrapper then. */
-function commandOrEditEvidence(update: AntigravityToolCallUpdate): boolean {
+const DIRECT_MCP_TITLE_PREFIX = "Run mcp_";
+
+/**
+ * Exact lookup of `Run mcp_<server>_<tool>` titles for Threadlines' own MCP
+ * servers, built from the canonical tool inventories so an external MCP server
+ * whose name shares a prefix (e.g. `threadlines_room_extra` + `status`) can
+ * never collide with `threadlines_room`.
+ */
+const DIRECT_THREADLINES_MCP_TITLES: ReadonlyMap<
+  string,
+  { readonly server: string; readonly tool: string }
+> = (() => {
+  const entries = new Map<string, { readonly server: string; readonly tool: string }>();
+  const register = (server: string, tools: ReadonlyArray<string>) => {
+    for (const tool of tools) {
+      entries.set(`${DIRECT_MCP_TITLE_PREFIX}${server}_${tool}`, { server, tool });
+    }
+  };
+  register(ROOM_MCP_SERVER_NAME, [...ROOM_TOOL_NAMES, SCHEDULED_RUN_TOOL_NAME]);
+  register(PAGES_MCP_SERVER_NAME, [
+    AGENT_PAGE_SHOW_TOOL_NAME,
+    AGENT_PAGE_PREVIEW_TOOL_NAME,
+    THEME_SHOW_TOOL_NAME,
+    THEME_PREVIEW_TOOL_NAME,
+    THEME_FIND_VSCODE_TOOL_NAME,
+  ]);
+  register(COMMANDS_MCP_SERVER_NAME, [ASK_USER_TO_RUN_TOOL_NAME]);
+  register(
+    DEVICE_MCP_SERVER_NAME,
+    DEVICE_TOOLS.map((tool) => tool.name),
+  );
+  register(BROWSER_MCP_SERVER_NAME, [
+    ...Object.keys(BrowserStandardToolkit.tools),
+    ...Object.keys(BrowserScreenshotToolkit.tools),
+  ]);
+  return entries;
+})();
+
+/** A sign that the call edits a file or runs a terminal. */
+function editOrTerminalEvidence(update: AntigravityToolCallUpdate): boolean {
   if (update.kind === "edit" || update.kind === "delete" || update.kind === "move") return true;
   if (update.content?.some((entry) => entry.type === "diff" || entry.type === "terminal"))
     return true;
-  if ((update.locations?.length ?? 0) > 0) return true;
-  return (
-    isRecord(update.rawInput) &&
-    Object.keys(update.rawInput).some((key) => COMMAND_LINE_FIELDS.has(key))
+  return (update.locations?.length ?? 0) > 0;
+}
+
+/** Whether merged `toolCall` data already carries edit, diff, terminal, or file location evidence. */
+function mergedEditOrTerminalEvidence(toolCall: AcpToolCallState): boolean {
+  if (toolCall.kind === "edit" || toolCall.kind === "delete" || toolCall.kind === "move") {
+    return true;
+  }
+  const { content, locations } = toolCall.data;
+  if (
+    Array.isArray(content) &&
+    content.some((entry) => isRecord(entry) && (entry.type === "diff" || entry.type === "terminal"))
+  ) {
+    return true;
+  }
+  return Array.isArray(locations) && locations.length > 0;
+}
+
+function hasUnexpectedCommandField(rawInput: unknown, allowsLowercaseCommand: boolean): boolean {
+  if (!isRecord(rawInput)) return false;
+  return Object.keys(rawInput).some(
+    (key) => COMMAND_LINE_FIELDS.has(key) && !(allowsLowercaseCommand && key === "command"),
   );
+}
+
+/** A sign that the call runs a command or changes a file: never an MCP wrapper then. */
+function commandOrEditEvidence(update: AntigravityToolCallUpdate): boolean {
+  if (editOrTerminalEvidence(update)) return true;
+  return hasUnexpectedCommandField(update.rawInput, false);
 }
 
 /** Server and tool names kept, at most this long. */
@@ -315,6 +397,36 @@ export function antigravityProxiedMcpTool(
 }
 
 /**
+ * The Threadlines MCP tool `agy acp` 1.5 invokes directly as `kind: "other"`,
+ * `title: "Run mcp_<server>_<tool>"` with tool arguments in `rawInput`.
+ * Matches only the exact registered Threadlines server/tool inventory and
+ * rejects edits, terminals, file locations, non-object inputs, and unexpected
+ * command-line fields (`ask_user_to_run`'s own `command` parameter is the sole
+ * exception).
+ */
+export function antigravityDirectMcpTool(
+  update: AntigravityToolCallUpdate,
+): AntigravityProxiedMcpTool | undefined {
+  if (update.kind !== "other" || editOrTerminalEvidence(update)) return undefined;
+  if (typeof update.title !== "string") return undefined;
+  const matched = DIRECT_THREADLINES_MCP_TITLES.get(update.title);
+  if (matched === undefined) return undefined;
+  if (update.rawInput !== undefined && update.rawInput !== null && !isRecord(update.rawInput)) {
+    return undefined;
+  }
+  const allowsLowercaseCommand =
+    matched.server === COMMANDS_MCP_SERVER_NAME && matched.tool === ASK_USER_TO_RUN_TOOL_NAME;
+  if (hasUnexpectedCommandField(update.rawInput, allowsLowercaseCommand)) {
+    return undefined;
+  }
+  return {
+    server: matched.server,
+    tool: matched.tool,
+    ...(isRecord(update.rawInput) ? { arguments: update.rawInput } : {}),
+  };
+}
+
+/**
  * What an approval for the call shows: the server and the tool first, then
  * its arguments, so a cut short loses the arguments' tail, never the target.
  */
@@ -324,9 +436,12 @@ export function antigravityMcpToolLabel(mcp: AntigravityProxiedMcpTool): string 
 }
 
 /** The MCP tool a call was already shown as, from the fields `asMcpToolCall` set. */
-function shownMcpTool(toolCall: AcpToolCallState): { server: string; tool: string } | undefined {
+function shownMcpTool(
+  toolCall: AcpToolCallState,
+): { server: string; tool: string; mode: "wrapper" | "direct" } | undefined {
   const { server, tool } = toolCall.data;
-  return typeof server === "string" && typeof tool === "string" ? { server, tool } : undefined;
+  if (typeof server !== "string" || typeof tool !== "string") return undefined;
+  return { server, tool, mode: toolCall.mcpCallMode ?? "wrapper" };
 }
 
 /**
@@ -336,20 +451,23 @@ function shownMcpTool(toolCall: AcpToolCallState): { server: string; tool: strin
 function asMcpToolCall(
   toolCall: AcpToolCallState,
   names: { readonly server: string; readonly tool: string },
+  mode: "wrapper" | "direct",
 ): AcpToolCallState {
   const { item: _item, command: _command, ...data } = toolCall.data;
   const { command: _shown, ...rest } = toolCall;
   const input = isRecord(data.rawInput) ? data.rawInput : undefined;
+  const rawArgs = mode === "wrapper" ? input?.Arguments : input;
   const mcp: AntigravityProxiedMcpTool = {
     server: boundAntigravityCommandLine(names.server, NAME_LIMIT),
     tool: boundAntigravityCommandLine(names.tool, NAME_LIMIT),
-    ...(isRecord(input?.Arguments) ? { arguments: input.Arguments } : {}),
+    ...(isRecord(rawArgs) ? { arguments: rawArgs } : {}),
   };
   const { arguments: _old, ...withoutArguments } = data;
   return {
     ...rest,
     kind: "other",
     itemType: "mcp_tool_call",
+    mcpCallMode: mode,
     // The approval panel names a tool call by its title.
     title: mcp.tool,
     detail: antigravityMcpToolLabel(mcp),
@@ -392,37 +510,87 @@ function withoutMcpTool(
     content: data.content as ReadonlyArray<EffectAcpSchema.ToolCallContent> | undefined,
     locations: data.locations as ReadonlyArray<EffectAcpSchema.ToolCallLocation> | undefined,
   });
-  const { itemType: _itemType, ...rest } = toolCall;
+  const { itemType: _itemType, mcpCallMode: _mcpCallMode, ...rest } = toolCall;
   return rebuilt ?? { ...rest, kind, data: { ...data, kind } };
+}
+
+function isWrapperInput(value: unknown, shown: { server: string; tool: string }): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    Object.keys(value).every((key) => WRAPPER_INPUT_KEYS.has(key)) &&
+    value.ServerName === shown.server &&
+    value.ToolName === shown.tool &&
+    (value.Arguments === undefined || isRecord(value.Arguments))
+  );
 }
 
 /**
  * A tool call as the timeline should show it, given the update that just
  * arrived, as the agent sent it. A call the update positively shows to be
- * `call_mcp_tool` is that MCP tool, with its server and tool, not a command;
- * a later update with no command or edit about it keeps it so, with the
- * newest arguments. Anything else stays, or goes back to, what the agent
- * described.
+ * `call_mcp_tool` or a direct Threadlines MCP tool (`Run mcp_<server>_<tool>`)
+ * is that MCP tool, with its server and tool, not a command; a later update
+ * with no command or edit about it keeps it so, with the newest arguments.
+ * Anything else stays, or goes back to, what the agent described.
  */
 export function normalizeAntigravityToolCall(
   toolCall: AcpToolCallState,
   update: AntigravityToolCallUpdate,
 ): AcpToolCallState {
-  const named = antigravityProxiedMcpTool(update);
-  if (named !== undefined) return asMcpToolCall(toolCall, named);
   const shown = shownMcpTool(toolCall);
-  if (shown === undefined) return toolCall;
-  const restated = isRecord(update.rawInput) ? update.rawInput : undefined;
-  const conflicting =
-    commandOrEditEvidence(update) ||
-    (update.kind !== undefined && update.kind !== null && update.kind !== "execute") ||
-    (update.title !== undefined &&
-      update.title !== null &&
-      update.title !== `MCP Tool ${shown.tool}`) ||
-    (restated !== undefined &&
-      (!Object.keys(restated).every((key) => WRAPPER_INPUT_KEYS.has(key)) ||
-        restated.ServerName !== shown.server ||
-        restated.ToolName !== shown.tool ||
-        (restated.Arguments !== undefined && !isRecord(restated.Arguments))));
-  return conflicting ? withoutMcpTool(toolCall, update) : asMcpToolCall(toolCall, shown);
+
+  // If the call is already established as an MCP tool, validate strictly against
+  // that same wire form (`wrapper` vs `direct`) and merged state.
+  if (shown !== undefined) {
+    const restated = isRecord(update.rawInput) ? update.rawInput : undefined;
+    if (shown.mode === "direct") {
+      const allowsLowercaseCommand =
+        shown.server === COMMANDS_MCP_SERVER_NAME && shown.tool === ASK_USER_TO_RUN_TOOL_NAME;
+      const conflictingDirect =
+        mergedEditOrTerminalEvidence(toolCall) ||
+        editOrTerminalEvidence(update) ||
+        (update.kind !== undefined && update.kind !== null && update.kind !== "other") ||
+        (update.title !== undefined &&
+          update.title !== null &&
+          update.title !== `${DIRECT_MCP_TITLE_PREFIX}${shown.server}_${shown.tool}`) ||
+        (update.rawInput !== undefined && update.rawInput !== null && !isRecord(update.rawInput)) ||
+        hasUnexpectedCommandField(restated, allowsLowercaseCommand) ||
+        hasUnexpectedCommandField(toolCall.data.rawInput, allowsLowercaseCommand);
+      return conflictingDirect
+        ? withoutMcpTool(toolCall, update)
+        : asMcpToolCall(toolCall, shown, "direct");
+    }
+
+    const conflictingWrapper =
+      mergedEditOrTerminalEvidence(toolCall) ||
+      commandOrEditEvidence(update) ||
+      hasUnexpectedCommandField(toolCall.data.rawInput, false) ||
+      (update.kind !== undefined && update.kind !== null && update.kind !== "execute") ||
+      (update.title !== undefined &&
+        update.title !== null &&
+        update.title !== `MCP Tool ${shown.tool}`) ||
+      (restated !== undefined && !isWrapperInput(restated, shown));
+    return conflictingWrapper
+      ? withoutMcpTool(toolCall, update)
+      : asMcpToolCall(toolCall, shown, "wrapper");
+  }
+
+  // Never upgrade a call whose merged state already carries edit, diff,
+  // terminal, or file location evidence into an MCP tool call.
+  if (mergedEditOrTerminalEvidence(toolCall)) return toolCall;
+
+  const named = antigravityProxiedMcpTool(update);
+  if (named !== undefined) {
+    return hasUnexpectedCommandField(toolCall.data.rawInput, false)
+      ? toolCall
+      : asMcpToolCall(toolCall, named, "wrapper");
+  }
+  const direct = antigravityDirectMcpTool(update);
+  if (direct !== undefined) {
+    const allowsLowercaseCommand =
+      direct.server === COMMANDS_MCP_SERVER_NAME && direct.tool === ASK_USER_TO_RUN_TOOL_NAME;
+    return hasUnexpectedCommandField(toolCall.data.rawInput, allowsLowercaseCommand)
+      ? toolCall
+      : asMcpToolCall(toolCall, direct, "direct");
+  }
+  return toolCall;
 }
