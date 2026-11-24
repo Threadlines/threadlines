@@ -20,6 +20,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 
 import { createBuildConfig } from "./build-desktop-artifact.ts";
+import { releasePackageFiles } from "./update-release-package-versions.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const vpBinary = resolve(
@@ -29,28 +30,39 @@ const vpBinary = resolve(
 );
 const vpCommand = existsSync(vpBinary) ? vpBinary : "vp";
 
-const workspaceFiles = [
+const rootWorkspaceFiles = [
   "package.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
-  "apps/server/package.json",
-  "apps/desktop/package.json",
-  "apps/web/package.json",
-  "apps/marketing/package.json",
   "docs/package.json",
   "oxlint-plugin-threadlines/package.json",
-  "packages/client-runtime/package.json",
-  "packages/contracts/package.json",
-  "packages/shared/package.json",
-  "packages/ssh/package.json",
-  "packages/tailscale/package.json",
-  "packages/effect-acp/package.json",
-  "packages/effect-codex-app-server/package.json",
   "scripts/package.json",
 ] as const;
 
+function collectWorkspaceManifestFiles(): ReadonlyArray<string> {
+  const files: string[] = [...rootWorkspaceFiles];
+
+  for (const parentDir of ["apps", "packages"] as const) {
+    const absoluteParent = resolve(repoRoot, parentDir);
+    if (!existsSync(absoluteParent)) {
+      continue;
+    }
+    for (const entry of readdirSync(absoluteParent, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const relativeManifest = `${parentDir}/${entry.name}/package.json`;
+      if (existsSync(resolve(repoRoot, relativeManifest))) {
+        files.push(relativeManifest);
+      }
+    }
+  }
+
+  return files;
+}
+
 function copyWorkspaceManifestFixture(targetRoot: string): void {
-  for (const relativePath of workspaceFiles) {
+  for (const relativePath of collectWorkspaceManifestFiles()) {
     const sourcePath = resolve(repoRoot, relativePath);
     const destinationPath = resolve(targetRoot, relativePath);
     mkdirSync(dirname(destinationPath), { recursive: true });
@@ -373,22 +385,41 @@ try {
     },
   );
 
-  rmSync(resolve(tempRoot, "pnpm-lock.yaml"), { force: true });
+  // Verify every releasable manifest received the smoke version and stayed
+  // valid against the frozen lockfile completely offline, without hitting
+  // registry.npmjs.org on every CI run.
+  for (const relativeManifest of releasePackageFiles) {
+    const manifest = JSON.parse(readFileSync(resolve(tempRoot, relativeManifest), "utf8")) as {
+      readonly version?: unknown;
+    };
+    assertEqual(
+      manifest.version,
+      "9.9.9-smoke.0",
+      `Expected ${relativeManifest} to be updated to the smoke version.`,
+    );
+  }
 
   if (process.platform === "win32") {
-    execSync(`"${vpCommand}" install --lockfile-only --ignore-scripts`, {
-      cwd: tempRoot,
-      stdio: "inherit",
-    });
+    execSync(
+      `"${vpCommand}" install --frozen-lockfile --lockfile-only --ignore-scripts --offline`,
+      {
+        cwd: tempRoot,
+        stdio: "inherit",
+      },
+    );
   } else {
-    execFileSync(vpCommand, ["install", "--lockfile-only", "--ignore-scripts"], {
-      cwd: tempRoot,
-      stdio: "inherit",
-    });
+    execFileSync(
+      vpCommand,
+      ["install", "--frozen-lockfile", "--lockfile-only", "--ignore-scripts", "--offline"],
+      {
+        cwd: tempRoot,
+        stdio: "inherit",
+      },
+    );
   }
 
   const lockfile = readFileSync(resolve(tempRoot, "pnpm-lock.yaml"), "utf8");
-  assertContains(lockfile, "lockfileVersion:", "Expected pnpm-lock.yaml to be regenerated.");
+  assertContains(lockfile, "lockfileVersion:", "Expected pnpm-lock.yaml to stay intact.");
 
   const nightlyReleaseMetadata = execFileSync(
     process.execPath,
