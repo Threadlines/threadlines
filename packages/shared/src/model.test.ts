@@ -316,26 +316,27 @@ describe("descriptor helpers", () => {
     ).toEqual([{ id: "effort", value: "ultracode" }]);
   });
 
-  it("reads legacy thought_level selections onto a reasoningEffort descriptor", () => {
-    const descriptors = getProviderOptionDescriptors({
-      caps: codexCaps,
-      selections: [{ id: "thought_level", value: "xhigh" }],
-    });
-
-    expect(descriptors[0]?.currentValue).toBe("xhigh");
-    expect(buildProviderOptionSelectionsFromDescriptors(descriptors)).toEqual([
-      { id: "reasoningEffort", value: "xhigh" },
-    ]);
-
-    // An explicit reasoningEffort selection wins over a stale thought_level one.
-    const overridden = getProviderOptionDescriptors({
-      caps: codexCaps,
-      selections: [
-        { id: "thought_level", value: "xhigh" },
-        { id: "reasoningEffort", value: "high" },
+  it("recognizes thought_level as a reasoning option", () => {
+    const antigravityCaps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "thought_level",
+          label: "Thinking Level",
+          type: "select",
+          options: [
+            { id: "high", label: "High", isDefault: true },
+            { id: "low", label: "Low" },
+          ],
+          currentValue: "high",
+        },
       ],
     });
-    expect(overridden[0]?.currentValue).toBe("high");
+    expect(findReasoningOptionDescriptor(antigravityCaps.optionDescriptors ?? [])?.id).toBe(
+      "thought_level",
+    );
+    expect(offersSelectedReasoning(antigravityCaps, [{ id: "thought_level", value: "low" }])).toBe(
+      true,
+    );
   });
 
   it("orders ultra above max in ascending reasoning levels", () => {

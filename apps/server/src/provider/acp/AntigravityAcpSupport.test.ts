@@ -175,7 +175,7 @@ describe("Antigravity reasoning levels", () => {
       "claude-sonnet-4-6",
       "gpt-6-1",
     ]);
-    expect(levels("gemini-4-argon")).toEqual(["reasoningEffort", ["low", "medium", "high"]]);
+    expect(levels("gemini-4-argon")).toEqual(["thought_level", ["low", "medium", "high"]]);
     expect(levels("claude-sonnet-4-6")).toBeUndefined();
     // Not seen yet: the current model's levels stand in (here, none).
     expect(levels("gpt-6-1")).toBeUndefined();

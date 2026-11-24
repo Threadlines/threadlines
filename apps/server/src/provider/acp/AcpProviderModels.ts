@@ -72,7 +72,7 @@ export function selectConfigOptionCurrentValue(
 /**
  * Descriptor id for an ACP `thought_level` select option. Keeps ids Threadlines
  * already recognizes as reasoning (`effort`, `reasoning`, `reasoningEffort`,
- * `variant`), and maps any other id (`thought_level`, `reasoning_effort`, or a
+ * `variant`, `thought_level`), and maps any other id (`reasoning_effort` or a
  * community agent's custom id) to `reasoningEffort` so the EffortMeter and
  * reasoning helpers recognize it.
  */

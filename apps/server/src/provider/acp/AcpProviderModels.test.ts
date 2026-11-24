@@ -80,7 +80,7 @@ describe("GENERIC_ACP_MODEL_OPTION_MAPPING", () => {
     ).toEqual([{ configId: "provider", value: "codex" }]);
   });
 
-  it("maps ACP thought_level options onto reasoningEffort and sends selections back under the agent's id", () => {
+  it("keeps recognized thought_level ids and normalizes custom ACP thought_level ids onto reasoningEffort", () => {
     const antigravityOptions = [
       {
         id: "model",
@@ -109,7 +109,7 @@ describe("GENERIC_ACP_MODEL_OPTION_MAPPING", () => {
       GENERIC_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(antigravityOptions);
     const descriptor = capabilities.optionDescriptors?.[0];
     expect(descriptor).toEqual({
-      id: "reasoningEffort",
+      id: "thought_level",
       label: "Thinking Level",
       type: "select",
       currentValue: "high",
@@ -122,15 +122,39 @@ describe("GENERIC_ACP_MODEL_OPTION_MAPPING", () => {
     });
     expect(
       GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(antigravityOptions, [
-        { id: "reasoningEffort", value: "xhigh" },
+        { id: "thought_level", value: "xhigh" },
       ]),
     ).toEqual([{ configId: "thought_level", value: "xhigh" }]);
-    // Saved selections written under the old raw id still apply.
+
+    const vendorEffortOptions = [
+      {
+        id: "reasoning_effort",
+        name: "Reasoning Effort",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { value: "high", name: "High" },
+          { value: "low", name: "Low" },
+        ],
+      },
+    ] satisfies ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
     expect(
-      GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(antigravityOptions, [
-        { id: "thought_level", value: "medium" },
+      GENERIC_ACP_MODEL_OPTION_MAPPING.capabilitiesFromConfigOptions(
+        vendorEffortOptions,
+      ).optionDescriptors?.map((entry) => entry.id),
+    ).toEqual(["reasoningEffort"]);
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(vendorEffortOptions, [
+        { id: "reasoningEffort", value: "low" },
       ]),
-    ).toEqual([{ configId: "thought_level", value: "medium" }]);
+    ).toEqual([{ configId: "reasoning_effort", value: "low" }]);
+    // Saved selections written under the raw vendor id still apply.
+    expect(
+      GENERIC_ACP_MODEL_OPTION_MAPPING.configUpdatesFromSelections(vendorEffortOptions, [
+        { id: "reasoning_effort", value: "high" },
+      ]),
+    ).toEqual([{ configId: "reasoning_effort", value: "high" }]);
   });
 
   it("drops a single-choice thought_level option and keeps already-known reasoning ids", () => {
