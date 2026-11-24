@@ -246,8 +246,9 @@ export const ClientSettingsSchema = Schema.Struct({
     .pipe(Schema.withDecodingDefault(Effect.succeed(12))),
   // xterm's screen reader mode: an accessible copy of the terminal's text.
   terminalScreenReaderMode: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  // What the send button does with a message typed while a turn runs: add it
-  // to that turn, or hold it for the next one. The last choice sticks.
+  // Global default for what Enter does when sending a message while a turn
+  // runs: add it to that turn ("steer"), or hold it for the next one ("queue").
+  // Applies to all providers; the composer's send menu can override it per thread.
   followUpDelivery: FollowUpDelivery.pipe(Schema.withDecodingDefault(Effect.succeed("steer"))),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model

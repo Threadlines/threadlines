@@ -1506,6 +1506,8 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
       await waitForComposerText("and update the changelog");
       await page.getByLabelText("Choose how this message is sent").click({ timeout: 5_000 });
       await page.getByRole("menuitemradio", { name: "Send when done" }).click({ timeout: 5_000 });
+      // Overriding in the composer does not change the global setting.
+      expect(getClientSettings().followUpDelivery).toBe("steer");
       await page.getByLabelText("Send when this reply finishes").click({ timeout: 5_000 });
       await vi.waitFor(() => {
         expect(dispatched("thread.follow-up.submit")).toMatchObject({
@@ -1575,10 +1577,27 @@ describe("ChatView (full app): plans, questions and turn controls", () => {
       await sendWith("steer this one", "{Enter}");
       expect(submitted().at(-1)).toMatchObject({ delivery: "steer" });
 
-      // The menu says "Send when done".
+      // The global default is "Send when done", and untouched threads follow it.
       updateSettings({ followUpDelivery: "queue" });
       await sendWith("correct it now", "{Control>}{Enter}{/Control}");
       expect(submitted().at(-1)).toMatchObject({ delivery: "steer" });
+      expect(getClientSettings().followUpDelivery).toBe("queue");
+
+      // Overriding back to "Steer now" in the composer overrides only this thread.
+      await page
+        .getByTestId("composer-editor")
+        .fill("override for this thread", { timeout: 5_000 });
+      await waitForComposerText("override for this thread");
+      await page.getByLabelText("Choose how this message is sent").click({ timeout: 5_000 });
+      await page.getByRole("menuitemradio", { name: "Steer now" }).click({ timeout: 5_000 });
+      await page.getByLabelText("Steer active turn").click({ timeout: 5_000 });
+      await vi.waitFor(() => {
+        expect(submitted().at(-1)).toMatchObject({
+          delivery: "steer",
+          message: { text: "override for this thread" },
+        });
+      });
+      await waitForComposerText("");
       expect(getClientSettings().followUpDelivery).toBe("queue");
     } finally {
       updateSettings({ followUpDelivery: "steer" });

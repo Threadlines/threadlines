@@ -31,6 +31,7 @@ import {
   agentThreadsShareWorktrees,
 } from "@threadlines/shared/serverSettings";
 import {
+  FOLLOW_UP_DELIVERY_LABELS,
   OPEN_LINKS_IN_LABELS,
   placeById,
   TIMESTAMP_FORMAT_LABELS,
@@ -1220,6 +1221,46 @@ function UnifiedSwitchRow({
   );
 }
 
+export function FollowUpDeliveryRow() {
+  const followUpDelivery = useSettings((settings) => settings.followUpDelivery);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      place="general.followUpDelivery"
+      resetAction={
+        followUpDelivery !== DEFAULT_UNIFIED_SETTINGS.followUpDelivery ? (
+          <SettingResetButton
+            label="sending while an agent works"
+            onClick={() =>
+              updateSettings({
+                followUpDelivery: DEFAULT_UNIFIED_SETTINGS.followUpDelivery,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={followUpDelivery}
+          onValueChange={(value) => {
+            if (value === "steer" || value === "queue") {
+              updateSettings({ followUpDelivery: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-40" aria-label="Sending while an agent works">
+            <SelectValue>{FOLLOW_UP_DELIVERY_LABELS[followUpDelivery]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="steer">{FOLLOW_UP_DELIVERY_LABELS.steer}</SelectItem>
+            <SelectItem value="queue">{FOLLOW_UP_DELIVERY_LABELS.queue}</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
 export function TimeFormatRow() {
   const timestampFormat = useSettings((settings) => settings.timestampFormat);
   const { updateSettings } = useUpdateSettings();
@@ -1393,6 +1434,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         <SettingsSection place="general.chatAndDiffs">
           {/* On a phone this one is the paired computer's: it sits under This Computer. */}
           {!isPhoneSurface ? <AssistantStreamingRow /> : null}
+          <FollowUpDeliveryRow />
           <TimeFormatRow />
           <ChangedFilesInChatRow />
           <ShownPlace place="general.agentsPanel">

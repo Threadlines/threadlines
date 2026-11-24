@@ -169,6 +169,8 @@ const ACP_SESSION_COMMANDS_INTERVAL_MS = 5_000;
  * conversation in a fresh one.
  */
 const ACP_CANCEL_DEADLINE = Duration.seconds(15);
+/** How long a steer waits to be written to the agent before failing so Stop is never blocked. */
+const ACP_STEER_DELIVERY_TIMEOUT = Duration.seconds(15);
 /** How long a revert lets the agent stop its work before its session ends. */
 const ACP_REVERT_WIND_DOWN = Duration.seconds(3);
 /**
@@ -420,7 +422,7 @@ interface AcpMachinePrompt {
   readonly resolvedModel: string | undefined;
   /** The context preamble this prompt carries; back to the session if it never goes out. */
   readonly preamble: string | undefined;
-  /** A send's: hears whether its prompt was written to the agent (`reportDelivery`). */
+  /** A send's or a steer's: hears whether its prompt was written to the agent (`reportDelivery`). */
   readonly delivered: Deferred.Deferred<boolean> | undefined;
 }
 
@@ -467,6 +469,8 @@ interface AcpMachineSession {
       readonly model: string | undefined;
       readonly resolvedModel: string | undefined;
       readonly planMode: AcpPromptPlanMode | undefined;
+      /** Set when the turn's opening prompt failed before being written to the agent. */
+      setupFailed?: Cause.Cause<unknown>;
     }
   >;
   readonly timers: Map<AcpTurnTimer, Fiber.Fiber<void, never>>;
@@ -478,6 +482,8 @@ interface AcpMachineSession {
    * every prompt the machine sent before it.
    */
   readonly outbox: Queue.Queue<number>;
+  /** Interrupted on session stop before draining `sessionStopping` so no late write slips through. */
+  senderFiber?: Fiber.Fiber<void, never>;
 }
 
 /**
@@ -1454,6 +1460,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         // after everything already queued (an answer and its usage, a turn's
         // end), and only then is it stopped.
         const machine = ctx.machine;
+        if (machine?.senderFiber !== undefined) {
+          yield* Fiber.interrupt(machine.senderFiber);
+        }
         const drained =
           machine === undefined || ctx.notificationFiber === undefined
             ? false
@@ -2790,7 +2799,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
 
           ctx.notificationFiber = notificationFiber;
           if (ctx.machine !== undefined) {
-            yield* runPromptSender(ctx, ctx.machine).pipe(Effect.forkIn(sessionScope));
+            ctx.machine.senderFiber = yield* runPromptSender(ctx, ctx.machine).pipe(
+              Effect.forkIn(sessionScope),
+            );
           }
           sessions.set(input.threadId, ctx);
           // A turn the machine holds open waits on no request the exit would
@@ -3180,11 +3191,25 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     ) =>
       Effect.gen(function* () {
         const sent = machine.prompts.get(prompt);
-        if (sent === undefined) return;
+        if (sent === undefined || ctx.stopped) return;
+        const turnData = machine.turns.get(sent.turnId);
+        // If the turn's opening prompt failed before reaching the agent, a
+        // steer queued behind it must never go out alone under the old mode.
+        if (sent.index > 1 && turnData?.setupFailed !== undefined) {
+          const setupFailure = turnData.setupFailed;
+          yield* ctx.acp.inOrder(
+            Effect.suspend(() => {
+              sent.exit = Exit.failCause(setupFailure);
+              return answerMachinePrompt(ctx, prompt);
+            }).pipe(Effect.asVoid),
+          );
+          return;
+        }
         const exit = yield* Effect.exit(
           Effect.gen(function* () {
             if (sent.configure !== undefined) yield* sent.configure;
             yield* seam({ point: "promptSetup", prompt });
+            if (ctx.stopped) return;
             // Where the agent's records stand as this prompt goes out.
             sent.watch =
               machineOptions?.outcome === undefined
@@ -3200,6 +3225,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       }).pipe(Effect.as(undefined)),
                     ),
                   );
+            if (ctx.stopped) return;
             const promptMeta = descriptor.promptMeta?.(sent.turnId);
             yield* ctx.acp.promptInOrder(
               prompt,
@@ -3213,6 +3239,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         );
         // A stopping session ends the turn itself.
         if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return;
+        if (sent.index === 1 && turnData !== undefined) {
+          turnData.setupFailed = exit.cause;
+        }
         yield* ctx.acp.inOrder(
           Effect.suspend(() => {
             sent.exit = Exit.failCause(exit.cause);
@@ -3763,6 +3792,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           "turn/steer",
         );
         const reply = yield* Deferred.make<AcpMachineReply>();
+        const delivered = yield* Deferred.make<boolean>();
         const steerId = `steer:${crypto.randomUUID()}`;
         machine.callers.set(steerId, {
           prompt: {
@@ -3771,7 +3801,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             model: undefined,
             resolvedModel: undefined,
             preamble: undefined,
-            delivered: undefined,
+            delivered,
           },
           planMode: undefined,
           reply,
@@ -3796,6 +3826,26 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             descriptor.presentation.displayName,
             answer.rejected,
           );
+        }
+        // Returns once the prompt was written to the agent: if the process
+        // exited or the session stopped first, the steer never reached it.
+        // Bounded so a stalled stdin pipe cannot block Stop behind this call.
+        const written = yield* Deferred.await(delivered).pipe(
+          Effect.timeoutOption(ACP_STEER_DELIVERY_TIMEOUT),
+        );
+        if (Option.isNone(written)) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/steer",
+            detail: `${descriptor.presentation.displayName} did not accept this message in time.`,
+          });
+        }
+        if (!written.value) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/steer",
+            detail: `${descriptor.presentation.displayName} stopped before this message could be sent.`,
+          });
         }
         return {
           threadId: input.threadId,
