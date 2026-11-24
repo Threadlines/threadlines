@@ -553,7 +553,7 @@ describe("Antigravity turns", () => {
       expect(completedTurns(agy.events)[0]?.payload).toMatchObject({
         state: "failed",
         failureCategory: "rate_limit",
-        usageLimit: { resetsAt: "2026-11-24T01:05:00.000Z" },
+        usageLimit: { resetsAt: "2099-01-01T00:00:00.000Z" },
       });
     }).pipe(Effect.scoped, Effect.provide(testServices)),
   );
