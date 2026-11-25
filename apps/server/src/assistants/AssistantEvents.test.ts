@@ -70,6 +70,7 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
  * events from memory, after `readDelayMs`.
  */
 const makeHarness = Effect.gen(function* () {
+  const testScope = yield* Effect.scope;
   const events: OrchestrationEvent[] = [];
   const published = yield* PubSub.unbounded<OrchestrationEvent>();
   /** `readDelayMs`: how long reading the event log takes (to make the settle loop win a race). */
@@ -116,9 +117,9 @@ const makeHarness = Effect.gen(function* () {
     ),
     Layer.provide(Layer.succeedContext(storage)),
   );
-  /** Starts the record in its own scope; closing it is the process stopping. */
+  /** Starts the record in a child scope; closing it is the process stopping, and the test scope cleans up any running boot when the test ends. */
   const boot = Effect.gen(function* () {
-    const scope = yield* Scope.make();
+    const scope = yield* Scope.fork(testScope);
     const context = yield* Layer.buildWithScope(layer, scope);
     const record = yield* AssistantEvents.pipe(Effect.provide(context));
     yield* record.start().pipe(Scope.provide(scope));
