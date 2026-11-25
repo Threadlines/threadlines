@@ -17,7 +17,6 @@ import type {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
-import { saveComposerDraftAttachments } from "../../composerDraftAttachmentSave";
 import { resolveFollowUpDelivery, useFollowUpDeliveryStore } from "../../followUpDeliveryStore";
 import { publishComposerImageSupport } from "./composerImageSupport";
 import { type PromptRecall, recallablePrompts, stepPromptRecall } from "./composerPromptRecall";
@@ -71,22 +70,17 @@ import { deriveComposerSendState, desktopCapturedScreenshotToFile } from "../Cha
 import {
   type ComposerAttachment,
   type DraftId,
-  type PersistedComposerAttachment,
-  composerAttachmentDedupKey,
-  hydrateAttachmentsFromPersisted,
+  composerDraftAttachmentCount,
   useComposerDraftStore,
   useComposerThreadDraft,
   useEffectiveComposerModelState,
 } from "../../composerDraftStore";
 import {
-  buildStashEntryContexts,
-  MAX_STASH_ENTRIES,
-  partitionStashAttachments,
-  stashEntryContextDrafts,
+  deleteStashEntryBlobs,
+  trackPendingStashRestore,
   usePromptStashStore,
   type PromptStashEntry,
 } from "../../promptStashStore";
-import { compressImageForStash, readFileForStash } from "../../lib/stashImageCompression";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../../keybindings";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import { isKeyboardOwnedByDialog } from "../../commands/shortcutBlock";
@@ -498,6 +492,7 @@ export interface ChatComposerHandle {
     selectedModelSelection: ModelSelection;
     selectedProvider: ProviderDriverKind;
     selectedModel: string;
+    selectedModelSupportsImages: boolean;
     selectedProviderModels: ReadonlyArray<ServerProvider["models"][number]>;
     skillReferences: ChatSkillReference[];
   };
@@ -885,18 +880,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const updateComposerDraftTranscriptHighlightContextNote = useComposerDraftStore(
     (store) => store.updateTranscriptHighlightContextNote,
-  );
-  const clearStashableComposerContent = useComposerDraftStore(
-    (store) => store.clearStashableComposerContent,
-  );
-  const addComposerDraftTerminalContexts = useComposerDraftStore(
-    (store) => store.addTerminalContexts,
-  );
-  const addComposerDraftTranscriptHighlightContexts = useComposerDraftStore(
-    (store) => store.addTranscriptHighlightContexts,
-  );
-  const addComposerDraftFileSelectionContext = useComposerDraftStore(
-    (store) => store.addFileSelectionContext,
   );
 
   // ------------------------------------------------------------------
@@ -1425,11 +1408,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Derived: composer send state
   // ------------------------------------------------------------------
+  const composerAttachmentSlotCount = composerDraftAttachmentCount(composerDraft);
   const composerSendState = useMemo(
     () =>
       deriveComposerSendState({
         prompt,
-        attachmentCount: composerAttachments.length,
+        attachmentCount: composerAttachmentSlotCount,
         terminalContexts: composerTerminalContexts,
         transcriptHighlightContexts: composerTranscriptHighlightContexts,
         fileSelectionContextCount: composerFileSelectionContexts.length,
@@ -1437,7 +1421,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         drawingContextCount: composerDrawingContexts.length,
       }),
     [
-      composerAttachments.length,
+      composerAttachmentSlotCount,
       composerTerminalContexts,
       composerTranscriptHighlightContexts,
       composerFileSelectionContexts.length,
@@ -1632,6 +1616,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => new Set(nonPersistedComposerImageIds),
     [nonPersistedComposerImageIds],
   );
+  const failedHydrationAttachments = useMemo(() => {
+    if (composerDraft.failedHydrationAttachmentIds.length === 0) return [];
+    const failedIds = new Set(composerDraft.failedHydrationAttachmentIds);
+    return composerDraft.persistedAttachments.filter((attachment) => failedIds.has(attachment.id));
+  }, [composerDraft.failedHydrationAttachmentIds, composerDraft.persistedAttachments]);
 
   const isComposerApprovalState = activePendingApproval !== null;
   const hasBlockingQuestion = pendingUserInputs.some((input) => input.isBlocking !== false);
@@ -2172,11 +2161,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // across threads and providers. Deliberately no model or provider: the
   // composer keeps whatever is selected right now.
   const stashEntries = usePromptStashStore((state) => state.entries);
-  const stashEntryToQueue = usePromptStashStore((state) => state.stashEntry);
   const takeStashEntry = usePromptStashStore((state) => state.takeEntry);
-  const finalizeStashEntryAttachments = usePromptStashStore(
-    (state) => state.finalizeEntryAttachments,
-  );
   // The "+" menu, and its Stashed prompts list (opened on its own by the stash
   // shortcut with nothing typed, the way the stash button used to open).
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
@@ -2186,6 +2171,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setIsStashListOpen(false);
   }, []);
   const stashInFlightRef = useRef<Set<string>>(new Set());
+  const restoringStashIdsRef = useRef<Set<string>>(new Set());
+  const activeDraftTargetKey =
+    typeof composerDraftTarget === "string"
+      ? composerDraftTarget
+      : scopedThreadKey(composerDraftTarget);
+  const activeDraftTargetKeyRef = useRef(activeDraftTargetKey);
+  useLayoutEffect(() => {
+    activeDraftTargetKeyRef.current = activeDraftTargetKey;
+  }, [activeDraftTargetKey]);
   const stashShortcutLabel = useMemo(
     () =>
       shortcutLabelForCommand(keybindings, "composer.stash", {
@@ -2198,7 +2192,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // selections is as much work to reassemble as the sentence about them.
   const composerHasStashableContent =
     prompt.trim().length > 0 ||
-    composerAttachments.length > 0 ||
+    composerAttachmentSlotCount > 0 ||
     composerTerminalContexts.length > 0 ||
     composerTranscriptHighlightContexts.length > 0 ||
     composerFileSelectionContexts.length > 0 ||
@@ -2206,153 +2200,56 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const restoreStashEntry = useCallback(
     (entry: PromptStashEntry) => {
-      // Remove first so a double activation (click + Enter) cannot restore twice.
-      const { entry: taken, durable } = takeStashEntry(entry.id);
-      if (!taken) return;
-      if (!durable) {
-        toastManager.add({
-          type: "warning",
-          title: "Restored prompt may reappear in the stash",
-          description:
-            "Browser storage rejected the update, so this entry could still be there after a reload.",
-          data: { hideCopyButton: true },
-        });
-      }
+      // Guard before any async work so a double activation (click + Enter)
+      // cannot restore the same entry twice.
+      if (restoringStashIdsRef.current.has(entry.id)) return;
+      restoringStashIdsRef.current.add(entry.id);
       closeAddMenu();
 
-      const currentPrompt = promptRef.current;
-      // An attachment-only or chip-only stash must not append blank lines to
-      // whatever is already in the composer.
-      const nextPrompt =
-        entry.prompt.length === 0
-          ? currentPrompt
-          : currentPrompt.trim().length
-            ? `${currentPrompt.replace(/\s+$/, "")}\n\n${entry.prompt}`
-            : entry.prompt;
-      const promptChanged = nextPrompt !== currentPrompt;
-      if (promptChanged) {
-        promptRef.current = nextPrompt;
-        setPrompt(nextPrompt);
-        setComposerCursor(collapseExpandedComposerCursor(nextPrompt, nextPrompt.length));
-        setComposerTrigger(null);
-      }
+      const restoreTarget = composerDraftTarget;
+      const restoreTargetKey =
+        typeof restoreTarget === "string" ? restoreTarget : scopedThreadKey(restoreTarget);
 
-      let unrestoredAttachmentNames: string[] = [];
-      if (entry.attachments.length > 0) {
-        const existingAttachments = composerAttachmentsRef.current;
-        const existingIds = new Set(existingAttachments.map((attachment) => attachment.id));
-        // The draft store also dedupes by mimeType+sizeBytes+name, so filter
-        // on the same key here. Counting a duplicate against capacity would
-        // burn a slot the store then refuses to fill, pushing a genuinely
-        // unique attachment into the overflow list for nothing.
-        const existingDedupKeys = new Set(
-          existingAttachments.map((attachment) => composerAttachmentDedupKey(attachment)),
-        );
-        const capacity = Math.max(
-          0,
-          PROVIDER_SEND_TURN_MAX_ATTACHMENTS - existingAttachments.length,
-        );
-        const pending = entry.attachments.filter(
-          (attachment) =>
-            !existingIds.has(attachment.id) &&
-            !existingDedupKeys.has(composerAttachmentDedupKey(attachment)),
-        );
-        // Anything past the attachment limit cannot be restored. The entry is
-        // already out of the queue, so report the overflow by name instead of
-        // discarding it silently.
-        unrestoredAttachmentNames = pending.slice(capacity).map((attachment) => attachment.name);
-        const restored = hydrateAttachmentsFromPersisted(pending.slice(0, capacity));
-        if (restored.length > 0) {
-          addComposerDraftAttachments(composerDraftTarget, restored);
-        }
-      }
-
-      // Chips go back through the store's own add paths, so each one is
-      // re-stamped for this thread and deduped against what is already there.
-      const chips = stashEntryContextDrafts(taken);
-      if (chips.terminalContexts.length > 0) {
-        addComposerDraftTerminalContexts(composerDraftTarget, chips.terminalContexts);
-      }
-      if (chips.transcriptHighlightContexts.length > 0) {
-        addComposerDraftTranscriptHighlightContexts(
-          composerDraftTarget,
-          chips.transcriptHighlightContexts,
-        );
-      }
-      for (const context of chips.fileSelectionContexts) {
-        addComposerDraftFileSelectionContext(composerDraftTarget, context);
-      }
-      if (chips.pickedElementContexts.length > 0) {
-        // Picked elements are set as a whole list, so merge rather than
-        // replace, and drop anything already pinned to the same element.
-        const existingPicked = composerPickedElementContextsRef.current;
-        const existingKeys = new Set(
-          existingPicked.map((context) => pickedElementContextDedupKey(context)),
-        );
-        const additions = chips.pickedElementContexts.filter((context) => {
-          const key = pickedElementContextDedupKey(context);
-          if (existingKeys.has(key)) return false;
-          existingKeys.add(key);
-          return true;
+      const restorePromise = import("./composerStashActions")
+        .then(({ runRestoreStashEntry }) =>
+          runRestoreStashEntry({
+            entry,
+            restoreTarget,
+            restoreTargetKey,
+            getActiveDraftTargetKey: () => activeDraftTargetKeyRef.current,
+            getLivePrompt: () => promptRef.current,
+            applyPromptOnActiveTarget: (nextPrompt, collapsedCursor) => {
+              promptRef.current = nextPrompt;
+              setPrompt(nextPrompt);
+              setComposerCursor(collapsedCursor);
+              setComposerTrigger(null);
+            },
+            commitPickedElementsOnActiveTarget: commitPickedElementContexts,
+            focusAfterWrite,
+          }),
+        )
+        .finally(() => {
+          restoringStashIdsRef.current.delete(entry.id);
         });
-        if (additions.length > 0) {
-          commitPickedElementContexts([...existingPicked, ...additions]);
-        }
-      }
 
-      // Each cause gets its own sentence so "too large" is never blamed for a
-      // file that actually failed to read, or for one the composer simply had
-      // no room to take back.
-      const missingReasons: string[] = [];
-      if (taken.droppedAttachmentNames.length > 0) {
-        missingReasons.push(
-          `${taken.droppedAttachmentNames.join(", ")} exceeded the stash size limit when this prompt was saved.`,
-        );
-      }
-      if (taken.unreadableAttachmentNames && taken.unreadableAttachmentNames.length > 0) {
-        missingReasons.push(
-          `${taken.unreadableAttachmentNames.join(", ")} could not be read when this prompt was saved.`,
-        );
-      }
-      if (unrestoredAttachmentNames.length > 0) {
-        missingReasons.push(
-          `${unrestoredAttachmentNames.join(", ")} could not be restored: the composer is at its ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS}-attachment limit.`,
-        );
-      }
-      if (missingReasons.length > 0) {
-        toastManager.add({
-          type: "warning",
-          title: "Some attachments were not restored",
-          description: missingReasons.join(" "),
-        });
-      }
-
-      // Only yank the caret to the end when text was actually inserted;
-      // restoring attachments alone should leave the user where they were.
-      if (promptChanged) {
-        focusAfterWrite(nextPrompt, "end");
-      }
+      trackPendingStashRestore(restoreTargetKey, restorePromise);
     },
     [
       closeAddMenu,
-      addComposerDraftAttachments,
-      addComposerDraftFileSelectionContext,
-      addComposerDraftTerminalContexts,
-      addComposerDraftTranscriptHighlightContexts,
       commitPickedElementContexts,
-      composerAttachmentsRef,
       composerDraftTarget,
-      composerPickedElementContextsRef,
       focusAfterWrite,
       promptRef,
       setPrompt,
-      takeStashEntry,
     ],
   );
 
   const deleteStashEntry = useCallback(
     (entry: PromptStashEntry) => {
-      const { durable } = takeStashEntry(entry.id);
+      const { entry: removed, durable } = takeStashEntry(entry.id);
+      if (removed && durable) {
+        void deleteStashEntryBlobs(removed);
+      }
       if (!durable) {
         toastManager.add({
           type: "warning",
@@ -2367,180 +2264,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
 
   const stashCurrentPrompt = useCallback(async () => {
-    // Inline terminal placeholders stay in the stashed text: their contexts
-    // travel with the entry, and the n-th placeholder still maps to the n-th
-    // context once both are appended back in order.
-    const stashedPrompt = promptRef.current.trim();
-    const attachments = [...composerAttachmentsRef.current];
-    const contexts = buildStashEntryContexts({
-      terminalContexts: composerTerminalContextsRef.current,
-      transcriptHighlightContexts: composerTranscriptHighlightContextsRef.current,
-      fileSelectionContexts: composerFileSelectionContextsRef.current,
-      pickedElementContexts: composerPickedElementContextsRef.current,
-    });
-    const hasChips = Object.keys(contexts).length > 0;
-    if (stashedPrompt.length === 0 && attachments.length === 0 && !hasChips) {
-      if (isAddMenuOpen) {
-        closeAddMenu();
-      } else {
-        setIsAddMenuOpen(true);
-        setIsStashListOpen(true);
-      }
-      return;
-    }
-    // A repeat press on the *same* still-unencoded snapshot would stash it
-    // twice. Guard on the snapshot itself rather than a bare boolean: once
-    // the composer has been cleared the user can type something genuinely new
-    // (or switch threads) while encoding continues, and that deserves its own
-    // entry.
-    const snapshotKey = `${String(composerDraftTarget)}${stashedPrompt}${attachments
-      .map((attachment) => attachment.id)
-      .join(",")}`;
-    if (stashInFlightRef.current.has(snapshotKey)) return;
-    stashInFlightRef.current.add(snapshotKey);
-
     const stashTarget = composerDraftTarget;
-    const entryId = randomUUID();
+    const stashTargetKey =
+      typeof stashTarget === "string" ? stashTarget : scopedThreadKey(stashTarget);
+    if (stashInFlightRef.current.has(stashTargetKey)) return;
+    stashInFlightRef.current.add(stashTargetKey);
     try {
-      // Persist the text-and-chips entry *first*, then clear. Ordering
-      // matters in both directions: writing before clearing means a crash or
-      // closed tab mid-encode still leaves the prompt recoverable, while
-      // clearing before the async attachment work means edits typed during
-      // encoding are not wiped. Attachments are appended to the stored entry
-      // as they finish encoding.
-      const { evicted, written, durable } = stashEntryToQueue({
-        id: entryId,
-        createdAt: new Date().toISOString(),
-        prompt: stashedPrompt,
-        attachments: [],
-        droppedAttachmentNames: [],
-        unreadableAttachmentNames: [],
-        pendingAttachmentCount: attachments.length,
-        ...contexts,
+      const { runStashCurrentPrompt } = await import("./composerStashActions");
+      await runStashCurrentPrompt({
+        stashTarget,
+        getActiveDraftTargetKey: () => activeDraftTargetKeyRef.current,
+        getLivePrompt: () => promptRef.current,
+        isAddMenuOpen,
+        closeAddMenu,
+        openStashList: () => {
+          setIsAddMenuOpen(true);
+          setIsStashListOpen(true);
+        },
+        clearPromptUiOnActiveTarget: (capturedRawPrompt) => {
+          if (promptRef.current === capturedRawPrompt) {
+            promptRef.current = "";
+            setComposerCursor(0);
+            setComposerTrigger(null);
+          }
+        },
       });
-
-      // Clearing the composer is only safe once the write actually landed.
-      // If it was rejected (quota) the store has already rolled itself back,
-      // so leave the composer untouched rather than making it the second
-      // casualty of a reload.
-      if (!written) {
-        toastManager.add(
-          failureNotice({
-            title: "Couldn't stash this prompt",
-            reason:
-              "Browser storage rejected the write, so the composer was left as-is. Free up site data and try again.",
-            data: { hideCopyButton: true },
-          }),
-        );
-        return;
-      }
-      // Written but only into the in-memory fallback (localStorage blocked):
-      // the entry is visible and restorable this session, so proceed with the
-      // clear, but say it will not survive a reload.
-      if (!durable) {
-        toastManager.add({
-          type: "warning",
-          title: "Stashed prompt won't survive a reload",
-          description:
-            "Browser storage is unavailable, so this stash is kept only until you close this page.",
-          data: { hideCopyButton: true },
-        });
-      }
-
-      // Drawings are deliberately left in place: the stash cannot carry their
-      // picture, so clearing them here would destroy them for good.
-      promptRef.current = "";
-      clearStashableComposerContent(stashTarget);
-      setComposerCursor(0);
-      setComposerTrigger(null);
-
-      if (evicted) {
-        toastManager.add({
-          type: "warning",
-          title: "Oldest stashed prompt discarded",
-          description: `The stash holds ${MAX_STASH_ENTRIES} prompts; the oldest was removed to make room.`,
-          data: { hideCopyButton: true },
-        });
-      }
-
-      // Images are re-encoded for the stash rather than stored verbatim: the
-      // composer allows large files, but localStorage gives the whole origin
-      // roughly 5MB. Only the stashed copy shrinks; the live attachment (and
-      // anything sent without stashing) keeps the original file.
-      const candidateAttachments: PersistedComposerAttachment[] = [];
-      const oversizedNames: string[] = [];
-      const unreadableNames: string[] = [];
-      for (const attachment of attachments) {
-        const result = attachment.mimeType.startsWith("image/")
-          ? await compressImageForStash(attachment.file)
-          : await readFileForStash(attachment.file);
-        if (!result.ok) {
-          // "too large" and "could not be read" are distinct outcomes; the
-          // restore toast reports them separately.
-          (result.reason === "too-large" ? oversizedNames : unreadableNames).push(attachment.name);
-          continue;
-        }
-        candidateAttachments.push({
-          id: attachment.id,
-          name: attachment.name,
-          mimeType: result.image.mimeType,
-          sizeBytes: result.image.sizeBytes,
-          dataUrl: result.image.dataUrl,
-        });
-      }
-      const { kept, droppedNames } = partitionStashAttachments(candidateAttachments);
-
-      const { attached, durable: attachmentsDurable } = finalizeStashEntryAttachments(entryId, {
-        attachments: kept,
-        droppedAttachmentNames: [...oversizedNames, ...droppedNames],
-        unreadableAttachmentNames: unreadableNames,
-      });
-      if (attached) {
-        // The second phase can be rejected on its own: the text entry fit, but
-        // adding attachment payloads pushed past the quota. Disk would then
-        // still hold the phase-one entry with a pending count set, which reads
-        // as an orphan after reload, so say so now. Gated on the entry write
-        // having been durable: on the in-memory fallback nothing is ever
-        // durable and the session-only warning already covered it.
-        if (!attachmentsDurable && durable && attachments.length > 0) {
-          toastManager.add({
-            type: "warning",
-            title: "Stashed attachments weren't saved",
-            description:
-              "The prompt was stashed, but browser storage rejected its attachments. They will be missing if you reload.",
-            data: { hideCopyButton: true },
-          });
-        }
-      } else if (kept.length > 0) {
-        // The entry was restored or deleted before its attachments finished
-        // encoding, so they have nowhere to land. Say so rather than letting
-        // them evaporate.
-        toastManager.add({
-          type: "warning",
-          title: "Stashed attachments didn't attach",
-          description: `That prompt was restored or deleted before ${kept.length} attachment${kept.length === 1 ? "" : "s"} finished saving. Add ${kept.length === 1 ? "it" : "them"} again if you still need ${kept.length === 1 ? "it" : "them"}.`,
-          data: { hideCopyButton: true },
-        });
-      }
     } finally {
-      // Must clear on every path: a throw that left this set would wedge this
-      // snapshot's shortcut until the composer remounts.
-      stashInFlightRef.current.delete(snapshotKey);
+      stashInFlightRef.current.delete(stashTargetKey);
     }
-  }, [
-    clearStashableComposerContent,
-    closeAddMenu,
-    composerAttachmentsRef,
-    composerDraftTarget,
-    composerFileSelectionContextsRef,
-    composerPickedElementContextsRef,
-    composerTerminalContextsRef,
-    composerTranscriptHighlightContextsRef,
-    finalizeStashEntryAttachments,
-    isAddMenuOpen,
-    promptRef,
-    stashEntryToQueue,
-  ]);
+  }, [closeAddMenu, composerDraftTarget, isAddMenuOpen, promptRef]);
 
   const stashProps = useMemo(
     () => ({
@@ -2783,9 +2535,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // the user switches threads mid-read it still finishes for the thread it
   // started in (its composer is gone, so nothing else would), and a run whose
   // list a newer change replaced finds that out itself and writes nothing.
+  const hasPersistedComposerAttachments = composerDraft.persistedAttachments.length > 0;
   useEffect(() => {
-    void saveComposerDraftAttachments(composerDraftTarget, { attachments: composerAttachments });
-  }, [composerDraftTarget, composerAttachments]);
+    if (composerAttachments.length === 0 && !hasPersistedComposerAttachments) {
+      return;
+    }
+    void import("../../composerDraftAttachmentSave").then(({ saveComposerDraftAttachments }) =>
+      saveComposerDraftAttachments(composerDraftTarget, { attachments: composerAttachments }),
+    );
+  }, [composerDraftTarget, composerAttachments, hasPersistedComposerAttachments]);
 
   // ------------------------------------------------------------------
   // Callbacks: prompt change
@@ -3211,7 +2969,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         event?.preventDefault();
         return;
       }
-      if (composerAttachments.length > 0 && !selectedModelSupportsImages) {
+      const hasImageAttachment =
+        composerAttachments.some((attachment) => attachment.type === "image") ||
+        composerDraft.persistedAttachments.some((attachment) =>
+          attachment.mimeType.startsWith("image/"),
+        );
+      if (hasImageAttachment && !selectedModelSupportsImages) {
         event?.preventDefault();
         toastManager.add({
           type: "error",
@@ -3234,7 +2997,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       activeThread?.latestTurn,
       hasBlockingQuestion,
       blurMobileComposerAfterSend,
-      composerAttachments.length,
+      composerAttachments,
+      composerDraft.persistedAttachments,
       composerSendState.hasSendableContent,
       onSend,
       selectedModelSupportsImages,
@@ -3347,7 +3111,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return false;
     }
     const nextAttachments: ComposerAttachment[] = [];
-    let nextAttachmentCount = composerAttachmentsRef.current.length;
+    let nextAttachmentCount = composerDraftAttachmentCount(
+      useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
+    );
     let error: string | null = null;
     let rejectedImageForModel = false;
     for (const file of files) {
@@ -3856,6 +3622,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         selectedModelSelection,
         selectedProvider,
         selectedModel,
+        selectedModelSupportsImages,
         selectedProviderModels,
         skillReferences: resolveComposerSkillReferences(promptRef.current, composerSkills),
       }),
@@ -3875,6 +3642,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedModel,
       selectedModelOptionsForDispatch,
       selectedModelSelection,
+      selectedModelSupportsImages,
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
@@ -4212,7 +3980,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
                 {!isComposerCollapsedMobile &&
                   !hasBlockingQuestion &&
-                  composerAttachments.length > 0 && (
+                  (composerAttachments.length > 0 || failedHydrationAttachments.length > 0) && (
                     <div className="mb-3 flex flex-wrap gap-2">
                       {composerAttachments.map((attachment) => (
                         <div
@@ -4305,10 +4073,52 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                 className="max-w-64 whitespace-normal leading-tight"
                               >
                                 Draft attachment could not be saved locally and may be lost on
-                                navigation.
+                                reload.
                               </TooltipPopup>
                             </Tooltip>
                           )}
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
+                            onClick={() => removeComposerAttachment(attachment.id)}
+                            aria-label={`Remove ${attachment.name}`}
+                          >
+                            <XIcon />
+                          </Button>
+                        </div>
+                      ))}
+                      {failedHydrationAttachments.map((attachment) => (
+                        <div
+                          key={attachment.id}
+                          className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-muted/40"
+                          title={attachment.name}
+                        >
+                          <div className="flex h-full w-full flex-col items-center justify-center gap-1 px-1 text-center">
+                            <FileIcon className="size-5 text-muted-foreground" />
+                            <span className="w-full truncate text-[9px] leading-tight text-muted-foreground/80">
+                              {attachment.name}
+                            </span>
+                          </div>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <span
+                                  role="img"
+                                  aria-label="Draft attachment failed to load"
+                                  className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
+                                >
+                                  <CircleAlertIcon className="size-3" />
+                                </span>
+                              }
+                            />
+                            <TooltipPopup
+                              side="top"
+                              className="max-w-64 whitespace-normal leading-tight"
+                            >
+                              Could not load attachment from browser storage. Reload or remove it.
+                            </TooltipPopup>
+                          </Tooltip>
                           <Button
                             variant="ghost"
                             size="icon-xs"

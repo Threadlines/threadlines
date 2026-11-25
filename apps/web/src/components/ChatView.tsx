@@ -68,6 +68,7 @@ import {
   useCallback,
   useEffect,
   useEffectEvent,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -269,12 +270,14 @@ import {
 import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerAttachment,
+  composerAttachmentFromFile,
   composerDraftActiveModelSelection,
   type DraftThreadEnvMode,
-  hydrateAttachmentsFromPersisted,
+  ensureDraftAttachmentsHydrated,
   useComposerDraftStore,
   type DraftId,
 } from "../composerDraftStore";
+import { hasPendingStashRestore, waitForPendingStashRestore } from "../promptStashStore";
 import {
   appendTerminalContextsToPrompt,
   deriveDisplayedUserMessageState,
@@ -1210,6 +1213,14 @@ export default function ChatView(props: ChatViewProps) {
         : null,
   );
   const promptRef = useRef("");
+  const activeComposerDraftTargetKey =
+    typeof composerDraftTarget === "string"
+      ? composerDraftTarget
+      : scopedThreadKey(composerDraftTarget);
+  const activeComposerDraftTargetKeyRef = useRef(activeComposerDraftTargetKey);
+  useLayoutEffect(() => {
+    activeComposerDraftTargetKeyRef.current = activeComposerDraftTargetKey;
+  }, [activeComposerDraftTargetKey]);
   const composerAttachmentsRef = useRef<ComposerAttachment[]>([]);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
   const composerTranscriptHighlightContextsRef = useRef<TranscriptHighlightContextDraft[]>([]);
@@ -5472,20 +5483,78 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     if (replyingInChatTo === null && pendingUserInputs.some(isBlockingUserInput)) return;
+
+    const sendTargetKey = activeComposerDraftTargetKey;
+    const preSendDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    const needsPreSendHydration =
+      hasPendingStashRestore(sendTargetKey) ||
+      (preSendDraft?.hydratingAttachmentIds.length ?? 0) > 0 ||
+      (preSendDraft?.failedHydrationAttachmentIds.length ?? 0) > 0;
+    if (needsPreSendHydration) {
+      // Hold the send guard across the wait so a rapid second Enter press
+      // cannot start a duplicate send while IndexedDB blobs finish loading.
+      sendInFlightRef.current = true;
+      try {
+        await waitForPendingStashRestore(sendTargetKey);
+        await ensureDraftAttachmentsHydrated(composerDraftTarget, { retryFailed: true });
+      } finally {
+        sendInFlightRef.current = false;
+      }
+      if (activeComposerDraftTargetKeyRef.current !== sendTargetKey) {
+        return;
+      }
+    }
+
+    const hydratedDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    if (hydratedDraft && hydratedDraft.failedHydrationAttachmentIds.length > 0) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Couldn't load attached files",
+          description:
+            "Browser storage could not load one or more attached files. Re-attach them or try again before sending.",
+        }),
+      );
+      return;
+    }
+
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx) return;
-    const {
-      images: composerAttachments,
-      terminalContexts: composerTerminalContexts,
-      transcriptHighlightContexts: composerTranscriptHighlightContexts,
-      fileSelectionContexts: composerFileSelectionContexts,
-      pickedElementContexts: composerPickedElementContexts,
-      drawingContexts: composerDrawingContexts,
-      selectedModel: ctxSelectedModel,
-      selectedModelSelection: ctxSelectedModelSelection,
-      skillReferences: composerSkillReferences,
-    } = sendCtx;
-    const promptForSend = promptRef.current;
+    // When we waited for async hydration or stash restore, read the live draft
+    // directly from the store so refs updated by React effects cannot lag behind.
+    const composerAttachments = needsPreSendHydration
+      ? (hydratedDraft?.attachments ?? [])
+      : sendCtx.images;
+    const composerTerminalContexts = needsPreSendHydration
+      ? (hydratedDraft?.terminalContexts ?? sendCtx.terminalContexts)
+      : sendCtx.terminalContexts;
+    const composerTranscriptHighlightContexts = needsPreSendHydration
+      ? (hydratedDraft?.transcriptHighlightContexts ?? sendCtx.transcriptHighlightContexts)
+      : sendCtx.transcriptHighlightContexts;
+    const composerFileSelectionContexts = needsPreSendHydration
+      ? (hydratedDraft?.fileSelectionContexts ?? sendCtx.fileSelectionContexts)
+      : sendCtx.fileSelectionContexts;
+    const composerPickedElementContexts = needsPreSendHydration
+      ? (hydratedDraft?.pickedElementContexts ?? sendCtx.pickedElementContexts)
+      : sendCtx.pickedElementContexts;
+    const composerDrawingContexts = sendCtx.drawingContexts;
+    const ctxSelectedModel = sendCtx.selectedModel;
+    const ctxSelectedModelSelection = sendCtx.selectedModelSelection;
+    const composerSkillReferences = sendCtx.skillReferences;
+    if (
+      composerAttachments.some((attachment) => attachment.type === "image") &&
+      !sendCtx.selectedModelSupportsImages
+    ) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Selected model doesn't accept images",
+        }),
+      );
+      return;
+    }
+    const promptForSend =
+      needsPreSendHydration && hydratedDraft ? hydratedDraft.prompt : promptRef.current;
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -6491,32 +6560,30 @@ export default function ChatView(props: ChatViewProps) {
   const loadQueuedAttachmentsForComposer = async (
     attachments: OrchestrationQueuedFollowUp["attachments"],
   ): Promise<{ restored: ComposerAttachment[]; failedCount: number }> => {
-    const persisted = await Promise.all(
+    const loaded = await Promise.all(
       attachments.map(async (attachment) => {
         try {
           const blob = await loadChatAttachmentBlob({
             environmentId,
             attachmentId: attachment.id,
           });
-          const dataUrl = await readFileAsDataUrl(
-            new File([blob], attachment.name, { type: attachment.mimeType }),
-          );
-          return {
+          const file = new File([blob], attachment.name, { type: attachment.mimeType });
+          return composerAttachmentFromFile({
             id: crypto.randomUUID(),
             name: attachment.name,
             mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes,
-            dataUrl,
-          };
+            file,
+          });
         } catch {
           return null;
         }
       }),
     );
-    const loaded = persisted.filter((entry) => entry !== null);
+    const restored = loaded.filter((entry): entry is ComposerAttachment => entry !== null);
     return {
-      restored: hydrateAttachmentsFromPersisted(loaded),
-      failedCount: attachments.length - loaded.length,
+      restored,
+      failedCount: attachments.length - restored.length,
     };
   };
 
