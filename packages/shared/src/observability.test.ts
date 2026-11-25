@@ -71,18 +71,30 @@ const readTraceRecords = Effect.fn("readTraceRecords")(function* (tracePath: str
     .map((line) => decodeTraceRecordLine(line));
 });
 
+/**
+ * Polls until `predicate` holds. A predicate that throws counts as not yet:
+ * while a sink rotates, its live file is missing between the rename and the
+ * next append, so reading it can fail. If the wait runs out, the last throw
+ * is the error's cause.
+ */
 const waitUntil = (predicate: () => boolean, timeoutMs = 2_000): Effect.Effect<void> =>
   Effect.promise(
     () =>
       new Promise<void>((resolve, reject) => {
         const deadline = Date.now() + timeoutMs;
+        let lastError: unknown;
         const check = () => {
-          if (predicate()) {
-            resolve();
-            return;
+          try {
+            if (predicate()) {
+              resolve();
+              return;
+            }
+            lastError = undefined;
+          } catch (error) {
+            lastError = error;
           }
           if (Date.now() >= deadline) {
-            reject(new Error("Timed out waiting for async trace flush"));
+            reject(new Error("Timed out waiting for async trace flush", { cause: lastError }));
             return;
           }
           setTimeout(check, 5);
