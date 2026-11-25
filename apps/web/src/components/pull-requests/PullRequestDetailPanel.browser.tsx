@@ -31,6 +31,10 @@ import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
 } from "../../environmentApi";
+import {
+  receivePullRequestRecord,
+  usePullRequestRecordsStore,
+} from "../../environments/pullRequests/pullRequestRecordsStore";
 import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
 import { ComposerPullRequestRow, type ComposerPullRequest } from "../chat/ComposerPullRequestRow";
 import { pullRequestQueryKeys } from "../../lib/pullRequestsReactQuery";
@@ -167,10 +171,11 @@ async function renderComposerPullRequest(
     };
     return { state: detail.state, isDraft: detail.isDraft };
   });
+  const readDetail = vi.fn(async () => detail);
   // The row reads the pull request itself, through the same API the app uses,
   // so a write's re-read sees what the write changed.
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, {
-    pullRequests: { runAction, detail: async () => detail },
+    pullRequests: { runAction, detail: readDetail },
   } as unknown as EnvironmentApi);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -216,6 +221,7 @@ async function renderComposerPullRequest(
   await page.getByRole("button", { name: "Checks", exact: true }).click();
   return {
     runAction,
+    readDetail,
     onOpen,
     onAutoMergeChange,
     async cleanup() {
@@ -226,7 +232,10 @@ async function renderComposerPullRequest(
 }
 
 describe("Composer pull request merge controls", () => {
-  afterEach(() => __resetEnvironmentApiOverridesForTests());
+  afterEach(() => {
+    __resetEnvironmentApiOverridesForTests();
+    usePullRequestRecordsStore.setState({ byEnvironmentId: {} });
+  });
 
   it.each([false, true])(
     "arms and cancels auto-merge with merge queue enabled: %s",
@@ -244,9 +253,11 @@ describe("Composer pull request merge controls", () => {
         await checkbox.click();
         await expect.element(checkbox).toBeChecked();
         await expect.element(checkbox).toBeDisabled();
+        await expect.element(page.getByText(queued ? "Queuing…" : "Enabling…")).toBeVisible();
         finishWrite();
         await expect.element(checkbox).toBeEnabled();
         await expect.element(checkbox).toBeChecked();
+        expect(page.getByText(queued ? "Queuing…" : "Enabling…").query()).toBeNull();
         expect(rendered.runAction).toHaveBeenLastCalledWith({
           ...REFERENCE,
           action: "enable-auto-merge",
@@ -265,6 +276,82 @@ describe("Composer pull request merge controls", () => {
       }
     },
   );
+
+  it("flips the checkbox at once even when a newer shared observation says auto-merge is off, and keeps pending state across closing the popover", async () => {
+    let finishWrite = () => {};
+    const pending = new Promise<void>((resolve) => {
+      finishWrite = resolve;
+    });
+    // A newer observation record from a background listing or lookup has
+    // autoMergeEnabled: false. Clicking must still check immediately without
+    // being reverted by the observation or firing a competing detail read.
+    receivePullRequestRecord(ENVIRONMENT_ID, {
+      provider: "github",
+      repository: DETAIL.repository,
+      number: DETAIL.number,
+      sequence: 1,
+      observedAt: "2026-09-01T12:05:00.000Z",
+      title: DETAIL.title,
+      url: DETAIL.url,
+      headBranch: DETAIL.headBranch,
+      state: "open",
+      isDraft: false,
+      autoMergeEnabled: false,
+    });
+    const rendered = await renderComposerPullRequest(
+      {
+        observedAt: "2026-09-01T12:00:00.000Z",
+        mergeQueue: { position: null },
+        mergeGate: "clear",
+      },
+      () => pending,
+    );
+    try {
+      const readsBeforeClick = rendered.readDetail.mock.calls.length;
+      const checkbox = page.getByRole("checkbox", { name: "Merge when checks pass" });
+      await checkbox.click();
+      await expect.element(checkbox).toBeChecked();
+      await expect.element(checkbox).toBeDisabled();
+      await expect.element(page.getByText("Queuing…")).toBeVisible();
+      expect(rendered.readDetail).toHaveBeenCalledTimes(readsBeforeClick);
+
+      // Closing and reopening the popover while the host is still working
+      // keeps the pending state visible instead of losing track of the click.
+      const trigger = page.getByRole("button", { name: "Checks", exact: true });
+      await trigger.click();
+      await trigger.click();
+      await expect
+        .element(page.getByRole("checkbox", { name: "Merge when checks pass" }))
+        .toBeChecked();
+      await expect.element(page.getByText("Queuing…")).toBeVisible();
+
+      // Update the observation record as the server's post-write read would.
+      receivePullRequestRecord(ENVIRONMENT_ID, {
+        provider: "github",
+        repository: DETAIL.repository,
+        number: DETAIL.number,
+        sequence: 2,
+        observedAt: "2026-09-01T12:06:00.000Z",
+        title: DETAIL.title,
+        url: DETAIL.url,
+        headBranch: DETAIL.headBranch,
+        state: "open",
+        isDraft: false,
+        autoMergeEnabled: true,
+      });
+      finishWrite();
+      await expect
+        .element(page.getByRole("checkbox", { name: "Merge when checks pass" }))
+        .toBeEnabled();
+      await expect
+        .element(page.getByRole("checkbox", { name: "Merge when checks pass" }))
+        .toBeChecked();
+      expect(page.getByText("Queuing…").query()).toBeNull();
+    } finally {
+      finishWrite();
+      await rendered.cleanup();
+    }
+  });
 
   it("rolls back the checkmark and shows a refused request", async () => {
     const rendered = await renderComposerPullRequest({}, async () => {
