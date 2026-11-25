@@ -103,6 +103,10 @@ import { ProviderInstallAction, startProviderInstall } from "./ProviderInstallAc
 import { ProviderSignInAction } from "./ProviderSignInAction";
 import { AgentRow, AgentUpdateTag, type AgentRowTone } from "./AgentRow";
 import {
+  isSuggestionDriverKind,
+  ProviderConfigurationSuggestionsSection,
+} from "./ProviderSuggestionsSection";
+import {
   agentDetectionLabel,
   agentStatusLine,
   deriveAgentStatus,
@@ -991,7 +995,7 @@ function ProviderAccountSignInSection(props: {
   );
 }
 
-type ProviderDetailsSection = "account" | "usage" | "models" | "configuration";
+export type ProviderDetailsSection = "account" | "usage" | "models" | "configuration";
 
 /** Stands in for a login command on a community agent's row: its Account tab always shows. */
 const COMMUNITY_SIGN_IN_LABEL = "Sign in";
@@ -1315,6 +1319,14 @@ interface ProviderInstanceCardProps {
    * is off: the row says so and offers to switch.
    */
   readonly builtInReplacement?: { readonly label: string; readonly onUse: () => void } | undefined;
+  /** True when the user has more than one account for this driver, so provider-wide toggles note it. */
+  readonly sharedSuggestionAccounts?: boolean | undefined;
+  /** Marks this row as the place-link anchor for its driver's suggestions toggle. */
+  readonly suggestionPlaceAnchor?: boolean | undefined;
+  /** Switches the open tab when a deep link or place arrival targets a specific tab inside this row. */
+  readonly detailsSectionRequest?:
+    | { readonly section: ProviderDetailsSection; readonly request: number }
+    | undefined;
 }
 
 export interface ProviderAddAccountControls {
@@ -1379,6 +1391,9 @@ export function ProviderInstanceCard({
   autoInstall = false,
   onAutoInstallSettled,
   builtInReplacement,
+  sharedSuggestionAccounts = false,
+  suggestionPlaceAnchor = true,
+  detailsSectionRequest,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   const summary = getProviderSummary(liveProvider);
@@ -1400,7 +1415,19 @@ export function ProviderInstanceCard({
   const providerInstallView = deriveProviderInstallView(liveProvider);
   const usagePresentation = deriveProviderAccountUsagePresentationForProvider(liveProvider);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
-  const [detailsSection, setDetailsSection] = useState<ProviderDetailsSection>("account");
+  const [detailsSection, setDetailsSection] = useState<ProviderDetailsSection>(
+    detailsSectionRequest?.section ?? "account",
+  );
+  const [seenDetailsSectionRequest, setSeenDetailsSectionRequest] = useState(
+    detailsSectionRequest?.request ?? 0,
+  );
+  if (
+    detailsSectionRequest !== undefined &&
+    detailsSectionRequest.request !== seenDetailsSectionRequest
+  ) {
+    setSeenDetailsSectionRequest(detailsSectionRequest.request);
+    setDetailsSection(detailsSectionRequest.section);
+  }
   const [pendingInstall, setPendingInstall] = useState(false);
   // Narrow `instance.driver` for callers that key on the closed
   // `ProviderDriverKind` union (e.g. `normalizeModelSlug`'s alias table). Custom
@@ -2000,6 +2027,13 @@ export function ProviderInstanceCard({
 
           {activeDetailsSection === "configuration" ? (
             <div className="space-y-0">
+              {isSuggestionDriverKind(driverKind) ? (
+                <ProviderConfigurationSuggestionsSection
+                  driverKind={driverKind}
+                  sharedAcrossAccounts={sharedSuggestionAccounts}
+                  includePlaceAnchor={suggestionPlaceAnchor}
+                />
+              ) : null}
               {community ? (
                 <ProviderConfigurationSection
                   title="About"

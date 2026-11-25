@@ -53,6 +53,7 @@ const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
  * (their endpoints and instructions are both left out).
  */
 export const EVAL_SERVER_SETTINGS = {
+  claudeSuggestions: false,
   codexSuggestions: false,
   antigravitySuggestions: false,
   enableAgentPages: false,
@@ -81,6 +82,7 @@ function evalAdapter(
           makeClaudeAdapter(settings, {
             // The adapter reads Claude's folder too (transcripts, approvals): the eval one.
             environment: claudeEvalEnvironment(),
+            promptSuggestions: Effect.succeed(false),
             createQuery: makeIsolatedClaudeQuery(
               (input) => query(input as Parameters<typeof query>[0]) as never,
               onBlocked,

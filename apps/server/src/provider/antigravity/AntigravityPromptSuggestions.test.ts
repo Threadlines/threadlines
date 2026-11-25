@@ -91,20 +91,35 @@ describe("isAntigravitySuggestionUsageNearLimit", () => {
   const resetsAt = nowMs + 3_600_000;
 
   it("still enforces plan-wide limits when the model name is unknown", () => {
-    const planWideUsage: ServerProviderAccountUsage = {
+    const nearLimitUsage: ServerProviderAccountUsage = {
       source: "codex-rate-limits",
       checkedAt: "2026-11-23T17:59:00.000Z",
       limits: [
         {
           primary: {
-            usedPercent: 92,
-            remainingPercent: 8,
+            usedPercent: 95,
+            remainingPercent: 5,
             resetsAt,
           },
         },
       ],
     };
-    expect(isAntigravitySuggestionUsageNearLimit(planWideUsage, undefined, nowMs)).toBe(true);
+    expect(isAntigravitySuggestionUsageNearLimit(nearLimitUsage, undefined, nowMs)).toBe(false);
+
+    const spentPlanWideUsage: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: "2026-11-23T17:59:00.000Z",
+      limits: [
+        {
+          primary: {
+            usedPercent: 100,
+            remainingPercent: 0,
+            resetsAt,
+          },
+        },
+      ],
+    };
+    expect(isAntigravitySuggestionUsageNearLimit(spentPlanWideUsage, undefined, nowMs)).toBe(true);
     const scopedUsage: ServerProviderAccountUsage = {
       source: "grok-billing",
       checkedAt: "2026-11-23T17:59:00.000Z",
@@ -115,8 +130,8 @@ describe("isAntigravitySuggestionUsageNearLimit", () => {
             {
               scopeLabel: "Claude & GPT",
               scopeModels: ["Claude", "GPT"],
-              usedPercent: 95,
-              remainingPercent: 5,
+              usedPercent: 100,
+              remainingPercent: 0,
               resetsAt,
             },
           ],
@@ -126,7 +141,7 @@ describe("isAntigravitySuggestionUsageNearLimit", () => {
     expect(isAntigravitySuggestionUsageNearLimit(scopedUsage, undefined, nowMs)).toBe(true);
   });
 
-  it("pauses only when the chosen suggestion model's own pool hits 90%", () => {
+  it("pauses only when the chosen suggestion model's own pool hits 100%", () => {
     const usage: ServerProviderAccountUsage = {
       source: "grok-billing",
       checkedAt: "2026-11-23T17:59:00.000Z",
@@ -137,15 +152,15 @@ describe("isAntigravitySuggestionUsageNearLimit", () => {
             {
               scopeLabel: "Gemini",
               scopeModels: ["Gemini"],
-              usedPercent: 45,
-              remainingPercent: 55,
+              usedPercent: 95,
+              remainingPercent: 5,
               resetsAt,
             },
             {
               scopeLabel: "Claude & GPT",
               scopeModels: ["Claude", "GPT"],
-              usedPercent: 95,
-              remainingPercent: 5,
+              usedPercent: 100,
+              remainingPercent: 0,
               resetsAt,
             },
           ],

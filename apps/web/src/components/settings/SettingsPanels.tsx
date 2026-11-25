@@ -7,7 +7,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { formatTokens, formatUsd } from "@threadlines/shared/usageFormat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -43,6 +43,7 @@ import {
 } from "@threadlines/shared/providerAccounts";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
+import { placeIdFromArrivalHash } from "../../appPlaceLinks";
 import { APP_VERSION } from "../../branding";
 import { getDesktopUpdateButtonTooltip } from "../../components/desktopUpdate.logic";
 import {
@@ -142,8 +143,16 @@ import {
   type ArchivedThreadProject,
   ArchivedThreadsSection,
 } from "./ArchivedThreadsSection";
-import { ProviderInstanceCard, type ProviderAddAccountControls } from "./ProviderInstanceCard";
-import { ProviderSuggestionsSection } from "./ProviderSuggestionsSection";
+import {
+  ProviderInstanceCard,
+  type ProviderAddAccountControls,
+  type ProviderDetailsSection,
+} from "./ProviderInstanceCard";
+import {
+  isSuggestionDriverKind,
+  SUGGESTION_PLACE_DRIVER,
+  type SuggestionDriverKind,
+} from "./ProviderSuggestionsSection";
 import { addAccountMenuLabel, isThreadlinesAccountFolder } from "./providerAccounts.logic";
 import { formatProviderInstanceName } from "../../providerInstances";
 import { getDriverOption } from "./providerDriverMeta";
@@ -544,8 +553,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.claudeWorkflowSize !== DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize
         ? ["Claude workflow size"]
         : []),
-      ...(settings.claudeSuggestionsWhenUsageRunsFast !==
-      DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast
+      ...(settings.claudeSuggestions !== DEFAULT_UNIFIED_SETTINGS.claudeSuggestions
         ? [placeById("providers.claudeSuggestions").title]
         : []),
       ...(settings.codexSuggestions !== DEFAULT_UNIFIED_SETTINGS.codexSuggestions
@@ -602,7 +610,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableAgentPages,
       settings.enableClaudeArtifacts,
       settings.claudeWorkflowSize,
-      settings.claudeSuggestionsWhenUsageRunsFast,
+      settings.claudeSuggestions,
       settings.codexSuggestions,
       settings.antigravitySuggestions,
       settings.continueAfterUsageLimits,
@@ -689,8 +697,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       enableAgentPages: true,
       enableClaudeArtifacts: false,
       claudeWorkflowSize: DEFAULT_UNIFIED_SETTINGS.claudeWorkflowSize,
-      claudeSuggestionsWhenUsageRunsFast:
-        DEFAULT_UNIFIED_SETTINGS.claudeSuggestionsWhenUsageRunsFast,
+      claudeSuggestions: DEFAULT_UNIFIED_SETTINGS.claudeSuggestions,
       codexSuggestions: DEFAULT_UNIFIED_SETTINGS.codexSuggestions,
       antigravitySuggestions: DEFAULT_UNIFIED_SETTINGS.antigravitySuggestions,
       continueAfterUsageLimits: DEFAULT_UNIFIED_SETTINGS.continueAfterUsageLimits,
@@ -1584,6 +1591,11 @@ export function ProviderSettingsPanel({
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
+  const [detailsSectionRequests, setDetailsSectionRequests] = useState<
+    Record<string, { readonly section: ProviderDetailsSection; readonly request: number }>
+  >({});
+  const [seenSuggestionArrivalKey, setSeenSuggestionArrivalKey] = useState<string | null>(null);
+  const locationHash = useLocation({ select: (location) => location.hash });
   // Extra accounts: rows that start sign-in as soon as they can (just added),
   // requests from the header's "+" to show an agent's add-account form, and
   // the account waiting for its removal to be confirmed.
@@ -1889,6 +1901,60 @@ export function ProviderSettingsPanel({
     ? computerLabel
     : (primaryEnvironment?.label ?? "the computer Threadlines runs on");
 
+  const { suggestionDriverCounts, suggestionAnchorByDriver } = useMemo(() => {
+    const grouped = new Map<SuggestionDriverKind, Array<ProviderSettingsRow>>();
+    for (const row of rows) {
+      if (!isSuggestionDriverKind(row.driver)) continue;
+      const list = grouped.get(row.driver);
+      if (list) {
+        list.push(row);
+      } else {
+        grouped.set(row.driver, [row]);
+      }
+    }
+    const counts = new Map<SuggestionDriverKind, number>();
+    const anchors = new Map<SuggestionDriverKind, ProviderInstanceId>();
+    for (const [driver, driverRows] of grouped) {
+      counts.set(driver, driverRows.length);
+      const anchor =
+        driverRows.find((candidate) => candidate.isDefault && isProviderRowEnabled(candidate)) ??
+        driverRows.find(isProviderRowEnabled) ??
+        driverRows.find((candidate) => candidate.isDefault) ??
+        driverRows[0];
+      if (anchor) {
+        anchors.set(driver, anchor.instanceId);
+      }
+    }
+    return { suggestionDriverCounts: counts, suggestionAnchorByDriver: anchors };
+  }, [rows]);
+
+  const arrivalPlace = placeIdFromArrivalHash(locationHash);
+  const arrivalSuggestionDriver =
+    arrivalPlace !== null && arrivalPlace in SUGGESTION_PLACE_DRIVER
+      ? SUGGESTION_PLACE_DRIVER[arrivalPlace as keyof typeof SUGGESTION_PLACE_DRIVER]
+      : null;
+  const arrivalAnchorId =
+    arrivalSuggestionDriver !== null
+      ? suggestionAnchorByDriver.get(arrivalSuggestionDriver)
+      : undefined;
+  const arrivalKey =
+    arrivalAnchorId !== undefined ? `${locationHash}\n${String(arrivalAnchorId)}` : null;
+  if (arrivalKey !== seenSuggestionArrivalKey) {
+    setSeenSuggestionArrivalKey(arrivalKey);
+    if (arrivalAnchorId !== undefined) {
+      setOpenInstanceDetails((existing) =>
+        existing[arrivalAnchorId] === true ? existing : { ...existing, [arrivalAnchorId]: true },
+      );
+      setDetailsSectionRequests((existing) => ({
+        ...existing,
+        [arrivalAnchorId]: {
+          section: "configuration",
+          request: (existing[arrivalAnchorId]?.request ?? 0) + 1,
+        },
+      }));
+    }
+  }
+
   const renderRow = (row: ProviderSettingsRow) => {
     const isCommunityAgent = row.driver === ACP_REGISTRY_DRIVER_KIND;
     const driverOption = getDriverOption(row.driver);
@@ -1968,6 +2034,14 @@ export function ProviderSettingsPanel({
         autoInstall={autoInstallIds.has(row.instanceId)}
         onAutoInstallSettled={settleAutoInstall}
         builtInReplacement={builtInReplacement}
+        sharedSuggestionAccounts={
+          isSuggestionDriverKind(row.driver) && (suggestionDriverCounts.get(row.driver) ?? 0) > 1
+        }
+        suggestionPlaceAnchor={
+          isSuggestionDriverKind(row.driver) &&
+          suggestionAnchorByDriver.get(row.driver) === row.instanceId
+        }
+        detailsSectionRequest={detailsSectionRequests[row.instanceId]}
         onResetDefaults={
           row.isDefault && row.isDirty
             ? () => resetDefaultInstance(row.driver, isProviderRowEnabled(row))
@@ -2133,8 +2207,6 @@ export function ProviderSettingsPanel({
             : []),
         ]}
       </div>
-
-      <ProviderSuggestionsSection />
 
       <CommunityAgentsSection
         addedAgentIds={communityAgentIds}

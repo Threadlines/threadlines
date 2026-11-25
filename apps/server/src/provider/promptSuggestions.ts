@@ -16,8 +16,8 @@ Read what they asked for and how the last reply ended. Suggest what they would m
 
 If there is no clear next message, reply with nothing. Otherwise reply with only the message: one line, at most 12 words, no quotes.`;
 
-/** No Threadlines-generated suggestions while a relevant usage window is this far used. */
-export const PROMPT_SUGGESTION_USAGE_CEILING_PERCENT = 90;
+/** No Threadlines-generated suggestions once a relevant usage window is spent (100% used). */
+export const PROMPT_SUGGESTION_USAGE_CEILING_PERCENT = 100;
 
 /**
  * The reasoning a suggestion asks for, best first, among the levels a model

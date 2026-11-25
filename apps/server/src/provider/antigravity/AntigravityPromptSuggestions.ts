@@ -123,7 +123,7 @@ export function selectAntigravitySuggestionTarget(
 
 /**
  * Whether the chosen Antigravity suggestion model's usage pool (or a plan-wide
- * limit) is at or above `percent` (default 90%), pausing suggestions without
+ * limit) is at or above `percent` (default 100%), pausing suggestions without
  * blocking on unrelated pools like Claude & GPT. When `modelName` is unknown,
  * fails safe if any active scoped or plan-wide window is at or above `percent`.
  */
@@ -140,7 +140,7 @@ export function isAntigravitySuggestionUsageNearLimit(
   if (accountUsage === undefined) return false;
   return accountUsage.limits.some((limit) =>
     (limit.scoped ?? []).some((window) => {
-      if (window.usedPercent < percent) return false;
+      if (window.usedPercent < percent && window.remainingPercent > 100 - percent) return false;
       const resetsAtMs = usageResetTimeMs(window.resetsAt);
       return resetsAtMs === undefined || resetsAtMs > nowMs;
     }),
