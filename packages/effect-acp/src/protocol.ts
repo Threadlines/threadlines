@@ -50,6 +50,12 @@ export interface AcpPatchedProtocolOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocolLogEvent) => Effect.Effect<void, never>;
+  /**
+   * Buffer incoming notifications in `incoming`. Set to `false` when using
+   * `onNotification` without reading `incoming`, so deltas do not accumulate
+   * in memory for the session lifetime. Defaults to `true`.
+   */
+  readonly bufferNotifications?: boolean;
   readonly onNotification?: (
     notification: AcpIncomingNotification,
   ) => Effect.Effect<void, AcpError.AcpError, never>;
@@ -87,6 +93,7 @@ const decodeElicitationComplete = Schema.decodeUnknownEffect(
   AcpSchema.ElicitationCompleteNotification,
 );
 const parserFactory = RpcSerialization.ndJsonRpc();
+const textDecoder = new TextDecoder();
 /** An outgoing JSON-RPC notification: no `id`, so no peer takes it for a request. */
 const encodeJsonRpcNotification = Schema.encodeUnknownExit(
   Schema.fromJsonString(
@@ -153,13 +160,13 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       }
     });
 
+  const logIncoming = options.logIncoming === true;
+  const logOutgoing = options.logOutgoing === true;
+  const bufferNotifications = options.bufferNotifications !== false;
+
   const logProtocol = (event: AcpProtocolLogEvent) => {
-    if (event.direction === "incoming" && !options.logIncoming) {
-      return Effect.void;
-    }
-    if (event.direction === "outgoing" && !options.logOutgoing) {
-      return Effect.void;
-    }
+    if (event.direction === "incoming" && !logIncoming) return Effect.void;
+    if (event.direction === "outgoing" && !logOutgoing) return Effect.void;
     return (
       options.logger?.(event) ??
       Effect.logDebug("ACP protocol event").pipe(Effect.annotateLogs({ event }))
@@ -175,11 +182,13 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     // The RPC client's own control messages (an interrupted request, a stream
     // ack) would go out as `@effect/rpc/*` methods no ACP agent knows.
     if (message._tag === "Interrupt" || message._tag === "Ack") return;
-    yield* logProtocol({
-      direction: "outgoing",
-      stage: "decoded",
-      payload: message,
-    });
+    if (logOutgoing) {
+      yield* logProtocol({
+        direction: "outgoing",
+        stage: "decoded",
+        payload: message,
+      });
+    }
 
     const encoded = yield* Effect.try({
       try: () => parser.encode(message),
@@ -191,11 +200,13 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     });
 
     if (encoded) {
-      yield* logProtocol({
-        direction: "outgoing",
-        stage: "raw",
-        payload: typeof encoded === "string" ? encoded : new TextDecoder().decode(encoded),
-      });
+      if (logOutgoing) {
+        yield* logProtocol({
+          direction: "outgoing",
+          stage: "raw",
+          payload: typeof encoded === "string" ? encoded : textDecoder.decode(encoded),
+        });
+      }
 
       // Register the answer handler and enqueue the frame together after the
       // pipe check, so termination cannot fire an answer for a frame that was
@@ -251,15 +262,14 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       for (const onAnswer of ordered.values()) yield* onAnswer(Exit.fail(error));
     });
 
-  const dispatchNotification = (notification: AcpIncomingNotification) =>
-    Queue.offer(notificationQueue, notification).pipe(
-      Effect.andThen(
-        options.onNotification
-          ? options.onNotification(notification).pipe(Effect.catch(() => Effect.void))
-          : Effect.void,
-      ),
-      Effect.asVoid,
-    );
+  const dispatchNotification = (notification: AcpIncomingNotification) => {
+    const notify = options.onNotification
+      ? options.onNotification(notification).pipe(Effect.catch(() => Effect.void))
+      : Effect.void;
+    return bufferNotifications
+      ? Queue.offer(notificationQueue, notification).pipe(Effect.andThen(notify), Effect.asVoid)
+      : notify;
+  };
 
   const emitClientProtocolError = (error: AcpError.AcpError) =>
     Queue.offer(clientQueue, {
@@ -463,49 +473,54 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   };
 
   yield* options.stdio.stdin.pipe(
-    Stream.runForEach((data) =>
-      logProtocol({
-        direction: "incoming",
-        stage: "raw",
-        payload: typeof data === "string" ? data : new TextDecoder().decode(data),
-      }).pipe(
-        Effect.flatMap(() =>
-          Effect.try({
-            try: () =>
-              parser.decode(data) as ReadonlyArray<
-                RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
-              >,
-            catch: (cause) =>
-              new AcpError.AcpProtocolParseError({
-                detail: "Failed to decode ACP wire message",
-                cause,
+    Stream.runForEach((data) => {
+      const decode = Effect.try({
+        try: () =>
+          parser.decode(data) as ReadonlyArray<
+            RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded
+          >,
+        catch: (cause) =>
+          new AcpError.AcpProtocolParseError({
+            detail: "Failed to decode ACP wire message",
+            cause,
+          }),
+      });
+      const decoded = logIncoming
+        ? logProtocol({
+            direction: "incoming",
+            stage: "raw",
+            payload: typeof data === "string" ? data : textDecoder.decode(data),
+          }).pipe(
+            Effect.flatMap(() => decode),
+            Effect.tap((messages) =>
+              messages.length === 0
+                ? Effect.void
+                : logProtocol({
+                    direction: "incoming",
+                    stage: "decoded",
+                    payload: messages,
+                  }),
+            ),
+            Effect.tapErrorTag("AcpProtocolParseError", (error) =>
+              logProtocol({
+                direction: "incoming",
+                stage: "decode_failed",
+                payload: {
+                  detail: error.detail,
+                  cause: error.cause,
+                },
               }),
-          }),
-        ),
-        Effect.tap((messages) =>
-          logProtocol({
-            direction: "incoming",
-            stage: "decoded",
-            payload: messages,
-          }),
-        ),
-        Effect.tapErrorTag("AcpProtocolParseError", (error) =>
-          logProtocol({
-            direction: "incoming",
-            stage: "decode_failed",
-            payload: {
-              detail: error.detail,
-              cause: error.cause,
-            },
-          }),
-        ),
+            ),
+          )
+        : decode;
+      return decoded.pipe(
         Effect.flatMap((messages) =>
           Effect.forEach(messages, routeDecodedMessage, {
             discard: true,
           }),
         ),
-      ),
-    ),
+      );
+    }),
     Effect.matchEffect({
       onFailure: (error) => {
         const normalized: AcpError.AcpError = isAcpError(error)
@@ -598,11 +613,13 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     method: string,
     payload: unknown,
   ) {
-    yield* logProtocol({
-      direction: "outgoing",
-      stage: "decoded",
-      payload: { _tag: "Notification", tag: method, payload },
-    });
+    if (logOutgoing) {
+      yield* logProtocol({
+        direction: "outgoing",
+        stage: "decoded",
+        payload: { _tag: "Notification", tag: method, payload },
+      });
+    }
     const exit = encodeJsonRpcNotification({ jsonrpc: "2.0", method, params: payload });
     if (Exit.isFailure(exit)) {
       return yield* new AcpError.AcpProtocolParseError({
@@ -611,7 +628,9 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       });
     }
     const encoded = `${exit.value}\n`;
-    yield* logProtocol({ direction: "outgoing", stage: "raw", payload: encoded });
+    if (logOutgoing) {
+      yield* logProtocol({ direction: "outgoing", stage: "raw", payload: encoded });
+    }
     yield* Queue.offer(outgoing, { data: encoded }).pipe(Effect.asVoid);
   });
 

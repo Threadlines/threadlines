@@ -779,12 +779,18 @@ const ApprovalDecisionPayload = Schema.Struct({
   decision: ProviderApprovalDecision,
 });
 
+const payloadPredicateCache = new WeakMap<object, (input: unknown) => boolean>();
+
 function readPayload<A>(
   schema: Schema.Schema<A>,
   payload: ProviderEvent["payload"],
 ): A | undefined {
-  const isPayload = Schema.is(schema);
-  return isPayload(payload) ? payload : undefined;
+  let isPayload = payloadPredicateCache.get(schema);
+  if (isPayload === undefined) {
+    isPayload = Schema.is(schema);
+    payloadPredicateCache.set(schema, isPayload);
+  }
+  return isPayload(payload) ? (payload as A) : undefined;
 }
 
 function trimText(value: string | undefined | null): string | undefined {
@@ -1558,13 +1564,13 @@ function isoFromEpochMillis(
 }
 
 function lifecycleCreatedAt(event: ProviderEvent): ProviderRuntimeEvent["createdAt"] | undefined {
-  const started = readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload);
-  if (started) {
-    return isoFromEpochMillis(started.startedAtMs);
+  if (event.method === "item/started") {
+    const started = readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload);
+    return started ? isoFromEpochMillis(started.startedAtMs) : undefined;
   }
-  const completed = readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
-  if (completed) {
-    return isoFromEpochMillis(completed.completedAtMs);
+  if (event.method === "item/completed") {
+    const completed = readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
+    return completed ? isoFromEpochMillis(completed.completedAtMs) : undefined;
   }
   return undefined;
 }
@@ -1572,13 +1578,14 @@ function lifecycleCreatedAt(event: ProviderEvent): ProviderRuntimeEvent["created
 function runtimeEventBase(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
+  createdAtOverride?: ProviderRuntimeEvent["createdAt"],
 ): Omit<ProviderRuntimeEvent, "type" | "payload"> {
   const refs = providerRefsFromEvent(event);
   return {
     eventId: event.id,
     provider: event.provider,
     threadId: canonicalThreadId,
-    createdAt: lifecycleCreatedAt(event) ?? event.createdAt,
+    createdAt: createdAtOverride ?? lifecycleCreatedAt(event) ?? event.createdAt,
     ...(event.turnId ? { turnId: event.turnId } : {}),
     ...(event.itemId ? { itemId: asRuntimeItemId(event.itemId) } : {}),
     ...(event.requestId ? { requestId: asRuntimeRequestId(event.requestId) } : {}),
@@ -1635,10 +1642,19 @@ function mapItemLifecycle(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
   lifecycle: "item.started" | "item.updated" | "item.completed",
+  parsedPayload?:
+    | EffectCodexSchema.V2ItemStartedNotification
+    | EffectCodexSchema.V2ItemCompletedNotification,
+  createdAtOverride?: ProviderRuntimeEvent["createdAt"],
 ): ProviderRuntimeEvent | undefined {
   const payload =
-    readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload) ??
-    readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
+    parsedPayload ??
+    (lifecycle === "item.completed"
+      ? readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload)
+      : lifecycle === "item.started"
+        ? readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload)
+        : (readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload) ??
+          readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload)));
   const item = payload?.item;
   if (!item) {
     return undefined;
@@ -1661,7 +1677,7 @@ function mapItemLifecycle(
   const mcpApp = lifecycle === "item.completed" ? codexMcpAppCall(item) : undefined;
 
   return {
-    ...runtimeEventBase(event, canonicalThreadId),
+    ...runtimeEventBase(event, canonicalThreadId, createdAtOverride),
     type: lifecycle,
     payload: {
       itemType,
@@ -1677,10 +1693,16 @@ function mapItemLifecycle(
 function mapNativeSubagentMetadata(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
+  parsedPayload?:
+    | EffectCodexSchema.V2ItemStartedNotification
+    | EffectCodexSchema.V2ItemCompletedNotification,
+  createdAtOverride?: ProviderRuntimeEvent["createdAt"],
 ): ProviderRuntimeEvent | undefined {
   const payload =
-    readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload) ??
-    readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
+    parsedPayload ??
+    (event.method === "item/completed"
+      ? readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload)
+      : readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload));
   const item = payload?.item;
   if (!item || item.type !== "subAgentActivity" || isRootAgentPath(item.agentPath)) {
     return undefined;
@@ -1703,7 +1725,7 @@ function mapNativeSubagentMetadata(
     ...(reasoningEffort ? { reasoningEffort, reasoningEffortSource: "provider" } : {}),
   };
   return {
-    ...runtimeEventBase(event, canonicalThreadId),
+    ...runtimeEventBase(event, canonicalThreadId, createdAtOverride),
     eventId: EventId.make(`${event.id}:subagent-metadata`),
     type: "subagent.metadata.updated",
     payload: metadata,
@@ -2300,28 +2322,33 @@ export function mapToRuntimeEvents(
 
   if (event.method === "item/started") {
     const payload = readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload);
+    if (!payload) {
+      return [];
+    }
     if (
-      payload?.item.type === "agentMessage" &&
+      payload.item.type === "agentMessage" &&
       payload.item.delivery === "async" &&
       payload.item.questions?.length
     ) {
       // Questions are projected once the complete structured message arrives.
       return [];
     }
-    const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
+    const createdAt = isoFromEpochMillis(payload.startedAtMs) ?? event.createdAt;
+    const started = mapItemLifecycle(event, canonicalThreadId, "item.started", payload, createdAt);
     if (!started) {
       return [];
     }
-    const metadata = mapNativeSubagentMetadata(event, canonicalThreadId);
+    const metadata = mapNativeSubagentMetadata(event, canonicalThreadId, payload, createdAt);
     return metadata ? [started, metadata] : [started];
   }
 
   if (event.method === "item/completed") {
     const payload = readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
     const item = payload?.item;
-    if (!item) {
+    if (!payload || !item) {
       return [];
     }
+    const createdAt = isoFromEpochMillis(payload.completedAtMs) ?? event.createdAt;
     if (item.type === "agentMessage" && item.delivery === "async" && item.questions?.length) {
       const questionCount = item.questions.length;
       const questions = item.questions.flatMap((question, index) => {
@@ -2342,7 +2369,7 @@ export function mapToRuntimeEvents(
       if (questions.length > 0) {
         return [
           {
-            ...runtimeEventBase(event, canonicalThreadId),
+            ...runtimeEventBase(event, canonicalThreadId, createdAt),
             eventId: EventId.make(`codex-question:${canonicalThreadId}:${item.id}`),
             requestId: RuntimeRequestId.make(`codex-question:${canonicalThreadId}:${item.id}`),
             type: "user-input.requested",
@@ -2364,7 +2391,7 @@ export function mapToRuntimeEvents(
       }
       return [
         {
-          ...runtimeEventBase(event, canonicalThreadId),
+          ...runtimeEventBase(event, canonicalThreadId, createdAt),
           type: "turn.proposed.completed",
           payload: {
             planMarkdown: detail,
@@ -2372,11 +2399,17 @@ export function mapToRuntimeEvents(
         },
       ];
     }
-    const completed = mapItemLifecycle(event, canonicalThreadId, "item.completed");
+    const completed = mapItemLifecycle(
+      event,
+      canonicalThreadId,
+      "item.completed",
+      payload,
+      createdAt,
+    );
     if (!completed) {
       return [];
     }
-    const metadata = mapNativeSubagentMetadata(event, canonicalThreadId);
+    const metadata = mapNativeSubagentMetadata(event, canonicalThreadId, payload, createdAt);
     return metadata ? [completed, metadata] : [completed];
   }
 

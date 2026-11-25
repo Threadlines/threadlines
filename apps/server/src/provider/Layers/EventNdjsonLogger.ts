@@ -49,6 +49,8 @@ export interface EventLogWriteOptions {
 
 export interface EventNdjsonLogger {
   readonly filePath: string;
+  /** False when records tagged `streamFragment: true` are discarded without writing. */
+  readonly keepsStreamFragments?: boolean;
   write: (
     event: unknown,
     threadId: ThreadId | null,
@@ -743,6 +745,7 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
 
   return {
     filePath,
+    keepsStreamFragments: keepStreamFragments,
     write: (event, threadId, writeOptions) =>
       writeOptions?.streamFragment === true && !keepStreamFragments
         ? Effect.void

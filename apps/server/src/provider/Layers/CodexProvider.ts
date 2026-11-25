@@ -772,6 +772,8 @@ export const makeCodexAppServerClient = Effect.fn("makeCodexAppServerClient")(fu
         ...(input.environment ?? process.env),
         ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
       },
+      bufferNotifications: false,
+      bufferRequests: false,
     }),
   );
   return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(

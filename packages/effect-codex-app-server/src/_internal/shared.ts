@@ -6,6 +6,41 @@ import * as CodexError from "../errors.ts";
 
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 
+const decodedEffectCache = new WeakMap<
+  object,
+  (input: unknown) => Effect.Effect<unknown, Schema.SchemaError>
+>();
+const encodedEffectCache = new WeakMap<
+  object,
+  (input: unknown) => Effect.Effect<unknown, Schema.SchemaError>
+>();
+
+function getCachedDecodeUnknownEffect<A, I>(
+  schema: Schema.Codec<A, I>,
+): (input: unknown) => Effect.Effect<A, Schema.SchemaError> {
+  let decode = decodedEffectCache.get(schema);
+  if (decode === undefined) {
+    decode = Schema.decodeUnknownEffect(schema) as (
+      input: unknown,
+    ) => Effect.Effect<unknown, Schema.SchemaError>;
+    decodedEffectCache.set(schema, decode);
+  }
+  return decode as (input: unknown) => Effect.Effect<A, Schema.SchemaError>;
+}
+
+function getCachedEncodeEffect<A, I>(
+  schema: Schema.Codec<A, I>,
+): (input: A) => Effect.Effect<I, Schema.SchemaError> {
+  let encode = encodedEffectCache.get(schema);
+  if (encode === undefined) {
+    encode = Schema.encodeEffect(schema) as (
+      input: unknown,
+    ) => Effect.Effect<unknown, Schema.SchemaError>;
+    encodedEffectCache.set(schema, encode);
+  }
+  return encode as (input: A) => Effect.Effect<I, Schema.SchemaError>;
+}
+
 export const JsonRpcId = Schema.Union([Schema.Number, Schema.String]);
 
 export const JsonRpcError = Schema.Struct({
@@ -34,7 +69,7 @@ export const decodeOptionalPayload = <A, I>(
     );
   }
 
-  return Schema.decodeUnknownEffect(schema)(raw).pipe(
+  return getCachedDecodeUnknownEffect(schema)(raw).pipe(
     Effect.mapError((error) =>
       CodexError.CodexAppServerRequestError.invalidParams(
         `Invalid ${method} payload: ${formatSchemaIssue(error.issue)}`,
@@ -61,7 +96,7 @@ export const encodeOptionalPayload = <A, I>(
     );
   }
 
-  return Schema.encodeEffect(schema)(payload).pipe(
+  return getCachedEncodeEffect(schema)(payload).pipe(
     Effect.mapError((error) =>
       CodexError.CodexAppServerRequestError.invalidParams(
         `Invalid ${method} payload: ${formatSchemaIssue(error.issue)}`,

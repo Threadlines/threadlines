@@ -31,7 +31,7 @@ export const makeProjectInstructions = Effect.gen(function* () {
   const settings = yield* Effect.serviceOption(ServerSettingsService);
   /** "Notes agents write"; off when it can't be read, so no agent is told to write. */
   const notesMode = Option.isSome(settings)
-    ? settings.value.getSettings.pipe(
+    ? settings.value.readStored.pipe(
         Effect.map((current) => current.projectNotes),
         Effect.orElseSucceed(() => "off" as const),
       )

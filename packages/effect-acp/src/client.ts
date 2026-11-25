@@ -26,6 +26,8 @@ export interface AcpClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
+  /** Set `false` when using handlers without reading `raw.notifications`. */
+  readonly bufferNotifications?: boolean;
   /**
    * Each line the agent writes to stderr. Some agents print things the
    * client needs there (Antigravity's sign-in URL); without a handler stderr
@@ -412,6 +414,9 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.bufferNotifications !== undefined
+      ? { bufferNotifications: options.bufferNotifications }
+      : {}),
     onNotification: dispatchNotification,
     onExtRequest: dispatchExtRequest,
   });

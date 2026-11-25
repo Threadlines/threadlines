@@ -340,6 +340,8 @@ interface SessionContext {
    */
   readonly joined: Map<string, TurnId>;
   readonly items: Map<string, ItemState>;
+  /** Revisions of retired completed items, kept for `view/gap` replay deduplication. */
+  readonly completedItemRevisions: Map<string, number>;
   readonly approvals: Map<ApprovalRequestId, PendingApproval>;
   readonly approvalIds: Map<string, ApprovalRequestId>;
   readonly questions: Map<ApprovalRequestId, PendingQuestion>;
@@ -738,391 +740,414 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         } as ProviderRuntimeEvent);
       });
 
+    const MUSE_STREAM_OUTPUT_MAX_CHARS = 20_000;
+
+    /** Frees completed item payloads while keeping revision tracking for gap replay and subagent lookups. */
+    const retireCompletedItem = (ctx: SessionContext, state: ItemState) => {
+      const item = state.item;
+      ctx.storedPatches.delete(item.itemId);
+      state.streamed = "";
+      state.summaryStreamed.clear();
+      if (item.kind !== "subagent" && !state.background) {
+        ctx.completedItemRevisions.set(item.itemId, item.revision);
+        ctx.items.delete(item.itemId);
+      }
+    };
+
     /** Publishes one item revision, opening the row first if it was never opened. */
     const emitItem = (ctx: SessionContext, state: ItemState, item: MuseItem) =>
       Effect.gen(function* () {
         state.item = item;
-        if (state.completed) return;
+        if (state.completed) {
+          ctx.storedPatches.delete(item.itemId);
+          return;
+        }
         const finished = item.status !== "inProgress";
         const base = yield* eventBase(ctx, state.turnId);
         const itemId = RuntimeItemId.make(item.itemId);
-        switch (item.kind) {
-          case "agentMessage": {
-            if (!state.started) {
-              state.started = true;
-              yield* emit({
-                type: "item.started",
-                ...base,
-                itemId,
-                payload: { itemType: "assistant_message", status: "inProgress" },
-              });
-            }
-            const text = item.text ?? "";
-            // A final text the deltas missed (a delivery gap) is made up here.
-            if (text.startsWith(state.streamed) && text.length > state.streamed.length) {
-              const delta = text.slice(state.streamed.length);
-              state.streamed = text;
-              yield* emit({
-                type: "content.delta",
-                ...base,
-                itemId,
-                payload: { streamKind: "assistant_text", delta },
-              });
-            }
-            if (!finished) return;
-            state.completed = true;
-            const turn = ctx.activeTurn;
-            if (
-              turn &&
-              state.turnId === turn.turnId &&
-              item.messagePhase !== "commentary" &&
-              text.trim()
-            ) {
-              turn.finalText = text;
-            }
-            yield* emit({
-              type: "item.completed",
-              ...base,
-              itemId,
-              payload: {
-                itemType: "assistant_message",
-                status: museItemFailed(item) && !text.trim() ? "failed" : "completed",
-                ...(text.trim() ? { detail: text.trim().slice(0, 4_000) } : {}),
-              },
-            });
-            return;
-          }
-          case "reasoning": {
-            if (!state.started) {
-              state.started = true;
-              yield* emit({
-                type: "item.started",
-                ...base,
-                itemId,
-                payload: { itemType: "reasoning", status: "inProgress", title: "Thinking" },
-              });
-            }
-            const parts = item.summary ?? [];
-            for (const [index, part] of parts.entries()) {
-              const seen = state.summaryStreamed.get(index) ?? "";
-              if (part.startsWith(seen) && part.length > seen.length) {
-                state.summaryStreamed.set(index, part);
+        try {
+          switch (item.kind) {
+            case "agentMessage": {
+              if (!state.started) {
+                state.started = true;
+                yield* emit({
+                  type: "item.started",
+                  ...base,
+                  itemId,
+                  payload: { itemType: "assistant_message", status: "inProgress" },
+                });
+              }
+              const text = item.text ?? "";
+              // A final text the deltas missed (a delivery gap) is made up here.
+              if (text.startsWith(state.streamed) && text.length > state.streamed.length) {
+                const delta = text.slice(state.streamed.length);
+                state.streamed = text;
                 yield* emit({
                   type: "content.delta",
                   ...base,
                   itemId,
+                  payload: { streamKind: "assistant_text", delta },
+                });
+              }
+              if (!finished) return;
+              state.completed = true;
+              const turn = ctx.activeTurn;
+              if (
+                turn &&
+                state.turnId === turn.turnId &&
+                item.messagePhase !== "commentary" &&
+                text.trim()
+              ) {
+                turn.finalText = text;
+              }
+              yield* emit({
+                type: "item.completed",
+                ...base,
+                itemId,
+                payload: {
+                  itemType: "assistant_message",
+                  status: museItemFailed(item) && !text.trim() ? "failed" : "completed",
+                  ...(text.trim() ? { detail: text.trim().slice(0, 4_000) } : {}),
+                },
+              });
+              return;
+            }
+            case "reasoning": {
+              if (!state.started) {
+                state.started = true;
+                yield* emit({
+                  type: "item.started",
+                  ...base,
+                  itemId,
+                  payload: { itemType: "reasoning", status: "inProgress", title: "Thinking" },
+                });
+              }
+              const parts = item.summary ?? [];
+              for (const [index, part] of parts.entries()) {
+                const seen = state.summaryStreamed.get(index) ?? "";
+                if (part.startsWith(seen) && part.length > seen.length) {
+                  state.summaryStreamed.set(index, part);
+                  yield* emit({
+                    type: "content.delta",
+                    ...base,
+                    itemId,
+                    payload: {
+                      streamKind: "reasoning_summary_text",
+                      delta: part.slice(seen.length),
+                      summaryIndex: index,
+                    },
+                  });
+                }
+              }
+              if (!finished) return;
+              state.completed = true;
+              const summary = parts.join("\n\n").trim();
+              yield* emit({
+                type: "item.completed",
+                ...base,
+                itemId,
+                payload: {
+                  itemType: "reasoning",
+                  status: "completed",
+                  title: "Thinking",
+                  ...(summary ? { data: { summary } } : {}),
+                },
+              });
+              return;
+            }
+            case "subagent": {
+              // The child session id names the agent everywhere (its own
+              // events carry it), and Muse sends it a moment after the start:
+              // a row opened under the short subagent id would stay a second,
+              // forever-running agent.
+              if (!item.childSessionId && subagentStatus(item) === "running") return;
+              const data = subagentData(ctx, item);
+              if (!state.started) {
+                state.started = true;
+                yield* emit({
+                  type: "item.started",
+                  ...base,
+                  itemId,
                   payload: {
-                    streamKind: "reasoning_summary_text",
-                    delta: part.slice(seen.length),
-                    summaryIndex: index,
+                    itemType: "collab_agent_tool_call",
+                    status: "inProgress",
+                    title: "Subagent task",
+                    ...(item.objective ? { detail: item.objective.slice(0, 400) } : {}),
+                    data,
+                  },
+                });
+              } else if (!finished) {
+                yield* emit({
+                  type: "item.updated",
+                  ...base,
+                  itemId,
+                  payload: {
+                    itemType: "collab_agent_tool_call",
+                    status: "inProgress",
+                    title: "Subagent task",
+                    data,
                   },
                 });
               }
-            }
-            if (!finished) return;
-            state.completed = true;
-            const summary = parts.join("\n\n").trim();
-            yield* emit({
-              type: "item.completed",
-              ...base,
-              itemId,
-              payload: {
-                itemType: "reasoning",
-                status: "completed",
-                title: "Thinking",
-                ...(summary ? { data: { summary } } : {}),
-              },
-            });
-            return;
-          }
-          case "subagent": {
-            // The child session id names the agent everywhere (its own
-            // events carry it), and Muse sends it a moment after the start:
-            // a row opened under the short subagent id would stay a second,
-            // forever-running agent.
-            if (!item.childSessionId && subagentStatus(item) === "running") return;
-            const data = subagentData(ctx, item);
-            if (!state.started) {
-              state.started = true;
+              yield* emitSubagent(ctx, state, item);
+              const final = subagentStatus(item);
+              if (final === "running") return;
+              state.completed = true;
               yield* emit({
-                type: "item.started",
+                type: "item.completed",
                 ...base,
                 itemId,
                 payload: {
                   itemType: "collab_agent_tool_call",
-                  status: "inProgress",
-                  title: "Subagent task",
-                  ...(item.objective ? { detail: item.objective.slice(0, 400) } : {}),
-                  data,
-                },
-              });
-            } else if (!finished) {
-              yield* emit({
-                type: "item.updated",
-                ...base,
-                itemId,
-                payload: {
-                  itemType: "collab_agent_tool_call",
-                  status: "inProgress",
+                  status: final === "completed" ? "completed" : "failed",
                   title: "Subagent task",
                   data,
                 },
               });
+              yield* endBackground(ctx, state, final);
+              return;
             }
-            yield* emitSubagent(ctx, state, item);
-            const final = subagentStatus(item);
-            if (final === "running") return;
-            state.completed = true;
-            yield* emit({
-              type: "item.completed",
-              ...base,
-              itemId,
-              payload: {
-                itemType: "collab_agent_tool_call",
-                status: final === "completed" ? "completed" : "failed",
-                title: "Subagent task",
-                data,
-              },
-            });
-            yield* endBackground(ctx, state, final);
-            return;
-          }
-          case "workflow": {
-            const children = item.children ?? [];
-            const detail = [
-              item.entryId,
-              children.length > 0
-                ? `${children.filter((child) => child.terminal !== undefined).length}/${children.length} agents done`
-                : undefined,
-            ]
-              .filter(Boolean)
-              .join(" · ");
-            const payload = {
-              itemType: "dynamic_tool_call" as const,
-              title: "Workflow",
-              ...(detail ? { detail } : {}),
-              data: {
-                toolName: "workflow",
-                ...(item.workflowRunId ? { workflowRunId: item.workflowRunId } : {}),
-                children: children.map((child) => ({
-                  id: child.childId,
-                  ...(child.label ? { label: child.label } : {}),
-                  status: child.terminal ?? child.status ?? "running",
-                })),
-                ...(item.finalSummary ? { result: item.finalSummary.slice(0, 20_000) } : {}),
-              },
-            };
-            if (!state.started) {
-              state.started = true;
+            case "workflow": {
+              const children = item.children ?? [];
+              const detail = [
+                item.entryId,
+                children.length > 0
+                  ? `${children.filter((child) => child.terminal !== undefined).length}/${children.length} agents done`
+                  : undefined,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              const payload = {
+                itemType: "dynamic_tool_call" as const,
+                title: "Workflow",
+                ...(detail ? { detail } : {}),
+                data: {
+                  toolName: "workflow",
+                  ...(item.workflowRunId ? { workflowRunId: item.workflowRunId } : {}),
+                  children: children.map((child) => ({
+                    id: child.childId,
+                    ...(child.label ? { label: child.label } : {}),
+                    status: child.terminal ?? child.status ?? "running",
+                  })),
+                  ...(item.finalSummary ? { result: item.finalSummary.slice(0, 20_000) } : {}),
+                },
+              };
+              if (!state.started) {
+                state.started = true;
+                yield* emit({
+                  type: "item.started",
+                  ...base,
+                  itemId,
+                  payload: { ...payload, status: "inProgress" },
+                });
+              } else if (!finished) {
+                yield* emit({
+                  type: "item.updated",
+                  ...base,
+                  itemId,
+                  payload: { ...payload, status: "inProgress" },
+                });
+              }
+              if (!finished) return;
+              state.completed = true;
+              const failed = museItemFailed(item);
               yield* emit({
-                type: "item.started",
+                type: "item.completed",
                 ...base,
                 itemId,
-                payload: { ...payload, status: "inProgress" },
+                payload: { ...payload, status: failed ? "failed" : "completed" },
               });
-            } else if (!finished) {
-              yield* emit({
-                type: "item.updated",
-                ...base,
-                itemId,
-                payload: { ...payload, status: "inProgress" },
-              });
+              yield* endBackground(
+                ctx,
+                state,
+                failed ? "failed" : item.status === "cancelled" ? "interrupted" : "completed",
+              );
+              return;
             }
-            if (!finished) return;
-            state.completed = true;
-            const failed = museItemFailed(item);
-            yield* emit({
-              type: "item.completed",
-              ...base,
-              itemId,
-              payload: { ...payload, status: failed ? "failed" : "completed" },
-            });
-            yield* endBackground(
-              ctx,
-              state,
-              failed ? "failed" : item.status === "cancelled" ? "interrupted" : "completed",
-            );
-            return;
-          }
-          case "compaction": {
-            if (!state.started) {
-              state.started = true;
+            case "compaction": {
+              if (!state.started) {
+                state.started = true;
+                yield* emit({
+                  type: "item.started",
+                  ...base,
+                  itemId,
+                  payload: {
+                    itemType: "context_compaction",
+                    status: "inProgress",
+                    data: { trigger: item.trigger ?? "auto" },
+                  },
+                });
+              }
+              if (!finished) return;
+              state.completed = true;
+              const failed = museItemFailed(item);
               yield* emit({
-                type: "item.started",
+                type: "item.completed",
                 ...base,
                 itemId,
                 payload: {
                   itemType: "context_compaction",
-                  status: "inProgress",
+                  status: failed ? "failed" : "completed",
+                  ...(failed ? { title: "Context compaction failed" } : {}),
                   data: { trigger: item.trigger ?? "auto" },
                 },
               });
-            }
-            if (!finished) return;
-            state.completed = true;
-            const failed = museItemFailed(item);
-            yield* emit({
-              type: "item.completed",
-              ...base,
-              itemId,
-              payload: {
-                itemType: "context_compaction",
-                status: failed ? "failed" : "completed",
-                ...(failed ? { title: "Context compaction failed" } : {}),
-                data: { trigger: item.trigger ?? "auto" },
-              },
-            });
-            if (!failed) {
-              yield* emit({
-                type: "thread.state.changed",
-                ...base,
-                payload: { state: "compacted" },
-              } as ProviderRuntimeEvent);
-            }
-            return;
-          }
-          case "toolCall":
-          case "userShell":
-          case "webSearch": {
-            if (isMuseNativeRowTool(item)) {
-              state.completed = finished;
+              if (!failed) {
+                yield* emit({
+                  type: "thread.state.changed",
+                  ...base,
+                  payload: { state: "compacted" },
+                } as ProviderRuntimeEvent);
+              }
               return;
             }
-            const identity = identifyMuseTool(item);
-            const title = museToolTitle(item, identity);
-            const detail = museToolDetail(item, identity);
-            const data = museToolData({
-              item,
-              identity,
-              root: ctx.directory,
-              storedPatch: ctx.storedPatches.get(item.itemId),
-            });
-            if (!state.started) {
-              state.started = true;
-              yield* emit({
-                type: "item.started",
-                ...base,
-                itemId,
-                payload: {
-                  itemType: identity.itemType,
-                  status: "inProgress",
-                  title,
-                  ...(detail ? { detail } : {}),
-                  data,
-                },
+            case "toolCall":
+            case "userShell":
+            case "webSearch": {
+              if (isMuseNativeRowTool(item)) {
+                state.completed = finished;
+                return;
+              }
+              const identity = identifyMuseTool(item);
+              const title = museToolTitle(item, identity);
+              const detail = museToolDetail(item, identity);
+              const data = museToolData({
+                item,
+                identity,
+                root: ctx.directory,
+                storedPatch: ctx.storedPatches.get(item.itemId),
               });
-            } else if (!finished) {
-              yield* emit({
-                type: "item.updated",
-                ...base,
-                itemId,
-                payload: {
-                  itemType: identity.itemType,
-                  status: "inProgress",
-                  title,
-                  ...(detail ? { detail } : {}),
-                  data,
-                },
-              });
-            }
-            // A shell moved to the background keeps running past its turn.
-            if (
-              identity.kind === "shell" &&
-              item.background === true &&
-              !state.background &&
-              !finished
-            ) {
-              state.background = true;
-              yield* emit({
-                type: "task.started",
-                ...base,
-                payload: {
-                  taskId: RuntimeTaskId.make(item.itemId),
-                  taskType: "local_bash",
-                  toolUseId: item.itemId,
-                  isBackgrounded: true,
-                  ...(detail ? { description: detail } : {}),
-                },
-              } as ProviderRuntimeEvent);
-            }
-            if (identity.kind === "shell") {
-              const output = museCommandOutput(item);
-              if (output.startsWith(state.streamed) && output.length > state.streamed.length) {
-                const delta = output.slice(state.streamed.length);
-                state.streamed = output;
+              if (!state.started) {
+                state.started = true;
                 yield* emit({
-                  type: "content.delta",
+                  type: "item.started",
                   ...base,
                   itemId,
-                  payload: { streamKind: "command_output", delta },
+                  payload: {
+                    itemType: identity.itemType,
+                    status: "inProgress",
+                    title,
+                    ...(detail ? { detail } : {}),
+                    data,
+                  },
+                });
+              } else if (!finished) {
+                yield* emit({
+                  type: "item.updated",
+                  ...base,
+                  itemId,
+                  payload: {
+                    itemType: identity.itemType,
+                    status: "inProgress",
+                    title,
+                    ...(detail ? { detail } : {}),
+                    data,
+                  },
                 });
               }
-            }
-            if (!finished) return;
-            state.completed = true;
-            yield* emit({
-              type: "item.completed",
-              ...base,
-              itemId,
-              payload: {
-                itemType: identity.itemType,
-                status: museItemDeclined(item)
-                  ? "declined"
-                  : museToolFailed(item, identity)
-                    ? "failed"
-                    : "completed",
-                title,
-                ...(detail ? { detail } : {}),
-                data: {
-                  ...data,
-                  ...(item.failureReason ? { error: item.failureReason } : {}),
-                },
-              },
-            });
-            if (state.background) {
-              yield* endBackground(
-                ctx,
-                state,
-                museToolFailed(item, identity) ? "failed" : "completed",
-              );
-            }
-            return;
-          }
-          case "userMessage":
-          case "reminderChild":
-          case "hookRun":
-          case "sideChat":
-          case "monitorFeed":
-            state.completed = finished;
-            return;
-          default: {
-            // An item kind this driver does not know: shown generically.
-            const summary = item.fallbackText ?? item.kind;
-            if (!state.started) {
-              state.started = true;
+              // A shell moved to the background keeps running past its turn.
+              if (
+                identity.kind === "shell" &&
+                item.background === true &&
+                !state.background &&
+                !finished
+              ) {
+                state.background = true;
+                yield* emit({
+                  type: "task.started",
+                  ...base,
+                  payload: {
+                    taskId: RuntimeTaskId.make(item.itemId),
+                    taskType: "local_bash",
+                    toolUseId: item.itemId,
+                    isBackgrounded: true,
+                    ...(detail ? { description: detail } : {}),
+                  },
+                } as ProviderRuntimeEvent);
+              }
+              if (identity.kind === "shell") {
+                const output = museCommandOutput(item);
+                if (output.startsWith(state.streamed) && output.length > state.streamed.length) {
+                  const delta = output.slice(state.streamed.length);
+                  state.streamed = output;
+                  yield* emit({
+                    type: "content.delta",
+                    ...base,
+                    itemId,
+                    payload: { streamKind: "command_output", delta },
+                  });
+                }
+              }
+              if (!finished) return;
+              state.completed = true;
               yield* emit({
-                type: "item.started",
+                type: "item.completed",
+                ...base,
+                itemId,
+                payload: {
+                  itemType: identity.itemType,
+                  status: museItemDeclined(item)
+                    ? "declined"
+                    : museToolFailed(item, identity)
+                      ? "failed"
+                      : "completed",
+                  title,
+                  ...(detail ? { detail } : {}),
+                  data: {
+                    ...data,
+                    ...(item.failureReason ? { error: item.failureReason } : {}),
+                  },
+                },
+              });
+              if (state.background) {
+                yield* endBackground(
+                  ctx,
+                  state,
+                  museToolFailed(item, identity) ? "failed" : "completed",
+                );
+              }
+              return;
+            }
+            case "userMessage":
+            case "reminderChild":
+            case "hookRun":
+            case "sideChat":
+            case "monitorFeed":
+              state.completed = finished;
+              return;
+            default: {
+              // An item kind this driver does not know: shown generically.
+              const summary = item.fallbackText ?? item.kind;
+              if (!state.started) {
+                state.started = true;
+                yield* emit({
+                  type: "item.started",
+                  ...base,
+                  itemId,
+                  payload: {
+                    itemType: "dynamic_tool_call",
+                    status: "inProgress",
+                    title: summary.slice(0, 200),
+                  },
+                });
+              }
+              if (!finished) return;
+              state.completed = true;
+              yield* emit({
+                type: "item.completed",
                 ...base,
                 itemId,
                 payload: {
                   itemType: "dynamic_tool_call",
-                  status: "inProgress",
+                  status: museItemFailed(item) ? "failed" : "completed",
                   title: summary.slice(0, 200),
                 },
               });
             }
-            if (!finished) return;
-            state.completed = true;
-            yield* emit({
-              type: "item.completed",
-              ...base,
-              itemId,
-              payload: {
-                itemType: "dynamic_tool_call",
-                status: museItemFailed(item) ? "failed" : "completed",
-                title: summary.slice(0, 200),
-              },
-            });
+          }
+        } finally {
+          if (state.completed) {
+            retireCompletedItem(ctx, state);
           }
         }
       });
@@ -1177,11 +1202,25 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
           }
           return false;
         }).pipe(Effect.orElseSucceed(() => false));
-        if (result && content) ctx.storedPatches.set(item.itemId, content);
+        if (
+          result &&
+          content &&
+          !ctx.completedItemRevisions.has(item.itemId) &&
+          ctx.items.get(item.itemId)?.completed !== true
+        ) {
+          ctx.storedPatches.set(item.itemId, content);
+        }
       });
 
     const applyItem = (ctx: SessionContext, item: MuseItem) =>
       Effect.gen(function* () {
+        const completedRevision = ctx.completedItemRevisions.get(item.itemId);
+        if (completedRevision !== undefined) {
+          if (item.revision > completedRevision) {
+            ctx.completedItemRevisions.set(item.itemId, item.revision);
+          }
+          return;
+        }
         const existing = ctx.items.get(item.itemId);
         if (existing && existing.item.revision > item.revision) return;
         if (existing?.completed) {
@@ -1228,9 +1267,138 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
     const applyDelta = (ctx: SessionContext, delta: typeof MuseItemDelta.Type) =>
       Effect.gen(function* () {
         const state = ctx.items.get(delta.itemId);
-        if (!state || state.completed) return;
+        if (!state || state.completed || delta.delta.length === 0) return;
         const field = delta.field ?? "text";
         const item = state.item;
+        if (field === "text" && item.kind === "agentMessage") {
+          const base = yield* eventBase(ctx, state.turnId);
+          const itemId = RuntimeItemId.make(item.itemId);
+          if (!state.started) {
+            state.started = true;
+            yield* emit({
+              type: "item.started",
+              ...base,
+              itemId,
+              payload: { itemType: "assistant_message", status: "inProgress" },
+            });
+          }
+          const prevText = item.text ?? "";
+          const nextText = prevText + delta.delta;
+          state.item = { ...item, text: nextText };
+          if (prevText === state.streamed) {
+            state.streamed = nextText;
+            yield* emit({
+              type: "content.delta",
+              ...base,
+              itemId,
+              payload: { streamKind: "assistant_text", delta: delta.delta },
+            });
+          } else if (
+            nextText.length > state.streamed.length &&
+            nextText.startsWith(state.streamed)
+          ) {
+            const unseen = nextText.slice(state.streamed.length);
+            state.streamed = nextText;
+            yield* emit({
+              type: "content.delta",
+              ...base,
+              itemId,
+              payload: { streamKind: "assistant_text", delta: unseen },
+            });
+          }
+          return;
+        }
+        if (field.startsWith("summary.") && item.kind === "reasoning") {
+          const index = Number(field.slice("summary.".length));
+          if (!Number.isSafeInteger(index) || index < 0 || index > 100) return;
+          const base = yield* eventBase(ctx, state.turnId);
+          const itemId = RuntimeItemId.make(item.itemId);
+          if (!state.started) {
+            state.started = true;
+            yield* emit({
+              type: "item.started",
+              ...base,
+              itemId,
+              payload: { itemType: "reasoning", status: "inProgress", title: "Thinking" },
+            });
+          }
+          const prevPart = item.summary?.[index] ?? "";
+          const seen = state.summaryStreamed.get(index) ?? "";
+          const nextPart = prevPart + delta.delta;
+          const summary = [...(item.summary ?? [])];
+          summary[index] = nextPart;
+          state.item = { ...item, summary };
+          if (prevPart === seen) {
+            state.summaryStreamed.set(index, nextPart);
+            yield* emit({
+              type: "content.delta",
+              ...base,
+              itemId,
+              payload: {
+                streamKind: "reasoning_summary_text",
+                delta: delta.delta,
+                summaryIndex: index,
+              },
+            });
+          } else if (nextPart.length > seen.length && nextPart.startsWith(seen)) {
+            const unseen = nextPart.slice(seen.length);
+            state.summaryStreamed.set(index, nextPart);
+            yield* emit({
+              type: "content.delta",
+              ...base,
+              itemId,
+              payload: {
+                streamKind: "reasoning_summary_text",
+                delta: unseen,
+                summaryIndex: index,
+              },
+            });
+          }
+          return;
+        }
+        if (
+          (field === "output" || field === "visibleOutput") &&
+          (item.kind === "toolCall" || item.kind === "userShell")
+        ) {
+          if (isMuseNativeRowTool(item)) return;
+          const identity = identifyMuseTool(item);
+          if (identity.kind === "shell" && state.started) {
+            const prevOutput = item.visibleOutput ?? "";
+            if (prevOutput.length >= MUSE_STREAM_OUTPUT_MAX_CHARS) return;
+            const remaining = MUSE_STREAM_OUTPUT_MAX_CHARS - prevOutput.length;
+            const chunk =
+              delta.delta.length <= remaining ? delta.delta : delta.delta.slice(0, remaining);
+            const nextOutput = prevOutput + chunk;
+            state.item = { ...item, visibleOutput: nextOutput };
+            if (prevOutput === state.streamed) {
+              state.streamed = nextOutput;
+              yield* emit({
+                type: "content.delta",
+                ...(yield* eventBase(ctx, state.turnId)),
+                itemId: RuntimeItemId.make(item.itemId),
+                payload: { streamKind: "command_output", delta: chunk },
+              });
+            } else if (
+              nextOutput.length > state.streamed.length &&
+              nextOutput.startsWith(state.streamed)
+            ) {
+              const unseen = nextOutput.slice(state.streamed.length);
+              state.streamed = nextOutput;
+              yield* emit({
+                type: "content.delta",
+                ...(yield* eventBase(ctx, state.turnId)),
+                itemId: RuntimeItemId.make(item.itemId),
+                payload: { streamKind: "command_output", delta: unseen },
+              });
+            }
+            return;
+          }
+          yield* emitItem(ctx, state, {
+            ...item,
+            visibleOutput: (item.visibleOutput ?? "") + delta.delta,
+          });
+          return;
+        }
         if (field === "text") {
           yield* emitItem(ctx, state, { ...item, text: (item.text ?? "") + delta.delta });
         } else if (field === "output" || field === "visibleOutput") {
@@ -2285,6 +2453,7 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
             queued: new Set(),
             joined: new Map(),
             items: new Map(),
+            completedItemRevisions: new Map(),
             approvals: new Map(),
             approvalIds: new Map(),
             questions: new Map(),

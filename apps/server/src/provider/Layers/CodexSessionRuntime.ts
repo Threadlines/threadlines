@@ -2093,10 +2093,8 @@ const makeCodexSessionRuntimeIn = (
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
-    const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
-    const collabChildThreadMetadataRef = yield* Ref.make(
-      new Map<string, CollabChildThreadMetadata>(),
-    );
+    const collabReceiverTurns = new Map<string, TurnId>();
+    const collabChildThreadMetadata = new Map<string, CollabChildThreadMetadata>();
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -2223,10 +2221,10 @@ const makeCodexSessionRuntimeIn = (
         ),
       );
 
-    const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
-      Layer.build,
-      Effect.provideService(Scope.Scope, runtimeScope),
-    );
+    const clientContext = yield* CodexClient.layerChildProcess(child, {
+      bufferNotifications: false,
+      bufferRequests: false,
+    }).pipe(Layer.build, Effect.provideService(Scope.Scope, runtimeScope));
     const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
       Effect.provide(clientContext),
     );
@@ -2321,8 +2319,6 @@ const makeCodexSessionRuntimeIn = (
     const handleRawNotification = (notification: CodexServerNotification) =>
       Effect.gen(function* () {
         const route = readRouteFields(notification);
-        const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
-        const collabChildThreadMetadata = yield* Ref.get(collabChildThreadMetadataRef);
         rememberCollabChildThreadMetadata(collabChildThreadMetadata, notification);
         const providerConversationId = readNotificationThreadId(notification);
         const session = yield* Ref.get(sessionRef);
@@ -2344,7 +2340,6 @@ const makeCodexSessionRuntimeIn = (
             isKnownChildThread: childParentTurnId !== undefined,
           })
         ) {
-          yield* Ref.set(collabChildThreadMetadataRef, collabChildThreadMetadata);
           return;
         }
 
@@ -2369,8 +2364,6 @@ const makeCodexSessionRuntimeIn = (
               payload: childStatus,
             });
           }
-          yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
-          yield* Ref.set(collabChildThreadMetadataRef, collabChildThreadMetadata);
           return;
         }
 
@@ -2404,8 +2397,6 @@ const makeCodexSessionRuntimeIn = (
           }
         }
 
-        yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
-        yield* Ref.set(collabChildThreadMetadataRef, collabChildThreadMetadata);
         if (notification.method === "thread/realtime/outputAudio/delta") {
           const audio = notification.params.audio;
           if (options.onRealtimeAudio) {

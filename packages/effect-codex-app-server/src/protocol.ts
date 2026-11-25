@@ -37,6 +37,17 @@ export interface CodexAppServerPatchedProtocolOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: CodexAppServerProtocolLogEvent) => Effect.Effect<void, never>;
+  /**
+   * Buffer incoming notifications in `incomingNotifications`. Set to `false`
+   * when using `onNotification` without reading `incomingNotifications`.
+   * Defaults to `true`.
+   */
+  readonly bufferNotifications?: boolean;
+  /**
+   * Buffer incoming requests in `incomingRequests`. Set to `false` when using
+   * `onRequest` without reading `incomingRequests`. Defaults to `true`.
+   */
+  readonly bufferRequests?: boolean;
   readonly onNotification?: (
     notification: CodexAppServerIncomingNotification,
   ) => Effect.Effect<void, never>;
@@ -84,7 +95,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isIncomingRequest(value: unknown): value is CodexAppServerIncomingRequest {
-  if (!isObject(value) || typeof value.method !== "string") {
+  if (!isObject(value) || typeof value.method !== "string" || !("id" in value)) {
     return false;
   }
   return isJsonRpcId(value.id);
@@ -98,35 +109,29 @@ function isIncomingResponse(value: unknown): value is typeof JsonRpcResponseEnve
   return isJsonRpcResponseEnvelope(value);
 }
 
-const encodeJsonString = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
-const decodeJsonString = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
-
 const encodeWireMessage = (
   message: Record<string, unknown>,
 ): Effect.Effect<string, CodexError.CodexAppServerProtocolParseError> =>
-  encodeJsonString(message).pipe(
-    Effect.map((encoded) => `${encoded}\n`),
-    Effect.mapError(
-      (cause) =>
-        new CodexError.CodexAppServerProtocolParseError({
-          detail: "Failed to encode Codex App Server message",
-          cause,
-        }),
-    ),
-  );
+  Effect.try({
+    try: () => `${JSON.stringify(message)}\n`,
+    catch: (cause) =>
+      new CodexError.CodexAppServerProtocolParseError({
+        detail: "Failed to encode Codex App Server message",
+        cause,
+      }),
+  });
 
 const decodeWireMessage = (
   line: string,
 ): Effect.Effect<unknown, CodexError.CodexAppServerProtocolParseError> =>
-  decodeJsonString(line).pipe(
-    Effect.mapError(
-      (cause) =>
-        new CodexError.CodexAppServerProtocolParseError({
-          detail: "Failed to decode Codex App Server wire message",
-          cause,
-        }),
-    ),
-  );
+  Effect.try({
+    try: () => JSON.parse(line) as unknown,
+    catch: (cause) =>
+      new CodexError.CodexAppServerProtocolParseError({
+        detail: "Failed to decode Codex App Server wire message",
+        cause,
+      }),
+  });
 
 const normalizeIncomingError = (error: unknown, detail: string): CodexError.CodexAppServerError =>
   isCodexAppServerError(error)
@@ -155,26 +160,21 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     const outgoing = yield* Queue.unbounded<string, Cause.Done<void>>();
     const incomingNotifications = yield* Queue.unbounded<CodexAppServerIncomingNotification>();
     const incomingRequests = yield* Queue.unbounded<CodexAppServerIncomingRequest>();
+    const bufferNotifications = options.bufferNotifications !== false;
+    const bufferRequests = options.bufferRequests !== false;
+    const logIncoming = options.logIncoming === true;
+    const logOutgoing = options.logOutgoing === true;
     const pending = yield* Ref.make(
       new Map<string, Deferred.Deferred<unknown, CodexError.CodexAppServerError>>(),
     );
     const nextRequestId = yield* Ref.make(1);
-    const remainder = yield* Ref.make("");
+    let pendingChunks: Array<string> = [];
     const terminationHandled = yield* Ref.make(false);
     const scope = yield* Effect.scope;
 
-    const logProtocol = (event: CodexAppServerProtocolLogEvent) => {
-      if (event.direction === "incoming" && !options.logIncoming) {
-        return Effect.void;
-      }
-      if (event.direction === "outgoing" && !options.logOutgoing) {
-        return Effect.void;
-      }
-      return (
-        options.logger?.(event) ??
-        Effect.logDebug("Codex App Server protocol event").pipe(Effect.annotateLogs({ event }))
-      );
-    };
+    const logProtocol = (event: CodexAppServerProtocolLogEvent) =>
+      options.logger?.(event) ??
+      Effect.logDebug("Codex App Server protocol event").pipe(Effect.annotateLogs({ event }));
 
     const failAllPending = (error: CodexError.CodexAppServerError) =>
       Ref.get(pending).pipe(
@@ -206,17 +206,21 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
 
     const offerOutgoing = (message: Record<string, unknown>) =>
       Effect.gen(function* () {
-        yield* logProtocol({
-          direction: "outgoing",
-          stage: "decoded",
-          payload: message,
-        });
+        if (logOutgoing) {
+          yield* logProtocol({
+            direction: "outgoing",
+            stage: "decoded",
+            payload: message,
+          });
+        }
         const encoded = yield* encodeWireMessage(message);
-        yield* logProtocol({
-          direction: "outgoing",
-          stage: "raw",
-          payload: encoded,
-        });
+        if (logOutgoing) {
+          yield* logProtocol({
+            direction: "outgoing",
+            stage: "raw",
+            payload: encoded,
+          });
+        }
         yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
       });
 
@@ -268,33 +272,36 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       return resolvePending(requestId, (deferred) => Deferred.succeed(deferred, response.result));
     };
 
-    const handleRequest = (request: CodexAppServerIncomingRequest) =>
-      Queue.offer(incomingRequests, request).pipe(
-        Effect.andThen(
-          options.onRequest
-            ? options.onRequest(request).pipe(
-                Effect.matchEffect({
-                  onFailure: (error) =>
-                    respondError(request.id, CodexError.normalizeToRequestError(error)),
-                  onSuccess: (result) => respond(request.id, result),
-                }),
-                // Server-initiated requests such as requestUserInput remain
-                // open while the user decides. Keep reading the bidirectional
-                // JSON-RPC stream so client-initiated requests (especially
-                // turn/interrupt) can receive their responses in the meantime.
-                Effect.forkIn(scope),
-                Effect.asVoid,
-              )
-            : Effect.void,
-        ),
-        Effect.asVoid,
-      );
+    const handleRequest = (request: CodexAppServerIncomingRequest) => {
+      const dispatch = options.onRequest
+        ? options.onRequest(request).pipe(
+            Effect.matchEffect({
+              onFailure: (error) =>
+                respondError(request.id, CodexError.normalizeToRequestError(error)),
+              onSuccess: (result) => respond(request.id, result),
+            }),
+            // Server-initiated requests such as requestUserInput remain
+            // open while the user decides. Keep reading the bidirectional
+            // JSON-RPC stream so client-initiated requests (especially
+            // turn/interrupt) can receive their responses in the meantime.
+            Effect.forkIn(scope),
+            Effect.asVoid,
+          )
+        : Effect.void;
+      return bufferRequests
+        ? Queue.offer(incomingRequests, request).pipe(Effect.andThen(dispatch), Effect.asVoid)
+        : dispatch;
+    };
 
-    const handleNotification = (notification: CodexAppServerIncomingNotification) =>
-      Queue.offer(incomingNotifications, notification).pipe(
-        Effect.andThen(options.onNotification ? options.onNotification(notification) : Effect.void),
-        Effect.asVoid,
-      );
+    const handleNotification = (notification: CodexAppServerIncomingNotification) => {
+      const dispatch = options.onNotification ? options.onNotification(notification) : Effect.void;
+      return bufferNotifications
+        ? Queue.offer(incomingNotifications, notification).pipe(
+            Effect.andThen(dispatch),
+            Effect.asVoid,
+          )
+        : dispatch;
+    };
 
     const routeMessage = (
       message: unknown,
@@ -318,6 +325,9 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     const handleLine = (line: string): Effect.Effect<void, CodexError.CodexAppServerError> => {
       if (line.trim().length === 0) {
         return Effect.void;
+      }
+      if (!logIncoming) {
+        return decodeWireMessage(line).pipe(Effect.flatMap(routeMessage));
       }
       return logProtocol({
         direction: "incoming",
@@ -346,24 +356,53 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       );
     };
 
+    const drainChunkLines = (chunk: string): ReadonlyArray<string> => {
+      let newlineIndex = chunk.indexOf("\n");
+      if (newlineIndex === -1) {
+        if (chunk.length > 0) {
+          pendingChunks.push(chunk);
+        }
+        return [];
+      }
+      const lines: Array<string> = [];
+      const firstSegment =
+        pendingChunks.length > 0
+          ? pendingChunks.join("") + chunk.slice(0, newlineIndex)
+          : chunk.slice(0, newlineIndex);
+      pendingChunks = [];
+      lines.push(firstSegment.endsWith("\r") ? firstSegment.slice(0, -1) : firstSegment);
+      let start = newlineIndex + 1;
+      while ((newlineIndex = chunk.indexOf("\n", start)) !== -1) {
+        const line = chunk.slice(start, newlineIndex);
+        lines.push(line.endsWith("\r") ? line.slice(0, -1) : line);
+        start = newlineIndex + 1;
+      }
+      if (start < chunk.length) {
+        pendingChunks.push(chunk.slice(start));
+      }
+      return lines;
+    };
+
     yield* options.stdio.stdin.pipe(
       Stream.decodeText(),
-      Stream.runForEach((chunk) =>
-        Ref.modify(remainder, (current) => {
-          const combined = current + chunk;
-          const lines = combined.split("\n");
-          const nextRemainder = lines.pop() ?? "";
-          return [lines.map((line) => line.replace(/\r$/, "")), nextRemainder] as const;
-        }).pipe(Effect.flatMap((lines) => Effect.forEach(lines, handleLine, { discard: true }))),
-      ),
+      Stream.runForEach((chunk) => {
+        const lines = drainChunkLines(chunk);
+        return lines.length === 0
+          ? Effect.void
+          : Effect.forEach(lines, handleLine, { discard: true });
+      }),
       Effect.matchEffect({
         onFailure: (error) =>
           handleTermination(() =>
             Effect.succeed(normalizeIncomingError(error, "Codex App Server input stream failed")),
           ),
         onSuccess: () =>
-          Ref.get(remainder).pipe(
-            Effect.flatMap((line) => (line.trim().length === 0 ? Effect.void : handleLine(line))),
+          Effect.suspend(() => {
+            const line = pendingChunks.length > 0 ? pendingChunks.join("") : "";
+            pendingChunks = [];
+            const trimmed = line.endsWith("\r") ? line.slice(0, -1) : line;
+            return trimmed.trim().length === 0 ? Effect.void : handleLine(trimmed);
+          }).pipe(
             Effect.matchEffect({
               onFailure: (error) => handleTermination(() => Effect.succeed(error)),
               onSuccess: () =>

@@ -98,7 +98,6 @@ import {
 } from "../Errors.ts";
 import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import {
-  appendTailCapped,
   PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE,
   PROMPT_SUGGESTION_MAX_MESSAGES,
   type PromptSuggestionMessage,
@@ -1011,9 +1010,14 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       method: string,
       payload: unknown,
       logOptions?: { readonly streamFragment?: boolean },
-    ) =>
-      Effect.gen(function* () {
-        if (!nativeEventLogger) return;
+    ) => {
+      if (
+        !nativeEventLogger ||
+        (logOptions?.streamFragment === true && nativeEventLogger.keepsStreamFragments === false)
+      ) {
+        return Effect.void;
+      }
+      return Effect.gen(function* () {
         const observedAt = yield* nowIso;
         yield* nativeEventLogger.write(
           {
@@ -1032,6 +1036,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           logOptions,
         );
       });
+    };
 
     /**
      * ACP streams reasoning as `agent_thought_chunk`s. A run of them becomes
@@ -1120,6 +1125,25 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }),
         );
       });
+
+    /**
+     * Strips inline base64 payloads from image/audio blocks before retaining
+     * completed turns in memory, so multi-MB attachments are garbage-collected
+     * once the prompt finishes.
+     */
+    function compactPromptPartsForHistory(
+      parts: ReadonlyArray<EffectAcpSchema.ContentBlock>,
+    ): ReadonlyArray<EffectAcpSchema.ContentBlock> {
+      let changed = false;
+      const compacted = parts.map((part) => {
+        if ((part.type === "image" || part.type === "audio") && part.data.length > 0) {
+          changed = true;
+          return { ...part, data: "" };
+        }
+        return part;
+      });
+      return changed ? compacted : parts;
+    }
 
     /** Clears what a turn accumulates, for a turn starting now. */
     const resetTurnState = (ctx: AcpSessionContext) => {
@@ -1456,10 +1480,22 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         const machine = ctx.machine;
         if (machine !== undefined) {
           if (earlier === undefined || machine.state.turn !== undefined) {
-            yield* applyTurnEvent(ctx, {
-              type: "agentOutput",
-              newTurnId: crypto.randomUUID(),
-            });
+            const turn = machine.state.turn;
+            if (
+              options?.turnMachineSeams === undefined &&
+              turn !== undefined &&
+              !machine.state.ended &&
+              (turn.phase.tag === "prompting" ||
+                (machine.state.replyOpen &&
+                  (turn.phase.tag !== "waiting" || turn.phase.recheck === true)))
+            ) {
+              yield* noteActivity(machine);
+            } else {
+              yield* applyTurnEvent(ctx, {
+                type: "agentOutput",
+                newTurnId: crypto.randomUUID(),
+              });
+            }
           } else {
             yield* noteActivity(machine);
           }
@@ -1776,6 +1812,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             string,
             { readonly reask: (latest: AcpToolCallState) => Effect.Effect<void> }
           >();
+          /** Tool call ids with a permission request currently in flight (before openApprovals is populated). */
+          const pendingPermissionToolCalls = new Map<string, number>();
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           const sessionScope = yield* Scope.make("sequential");
           let sessionScopeTransferred = false;
@@ -1976,7 +2014,8 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             ...(descriptor.agentTurns || descriptor.turnMachine ? { liveOutsidePrompt: true } : {}),
             ...(descriptor.turnMachine ? { trackSilentToolCalls: true } : {}),
             // An open approval must hear of an update that changes only what it would authorize.
-            reportRevisedToolCalls: true,
+            reportRevisedToolCalls: (toolCallId) =>
+              openApprovals.has(toolCallId) || pendingPermissionToolCalls.has(toolCallId),
             ...acpNativeLoggers,
           }).pipe(
             Effect.provideService(Scope.Scope, sessionScope),
@@ -2312,8 +2351,13 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             if (descriptor.extensions) {
               yield* descriptor.extensions.register(extensionContext);
             }
-            yield* acp.handleRequestPermission((params) =>
-              Effect.gen(function* () {
+            yield* acp.handleRequestPermission((params) => {
+              const permissionToolCallId = params.toolCall.toolCallId;
+              pendingPermissionToolCalls.set(
+                permissionToolCallId,
+                (pendingPermissionToolCalls.get(permissionToolCallId) ?? 0) + 1,
+              );
+              return Effect.gen(function* () {
                 yield* logNative(input.threadId, "session/request_permission", params);
                 // A side runtime never shows a request. It is answered once,
                 // as its descriptor says (AcpSideRuntime.approvals): declined,
@@ -2578,8 +2622,20 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                 return resolved === "cancel"
                   ? { outcome: { outcome: "cancelled" as const } }
                   : selected(acpPermissionOptionId(resolved, offered));
-              }),
-            );
+              }).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    const remaining =
+                      (pendingPermissionToolCalls.get(permissionToolCallId) ?? 1) - 1;
+                    if (remaining <= 0) {
+                      pendingPermissionToolCalls.delete(permissionToolCallId);
+                    } else {
+                      pendingPermissionToolCalls.set(permissionToolCallId, remaining);
+                    }
+                  }),
+                ),
+              );
+            });
             const startedSession = yield* acp.start();
             // Up, but not trusted yet: the descriptor checks the agent really
             // came up locked down before anything is sent to it.
@@ -3012,11 +3068,15 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     if (ctx.activeTurnText.length < PLAN_GATE_SCAN_MAX_CHARS) {
                       ctx.activeTurnText += event.text;
                     }
-                    ctx.activeTurnReplyTail = appendTailCapped(
-                      ctx.activeTurnReplyTail,
-                      event.text,
-                      PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE,
-                    );
+                    if (options?.promptSuggestions !== undefined) {
+                      const nextTail = ctx.activeTurnReplyTail + event.text;
+                      ctx.activeTurnReplyTail =
+                        nextTail.length > PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE * 2
+                          ? nextTail.slice(
+                              nextTail.length - PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE,
+                            )
+                          : nextTail;
+                    }
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload, {
                       streamFragment: true,
                     });
@@ -3524,7 +3584,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
               );
         if (exit !== undefined && Exit.isSuccess(exit)) {
           const result = exit.value;
-          ctx.turns.push({ id: sent.turnId, items: [{ prompt: sent.parts, result }] });
+          ctx.turns.push({
+            id: sent.turnId,
+            items: [{ prompt: compactPromptPartsForHistory(sent.parts), result }],
+          });
           ctx.session = {
             ...ctx.session,
             updatedAt: yield* nowIso,
@@ -4358,7 +4421,10 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
           }
           if (Exit.isSuccess(exit)) {
             const result = exit.value;
-            ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
+            ctx.turns.push({
+              id: turnId,
+              items: [{ prompt: compactPromptPartsForHistory(promptParts), result }],
+            });
             const planMarkdown = planMode ? ctx.planMarkdown?.trim() : undefined;
             if (planMarkdown && result.stopReason !== "cancelled") {
               yield* offerRuntimeEvent({

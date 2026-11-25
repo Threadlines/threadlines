@@ -1579,7 +1579,7 @@ const make = Effect.gen(function* () {
     // A room agent's runtime carries the room tools, and so does any thread's
     // own agent while agents may bring in others (it invites through them) or
     // start threads of their own (child threads use the same server).
-    const toolSettings = yield* serverSettingsService.getSettings.pipe(
+    const toolSettings = yield* serverSettingsService.readStored.pipe(
       Effect.orElseSucceed(() => undefined),
     );
     // A scheduled run's thread gets them on its own, for scheduled_run_finish
@@ -6877,7 +6877,7 @@ const make = Effect.gen(function* () {
     if (request?.kind !== "invite" || Option.isNone(providerRegistry)) {
       return null;
     }
-    const settings = yield* serverSettingsService.getSettings.pipe(Effect.option);
+    const settings = yield* serverSettingsService.readStored.pipe(Effect.option);
     if (Option.isNone(settings)) {
       return "Could not check the invited agent's provider.";
     }
@@ -7733,7 +7733,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const cut = turnsCutByRestart.splice(0);
       if (cut.length === 0) return;
-      const settingOn = yield* serverSettingsService.getSettings.pipe(
+      const settingOn = yield* serverSettingsService.readStored.pipe(
         Effect.map((settings) => settings.continueAfterRestart),
         Effect.orElseSucceed(() => false),
       );
@@ -7886,7 +7886,7 @@ const make = Effect.gen(function* () {
     // Invites waiting for the user survive a restart, unless they were
     // turned off meanwhile.
     const invitesModeAtStart = agentInvitesMode(
-      yield* serverSettingsService.getSettings.pipe(Effect.orElseSucceed(() => undefined)),
+      yield* serverSettingsService.readStored.pipe(Effect.orElseSucceed(() => undefined)),
     );
     if (invitesModeAtStart === "off") {
       yield* cancelAwaitingInvites().pipe(
@@ -7936,7 +7936,7 @@ const make = Effect.gen(function* () {
    */
   const warmUpThread = (input: OrchestrationWarmUpTurnInput) =>
     Effect.gen(function* () {
-      const settings = yield* serverSettingsService.getSettings.pipe(
+      const settings = yield* serverSettingsService.readStored.pipe(
         Effect.orElseSucceed(() => undefined),
       );
       if (settings?.startAgentsWhileTyping === false) {

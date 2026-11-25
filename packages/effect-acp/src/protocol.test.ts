@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
 import * as Ref from "effect/Ref";
 import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
+import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { it, assert } from "@effect/vitest";
@@ -169,6 +170,31 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
             '{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"session-1"}}\n',
         },
       ]);
+    }),
+  );
+
+  it.effect("skips outgoing notification logs when logOutgoing is disabled", () =>
+    Effect.gen(function* () {
+      const { stdio, output } = yield* makeInMemoryStdio();
+      const events: Array<AcpProtocol.AcpProtocolLogEvent> = [];
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        logOutgoing: false,
+        logger: (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+      });
+
+      yield* transport.notify("session/cancel", { sessionId: "session-1" });
+      const outbound = yield* Queue.take(output);
+      assert.deepEqual(yield* decodeSessionCancelNotification(outbound), {
+        jsonrpc: "2.0",
+        method: "session/cancel",
+        params: { sessionId: "session-1" },
+      });
+      assert.deepEqual(events, []);
     }),
   );
 
@@ -604,6 +630,43 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
       );
       assert.instanceOf(error, AcpError.AcpProcessExitedError);
       assert.equal(error.code, 0);
+    }),
+  );
+
+  it.effect("does not buffer incoming notifications when bufferNotifications is false", () =>
+    Effect.gen(function* () {
+      const { stdio, input } = yield* makeInMemoryStdio();
+      const handled = yield* Deferred.make<AcpProtocol.AcpIncomingNotification>();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        bufferNotifications: false,
+        onNotification: (notification) =>
+          Deferred.succeed(handled, notification).pipe(Effect.asVoid),
+      });
+
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(SessionUpdateNotification, {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: "session-1",
+            update: { sessionUpdate: "plan", entries: [] },
+          },
+        }),
+      );
+      const seen = yield* Deferred.await(handled);
+      assert.equal(seen._tag, "SessionUpdate");
+
+      const bufferedFiber = yield* transport.incoming.pipe(
+        Stream.runHead,
+        Effect.timeoutOption("50 millis"),
+        Effect.forkScoped,
+      );
+      yield* TestClock.adjust("100 millis");
+      const buffered = yield* Fiber.join(bufferedFiber);
+      assert.equal(buffered._tag, "None");
     }),
   );
 });

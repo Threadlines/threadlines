@@ -4,6 +4,7 @@ import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -274,5 +275,59 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
       // One that was answered never reaches the hook.
       assert.deepEqual(abandoned, [sent.id]);
     }),
+  );
+
+  it.effect(
+    "reassembles multi-chunk CRLF lines and respects independent bufferNotifications/bufferRequests flags",
+    () =>
+      Effect.gen(function* () {
+        const { stdio, input } = yield* makeInMemoryStdio();
+        const received: Array<CodexProtocol.CodexAppServerIncomingNotification> = [];
+        const secondReceived = yield* Deferred.make<void>();
+        const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+          stdio,
+          bufferNotifications: false,
+          onNotification: (notification) =>
+            Effect.gen(function* () {
+              received.push(notification);
+              if (received.length >= 2) {
+                yield* Deferred.succeed(secondReceived, undefined);
+              }
+            }),
+        });
+
+        const payload = `${JSON.stringify({ method: "item/agentMessage/delta", params: { delta: "abc" } })}\r\n${JSON.stringify({ method: "item/agentMessage/delta", params: { delta: "def" } })}\n`;
+        // Split right across the CRLF boundary and mid-JSON.
+        const split1 = payload.indexOf("\r") + 1;
+        yield* Queue.offer(input, encoder.encode(payload.slice(0, 12)));
+        yield* Queue.offer(input, encoder.encode(payload.slice(12, split1)));
+        yield* Queue.offer(input, encoder.encode(payload.slice(split1)));
+        yield* Queue.offer(
+          input,
+          encodeJsonl({ id: 77, method: "item/tool/requestUserInput", params: {} }),
+        );
+        yield* Deferred.await(secondReceived);
+
+        assert.equal(received.length, 2);
+        assert.deepEqual(received[0]?.params, { delta: "abc" });
+        assert.deepEqual(received[1]?.params, { delta: "def" });
+
+        // Notifications were opt-out buffered, so incomingNotifications stays empty.
+        const bufferedNotificationFiber = yield* transport.incomingNotifications.pipe(
+          Stream.runHead,
+          Effect.timeoutOption("50 millis"),
+          Effect.forkScoped,
+        );
+        yield* TestClock.adjust("100 millis");
+        const bufferedNotification = yield* Fiber.join(bufferedNotificationFiber);
+        assert.equal(bufferedNotification._tag, "None");
+
+        // Requests keep their default buffering when only bufferNotifications is false.
+        const bufferedRequest = yield* transport.incomingRequests.pipe(Stream.runHead);
+        assert.equal(bufferedRequest._tag, "Some");
+        if (bufferedRequest._tag === "Some") {
+          assert.equal(bufferedRequest.value.id, 77);
+        }
+      }),
   );
 });

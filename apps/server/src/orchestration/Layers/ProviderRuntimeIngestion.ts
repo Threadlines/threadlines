@@ -3194,7 +3194,7 @@ const make = Effect.gen(function* () {
         }
 
         const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
-          serverSettingsService.getSettings,
+          serverSettingsService.readStored,
           (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
         );
         if (assistantDeliveryMode === "buffered") {
@@ -3853,7 +3853,7 @@ const make = Effect.gen(function* () {
                   window: failedUsageLimit.window ?? "other",
                   resetsAt: failedUsageLimit.resetsAt ?? null,
                 },
-                continueAfterUsageLimits: yield* serverSettingsService.getSettings.pipe(
+                continueAfterUsageLimits: yield* serverSettingsService.readStored.pipe(
                   Effect.map((settings) => settings.continueAfterUsageLimits),
                   Effect.orElseSucceed(() => false),
                 ),
