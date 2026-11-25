@@ -86,6 +86,11 @@ export class SecureLinkClosedError extends Error {
   }
 }
 
+/** A route could not be reached or timed out before completing the handshake. */
+class SecureLinkUnreachableError extends Error {}
+
+const ERROR_CLOSE_FALLBACK_MS = 50;
+
 interface CloseDetails {
   readonly code: number;
   readonly reason: string;
@@ -143,12 +148,17 @@ function openLink(input: {
     let ready: Link | null = null;
     let initiator: Awaited<ReturnType<typeof startKKInitiator>> | null = null;
     let closedBy: SecureLinkClosedError | null = null;
+    let errorTimer: ReturnType<typeof setTimeout> | null = null;
     const early: Array<Uint8Array> = [];
 
     const fail = (reason: unknown) => {
       if (phase === "ready" || phase === "failed") return;
       phase = "failed";
       clearTimeout(timer);
+      if (errorTimer !== null) {
+        clearTimeout(errorTimer);
+        errorTimer = null;
+      }
       input.signal.removeEventListener("abort", onAbort);
       try {
         socket.close();
@@ -157,7 +167,10 @@ function openLink(input: {
       }
       reject(closedBy ?? reason);
     };
-    const timer = setTimeout(() => fail(new Error("Timed out.")), input.timeoutMs);
+    const timer = setTimeout(
+      () => fail(new SecureLinkUnreachableError("Timed out.")),
+      input.timeoutMs,
+    );
     const onAbort = () => fail(new Error("Aborted."));
     input.signal.addEventListener("abort", onAbort);
 
@@ -210,6 +223,10 @@ function openLink(input: {
           if (phase !== "finishing") return;
           phase = "ready";
           clearTimeout(timer);
+          if (errorTimer !== null) {
+            clearTimeout(errorTimer);
+            errorTimer = null;
+          }
           input.signal.removeEventListener("abort", onAbort);
           ready = {
             url: input.url,
@@ -232,7 +249,16 @@ function openLink(input: {
       if (ready) ready.onClose(details);
       else fail(closedBy);
     });
-    socket.addEventListener("error", () => fail(new Error("Couldn't connect.")));
+    socket.addEventListener("error", () => {
+      if (ready || phase === "failed" || errorTimer !== null) return;
+      // Stop the handshake deadline so it cannot preempt the short grace
+      // window waiting for the paired `close` event's real close code.
+      clearTimeout(timer);
+      errorTimer = setTimeout(() => {
+        errorTimer = null;
+        fail(new SecureLinkUnreachableError("Couldn't connect."));
+      }, ERROR_CLOSE_FALLBACK_MS);
+    });
   });
 }
 
@@ -288,11 +314,14 @@ export async function probeDirectRoutes(
       },
       onError: () => winner.socket.close(),
     });
+    const closeTimer = setTimeout(() => winner.socket.close(), DIRECT_BUDGET_MS * 2);
     winner.onFrame = (frame) => stream.receiveFrame(frame);
-    winner.onClose = () => resolve(answered ? winner.url : null);
+    winner.onClose = () => {
+      clearTimeout(closeTimer);
+      resolve(answered ? winner.url : null);
+    };
     for (const frame of winner.early) stream.receiveFrame(frame);
     stream.sendRecord(SECURE_RECORD_CONFIRM, new Uint8Array([SECURE_CONFIRM_PROBE]));
-    setTimeout(() => winner.socket.close(), DIRECT_BUDGET_MS * 2);
   });
 }
 
@@ -393,9 +422,17 @@ export class SecureChannel {
           signal: this.abort.signal,
         });
       } catch (error) {
-        // Pass the relay's close code on (daily limit, access removed, ...).
+        // Pass the relay's close code on (daily limit, access removed, ...),
+        // and classify unreachable/timeout or silent 1006 drops before open as
+        // NO_ROUTE rather than protocol failure so offline backoff kicks in.
         if (error instanceof SecureLinkClosedError) {
-          this.finish(error.code, error.reason);
+          if (error.code === 1006 && error.reason === "") {
+            this.finish(SECURE_CLOSE_CODE_NO_ROUTE, "Can't reach this computer right now.");
+          } else {
+            this.finish(error.code, error.reason);
+          }
+        } else if (error instanceof SecureLinkUnreachableError) {
+          this.finish(SECURE_CLOSE_CODE_NO_ROUTE, "Can't reach this computer right now.");
         } else {
           this.finish(SECURE_CLOSE_CODE_PROTOCOL, "Couldn't set up a secure connection.");
         }

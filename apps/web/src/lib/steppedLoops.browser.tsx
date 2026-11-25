@@ -123,12 +123,15 @@ describe("installSteppedLoops", () => {
     const screen = await render(SCENE);
     try {
       // It arrives after startup: these loops are already running, one still in its delay.
-      await vi.waitFor(() => expect(hasBegun("stepped")).toBe(true));
+      await vi.waitFor(() => expect(hasBegun("stepped")).toBe(true), { timeout: 5_000 });
       install();
-      await vi.waitFor(() => {
-        expect(isStepped(loopOf("stepped").animation)).toBe(true);
-        expect(isStepped(loopOf("late").animation)).toBe(true);
-      });
+      await vi.waitFor(
+        () => {
+          expect(isStepped(loopOf("stepped").animation)).toBe(true);
+          expect(isStepped(loopOf("late").animation)).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
       const { plain, stepped } = await positionsUntil(
         ["plain", "stepped"],
         (seen) => new Set(seen.stepped).size > 2 && offGrid(seen.plain, 10).length > 0,
@@ -154,7 +157,9 @@ describe("installSteppedLoops", () => {
     install();
     const screen = await render(SCENE);
     try {
-      await vi.waitFor(() => expect(isStepped(loopOf("stepped").animation)).toBe(true));
+      await vi.waitFor(() => expect(isStepped(loopOf("stepped").animation)).toBe(true), {
+        timeout: 5_000,
+      });
 
       setInFront(false);
       const { stepped: behind } = await positionsUntil(

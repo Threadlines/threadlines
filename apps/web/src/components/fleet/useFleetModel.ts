@@ -61,15 +61,44 @@ import {
   trustedOriginEnvironment,
 } from "./fleetLinks.logic";
 
-/** Every thread's model, by scoped thread key; references are stable, so a shallow compare holds. */
+let lastModelSelections: {
+  readonly entries: ReadonlyArray<
+    readonly [string, AppState["environmentStateById"][string]["threadShellById"]]
+  >;
+  readonly byKey: Record<string, ModelSelection>;
+} | null = null;
+
+/**
+ * Every thread's model, by scoped thread key. Cached by each environment's
+ * `threadShellById` reference so streamed message updates don't re-walk and
+ * re-allocate across all threads on every store write.
+ */
 function selectThreadModelSelections(state: AppState): Record<string, ModelSelection> {
+  const envEntries = Object.entries(state.environmentStateById);
+  const last = lastModelSelections;
+  if (
+    last !== null &&
+    last.entries.length === envEntries.length &&
+    envEntries.every(
+      ([environmentId, environment], index) =>
+        last.entries[index]![0] === environmentId &&
+        last.entries[index]![1] === environment.threadShellById,
+    )
+  ) {
+    return last.byKey;
+  }
   const byKey: Record<string, ModelSelection> = {};
-  for (const [environmentId, environment] of Object.entries(state.environmentStateById)) {
+  const entries: Array<
+    readonly [string, AppState["environmentStateById"][string]["threadShellById"]]
+  > = [];
+  for (const [environmentId, environment] of envEntries) {
+    entries.push([environmentId, environment.threadShellById]);
     for (const shell of Object.values(environment.threadShellById)) {
       if (shell.archivedAt !== null) continue;
       byKey[`${environmentId}:${shell.id}`] = shell.modelSelection;
     }
   }
+  lastModelSelections = { entries, byKey };
   return byKey;
 }
 
@@ -370,8 +399,17 @@ export function useFleetModel(): FleetData {
   ]);
 
   // Work computers asked of each other: the real threads first (their status
-  // wins), then what parents remember of children this app can't see.
+  // wins), then what parents remember of children this app can't see. Only
+  // currently connected computers contribute cross-work so a disconnected
+  // computer's stale remembered children don't inflate running counts.
   const crossWorkThreads = useMemo(() => {
+    const connectedEnvironments = new Set<string>();
+    if (primaryEnvironmentId !== null && primaryConnection === "connected") {
+      connectedEnvironments.add(primaryEnvironmentId);
+    }
+    for (const [environmentId, runtime] of Object.entries(savedRuntime)) {
+      if (runtime?.connectionState === "connected") connectedEnvironments.add(environmentId);
+    }
     const attentionByKey = new Map<string, "working" | "needs-you" | null>();
     for (const computer of [model.center, ...model.others]) {
       for (const thread of computer.threads) attentionByKey.set(thread.threadKey, thread.attention);
@@ -379,7 +417,7 @@ export function useFleetModel(): FleetData {
     const real: FleetCrossWorkThread[] = [];
     const remembered: FleetCrossWorkThread[] = [];
     for (const thread of threads) {
-      if (thread.archivedAt !== null) continue;
+      if (thread.archivedAt !== null || !connectedEnvironments.has(thread.environmentId)) continue;
       const origin = thread.remoteOrigin ?? null;
       // Work over a link whose computer isn't confirmed is drawn to no computer.
       const asker =
@@ -415,7 +453,7 @@ export function useFleetModel(): FleetData {
       }
     }
     return [...real, ...remembered];
-  }, [links, model, threads]);
+  }, [links, model, primaryConnection, primaryEnvironmentId, savedRuntime, threads]);
 
   const edges = useMemo(
     () =>
