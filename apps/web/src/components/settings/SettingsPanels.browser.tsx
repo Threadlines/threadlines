@@ -8153,14 +8153,37 @@ describe("ExtensionsSettingsPanel multi-provider support", () => {
           displayName: "Antigravity",
           status: "ready" as const,
           capabilities: {
-            plugins: false,
-            mcpServers: false,
+            plugins: true,
+            mcpServers: true,
+            mcpServerManage: true,
+            pluginMarketplaces: false,
+            pluginSourceInstall: true,
             apps: false,
             hooks: false,
             skillCreate: true,
           },
-          plugins: [],
-          marketplaces: [],
+          plugins: [
+            {
+              id: "firebase",
+              name: "firebase",
+              displayName: "Firebase",
+              description: "Firebase tools and skills",
+              installed: true,
+              enabled: true,
+              scope: "user",
+              marketplaceName: "antigravity-plugins-official",
+            },
+          ],
+          marketplaces: [
+            {
+              name: "antigravity-plugins-official",
+              displayName: "Antigravity Official",
+              installedPluginCount: 1,
+              remote: true,
+              removable: false,
+            },
+          ],
+          pluginCatalogStatus: "deferred" as const,
           skills: [
             {
               name: "gemini-frontend-design",
@@ -8174,7 +8197,26 @@ describe("ExtensionsSettingsPanel multi-provider support", () => {
                 "Applies inside Threadlines only. Terminal agy sessions still load ~/.gemini/config/skills.",
             },
           ],
-          mcpServers: [],
+          mcpServers: [
+            {
+              name: "posthog",
+              origin: { kind: "user" as const },
+              transport: "oauth (mcp-remote)",
+              authStatus: "Not logged in",
+              status: "Needs auth",
+              enabled: true,
+              canToggle: true,
+              canEdit: true,
+              configPath:
+                "/Users/will/.threadlines/dev/providers/antigravity/abc/config/mcp_config.json",
+              config: {
+                mode: "oauth" as const,
+                url: "https://mcp.posthog.com/mcp",
+              },
+              detail: "https://mcp.posthog.com/mcp",
+            },
+          ],
+          mcpServersStatus: "ready" as const,
           apps: [],
         },
         {
@@ -8273,18 +8315,34 @@ describe("ExtensionsSettingsPanel multi-provider support", () => {
     await expect.element(page.getByText("supabase")).toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: "Browse catalog" })).toBeInTheDocument();
 
-    // Filtering to Antigravity hides Browse catalog and explains plugin/MCP capability cleanly.
+    // Filtering to Grok hides Browse catalog and explains plugin/MCP capability cleanly.
     await providerSelect.click();
-    await page.getByRole("option", { name: "Antigravity" }).click();
+    await page.getByRole("option", { name: "Grok" }).click();
+    await expect.element(page.getByText("Grok does not manage plugins here.")).toBeInTheDocument();
     await expect
-      .element(page.getByText("Antigravity does not manage plugins here."))
-      .toBeInTheDocument();
-    await expect
-      .element(page.getByText("Antigravity does not report MCP connections here."))
+      .element(page.getByText("Grok does not report MCP connections here."))
       .toBeInTheDocument();
     await expect
       .element(page.getByRole("button", { name: "Browse catalog" }))
       .not.toBeInTheDocument();
+
+    // Filtering to Antigravity shows its installed plugins, Browse catalog, Install from source,
+    // Add connection, and its OAuth MCP server with toggle and Authorize action.
+    await providerSelect.click();
+    await page.getByRole("option", { name: "Antigravity" }).click();
+    await expect.element(page.getByText("Firebase", { exact: true })).toBeInTheDocument();
+    await expect.element(page.getByText("posthog", { exact: true })).toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Browse catalog" })).toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Install from source" }))
+      .toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Add connection" })).toBeInTheDocument();
+
+    // Opening Add connection dialog lets the user configure a Remote OAuth server.
+    await page.getByRole("button", { name: "Add connection" }).click();
+    await expect.element(page.getByRole("heading", { name: "Add connection" })).toBeInTheDocument();
+    await expect.element(page.getByText(/Uses mcp-remote with OAuth tokens/i)).toBeInTheDocument();
+    await page.getByRole("button", { name: "Cancel" }).click();
 
     // Switching back to All providers on the Skills tab shows interactive switches for Claude,
     // Antigravity, and Grok, plus a disabled switch with tooltip for Cursor's disk-loaded skill.

@@ -31,7 +31,10 @@ import {
   mergeRefreshedProviders,
   providerSupportsApps,
   providerSupportsHooks,
+  providerSupportsMcpServerManage,
   providerSupportsMcpServers,
+  providerSupportsPluginMarketplaces,
+  providerSupportsPluginSourceInstall,
   providerSupportsPlugins,
   providerSupportsSkillCreate,
   formatSkillDisplayName,
@@ -905,14 +908,40 @@ describe("ExtensionsSettings scope", () => {
       },
     };
 
+    const antigravity = {
+      driver: ProviderDriverKind.make("antigravity"),
+      capabilities: {
+        plugins: true,
+        mcpServers: true,
+        mcpServerManage: true,
+        pluginMarketplaces: false,
+        pluginSourceInstall: true,
+        apps: false,
+        hooks: false,
+        skillCreate: true,
+      },
+    };
+
     expect(providerSupportsPlugins(legacyCodex)).toBe(true);
     expect(providerSupportsApps(legacyCodex)).toBe(true);
+    expect(providerSupportsPluginMarketplaces(legacyCodex)).toBe(true);
+    expect(providerSupportsMcpServerManage(legacyCodex)).toBe(false);
     expect(providerSupportsPlugins(legacyClaude)).toBe(true);
     expect(providerSupportsApps(legacyClaude)).toBe(false);
     expect(providerSupportsHooks(legacyClaude)).toBe(true);
+    expect(providerSupportsPluginMarketplaces(legacyClaude)).toBe(true);
     expect(providerSupportsPlugins(legacyAntigravity)).toBe(false);
     expect(providerSupportsMcpServers(legacyAntigravity)).toBe(false);
     expect(providerSupportsSkillCreate(legacyAntigravity)).toBe(false);
+    expect(providerSupportsMcpServerManage(legacyAntigravity)).toBe(false);
+    expect(providerSupportsPluginMarketplaces(legacyAntigravity)).toBe(false);
+    expect(providerSupportsPluginSourceInstall(legacyAntigravity)).toBe(false);
+
+    expect(providerSupportsPlugins(antigravity)).toBe(true);
+    expect(providerSupportsMcpServers(antigravity)).toBe(true);
+    expect(providerSupportsMcpServerManage(antigravity)).toBe(true);
+    expect(providerSupportsPluginMarketplaces(antigravity)).toBe(false);
+    expect(providerSupportsPluginSourceInstall(antigravity)).toBe(true);
 
     expect(providerSupportsPlugins(cursor)).toBe(false);
     expect(providerSupportsMcpServers(cursor)).toBe(true);

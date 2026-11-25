@@ -125,6 +125,12 @@ import type {
   ProviderExtensionMcpOAuthStartResult,
   ProviderExtensionMcpReloadInput,
   ProviderExtensionMcpReloadResult,
+  ProviderExtensionMcpServerRemoveInput,
+  ProviderExtensionMcpServerRemoveResult,
+  ProviderExtensionMcpServerSaveInput,
+  ProviderExtensionMcpServerSaveResult,
+  ProviderExtensionMcpServerToggleInput,
+  ProviderExtensionMcpServerToggleResult,
   ProviderExtensionMcpResourceReadInput,
   ProviderExtensionMcpResourceReadResult,
   ProviderExtensionMcpToolCallInput,
@@ -1829,6 +1835,15 @@ export interface LocalApi {
     reloadProviderExtensionMcpServers: (
       input: ProviderExtensionMcpReloadInput,
     ) => Promise<ProviderExtensionMcpReloadResult>;
+    saveProviderExtensionMcpServer: (
+      input: ProviderExtensionMcpServerSaveInput,
+    ) => Promise<ProviderExtensionMcpServerSaveResult>;
+    removeProviderExtensionMcpServer: (
+      input: ProviderExtensionMcpServerRemoveInput,
+    ) => Promise<ProviderExtensionMcpServerRemoveResult>;
+    setProviderExtensionMcpServerEnabled: (
+      input: ProviderExtensionMcpServerToggleInput,
+    ) => Promise<ProviderExtensionMcpServerToggleResult>;
     setProviderExtensionSkillEnabled: (
       input: ProviderExtensionSkillToggleInput,
     ) => Promise<ProviderExtensionSkillToggleResult>;
@@ -2037,6 +2052,15 @@ export interface EnvironmentApi {
     reloadExtensionMcpServers: (
       input: ProviderExtensionMcpReloadInput,
     ) => Promise<ProviderExtensionMcpReloadResult>;
+    saveExtensionMcpServer?: (
+      input: ProviderExtensionMcpServerSaveInput,
+    ) => Promise<ProviderExtensionMcpServerSaveResult>;
+    removeExtensionMcpServer?: (
+      input: ProviderExtensionMcpServerRemoveInput,
+    ) => Promise<ProviderExtensionMcpServerRemoveResult>;
+    setExtensionMcpServerEnabled?: (
+      input: ProviderExtensionMcpServerToggleInput,
+    ) => Promise<ProviderExtensionMcpServerToggleResult>;
     setExtensionSkillEnabled: (
       input: ProviderExtensionSkillToggleInput,
     ) => Promise<ProviderExtensionSkillToggleResult>;

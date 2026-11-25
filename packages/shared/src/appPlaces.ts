@@ -759,9 +759,10 @@ const SECTIONS = [
     kind: "section",
     parent: "settings.plugins",
     title: "Connections",
-    about: "MCP servers your agents can use.",
+    about:
+      "MCP servers your agents can use, including adding and authorizing Antigravity connections.",
     route: { to: "/settings/plugins", search: { tab: "plugins" } },
-    keywords: ["mcp", "servers"],
+    keywords: ["mcp", "servers", "oauth", "antigravity"],
     widensAgents: true,
   },
   {

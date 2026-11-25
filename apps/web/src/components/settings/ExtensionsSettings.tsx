@@ -13,7 +13,9 @@ import {
   MonitorIcon,
   PackageMinusIcon,
   PackagePlusIcon,
+  PencilIcon,
   PlugIcon,
+  PlusIcon,
   PowerIcon,
   PlayIcon,
   RefreshCwIcon,
@@ -95,8 +97,11 @@ import {
   mergeRefreshedProviders,
   makeExtensionInventoryCacheKey,
   providerSupportsApps,
+  providerSupportsMcpServerManage,
   providerSupportsMcpServers,
+  providerSupportsPluginMarketplaces,
   providerSupportsPlugins,
+  providerSupportsPluginSourceInstall,
   providerSupportsSkillCreate,
   type ExtensionScopeGroup,
   type ExtensionScopeSelection,
@@ -163,6 +168,7 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { failureNotice, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { InstallPluginSourceDialog, McpServerDialog } from "./ExtensionsMcpDialogs";
 import {
   SETTINGS_GROUP_ROW_CLASS,
   SettingsGroup,
@@ -183,6 +189,7 @@ const EXTENSION_INVENTORY_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 const EXTENSION_INVENTORY_REUSE_MS = 15_000;
 const EXTENSIONS_CODEX_DRIVER = ProviderDriverKind.make("codex");
 const EXTENSIONS_CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+const EXTENSIONS_ANTIGRAVITY_DRIVER = ProviderDriverKind.make("antigravity");
 type ExtensionSectionKey = "plugins" | "skills" | "mcpServers" | "apps";
 type ExtensionBrowserFilter =
   | "all"
@@ -723,7 +730,8 @@ function extensionItemIsOfficial(item: ExtensionItem): boolean {
     return (
       normalized.includes("official") ||
       normalized.includes("openai-curated") ||
-      normalized.includes("claude-plugins-official")
+      normalized.includes("claude-plugins-official") ||
+      normalized.includes("antigravity-plugins-official")
     );
   });
 }
@@ -848,6 +856,9 @@ function extensionItemMatchesBrowserFilter(
 
 function mcpOAuthActionIntent(item: ExtensionItem) {
   if (item.kind !== "mcp") return null;
+  if (item.provider.driver === EXTENSIONS_ANTIGRAVITY_DRIVER && item.server.canEdit !== true) {
+    return null;
+  }
   return extensionMcpOAuthActionIntent(item.server);
 }
 
@@ -1048,6 +1059,10 @@ function isClaudeProvider(provider: ProviderExtensionProviderInventory): boolean
   return provider.driver === EXTENSIONS_CLAUDE_DRIVER;
 }
 
+function isAntigravityProvider(provider: ProviderExtensionProviderInventory): boolean {
+  return provider.driver === EXTENSIONS_ANTIGRAVITY_DRIVER;
+}
+
 function findManagedClaudePluginForMcp(item: ExtensionItem | null): ProviderExtensionPlugin | null {
   if (!item || item.kind !== "mcp" || !isClaudeProvider(item.provider)) return null;
   const serverName = item.server.name.toLowerCase();
@@ -1217,7 +1232,7 @@ function ExtensionToolsList({
   onSelectTool,
 }: {
   tools: ReadonlyArray<ProviderExtensionMcpTool>;
-  onSelectTool: (tool: ProviderExtensionMcpTool) => void;
+  onSelectTool?: (tool: ProviderExtensionMcpTool) => void;
 }) {
   if (tools.length === 0) return null;
 
@@ -1250,22 +1265,24 @@ function ExtensionToolsList({
               />
               <TooltipPopup side="top">Copy schema</TooltipPopup>
             </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    className="size-6 rounded-sm text-muted-foreground hover:text-foreground"
-                    onClick={() => onSelectTool(tool)}
-                    aria-label={`Prepare ${tool.name}`}
-                  >
-                    <PlayIcon className="size-3" />
-                  </Button>
-                }
-              />
-              <TooltipPopup side="top">Use tool</TooltipPopup>
-            </Tooltip>
+            {onSelectTool ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      className="size-6 rounded-sm text-muted-foreground hover:text-foreground"
+                      onClick={() => onSelectTool(tool)}
+                      aria-label={`Prepare ${tool.name}`}
+                    >
+                      <PlayIcon className="size-3" />
+                    </Button>
+                  }
+                />
+                <TooltipPopup side="top">Use tool</TooltipPopup>
+              </Tooltip>
+            ) : null}
           </div>
         ))}
       </div>
@@ -1519,6 +1536,7 @@ function ExtensionDetailDialog({
   item,
   onClose,
   onSelectItem,
+  onEditMcpServer,
   environmentId,
   cwd,
   machineLabel,
@@ -1530,6 +1548,10 @@ function ExtensionDetailDialog({
   item: ExtensionItem | null;
   onClose: () => void;
   onSelectItem: (item: ExtensionItem) => void;
+  onEditMcpServer: (
+    provider: ProviderExtensionProviderInventory,
+    server: ProviderExtensionMcpServer,
+  ) => void;
   environmentId: EnvironmentId | null;
   cwd: string;
   /** Named in the delete confirmation so it is clear which machine loses the folder. */
@@ -1547,6 +1569,10 @@ function ExtensionDetailDialog({
     item?.kind === "skill" && item.skill.configPath && isLikelyLocalPath(item.skill.configPath)
       ? item.skill.configPath
       : null;
+  const mcpConfigPath =
+    item?.kind === "mcp" && item.server.configPath && isLikelyLocalPath(item.server.configPath)
+      ? item.server.configPath
+      : null;
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionOutput, setActionOutput] = useState<string | null>(null);
   const [selectedTool, setSelectedTool] = useState<ProviderExtensionMcpTool | null>(null);
@@ -1558,6 +1584,12 @@ function ExtensionDetailDialog({
   const [skillContents, setSkillContents] = useState<SkillContentsState>({ status: "idle" });
   const pollRef = useRef(0);
   const managedClaudePlugin = useMemo(() => findManagedClaudePluginForMcp(item), [item]);
+  const mcpOwningPlugin = useMemo(() => {
+    if (!item || item.kind !== "mcp" || item.server.origin?.kind !== "plugin") return null;
+    const pluginId = item.server.origin.pluginId?.trim();
+    if (!pluginId) return null;
+    return item.provider.plugins.find((plugin) => plugin.id === pluginId) ?? null;
+  }, [item]);
   const skillOwningPlugin = useMemo(() => {
     if (!item || item.kind !== "skill" || !item.skill.bundleId) return null;
     return item.provider.plugins.find((plugin) => plugin.id === item.skill.bundleId) ?? null;
@@ -1741,7 +1773,7 @@ function ExtensionDetailDialog({
       setActionOutput(
         result.authorizationUrl
           ? `Opened OAuth for ${item.server.name}.\n\nFallback:\n${result.terminalCommand}`
-          : `Started login for ${item.server.name}. Complete the browser prompt if Claude opens one.\n\nFallback:\n${result.terminalCommand}`,
+          : `Started login for ${item.server.name}. Complete the browser prompt if one opens.\n\nFallback:\n${result.terminalCommand}`,
       );
 
       const expiresAt = Date.parse(result.expiresAt);
@@ -1781,6 +1813,45 @@ function ExtensionDetailDialog({
       return "MCP servers reloaded.";
     });
   }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
+
+  const toggleMcpServer = useCallback(() => {
+    if (!item || item.kind !== "mcp") return;
+    const nextEnabled = item.server.enabled === false;
+    void runDialogAction(nextEnabled ? "Enable connection" : "Disable connection", async () => {
+      const api = providersApi();
+      if (!api.setExtensionMcpServerEnabled) {
+        throw new Error("This server does not support toggling MCP connections.");
+      }
+      const result = await api.setExtensionMcpServerEnabled({
+        ...actionBaseInput(item, cwd),
+        serverName: item.server.configuredName ?? item.server.name,
+        enabled: nextEnabled,
+      });
+      await onInventoryMutated(inventoryChangeFor(item, true));
+      return `Connection ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
+    });
+  }, [cwd, item, onInventoryMutated, providersApi, runDialogAction]);
+
+  const removeMcpServer = useCallback(() => {
+    if (!item || item.kind !== "mcp") return;
+    void runDialogAction("Remove connection", async () => {
+      const api = providersApi();
+      if (!api.removeExtensionMcpServer) {
+        throw new Error("This server does not support removing MCP connections.");
+      }
+      const confirmed = await ensureLocalApi().dialogs.confirm(
+        `Remove ${item.server.name} from ${providerTitle(item.provider)}?`,
+      );
+      if (!confirmed) return "Removal cancelled.";
+      await api.removeExtensionMcpServer({
+        ...actionBaseInput(item, cwd),
+        serverName: item.server.configuredName ?? item.server.name,
+      });
+      await onInventoryMutated(inventoryChangeFor(item, true));
+      onClose();
+      return "Connection removed.";
+    });
+  }, [cwd, item, onClose, onInventoryMutated, providersApi, runDialogAction]);
 
   const toggleSkill = useCallback(() => {
     if (!item || item.kind !== "skill") return;
@@ -1987,6 +2058,7 @@ function ExtensionDetailDialog({
 
   const codexActionsAvailable = item ? isCodexProvider(item.provider) : false;
   const claudeActionsAvailable = item ? isClaudeProvider(item.provider) : false;
+  const antigravityActionsAvailable = item ? isAntigravityProvider(item.provider) : false;
   const mcpTools =
     item?.kind === "mcp"
       ? (item.server.toolDefinitions ??
@@ -2180,13 +2252,27 @@ function ExtensionDetailDialog({
                     <DetailRow label="Status" value={item.server.status} />
                     <DetailRow label="Auth" value={item.server.authStatus} />
                     <DetailRow label="Transport" value={item.server.transport} />
-                    <DetailRow label="Tool Count" value={String(item.server.toolCount ?? 0)} />
+                    <DetailRow
+                      label="Tool Count"
+                      value={String(item.server.toolCount ?? item.server.tools?.length ?? 0)}
+                    />
                     <DetailRow label="Resources" value={String(item.server.resourceCount ?? 0)} />
                     <DetailRow label="Detail" value={item.server.detail} />
                     <DetailRow
+                      label="Config"
+                      value={item.server.configPath}
+                      copyValue={item.server.configPath}
+                    />
+                    <DetailRow
                       label="Managed By"
-                      value={managedClaudePlugin ? `${managedClaudePlugin.name} plugin` : undefined}
-                      copyValue={managedClaudePlugin?.id}
+                      value={
+                        managedClaudePlugin
+                          ? `${managedClaudePlugin.name} plugin`
+                          : mcpOwningPlugin
+                            ? `${mcpOwningPlugin.displayName ?? mcpOwningPlugin.name} plugin`
+                            : undefined
+                      }
+                      copyValue={managedClaudePlugin?.id ?? mcpOwningPlugin?.id}
                     />
                   </>
                 ) : null}
@@ -2258,7 +2344,10 @@ function ExtensionDetailDialog({
             ) : null}
             {item.kind === "mcp" ? (
               <>
-                <ExtensionToolsList tools={mcpTools} onSelectTool={selectTool} />
+                <ExtensionToolsList
+                  tools={mcpTools}
+                  {...(codexActionsAvailable ? { onSelectTool: selectTool } : {})}
+                />
                 <ExtensionResourcesList server={item.server} onReadResource={readResource} />
                 {selectedTool ? (
                   <div className="space-y-2 border-t border-group-divider pt-3">
@@ -2415,7 +2504,8 @@ function ExtensionDetailDialog({
             <ExtensionActionOutput value={actionOutput} />
           </DialogPanel>
           <DialogFooter>
-            {(codexActionsAvailable || claudeActionsAvailable) && item.kind === "mcp" ? (
+            {(codexActionsAvailable || claudeActionsAvailable || antigravityActionsAvailable) &&
+            item.kind === "mcp" ? (
               <>
                 {mcpOAuthActionAvailable ? (
                   <Button
@@ -2430,6 +2520,60 @@ function ExtensionDetailDialog({
                       <KeyRoundIcon className="size-3.5" />
                     )}
                     {mcpOAuthActionLabel}
+                  </Button>
+                ) : null}
+                {item.server.canToggle === true ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={busyAction !== null}
+                    onClick={toggleMcpServer}
+                  >
+                    {busyAction === "Enable connection" || busyAction === "Disable connection" ? (
+                      <LoaderIcon className="size-3.5 animate-spin" />
+                    ) : (
+                      <PowerIcon className="size-3.5" />
+                    )}
+                    {item.server.enabled === false ? "Enable" : "Disable"}
+                  </Button>
+                ) : null}
+                {item.server.canEdit === true ? (
+                  <>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={busyAction !== null}
+                      onClick={() => onEditMcpServer(item.provider, item.server)}
+                    >
+                      <PencilIcon className="size-3.5" />
+                      Edit
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={busyAction !== null}
+                      onClick={removeMcpServer}
+                    >
+                      {busyAction === "Remove connection" ? (
+                        <LoaderIcon className="size-3.5 animate-spin" />
+                      ) : (
+                        <Trash2Icon className="size-3.5" />
+                      )}
+                      Remove
+                    </Button>
+                  </>
+                ) : null}
+                {antigravityActionsAvailable && mcpOwningPlugin ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={busyAction !== null}
+                    onClick={() =>
+                      onSelectItem(pluginExtensionItem(item.provider, mcpOwningPlugin))
+                    }
+                  >
+                    <PlugIcon className="size-3.5" />
+                    Open plugin
                   </Button>
                 ) : null}
                 {codexActionsAvailable ? (
@@ -2447,7 +2591,7 @@ function ExtensionDetailDialog({
                     Reload MCP
                   </Button>
                 ) : null}
-                {mcpOAuthActionAvailable ? (
+                {mcpOAuthActionAvailable && (codexActionsAvailable || claudeActionsAvailable) ? (
                   <CopyIconButton
                     value={providerMcpLoginCommand(mcpLoginProviderForItem(item), item.server.name)}
                     what="login command"
@@ -2630,6 +2774,56 @@ function ExtensionDetailDialog({
                 )}
               </>
             ) : null}
+            {antigravityActionsAvailable && item.kind === "plugin" ? (
+              <>
+                {item.plugin.installed === true ? (
+                  <>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={busyAction !== null}
+                      onClick={togglePlugin}
+                    >
+                      {busyAction === "Enable plugin" || busyAction === "Disable plugin" ? (
+                        <LoaderIcon className="size-3.5 animate-spin" />
+                      ) : (
+                        <PowerIcon className="size-3.5" />
+                      )}
+                      {item.plugin.enabled === false ? "Enable" : "Disable"}
+                    </Button>
+                    {item.plugin.scope !== "project" ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={busyAction !== null}
+                        onClick={uninstallPlugin}
+                      >
+                        {busyAction === "Uninstall plugin" ? (
+                          <LoaderIcon className="size-3.5 animate-spin" />
+                        ) : (
+                          <PackageMinusIcon className="size-3.5" />
+                        )}
+                        Uninstall
+                      </Button>
+                    ) : null}
+                  </>
+                ) : (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={busyAction !== null}
+                    onClick={installPlugin}
+                  >
+                    {busyAction === "Install plugin" ? (
+                      <LoaderIcon className="size-3.5 animate-spin" />
+                    ) : (
+                      <PackagePlusIcon className="size-3.5" />
+                    )}
+                    Install
+                  </Button>
+                )}
+              </>
+            ) : null}
             {claudeActionsAvailable && item.kind === "mcp" && managedClaudePlugin ? (
               <>
                 <Button
@@ -2689,11 +2883,11 @@ function ExtensionDetailDialog({
               />
               <TooltipPopup side="top">Copy metadata</TooltipPopup>
             </Tooltip>
-            {isLocalMachine && skillConfigPath ? (
+            {isLocalMachine && (skillConfigPath || mcpConfigPath) ? (
               <Button
                 size="xs"
                 variant="outline"
-                onClick={() => openPathInEditor(skillConfigPath, cwd)}
+                onClick={() => openPathInEditor((skillConfigPath ?? mcpConfigPath)!, cwd)}
               >
                 <FileTextIcon className="size-3.5" />
                 Open config
@@ -3155,7 +3349,7 @@ function SkillListSkeleton() {
 function ConnectionsTableSkeleton() {
   return (
     <div aria-hidden="true" data-testid="extensions-connections-skeleton">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-group-divider pb-1.5 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-group-divider pb-1.5 sm:grid-cols-[minmax(0,1fr)_9rem_10rem]">
         <Skeleton className="h-2.5 w-20 max-w-full rounded-full" />
         <Skeleton className="hidden h-2.5 w-10 max-w-full rounded-full sm:block" />
         <Skeleton className="h-2.5 w-12 max-w-full rounded-full" />
@@ -3163,7 +3357,7 @@ function ConnectionsTableSkeleton() {
       {["first-connection", "second-connection"].map((rowKey) => (
         <div
           key={rowKey}
-          className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-group-divider py-2 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
+          className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-group-divider py-2 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_9rem_10rem]"
         >
           <span className="flex min-w-0 items-center gap-2">
             <Skeleton className="size-3.5 shrink-0 rounded-sm" />
@@ -3328,14 +3522,18 @@ function ConnectionsTable({
   items,
   environmentId,
   isLoading,
+  busyMcpKey,
   emptyLabel = "No connections configured.",
   onSelect,
+  onToggle,
 }: {
   items: ReadonlyArray<ExtensionItem>;
   environmentId: EnvironmentId | null;
   isLoading: boolean;
+  busyMcpKey?: string | null | undefined;
   emptyLabel?: string;
   onSelect: (item: ExtensionItem) => void;
+  onToggle?: (item: Extract<ExtensionItem, { kind: "mcp" }>, nextEnabled: boolean) => void;
 }) {
   if (items.length === 0) {
     // Do not assert emptiness while the inventory is still arriving.
@@ -3352,7 +3550,7 @@ function ConnectionsTable({
   return (
     <div>
       {/* Type folds away below sm: three fixed columns starve the name column on a phone. */}
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-group-divider pb-1.5 text-[11.5px] font-medium text-muted-foreground sm:grid-cols-[minmax(0,1fr)_9rem_8rem]">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-group-divider pb-1.5 text-[11.5px] font-medium text-muted-foreground sm:grid-cols-[minmax(0,1fr)_9rem_10rem]">
         <span>Connection</span>
         <span className="hidden sm:block">Type</span>
         <span>Status</span>
@@ -3361,58 +3559,79 @@ function ConnectionsTable({
         if (item.kind !== "mcp") return null;
         const origin = item.server.origin;
         const needsAuth = extensionItemNeedsAuth(item);
+        const rowKey = `${item.provider.instanceId}:${item.id}`;
+        const canToggle = item.server.canToggle === true && onToggle !== undefined;
+        const enabled = item.server.enabled !== false;
         return (
-          <button
-            key={`${item.provider.instanceId}:${item.id}`}
-            type="button"
-            className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-group-divider py-2 text-left transition-colors first:border-t-0 hover:bg-accent/40 focus-ring sm:grid-cols-[minmax(0,1fr)_9rem_8rem]"
-            onClick={() => onSelect(item)}
-          >
-            <span className="flex min-w-0 items-center gap-2">
-              {/* The type column is hidden on a phone, so the provider mark rides with the name. */}
-              <span className="sm:hidden">
-                <ProviderNameGlyph provider={item.provider} />
-              </span>
-              <ExtensionItemGlyph item={item} environmentId={environmentId} />
-              <span className="min-w-0">
-                <span className="block truncate text-xs text-foreground">{item.title}</span>
-                {origin?.kind === "plugin" ? (
-                  <span className="block truncate text-[11px] text-muted-foreground">
-                    Provided by the {origin.pluginName ?? origin.pluginId} plugin
+          <div key={rowKey} className="border-t border-group-divider py-1 first:border-t-0">
+            <div className="-mx-1.5 grid w-[calc(100%+0.75rem)] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-1.5 py-1 transition-colors hover:bg-accent/40 sm:grid-cols-[minmax(0,1fr)_9rem_10rem]">
+              <button
+                type="button"
+                className="flex min-w-0 items-center gap-2 rounded-sm text-left focus-ring sm:col-span-2 sm:grid sm:grid-cols-[minmax(0,1fr)_9rem] sm:gap-3"
+                onClick={() => onSelect(item)}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  {/* The type column is hidden on a phone, so the provider mark rides with the name. */}
+                  <span className="sm:hidden">
+                    <ProviderNameGlyph provider={item.provider} />
                   </span>
-                ) : null}
-              </span>
-            </span>
-            <span className="hidden min-w-0 flex-col gap-0.5 sm:flex">
-              <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground/90">
-                <ProviderNameGlyph provider={item.provider} />
-                <span className="truncate">{providerTitle(item.provider)}</span>
-              </span>
-              <span className="flex min-w-0 items-center gap-1.5">
-                {item.server.transport ? (
-                  <span className="truncate font-mono text-[11px] text-muted-foreground">
-                    {item.server.transport}
+                  <ExtensionItemGlyph item={item} environmentId={environmentId} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs text-foreground">{item.title}</span>
+                    {origin?.kind === "plugin" ? (
+                      <span className="block truncate text-[11px] text-muted-foreground">
+                        Provided by the {origin.pluginName ?? origin.pluginId} plugin
+                      </span>
+                    ) : null}
                   </span>
-                ) : null}
-                {origin?.kind === "plugin" ? (
-                  <Badge size="sm" variant="outline">
-                    Plugin
-                  </Badge>
-                ) : null}
-              </span>
-            </span>
-            <span className="min-w-0">
-              {needsAuth ? (
-                <Badge size="sm" variant="warning">
-                  Needs auth
-                </Badge>
-              ) : (
-                <span className="truncate text-[11px] text-muted-foreground">
-                  {item.server.status ?? "Ready"}
                 </span>
-              )}
-            </span>
-          </button>
+                <span className="hidden min-w-0 flex-col gap-0.5 sm:flex">
+                  <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground/90">
+                    <ProviderNameGlyph provider={item.provider} />
+                    <span className="truncate">{providerTitle(item.provider)}</span>
+                  </span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    {item.server.transport ? (
+                      <span className="truncate font-mono text-[11px] text-muted-foreground">
+                        {item.server.transport}
+                      </span>
+                    ) : null}
+                    {origin?.kind === "plugin" ? (
+                      <Badge size="sm" variant="outline">
+                        Plugin
+                      </Badge>
+                    ) : null}
+                  </span>
+                </span>
+              </button>
+              <span className="flex min-w-0 items-center justify-between gap-2">
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate rounded-sm text-left focus-ring"
+                  onClick={() => onSelect(item)}
+                >
+                  {needsAuth ? (
+                    <Badge size="sm" variant="warning">
+                      Needs auth
+                    </Badge>
+                  ) : (
+                    <span className="truncate text-[11px] text-muted-foreground">
+                      {item.server.status ?? "Ready"}
+                    </span>
+                  )}
+                </button>
+                {canToggle ? (
+                  <Switch
+                    size="sm"
+                    checked={enabled}
+                    disabled={busyMcpKey === rowKey}
+                    aria-label={`${enabled ? "Disable" : "Enable"} ${item.title}`}
+                    onCheckedChange={(checked) => onToggle(item, Boolean(checked))}
+                  />
+                ) : null}
+              </span>
+            </div>
+          </div>
         );
       })}
     </div>
@@ -3499,13 +3718,15 @@ function MarketplacesBlock({
             )}
             Update all
           </Button>
-          <Button size="xs" variant="outline" onClick={() => setIsAdding((value) => !value)}>
-            <PackagePlusIcon className="size-3.5" />
-            Add
-          </Button>
+          {providerSupportsPluginMarketplaces(provider) ? (
+            <Button size="xs" variant="outline" onClick={() => setIsAdding((value) => !value)}>
+              <PackagePlusIcon className="size-3.5" />
+              Add
+            </Button>
+          ) : null}
         </div>
       </div>
-      {isAdding ? (
+      {isAdding && providerSupportsPluginMarketplaces(provider) ? (
         <div className="flex gap-2">
           <Input
             nativeInput
@@ -4827,6 +5048,22 @@ export function ExtensionsSettingsPanel() {
   );
   const [selectedItem, setSelectedItem] = useState<ExtensionItem | null>(null);
   const [isBrowsingCatalog, setIsBrowsingCatalog] = useState(false);
+  const [isInstallingPluginSource, setIsInstallingPluginSource] = useState(false);
+  const [mcpDialogState, setMcpDialogState] = useState<
+    | { readonly open: false }
+    | {
+        readonly open: true;
+        readonly editing: {
+          readonly provider: ProviderExtensionProviderInventory;
+          readonly server: ProviderExtensionMcpServer;
+        } | null;
+      }
+  >({ open: false });
+  const [busyMcpKey, setBusyMcpKey] = useState<string | null>(null);
+  const pendingSelectMcpRef = useRef<{
+    readonly providerInstanceId: string;
+    readonly serverName: string;
+  } | null>(null);
   const [actionHistoryByItem, setActionHistoryByItem] = useState<
     Record<string, ExtensionActionHistoryEntry>
   >({});
@@ -5306,10 +5543,56 @@ export function ExtensionsSettingsPanel() {
     () => providerScopedInventory.filter(providerSupportsPlugins),
     [providerScopedInventory],
   );
+  const pluginSourceInstallProviders = useMemo(
+    () => providerScopedInventory.filter(providerSupportsPluginSourceInstall),
+    [providerScopedInventory],
+  );
   const mcpCapableProviders = useMemo(
     () => providerScopedInventory.filter(providerSupportsMcpServers),
     [providerScopedInventory],
   );
+  const mcpManageProviders = useMemo(
+    () => providerScopedInventory.filter(providerSupportsMcpServerManage),
+    [providerScopedInventory],
+  );
+  const toggleMcpRow = useCallback(
+    async (item: Extract<ExtensionItem, { kind: "mcp" }>, nextEnabled: boolean) => {
+      const providersApi = readScopedProvidersApi(scopeEnvironmentId);
+      if (!providersApi?.setExtensionMcpServerEnabled) return;
+      const busyKey = `${item.provider.instanceId}:${item.id}`;
+      setBusyMcpKey(busyKey);
+      try {
+        await providersApi.setExtensionMcpServerEnabled({
+          ...actionBaseInput(item, cwd),
+          serverName: item.server.configuredName ?? item.server.name,
+          enabled: nextEnabled,
+        });
+        await refresh({ invalidateCache: true, includeMcpServers: true });
+      } catch (toggleError) {
+        toastManager.add(
+          failureNotice({
+            title: `Couldn't ${nextEnabled ? "enable" : "disable"} the connection`,
+            error: toggleError,
+          }),
+        );
+      } finally {
+        setBusyMcpKey((current) => (current === busyKey ? null : current));
+      }
+    },
+    [cwd, refresh, scopeEnvironmentId],
+  );
+  useEffect(() => {
+    const pending = pendingSelectMcpRef.current;
+    if (!pending || !inventory) return;
+    const provider = inventory.providers.find(
+      (entry) => String(entry.instanceId) === pending.providerInstanceId,
+    );
+    const server = provider?.mcpServers.find((entry) => entry.name === pending.serverName);
+    if (provider && server) {
+      pendingSelectMcpRef.current = null;
+      setSelectedItem(mcpExtensionItem(provider, server));
+    }
+  }, [inventory]);
   const toggleSkillRow = useCallback(
     async (item: Extract<ExtensionItem, { kind: "skill" }>, nextEnabled: boolean) => {
       const providersApi = readScopedProvidersApi(scopeEnvironmentId);
@@ -5681,11 +5964,25 @@ export function ExtensionsSettingsPanel() {
               place="plugins.installed"
               description="Plugin packages installed on this machine. They can bundle skills, commands, and connections."
               headerAction={
-                pluginCapableProviders.length > 0 ? (
-                  <Button size="xs" variant="outline" onClick={browseCatalog}>
-                    <SearchIcon className="size-3.5" />
-                    Browse catalog
-                  </Button>
+                pluginCapableProviders.length > 0 || pluginSourceInstallProviders.length > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    {pluginSourceInstallProviders.length > 0 ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() => setIsInstallingPluginSource(true)}
+                      >
+                        <PackagePlusIcon className="size-3.5" />
+                        Install from source
+                      </Button>
+                    ) : null}
+                    {pluginCapableProviders.length > 0 ? (
+                      <Button size="xs" variant="outline" onClick={browseCatalog}>
+                        <SearchIcon className="size-3.5" />
+                        Browse catalog
+                      </Button>
+                    ) : null}
+                  </div>
                 ) : undefined
               }
             >
@@ -5870,20 +6167,34 @@ export function ExtensionsSettingsPanel() {
             <SettingsSection
               place="plugins.connections"
               headerAction={
-                mcpAuthCheckProvider ? (
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={mcpLoadingProviderId !== null}
-                    onClick={() => void loadMcpServers(mcpAuthCheckProvider)}
-                  >
-                    {mcpLoadingProviderId !== null ? (
-                      <LoaderIcon className="size-3.5 animate-spin" />
-                    ) : (
-                      <KeyRoundIcon className="size-3.5" />
-                    )}
-                    {mcpAuthCheckFailed ? "Retry MCP auth" : "Check MCP auth"}
-                  </Button>
+                mcpAuthCheckProvider || mcpManageProviders.length > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    {mcpManageProviders.length > 0 ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() => setMcpDialogState({ open: true, editing: null })}
+                      >
+                        <PlusIcon className="size-3.5" />
+                        Add connection
+                      </Button>
+                    ) : null}
+                    {mcpAuthCheckProvider ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={mcpLoadingProviderId !== null}
+                        onClick={() => void loadMcpServers(mcpAuthCheckProvider)}
+                      >
+                        {mcpLoadingProviderId !== null ? (
+                          <LoaderIcon className="size-3.5 animate-spin" />
+                        ) : (
+                          <KeyRoundIcon className="size-3.5" />
+                        )}
+                        {mcpAuthCheckFailed ? "Retry MCP auth" : "Check MCP auth"}
+                      </Button>
+                    ) : null}
+                  </div>
                 ) : null
               }
             >
@@ -5894,6 +6205,7 @@ export function ExtensionsSettingsPanel() {
                   <ConnectionsTable
                     items={searchedConnections}
                     environmentId={selectedEnvironmentId}
+                    busyMcpKey={busyMcpKey}
                     // A deferred provider is about to be checked, so "none configured" would lie.
                     isLoading={
                       isLoading ||
@@ -5906,6 +6218,7 @@ export function ExtensionsSettingsPanel() {
                         : "No connections configured."
                     }
                     onSelect={setSelectedItem}
+                    onToggle={(target, nextEnabled) => void toggleMcpRow(target, nextEnabled)}
                   />
                 )}
                 {mcpFailureMessages.map((message) => (
@@ -6071,6 +6384,47 @@ export function ExtensionsSettingsPanel() {
           onClose={() => setIsCreatingSkill(false)}
           onCreated={refreshAfterMutation}
         />
+        <McpServerDialog
+          open={mcpDialogState.open}
+          editing={mcpDialogState.open ? mcpDialogState.editing : null}
+          providers={mcpManageProviders}
+          cwd={cwd}
+          providersApi={() => {
+            const api = readScopedProvidersApi(scopeEnvironmentId);
+            if (!api) throw new Error("This machine is not connected.");
+            return api;
+          }}
+          onClose={() => setMcpDialogState({ open: false })}
+          onSaved={async (saved) => {
+            if (saved.isOAuth) {
+              pendingSelectMcpRef.current = {
+                providerInstanceId: saved.providerInstanceId,
+                serverName: saved.serverName,
+              };
+            }
+            await refreshAfterMutation({
+              providerInstanceId: saved.providerInstanceId,
+              affectsConnections: true,
+            });
+          }}
+        />
+        <InstallPluginSourceDialog
+          open={isInstallingPluginSource}
+          providers={pluginSourceInstallProviders}
+          cwd={cwd}
+          providersApi={() => {
+            const api = readScopedProvidersApi(scopeEnvironmentId);
+            if (!api) throw new Error("This machine is not connected.");
+            return api;
+          }}
+          onClose={() => setIsInstallingPluginSource(false)}
+          onInstalled={async (targetProviderId) => {
+            await refreshAfterMutation({
+              providerInstanceId: targetProviderId,
+              affectsConnections: true,
+            });
+          }}
+        />
         <ExtensionDetailDialog
           item={selectedItem}
           environmentId={selectedEnvironmentId}
@@ -6079,6 +6433,10 @@ export function ExtensionsSettingsPanel() {
           providerThreadId={effectiveProviderThreadId}
           onClose={() => setSelectedItem(null)}
           onSelectItem={setSelectedItem}
+          onEditMcpServer={(provider, server) => {
+            setSelectedItem(null);
+            setMcpDialogState({ open: true, editing: { provider, server } });
+          }}
           onInventoryMutated={refreshAfterMutation}
           lastAction={selectedItemLastAction}
           onActionHistoryChange={recordItemActionHistory}
