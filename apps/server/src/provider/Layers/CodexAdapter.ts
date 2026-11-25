@@ -63,7 +63,7 @@ import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { isRootAgentPath } from "@threadlines/shared/subagentPath";
 import { isMcpAppResourceUri, mcpToolUiFromMeta } from "@threadlines/shared/mcpApps";
-import { resolveCodexServiceTier } from "../../codexServiceTier.ts";
+import { resolveCodexAppServerServiceTier } from "../../codexServiceTier.ts";
 
 import {
   ProviderAdapterRequestError,
@@ -3373,7 +3373,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           yield* Effect.suspend(() => stopSessionInternal(existing));
         }
 
-        const serviceTier = resolveCodexServiceTier(input.modelSelection, {
+        const serviceTier = resolveCodexAppServerServiceTier(input.modelSelection, {
           instanceId: boundInstanceId,
         });
         // A room's side answer runs in a home of its own, continuing a copy of
@@ -3475,7 +3475,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
             : {}),
-          ...(serviceTier ? { serviceTier } : {}),
+          ...(serviceTier !== undefined ? { serviceTier } : {}),
           ...(options?.publishRealtimeAudio
             ? {
                 onRealtimeAudio: (audio: ProviderRealtimeAudioChunk) =>
@@ -3788,7 +3788,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
         : undefined;
-    const serviceTier = resolveCodexServiceTier(input.modelSelection, {
+    const serviceTier = resolveCodexAppServerServiceTier(input.modelSelection, {
       instanceId: boundInstanceId,
     });
     const turn = yield* session.runtime
@@ -3803,7 +3803,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
             }
           : {}),
-        ...(serviceTier ? { serviceTier } : {}),
+        ...(serviceTier !== undefined ? { serviceTier } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(input.skills !== undefined
           ? {

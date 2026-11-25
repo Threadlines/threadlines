@@ -271,4 +271,86 @@ describe.skipIf(!piCli)("Threadlines extension in a real Pi", () => {
       ),
     60_000,
   );
+
+  it.live(
+    "registers MCP tool servers in deterministic config order regardless of response timing",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const model = yield* Effect.acquireRelease(
+            Effect.promise(() => startTestModelServer()),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const slowFirst = yield* Effect.acquireRelease(
+            Effect.promise(() =>
+              startTestMcpServer({
+                token: TOKEN,
+                tools: [{ name: "alpha", readOnly: true }],
+                listToolsDelayMs: 120,
+              }),
+            ),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const fastSecond = yield* Effect.acquireRelease(
+            Effect.promise(() =>
+              startTestMcpServer({
+                token: TOKEN,
+                tools: [{ name: "beta", readOnly: true }],
+              }),
+            ),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const home = makeTestPiHome(model.url);
+          const extensionDir = mkdtempSync(join(tmpdir(), "threadlines-pi-ext-order-"));
+          const extensionPath = join(extensionDir, piExtensionFileName());
+          writeFileSync(extensionPath, PI_EXTENSION_SOURCE, { mode: 0o600 });
+          const secretsFile = yield* Effect.promise(() =>
+            writePiSecretsFile(join(extensionDir, "run"), { token: TOKEN, nonce: NONCE }),
+          );
+          const rpc = yield* startPiRpc({
+            command: process.execPath,
+            args: piProcessArgs(
+              { command: process.execPath, prefixArgs: [piCli!] },
+              {
+                purpose: "chat",
+                session: { kind: "new" },
+                launchArgs: [],
+                extensionPath,
+                instructionsPath: undefined,
+              },
+            ),
+            cwd: home.projectDir,
+            environment: piProcessEnvironment({
+              instanceEnvironment: undefined,
+              baseEnv: testPiEnvironment(home.agentDir),
+              extension: {
+                access: "full-access",
+                plan: false,
+                toolServers: [
+                  { name: "threadlines_first", url: slowFirst.url },
+                  { name: "threadlines_second", url: fastSecond.url },
+                ],
+                secretsFile,
+              },
+            }),
+          });
+          const log = yield* collectPiRecords(rpc);
+          const from = log.mark();
+          yield* prompt(rpc, "REPLY ok");
+          yield* settled(log, from);
+
+          const rawTools = (model.requests.at(-1)?.tools ?? []) as ReadonlyArray<{
+            readonly function?: { readonly name?: string };
+          }>;
+          const toolNames = rawTools
+            .map((tool) => tool.function?.name)
+            .filter((name): name is string => typeof name === "string");
+          const firstIndex = toolNames.indexOf("mcp__threadlines_first__alpha");
+          const secondIndex = toolNames.indexOf("mcp__threadlines_second__beta");
+          expect(firstIndex).toBeGreaterThanOrEqual(0);
+          expect(secondIndex).toBeGreaterThan(firstIndex);
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    60_000,
+  );
 });

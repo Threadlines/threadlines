@@ -1,3 +1,4 @@
+import { DEFAULT_CODEX_SERVICE_TIER_SELECTION } from "../../codexServiceTier.ts";
 import { parseSessionKey } from "@threadlines/shared/threadParticipants";
 import {
   BROWSER_MCP_SERVER_NAME,
@@ -226,6 +227,8 @@ const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 
 export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
 type CodexServiceTier = NonNullable<EffectCodexSchema.V2ThreadStartParams["serviceTier"]>;
+/** Explicit tier override, or `null` to clear a sticky tier back to standard. */
+type CodexServiceTierOverride = CodexServiceTier | null;
 type CodexThreadTurn =
   | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]
   | EffectCodexSchema.V2ThreadTurnsListResponse["data"][number];
@@ -243,7 +246,7 @@ export interface CodexSessionRuntimeOptions {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
-  readonly serviceTier?: CodexServiceTier | undefined;
+  readonly serviceTier?: CodexServiceTierOverride | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   /** Fail session startup when a requested native thread cannot be resumed.
    *  External imports use this to avoid silently attaching an empty provider
@@ -335,7 +338,7 @@ export interface CodexSessionRuntimeSendTurnInput {
   readonly skills?: ReadonlyArray<CodexTurnSkillInput>;
   readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
   readonly model?: string;
-  readonly serviceTier?: CodexServiceTier | undefined;
+  readonly serviceTier?: CodexServiceTierOverride | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
   readonly interactionMode?: ProviderInteractionMode;
 }
@@ -666,7 +669,7 @@ function buildThreadStartParams(input: {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
-  readonly serviceTier: CodexServiceTier | undefined;
+  readonly serviceTier: CodexServiceTierOverride | undefined;
   readonly lockdown?: boolean;
   /** The thread's developer instructions (codexThreadDeveloperInstructions). */
   readonly developerInstructions: string | undefined;
@@ -681,7 +684,7 @@ function buildThreadStartParams(input: {
     sandbox: config.sandbox,
     ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
     ...(input.model ? { model: input.model } : {}),
-    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
     ...(input.developerInstructions !== undefined && input.lockdown !== true
       ? { developerInstructions: input.developerInstructions }
       : {}),
@@ -694,7 +697,7 @@ function buildThreadForkParams(input: {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
-  readonly serviceTier: CodexServiceTier | undefined;
+  readonly serviceTier: CodexServiceTierOverride | undefined;
   readonly developerInstructions: string | undefined;
 }): EffectCodexSchema.V2ThreadForkParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
@@ -708,7 +711,7 @@ function buildThreadForkParams(input: {
     sandbox: config.sandbox,
     ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
     ...(input.model ? { model: input.model } : {}),
-    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
     ...(input.developerInstructions !== undefined
       ? { developerInstructions: input.developerInstructions }
       : {}),
@@ -772,6 +775,8 @@ function buildCodexCollaborationMode(input: {
   readonly scheduleTools?: boolean;
   /** The thread's own runtime has the room endpoint, so the app guide. */
   readonly guide?: boolean;
+  /** A locked-down side answer or review: no browser, pages, commands, device, schedule, guide, or worktree guidance. */
+  readonly lockdown?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -789,25 +794,29 @@ function buildCodexCollaborationMode(input: {
         input.interactionMode === "plan"
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
           : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-        CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
-        ...(input.agentPageAssetsDir !== undefined
-          ? [
-              buildAgentPageInstructions({
-                assetsDir: input.agentPageAssetsDir,
-                rival: CODEX_PAGE_RIVAL,
-              }),
-            ]
-          : []),
-        ...(input.commandRequests ? [buildCommandRequestInstructions({})] : []),
-        ...(input.deviceTools ? [buildDeviceInstructions()] : []),
-        ...(input.scheduleTools
-          ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
-          : []),
-        ...(input.guide
-          ? [buildGuideInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
-          : []),
+        ...(input.lockdown
+          ? []
+          : [
+              CODEX_PREVIEW_PANEL_DEVELOPER_INSTRUCTIONS,
+              ...(input.agentPageAssetsDir !== undefined
+                ? [
+                    buildAgentPageInstructions({
+                      assetsDir: input.agentPageAssetsDir,
+                      rival: CODEX_PAGE_RIVAL,
+                    }),
+                  ]
+                : []),
+              ...(input.commandRequests ? [buildCommandRequestInstructions({})] : []),
+              ...(input.deviceTools ? [buildDeviceInstructions()] : []),
+              ...(input.scheduleTools
+                ? [buildScheduleInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
+                : []),
+              ...(input.guide
+                ? [buildGuideInstructions({ toolPrefix: `mcp__${ROOM_MCP_SERVER_NAME}__` })]
+                : []),
+            ]),
         FILE_LINK_INSTRUCTIONS,
-        ...(input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
+        ...(!input.lockdown && input.managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
       ].join("\n\n"),
     },
   };
@@ -821,7 +830,7 @@ export function buildTurnStartParams(input: {
   readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
   readonly clientUserMessageId?: string;
   readonly model?: string;
-  readonly serviceTier?: CodexServiceTier;
+  readonly serviceTier?: CodexServiceTierOverride;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly interactionMode?: ProviderInteractionMode;
   /** Session runs in a git worktree Threadlines created and must not delete. */
@@ -863,14 +872,15 @@ export function buildTurnStartParams(input: {
     ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
-    ...(input.managedWorktree ? { managedWorktree: true } : {}),
-    ...(input.agentPageAssetsDir !== undefined
+    ...(input.managedWorktree && !input.lockdown ? { managedWorktree: true } : {}),
+    ...(input.agentPageAssetsDir !== undefined && !input.lockdown
       ? { agentPageAssetsDir: input.agentPageAssetsDir }
       : {}),
-    ...(input.commandRequests ? { commandRequests: true } : {}),
+    ...(input.commandRequests && !input.lockdown ? { commandRequests: true } : {}),
     ...(input.deviceTools && !input.lockdown ? { deviceTools: true } : {}),
     ...(input.scheduleTools && !input.lockdown ? { scheduleTools: true } : {}),
     ...(input.guide && !input.lockdown ? { guide: true } : {}),
+    ...(input.lockdown ? { lockdown: true } : {}),
   });
 
   return decodeCodexTurnStartParams({
@@ -883,7 +893,7 @@ export function buildTurnStartParams(input: {
       ? { type: "readOnly" }
       : runtimeModeToTurnSandboxPolicy(input.runtimeMode),
     ...(input.model ? { model: input.model } : {}),
-    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
     ...(collaborationMode ? { collaborationMode } : {}),
   }).pipe(
@@ -1084,7 +1094,7 @@ export const openCodexThread = (input: {
   readonly runtimeMode: RuntimeMode;
   readonly cwd: string;
   readonly requestedModel: string | undefined;
-  readonly serviceTier: CodexServiceTier | undefined;
+  readonly serviceTier: CodexServiceTierOverride | undefined;
   /** See codexThreadDeveloperInstructions. Never for a side answer. */
   readonly developerInstructions?: string | undefined;
   readonly resumeThreadId: string | undefined;
@@ -1343,7 +1353,7 @@ export const rollbackCodexThread = (input: {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
-  readonly serviceTier: CodexServiceTier | undefined;
+  readonly serviceTier: CodexServiceTierOverride | undefined;
   /** See codexThreadDeveloperInstructions. */
   readonly developerInstructions?: string | undefined;
 }): Effect.Effect<CodexThreadRollbackResult, CodexErrors.CodexAppServerError> =>
@@ -2937,6 +2947,19 @@ const makeCodexSessionRuntimeIn = (
     /** What the session's provider threads keep (codexThreadDeveloperInstructions), set at start. */
     let threadDeveloperInstructions: string | undefined;
     /**
+     * Current `serviceTier` state Threadlines has requested on this session:
+     * a non-default string when active, `null` when explicitly cleared back to
+     * standard speed, or `undefined` when untouched. Codex treats
+     * `turn/start.serviceTier` as sticky across turns, so a later turn that
+     * omits `serviceTier` sends `null` whenever a non-default tier may be
+     * active.
+     */
+    let currentServiceTier: CodexServiceTierOverride | undefined = options.serviceTier;
+    const isNonDefaultServiceTier = (
+      tier: CodexServiceTierOverride | undefined,
+    ): tier is CodexServiceTier =>
+      typeof tier === "string" && tier !== DEFAULT_CODEX_SERVICE_TIER_SELECTION;
+    /**
      * The hash of the project brief the conversation holds, kept in every
      * resume cursor this session writes. A thread Codex creates (start, fork,
      * a rollback's copy) gets the brief in its opening context; a resumed one
@@ -3130,6 +3153,12 @@ const makeCodexSessionRuntimeIn = (
           const normalizedModel = normalizeCodexModelSlug(
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
+          const effectiveServiceTier: CodexServiceTierOverride | undefined =
+            input.serviceTier !== undefined
+              ? input.serviceTier
+              : isNonDefaultServiceTier(currentServiceTier)
+                ? null
+                : undefined;
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
@@ -3140,7 +3169,7 @@ const makeCodexSessionRuntimeIn = (
             ...(input.skills ? { skills: input.skills } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),
-            ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+            ...(effectiveServiceTier !== undefined ? { serviceTier: effectiveServiceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
             ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
@@ -3153,6 +3182,11 @@ const makeCodexSessionRuntimeIn = (
             ...(roomGrant.attach && lockdown === undefined ? { guide: true } : {}),
             ...(lockdown !== undefined ? { lockdown: true } : {}),
           });
+          // Mark a non-default tier active before sending so a lost/timed-out
+          // turn/start reply still causes the next standard turn to clear it.
+          if (isNonDefaultServiceTier(effectiveServiceTier)) {
+            currentServiceTier = effectiveServiceTier;
+          }
           const rawResponse = yield* withCodexRequestTimeout(
             "start a Codex turn",
             client.raw.request("turn/start", params),
@@ -3162,6 +3196,13 @@ const makeCodexSessionRuntimeIn = (
               toProtocolParseError("Invalid turn/start response payload", error),
             ),
           );
+          // Only record a clear after Codex accepts it, so a failed clear retries.
+          if (
+            effectiveServiceTier === null ||
+            effectiveServiceTier === DEFAULT_CODEX_SERVICE_TIER_SELECTION
+          ) {
+            currentServiceTier = null;
+          }
           const turnId = TurnId.make(response.turn.id);
           yield* updateSession(sessionRef, {
             status: "running",
@@ -3531,7 +3572,7 @@ const makeCodexSessionRuntimeIn = (
             cwd: session.cwd ?? options.cwd,
             runtimeMode: options.runtimeMode,
             model: normalizeCodexModelSlug(session.model),
-            serviceTier: options.serviceTier,
+            serviceTier: currentServiceTier,
             developerInstructions: threadDeveloperInstructions,
           });
           // A revert may take the brief a resume added along with the turns

@@ -168,6 +168,7 @@ export interface TestMcpTool {
 export async function startTestMcpServer(input: {
   readonly token: string;
   readonly tools: ReadonlyArray<TestMcpTool>;
+  readonly listToolsDelayMs?: number;
 }): Promise<TestServer & { readonly calls: Array<{ name: string; args: unknown }> }> {
   const requests: Array<Record<string, unknown>> = [];
   const calls: Array<{ name: string; args: unknown }> = [];
@@ -201,6 +202,9 @@ export async function startTestMcpServer(input: {
         });
         return;
       case "tools/list":
+        if (input.listToolsDelayMs && input.listToolsDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, input.listToolsDelayMs));
+        }
         reply({
           tools: input.tools.map((tool) => ({
             name: tool.name,

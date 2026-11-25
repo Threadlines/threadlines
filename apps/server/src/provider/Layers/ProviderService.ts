@@ -217,6 +217,16 @@ function toRuntimeStatus(session: ProviderSession): "starting" | "running" | "st
   }
 }
 
+interface PersistedStartTools {
+  readonly guideTools: boolean;
+  readonly scheduleTools: boolean;
+  readonly scheduledRunTools: boolean;
+  readonly agentPages: boolean;
+  readonly artifacts: boolean;
+  readonly commandRequests: boolean;
+  readonly deviceTools: boolean;
+}
+
 function toRuntimePayloadFromSession(
   session: ProviderSession,
   extra?: {
@@ -226,8 +236,8 @@ function toRuntimePayloadFromSession(
     readonly earlyUnused?: boolean;
     /** See readPersistedHistoryOwed. */
     readonly historyOwed?: boolean;
-    /** A start: what it asked of the room endpoint, recorded over any older start's. */
-    readonly startedWith?: { readonly guideTools: boolean };
+    /** A start: the tool grants it asked for, recorded over any older start's. */
+    readonly startedWith?: PersistedStartTools;
   },
 ): Record<string, unknown> {
   return {
@@ -240,11 +250,20 @@ function toRuntimePayloadFromSession(
     sessionCreatedAt: session.createdAt,
     // Kept so a recovered runtime gets the room tools it was started with.
     ...(session.roomTools !== undefined ? { roomTools: session.roomTools } : {}),
-    // A start replaces both (null clears an older start's room tools in the
-    // merged payload), so a runtime started with the app guide alone is
-    // recovered with it, and not with room tools it no longer has.
+    // A start replaces every tool grant (null clears an older start's room
+    // tools in the merged payload), so a recovered runtime starts with the
+    // exact same MCP servers and prompt sections as the session it replaces.
     ...(extra?.startedWith !== undefined
-      ? { roomTools: session.roomTools ?? null, guideTools: extra.startedWith.guideTools }
+      ? {
+          roomTools: session.roomTools ?? null,
+          guideTools: extra.startedWith.guideTools,
+          scheduleTools: extra.startedWith.scheduleTools,
+          scheduledRunTools: extra.startedWith.scheduledRunTools,
+          agentPages: extra.startedWith.agentPages,
+          artifacts: extra.startedWith.artifacts,
+          commandRequests: extra.startedWith.commandRequests,
+          deviceTools: extra.startedWith.deviceTools,
+        }
       : {}),
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
@@ -317,16 +336,17 @@ function readPersistedRoomToolsRequest(
   );
 }
 
-/** Whether the runtime was started with the app guide alone (ProviderSessionStartInput.guideTools). */
-function readPersistedGuideToolsRequest(
+/** Whether the runtime was started with a boolean tool grant (ProviderSessionStartInput). */
+function readPersistedStartToolFlag(
   runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+  key: keyof PersistedStartTools,
 ): boolean {
   return (
     runtimePayload !== null &&
     typeof runtimePayload === "object" &&
     !Array.isArray(runtimePayload) &&
-    "guideTools" in runtimePayload &&
-    runtimePayload.guideTools === true
+    key in runtimePayload &&
+    (runtimePayload as Record<string, unknown>)[key] === true
   );
 }
 
@@ -732,7 +752,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly lastRuntimeEventAt?: string;
       readonly earlyUnused?: boolean;
       readonly historyOwed?: boolean;
-      readonly startedWith?: { readonly guideTools: boolean };
+      readonly startedWith?: PersistedStartTools;
     },
   ) =>
     Effect.gen(function* () {
@@ -931,8 +951,26 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ...(readPersistedRoomToolsRequest(input.binding.runtimePayload)
               ? { roomTools: true }
               : {}),
-            ...(readPersistedGuideToolsRequest(input.binding.runtimePayload)
+            ...(readPersistedStartToolFlag(input.binding.runtimePayload, "guideTools")
               ? { guideTools: true }
+              : {}),
+            ...(readPersistedStartToolFlag(input.binding.runtimePayload, "scheduleTools")
+              ? { scheduleTools: true }
+              : {}),
+            ...(readPersistedStartToolFlag(input.binding.runtimePayload, "scheduledRunTools")
+              ? { scheduledRunTools: true }
+              : {}),
+            ...(readPersistedStartToolFlag(input.binding.runtimePayload, "agentPages")
+              ? { agentPages: true }
+              : {}),
+            ...(readPersistedStartToolFlag(input.binding.runtimePayload, "artifacts")
+              ? { artifacts: true }
+              : {}),
+            ...(readPersistedStartToolFlag(input.binding.runtimePayload, "commandRequests")
+              ? { commandRequests: true }
+              : {}),
+            ...(readPersistedStartToolFlag(input.binding.runtimePayload, "deviceTools")
+              ? { deviceTools: true }
               : {}),
             runtimeMode: input.binding.runtimeMode ?? "full-access",
           }),
@@ -985,6 +1023,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     readonly threadId: ThreadId;
     readonly operation: string;
     readonly allowRecovery: boolean;
+    /** Skip recovery when the binding's adapter cannot serve the operation. */
+    readonly recoverWhen?: (adapter: ProviderAdapterShape<ProviderAdapterError>) => boolean;
   }) {
     const bindingOption = yield* directory.getBinding(input.threadId);
     const binding = Option.getOrUndefined(bindingOption);
@@ -1010,7 +1050,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     // A side answer's runtime is never brought back: its binding does not
     // record the lockdown, so recovering it would start an unrestricted
     // session under a side key.
-    if (!input.allowRecovery || parseSessionKey(input.threadId).kind === "side") {
+    if (
+      !input.allowRecovery ||
+      (input.recoverWhen !== undefined && !input.recoverWhen(adapter)) ||
+      parseSessionKey(input.threadId).kind === "side"
+    ) {
       return {
         adapter,
         instanceId,
@@ -1270,7 +1314,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(historyOwed || input.contextSeed !== undefined || session.resumeFailed === true
             ? { historyOwed: true }
             : {}),
-          startedWith: { guideTools: input.guideTools === true },
+          startedWith: {
+            guideTools: input.guideTools === true,
+            scheduleTools: input.scheduleTools === true,
+            scheduledRunTools: input.scheduledRunTools === true,
+            agentPages: input.agentPages === true,
+            artifacts: input.artifacts === true,
+            commandRequests: input.commandRequests === true,
+            deviceTools: input.deviceTools === true,
+          },
         });
         return { sessionWithInstance, sessionStart } as const;
       }).pipe(
@@ -3257,6 +3309,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           threadId: sessionKey,
           operation: "ProviderService.readSubagentTranscript",
           allowRecovery: true,
+          recoverWhen: (adapter) => adapter.readSubagentTranscript !== undefined,
         });
         yield* Effect.annotateCurrentSpan({
           "provider.operation": "read-subagent-transcript",
@@ -3425,6 +3478,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         threadId: input.threadId,
         operation: "ProviderService.deleteThread",
         allowRecovery: admitted,
+        recoverWhen: (adapter) => adapter.deleteThread !== undefined,
       });
       turnLatency.sessionStopped(input.threadId);
       earlySessions.forget(input.threadId);
