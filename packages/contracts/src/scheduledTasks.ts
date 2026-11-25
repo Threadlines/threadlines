@@ -137,15 +137,7 @@ export const ScheduledTaskWebhookCadence = Schema.Struct({
 });
 export type ScheduledTaskWebhookCadence = typeof ScheduledTaskWebhookCadence.Type;
 
-/**
- * When a task runs. Every kind but `manual` and `webhook` compiles to a
- * 5-field cron expression evaluated in the task's time zone (packages/shared
- * scheduledTasks.ts); `custom` is one, minute resolution only. `weekday` is
- * 0 (Sunday) to 6 (Saturday). `once` runs one time, on `date` at `time`; the
- * task is `done` after. `webhook` runs when an event arrives (an "event
- * task"); servers without the `eventTasks` capability refuse it.
- */
-export const ScheduledTaskCadence = Schema.Union([
+const SCHEDULED_TASK_CLOCK_CADENCE_MEMBERS = [
   Schema.Struct({ kind: Schema.Literal("manual") }),
   Schema.Struct({
     kind: Schema.Literal("once"),
@@ -164,6 +156,22 @@ export const ScheduledTaskCadence = Schema.Union([
     time: ScheduledTaskClock,
   }),
   Schema.Struct({ kind: Schema.Literal("custom"), cron: TrimmedNonEmptyString }),
+] as const;
+
+/** Non-webhook cadences: every schedule kind an agent may create or assign. */
+export const ScheduledTaskClockCadence = Schema.Union(SCHEDULED_TASK_CLOCK_CADENCE_MEMBERS);
+export type ScheduledTaskClockCadence = typeof ScheduledTaskClockCadence.Type;
+
+/**
+ * When a task runs. Every kind but `manual` and `webhook` compiles to a
+ * 5-field cron expression evaluated in the task's time zone (packages/shared
+ * scheduledTasks.ts); `custom` is one, minute resolution only. `weekday` is
+ * 0 (Sunday) to 6 (Saturday). `once` runs one time, on `date` at `time`; the
+ * task is `done` after. `webhook` runs when an event arrives (an "event
+ * task"); servers without the `eventTasks` capability refuse it.
+ */
+export const ScheduledTaskCadence = Schema.Union([
+  ...SCHEDULED_TASK_CLOCK_CADENCE_MEMBERS,
   ScheduledTaskWebhookCadence,
 ]);
 export type ScheduledTaskCadence = typeof ScheduledTaskCadence.Type;

@@ -12,6 +12,8 @@
 import {
   ScheduledRunStatus,
   ScheduledTaskCadence,
+  ScheduledTaskClock,
+  ScheduledTaskDate,
   ScheduledTaskStatus,
 } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
@@ -102,9 +104,47 @@ export const ScheduledRunFinishResult = Schema.Struct({
 });
 export type ScheduledRunFinishResult = typeof ScheduledRunFinishResult.Type;
 
-const CadenceParameter = ScheduledTaskCadence.annotate({
+// Flat parameter schema for agent schedule inputs: avoids duplicating the
+// 7-branch union and clock struct across create/update while keeping exact
+// field types and bounds. Handlers validate the per-kind shape against
+// ScheduledTaskClockCadence, and ScheduledTasks refuses webhook cadences.
+export const AgentScheduleCadenceInput = Schema.Struct({
+  kind: Schema.Literals(["manual", "once", "hourly", "daily", "weekdays", "weekly", "custom"]),
+  date: Schema.optionalKey(
+    ScheduledTaskDate.annotate({
+      description: 'For kind "once": "YYYY-MM-DD" (schedule_list gives the date and time now).',
+    }),
+  ),
+  time: Schema.optionalKey(
+    ScheduledTaskClock.annotate({
+      description: 'For kind "once", "daily", "weekdays", or "weekly".',
+    }),
+  ),
+  minute: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 59 })).annotate({
+      description: 'For kind "hourly": minute past the hour (0-59).',
+    }),
+  ),
+  weekday: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 })).annotate({
+      description: 'For kind "weekly": 0 (Sunday) to 6 (Saturday).',
+    }),
+  ),
+  cron: Schema.optionalKey(
+    // Plain Schema.String here so Tool.getJsonSchema emits the description
+    // (transformation schemas like TrimmedNonEmptyString drop annotations on the
+    // encoded JSON Schema side). parseScheduleCadence validates TrimmedNonEmptyString.
+    Schema.String.annotate({
+      description:
+        'For kind "custom": 5-field cron expression (minute hour day-of-month month day-of-week).',
+    }),
+  ),
+});
+export type AgentScheduleCadenceInput = typeof AgentScheduleCadenceInput.Type;
+
+const CadenceParameter = AgentScheduleCadenceInput.annotate({
   description:
-    'When it runs, in its time zone: {kind:"once", date:"YYYY-MM-DD", time:{hour, minute}} (one time, for "tomorrow at 8am"; the task is done after; schedule_list says the date and time now), {kind:"manual"} (only when someone starts it), {kind:"hourly", minute}, {kind:"daily", time:{hour, minute}}, {kind:"weekdays", time}, {kind:"weekly", weekday (0 Sunday to 6 Saturday), time}, or {kind:"custom", cron} with a 5-field cron expression (minute hour day-of-month month day-of-week).',
+    'When it runs, in its time zone ("once" runs once then marks the task done; "manual" runs only when started).',
 });
 
 const TimeZoneParameter = Schema.String.annotate({

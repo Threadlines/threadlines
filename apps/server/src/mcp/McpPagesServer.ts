@@ -270,6 +270,9 @@ const registerPageTools = Effect.fn("McpPagesServer.registerPageTools")(function
   });
 });
 
+export const PAGES_MCP_SERVER_INSTRUCTIONS =
+  "Show inline HTML or Markdown pages (show_page, preview_page) and Threadlines custom themes (preview_theme, show_theme, find_vscode_theme).";
+
 export const layer = Layer.fresh(
   Layer.effectDiscard(registerPageTools()).pipe(
     Layer.provideMerge(
@@ -277,6 +280,7 @@ export const layer = Layer.fresh(
         name: "threadlines-pages",
         version: "1",
         path: MCP_PAGES_ROUTE_PATH,
+        instructions: PAGES_MCP_SERVER_INSTRUCTIONS,
         protocols: [McpProtocol.v2025_06_18],
       }).pipe(Layer.provide(AuthenticationLive)),
     ),

@@ -30,7 +30,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { McpProtocol, McpServer, Tool, Toolkit } from "effect/ai";
-import { HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -38,11 +38,16 @@ import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import {
+  ALERT_ASSISTANTS_TOOL_NAME,
   GUIDE_TOOL_NAME,
   INVITE_TOOL_NAMES,
   MULTI_AGENT_ROOM_TOOL_NAMES,
+  PROJECT_NOTE_READ_TOOL_NAME,
   PROJECT_NOTE_WRITE_TOOL_NAME,
   SCHEDULE_TOOL_NAMES,
+  SCHEDULED_RUN_TOOL_NAME,
+  SECRET_REQUEST_TOOL_NAME,
+  SETTINGS_CHANGE_TOOL_NAME,
   THREAD_TOOL_NAMES,
 } from "./roomToolAccess.ts";
 import { hasAgentRecords } from "@threadlines/shared/threadParticipants";
@@ -163,6 +168,70 @@ type ToolsReaching<R> = {
   [K in keyof typeof ROOM_TOOL_REACH]: (typeof ROOM_TOOL_REACH)[K] extends R ? K : never;
 }[keyof typeof ROOM_TOOL_REACH];
 
+const jsonDecoder = new TextDecoder();
+const jsonEncoder = new TextEncoder();
+
+/** One-line MCP initialize instructions tailored to the tools this session may call. */
+export function roomInstructionsFor(listed: ReadonlySet<string>): string {
+  const groups: Array<string> = [];
+  if (listed.has(GUIDE_TOOL_NAME)) groups.push("app guide");
+  if (listed.has(SETTINGS_CHANGE_TOOL_NAME)) groups.push("settings changes");
+  if (listed.has(SECRET_REQUEST_TOOL_NAME)) groups.push("secret requests");
+  if (listed.has(ALERT_ASSISTANTS_TOOL_NAME)) groups.push("assistant alerts");
+  if (listed.has(PROJECT_NOTE_READ_TOOL_NAME) || listed.has(PROJECT_NOTE_WRITE_TOOL_NAME)) {
+    groups.push("project notes");
+  }
+  if (SCHEDULE_TOOL_NAMES.some((tool) => listed.has(tool)) || listed.has(SCHEDULED_RUN_TOOL_NAME)) {
+    groups.push("scheduled tasks");
+  }
+  if (THREAD_TOOL_NAMES.some((tool) => listed.has(tool))) groups.push("child threads");
+  if (INVITE_TOOL_NAMES.some((tool) => listed.has(tool))) groups.push("agent invites");
+  if (listed.has("room_ask") || listed.has("room_review") || listed.has("room_hand_off")) {
+    groups.push("room coordination");
+  } else {
+    if (listed.has("room_history")) groups.push("room history");
+    if (listed.has("room_diff")) groups.push("checkout git diff");
+  }
+  if (groups.length === 0) return ROOM_MCP_SERVER_INSTRUCTIONS;
+  return `Threadlines workspace tools for this session: ${groups.join(", ")}.`;
+}
+
+/** Tailors `initialize` `result.instructions` to the credential's granted tools. */
+function tailorInitializeInstructions(
+  response: HttpServerResponse.HttpServerResponse,
+  instructions: string,
+): HttpServerResponse.HttpServerResponse {
+  const body = response.body;
+  if (body._tag !== "Uint8Array" || !body.contentType.includes("json")) return response;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonDecoder.decode(body.body));
+  } catch {
+    return response;
+  }
+  let changed = false;
+  const rewrite = (message: unknown): unknown => {
+    if (typeof message !== "object" || message === null || !("result" in message)) return message;
+    const result = message.result;
+    if (
+      typeof result !== "object" ||
+      result === null ||
+      !("protocolVersion" in result) ||
+      !("serverInfo" in result)
+    ) {
+      return message;
+    }
+    changed = true;
+    return { ...message, result: { ...result, instructions } };
+  };
+  const updated = Array.isArray(parsed) ? parsed.map(rewrite) : rewrite(parsed);
+  if (!changed) return response;
+  return HttpServerResponse.setBody(
+    response,
+    HttpBody.uint8Array(jsonEncoder.encode(JSON.stringify(updated)), body.contentType),
+  );
+}
+
 const authenticate = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;
   const snapshots = yield* Effect.serviceOption(ProjectionSnapshotQuery);
@@ -230,7 +299,12 @@ const authenticate = Effect.gen(function* () {
         McpRoomInvocation,
         outsideLimit === null ? scope : { ...scope, outsideLimit },
       ),
-      Effect.map((response) => listOnlyGrantedTools(normalizeMcpHttpResponse(response), listed)),
+      Effect.map((response) =>
+        tailorInitializeInstructions(
+          listOnlyGrantedTools(normalizeMcpHttpResponse(response), listed),
+          roomInstructionsFor(listed),
+        ),
+      ),
     );
   });
 });
@@ -688,6 +762,9 @@ const RoomToolHandlersLive = RoomEndpointToolkit.toLayer(
   }),
 );
 
+export const ROOM_MCP_SERVER_INSTRUCTIONS =
+  "Threadlines workspace tools available to this session.";
+
 /**
  * The room endpoint with the given tool handlers: production's below; the
  * tool-use evals (apps/server/evals) serve the same tools, listing and
@@ -704,6 +781,7 @@ export const makeLayer = <E, R>(
           name: "threadlines-room",
           version: "1",
           path: MCP_ROOM_ROUTE_PATH,
+          instructions: ROOM_MCP_SERVER_INSTRUCTIONS,
           protocols: [McpProtocol.v2025_06_18],
         }).pipe(Layer.provide(AuthenticationLive)),
       ),

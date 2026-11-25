@@ -700,4 +700,27 @@ it.layer(NodeServices.layer)("AgentPages.showTheme", (it) => {
       );
     },
   );
+
+  it.effect(
+    "returns the full theme authoring guide from previewTheme({ guide: true }) without rendering",
+    () => {
+      const dispatched: Array<OrchestrationCommand> = [];
+      return Effect.gen(function* () {
+        const pages = yield* AgentPages;
+        const guide = yield* pages.previewTheme(caller(), { guide: true });
+        assert.strictEqual(guide.outcome, "previewed");
+        if (guide.outcome !== "previewed") return;
+        assert.deepStrictEqual(guide.shots, []);
+        assert.include(guide.text, "threadlines.backdrop");
+        assert.include(guide.text, "Art rules:");
+      }).pipe(
+        Effect.provide(
+          makeLayer({
+            thread: threadWith({ participantId: null, activeTurnId: TURN }),
+            dispatched,
+          }),
+        ),
+      );
+    },
+  );
 });
