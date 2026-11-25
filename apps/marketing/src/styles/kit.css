@@ -1,0 +1,1121 @@
+/*
+ * The inner pages' kit: everything that makes a page below the nav look like
+ * the homepage, written once. It builds on the site tokens in
+ * layouts/Layout.astro (--bg, --fg, --t0..--t8, --nt-ink, --gut, --nt-pad,
+ * --ease, .btn) and matches the homepage's trunk (styles/threads.css): same
+ * gutter, same line weights, same ring nodes. The parts are Astro components
+ * in components/kit/; this file is their look.
+ *
+ * A page is a frame (.k-frame, components/kit/KitFrame.astro) whose left
+ * gutter carries one line. scripts/pageThread.ts draws that line, its strands
+ * and its taps into the frame's .k-art from the data-k-* attributes below;
+ * this file draws everything else, the ring nodes included, so a page without
+ * script still shows every node in place. A quiet frame (privacy, terms,
+ * support, docs) has no line and no nodes, only the type.
+ *
+ *   data-k-region="ink" | "<n>"   a stretch of the line, in ink or thread color n
+ *   data-k-start[="chip"]         where the line begins (a heading's first line, or a chip's bottom)
+ *   data-k-node[="small"|"fill"]  a ring node on the line, level with this element's first line
+ *   data-k-steps                  an <ol> drawn as stops on a short thread
+ *   data-k-taps="down" | "up"     chips whose strands tap into the line below them, or rise into its end
+ *   data-k-tap="<n>"              one such chip, in thread color n
+ *   data-k-end                    the button the line turns into (the first one shown)
+ */
+
+/* ---- Tokens ------------------------------------------------------------- */
+
+:root {
+  /* Three sizes below the title: headings, body, small. */
+  --k-h1: clamp(2.25rem, 3.6vw, 3.25rem);
+  --k-h2: clamp(1.5rem, 2.4vw, 2rem);
+  --k-b: 1.0625rem;
+  --k-s: 0.875rem;
+  /* The line's x inside the gutter: the homepage trunk runs 26px in from the column's edge (12px on phones). */
+  --k-inset: 26px;
+  /* The line's x relative to the content's left edge. */
+  --k-rail-x: calc(var(--k-inset) - var(--gut));
+  /* Ring nodes: 4px radius, 2px ring, as on the homepage. */
+  --k-node: 10px;
+  --k-node-ring: 2px;
+  /* Logo chips: the hero's size, and a small one for inline use. */
+  --k-chip: 42px;
+  --k-chip-sm: 32px;
+  /* The line's color; a page or region sets it. */
+  --k-c: var(--nt-ink);
+}
+
+@media (width <= 640px) {
+  :root {
+    --k-inset: 12px;
+    --k-node: 8.4px;
+    --k-node-ring: 1.6px;
+    --k-chip: 36px;
+    --k-chip-sm: 30px;
+  }
+}
+
+/* ---- Frame and line ----------------------------------------------------- */
+
+/* The column every inner page sits in: the homepage's .wrap.nt-in. */
+.k-frame {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 1200px;
+  margin-inline: auto;
+  padding: clamp(36px, 5vw, 64px) var(--nt-pad) clamp(96px, 10vw, 136px)
+    calc(var(--nt-pad) + var(--gut));
+  font-size: var(--k-b);
+  line-height: 1.6;
+}
+
+/* Whatever a page's script hides stays hidden, whatever kit style it wears. */
+.k-frame [hidden] {
+  display: none !important;
+}
+
+/* The line's drawing covers the frame, under its content (the homepage's .nt-spine). */
+.k-art {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.k-art path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.k-art .k-trunk {
+  stroke-width: 3px;
+}
+
+.k-art .k-thread {
+  stroke-width: 2.4px;
+}
+
+.k-art .k-strand {
+  stroke-width: 2px;
+}
+
+.k-art .k-dot {
+  r: 4px;
+  stroke-width: 2px;
+  fill: var(--bg);
+  transition: opacity 200ms var(--ease);
+}
+
+@media (width <= 640px) {
+  .k-art .k-trunk {
+    stroke-width: 2.6px;
+  }
+
+  .k-art .k-thread {
+    stroke-width: 2px;
+  }
+
+  .k-art .k-strand {
+    stroke-width: 1.7px;
+  }
+
+  .k-art .k-dot {
+    r: 3.4px;
+    stroke-width: 1.6px;
+  }
+}
+
+/* A ring node on the line, level with the element's first line. */
+[data-k-node] {
+  position: relative;
+}
+
+[data-k-node]::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--k-rail-x) - var(--k-node) / 2);
+  top: calc(0.5lh - var(--k-node) / 2);
+  width: var(--k-node);
+  height: var(--k-node);
+  box-sizing: border-box;
+  border: var(--k-node-ring) solid var(--k-c);
+  border-radius: 50%;
+  background: var(--bg);
+  transition:
+    opacity 200ms var(--ease),
+    transform 200ms var(--ease);
+}
+
+/* A patch release: smaller, but with the full ring, so it reads on the 3px trunk. */
+[data-k-node="small"]::before {
+  --k-node: 8px;
+  --k-node-ring: 2px;
+}
+
+[data-k-node="fill"]::before {
+  background: var(--k-c);
+}
+
+/* A quiet page has no line, so no nodes either. */
+.k-quiet [data-k-node]::before {
+  content: none;
+}
+
+/* With motion on, a node shows once the line has drawn down to it. */
+.k-armed [data-k-node]:not(.k-lit)::before {
+  opacity: 0;
+  transform: scale(0.4);
+}
+
+/* ---- Type ----------------------------------------------------------------- */
+
+.k-h1 {
+  font-size: var(--k-h1);
+  font-weight: 600;
+  line-height: 1.06;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.k-h2 {
+  font-size: var(--k-h2);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.k-h3 {
+  font-size: var(--k-b);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.k-lede {
+  max-width: 36em;
+  margin-top: 18px;
+  color: var(--fg-muted);
+  text-wrap: pretty;
+}
+
+.k-small {
+  font-size: var(--k-s);
+  color: var(--fg-muted);
+  line-height: 1.55;
+}
+
+.k-mono {
+  font-family: var(--font-mono);
+  font-size: var(--k-s);
+}
+
+/* ---- Page head ------------------------------------------------------------ */
+
+/* Title, intro and actions; a way back and the page's chip may come first. */
+.k-head > * + .k-lead {
+  margin-top: 24px;
+}
+
+.k-head > * + .k-h1 {
+  margin-top: 22px;
+}
+
+/* ---- Sections ------------------------------------------------------------- */
+
+.k-sec {
+  margin-top: clamp(72px, 8vw, 112px);
+}
+
+.k-sec > .k-h2 + * {
+  margin-top: clamp(24px, 3vw, 32px);
+}
+
+/* ---- Links and actions ---------------------------------------------------- */
+
+/* A text link: muted, with a quiet underline (the homepage's release link). */
+.k-link {
+  color: var(--fg-muted);
+  text-decoration: underline;
+  text-decoration-color: var(--underline);
+  text-underline-offset: 3px;
+  transition:
+    color 160ms var(--ease),
+    text-decoration-color 160ms var(--ease);
+}
+
+.k-link:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
+/* A quiet way back: small, muted, no underline. */
+.k-back {
+  display: inline-flex;
+  gap: 8px;
+  font-size: var(--k-s);
+  color: var(--fg-muted);
+  transition: color 160ms var(--ease);
+}
+
+.k-back:hover {
+  color: var(--fg);
+}
+
+/* One ink button and, at most, one text link beside it. */
+.k-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 26px;
+  margin-top: 30px;
+  font-size: var(--k-s);
+}
+
+.k-actions .btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* An arrow that leans toward where the link goes. */
+.k-arrow {
+  display: inline-block;
+  color: var(--fg-muted);
+  transition:
+    color 160ms var(--ease),
+    transform 180ms var(--ease);
+}
+
+a:hover > .k-arrow {
+  color: currentColor;
+  transform: translateX(3px);
+}
+
+/* ---- Pictures of the app (the homepage's .still) ------------------------ */
+
+.k-shot {
+  margin-top: clamp(48px, 6vw, 72px);
+}
+
+/* A still or clip of the app, on its own dark ground with a hairline edge, so it sits on either page. */
+.k-still {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #16181d;
+  box-shadow:
+    0 0 0 1px var(--frame-edge),
+    0 30px 70px -34px light-dark(rgba(13, 16, 23, 0.4), rgba(0, 0, 0, 0.8));
+}
+
+.k-still > img,
+.k-still > video {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.k-cap {
+  margin-top: 14px;
+  font-size: var(--k-s);
+  color: var(--fg-muted);
+}
+
+/* ---- Ruled list: a hairline above each item -------------------------------- */
+
+.k-rules {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: clamp(32px, 4vw, 56px);
+  max-width: 980px;
+}
+
+.k-rules > li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 14px;
+  align-content: start;
+  padding: 16px 0 18px;
+  border-top: 1px solid var(--border);
+}
+
+/* The last row closes the list. */
+.k-rules > li:last-child,
+.k-rules > li:nth-last-child(2):nth-child(odd) {
+  border-bottom: 1px solid var(--border);
+}
+
+/* A plain glyph in muted ink, level with the item's name. */
+.k-rules > li > svg {
+  grid-row: 1 / span 2;
+  width: 18px;
+  height: 18px;
+  margin-top: calc((1.5 * var(--k-b) - 18px) / 2);
+  color: var(--fg-muted);
+}
+
+.k-rules h3 {
+  font-size: var(--k-b);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.k-rules p {
+  margin-top: 2px;
+  font-size: var(--k-s);
+  color: var(--fg-muted);
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* ---- Steps: stops on a short thread ---------------------------------------- */
+
+/* Each step is a ring node; the engine draws the thread through them from the line. */
+.k-steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 clamp(20px, 3vw, 40px);
+  max-width: 980px;
+  padding-top: 8px;
+}
+
+.k-steps > li {
+  padding-top: 30px;
+  text-wrap: pretty;
+}
+
+.k-steps > li::before {
+  left: 0;
+  top: 0;
+}
+
+/* ---- Disclosure list ------------------------------------------------------- */
+
+.k-faq {
+  max-width: 72ch;
+  border-bottom: 1px solid var(--border);
+}
+
+.k-faq details {
+  border-top: 1px solid var(--border);
+}
+
+.k-faq summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0;
+  font-weight: 600;
+  line-height: 1.5;
+  list-style: none;
+  cursor: pointer;
+  transition: color 160ms var(--ease);
+}
+
+.k-faq summary::-webkit-details-marker {
+  display: none;
+}
+
+.k-faq summary:hover {
+  color: var(--accent);
+}
+
+.k-faq summary svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-muted);
+  transition: transform 200ms var(--ease);
+}
+
+.k-faq details[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.k-faq details > p {
+  max-width: 64ch;
+  padding-bottom: 20px;
+  color: var(--fg-muted);
+  text-wrap: pretty;
+}
+
+/* ---- Facts table (the homepage's .facts) ----------------------------------- */
+
+.k-facts {
+  border-bottom: 1px solid var(--border);
+}
+
+.k-facts > div {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 16px;
+  align-items: baseline;
+  padding: 15px 0;
+  border-top: 1px solid var(--border);
+}
+
+.k-facts dt {
+  font-size: var(--k-s);
+  color: var(--fg-muted);
+}
+
+.k-facts dd a {
+  text-decoration: underline;
+  text-decoration-color: var(--underline);
+  text-underline-offset: 3px;
+  transition:
+    color 160ms var(--ease),
+    text-decoration-color 160ms var(--ease);
+}
+
+.k-facts dd a:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
+/* ---- Logo chips (the homepage's .nt-chip) ---------------------------------- */
+
+/* --c is the agent's thread color; a chip without one takes the line's. */
+.k-chip {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: var(--k-chip);
+  height: var(--k-chip);
+  border-radius: 50%;
+  background: var(--bg-card);
+  color: var(--fg);
+  box-shadow:
+    0 0 0 1.5px color-mix(in oklch, var(--c, var(--k-c)) 75%, transparent),
+    0 2px 6px -2px light-dark(#0d101726, #000a);
+  transition:
+    box-shadow 180ms var(--ease),
+    transform 180ms var(--ease);
+}
+
+.k-chip-sm {
+  width: var(--k-chip-sm);
+  height: var(--k-chip-sm);
+}
+
+.k-chip > svg,
+.k-chip > img {
+  width: 46%;
+  height: 46%;
+}
+
+.k-chip[data-wordmark] > svg {
+  width: 56%;
+}
+
+a.k-chip:hover,
+a.k-chip:focus-visible,
+a:hover > .k-chip,
+a:focus-visible > .k-chip {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 2.5px var(--c, var(--k-c)),
+    0 6px 14px -6px color-mix(in oklch, var(--c, var(--k-c)) 70%, transparent);
+}
+
+a.k-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+/* A chip with no name beside it shows one on hover or focus. */
+a.k-chip[data-name]::after {
+  content: attr(data-name);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 3px);
+  transition:
+    opacity 160ms var(--ease),
+    transform 160ms var(--ease);
+}
+
+a.k-chip[data-name]:hover::after,
+a.k-chip[data-name]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* The page's own agent, at the top of its line. */
+.k-lead {
+  margin-left: calc(var(--k-rail-x) - var(--k-chip) / 2);
+}
+
+/* Chips whose strands tap into the line. */
+.k-taps {
+  display: flex;
+  gap: 10px;
+}
+
+/* A row of agents, each with a short stub of its own thread fading out below. */
+.k-others {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 48px 30px;
+  padding-bottom: 30px;
+}
+
+.k-others li {
+  position: relative;
+}
+
+.k-others li::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--k-chip-sm) / 2 - 1px);
+  top: calc(var(--k-chip-sm) + 2px);
+  width: 2px;
+  height: 30px;
+  border-radius: 1px;
+  background: linear-gradient(var(--c), transparent);
+}
+
+.k-others a {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  font-weight: 500;
+  transition: color 160ms var(--ease);
+}
+
+.k-others a:hover {
+  color: var(--accent);
+}
+
+/* ---- The end: the line turns into the last Download button ---------------- */
+
+.k-end {
+  padding-top: clamp(72px, 8vw, 104px);
+}
+
+.k-end .btn {
+  position: relative;
+}
+
+.k-end .k-small {
+  max-width: 60ch;
+  margin-top: 24px;
+}
+
+/* ---- Timeline (the changelog): the trunk with a stop per entry ------------ */
+
+/*
+ * Desktop: a dated column right-aligned to the trunk, the entry to its right.
+ * The trunk sits 28px right of the dates and 38px left of the entry, the
+ * homepage's gap between trunk and text. Phones: the trunk returns to the
+ * gutter and the date sits above the title.
+ */
+.k-timeline {
+  --k-meta: 168px;
+  margin-top: clamp(88px, 9vw, 120px);
+  margin-left: calc(-1 * var(--gut));
+}
+
+.k-entry {
+  display: grid;
+  grid-template-columns: var(--k-meta) 66px minmax(0, 64ch);
+  grid-template-rows: auto 1fr;
+  align-items: start;
+  padding-bottom: clamp(52px, 5.5vw, 72px);
+  /* The title's first line, for setting the date level with it. */
+  --k-title: var(--k-h2);
+  --k-title-lh: 1.15;
+}
+
+/* The last stop ends the line: no room after it. */
+.k-entry:last-child {
+  padding-bottom: 0;
+}
+
+.k-entry[data-kind="patch"] {
+  --k-title: var(--k-b);
+  --k-title-lh: 1.45;
+}
+
+.k-entry[data-kind="patch"]:not(:last-child) {
+  padding-bottom: 36px;
+}
+
+.k-entry-meta {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding-top: calc((var(--k-title) * var(--k-title-lh) - 1.5 * var(--k-s)) / 2);
+  font-family: var(--font-mono);
+  font-size: var(--k-s);
+  line-height: 1.5;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.k-entry-meta .k-ver {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.k-entry-body {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
+/* The whole release is one link: its version, date, title and summary. Chips beside it are links of their own. */
+.k-entry-link {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-template-rows: subgrid;
+}
+
+.k-entry > .k-taps {
+  position: relative;
+  z-index: 1;
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: end;
+  margin-top: 16px;
+}
+
+.k-entry-title {
+  font-size: var(--k-title);
+  line-height: var(--k-title-lh);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+  transition: color 160ms var(--ease);
+}
+
+.k-entry[data-kind="patch"] .k-entry-title {
+  letter-spacing: -0.01em;
+}
+
+.k-entry-link:hover .k-entry-title {
+  color: var(--accent);
+}
+
+.k-entry-link:hover .k-arrow {
+  color: currentColor;
+  transform: translateX(3px);
+}
+
+.k-entry-body > p {
+  margin-top: 10px;
+  color: var(--fg-muted);
+  text-wrap: pretty;
+}
+
+.k-entry[data-kind="patch"] .k-entry-body > p {
+  margin-top: 4px;
+}
+
+/* Where the line began: chips under its end, centred on the trunk. */
+.k-roots {
+  display: grid;
+  grid-template-columns: var(--k-meta) 66px minmax(0, 1fr);
+  padding-top: 56px;
+}
+
+.k-roots > .k-taps {
+  grid-column: 3;
+  gap: 48px;
+  margin-left: calc(var(--k-rail-x) - var(--k-chip-sm) - 24px);
+}
+
+@media (width <= 640px) {
+  .k-timeline {
+    margin-top: 64px;
+    margin-left: 0;
+  }
+
+  .k-entry,
+  .k-roots {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+  }
+
+  .k-entry-link {
+    grid-column: 1;
+    grid-row: auto;
+    grid-template-rows: none;
+  }
+
+  .k-entry-link > .k-entry-meta,
+  .k-entry-link > .k-entry-body,
+  .k-entry > .k-taps,
+  .k-roots > .k-taps {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .k-entry-meta {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0 12px;
+    padding-top: 0;
+    margin-bottom: 6px;
+  }
+
+  .k-entry > .k-taps {
+    justify-self: start;
+    margin-top: 18px;
+  }
+
+  /* Room under the chips for their strands to reach the trunk. */
+  .k-entry:has(.k-taps) {
+    padding-bottom: 88px;
+  }
+
+  .k-roots > .k-taps {
+    margin-left: calc(var(--k-rail-x) - var(--k-chip-sm) / 2);
+  }
+}
+
+/* ---- Small print beside a title ------------------------------------------- */
+
+/* A version and a date, or when a page was checked: mono, muted. */
+.k-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-family: var(--font-mono);
+  font-size: var(--k-s);
+  color: var(--fg-muted);
+}
+
+.k-meta > :first-child {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* A short note under the intro, its links underlined. */
+.k-note {
+  margin-top: 12px;
+  font-size: var(--k-s);
+  color: var(--fg-muted);
+}
+
+.k-note a,
+.k-small a {
+  text-decoration: underline;
+  text-decoration-color: var(--underline);
+  text-underline-offset: 3px;
+  transition: color 160ms var(--ease);
+}
+
+.k-note a:hover,
+.k-small a:hover {
+  color: var(--accent);
+}
+
+/* ---- Rows: a ruled list of links, one stop each ---------------------------- */
+
+/* Each row is one link; a small node on the line marks it. */
+.k-rows {
+  list-style: none;
+  max-width: 820px;
+  border-bottom: 1px solid var(--border);
+}
+
+.k-rows > li {
+  border-top: 1px solid var(--border);
+}
+
+.k-rows > li > a {
+  display: grid;
+  gap: 4px;
+  padding: 18px 0 20px;
+}
+
+.k-rows .k-row-name {
+  font-weight: 600;
+  line-height: 1.5;
+  transition: color 160ms var(--ease);
+}
+
+.k-rows > li > a:hover .k-row-name {
+  color: var(--accent);
+}
+
+.k-rows .k-row-text {
+  font-size: var(--k-s);
+  color: var(--fg-muted);
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* ---- Two lists side by side, one stop for the pair ------------------------- */
+
+.k-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: clamp(48px, 6vw, 72px);
+  max-width: 980px;
+}
+
+@media (width >= 820px) {
+  .k-pair {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: clamp(32px, 4vw, 56px);
+  }
+}
+
+.k-pair > div > .k-h2 + * {
+  margin-top: clamp(24px, 3vw, 32px);
+}
+
+/* A plain list with a glyph per item, between hairlines. */
+.k-ticks {
+  list-style: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.k-ticks > li {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  text-wrap: pretty;
+}
+
+.k-ticks > li > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: calc((1.6em - 18px) / 2);
+  color: var(--fg-muted);
+}
+
+/* ---- Comparison table -------------------------------------------------------- */
+
+/* Ruled like the lists. On a phone it scrolls sideways and the first column stays put. */
+.k-table-wrap {
+  max-width: 980px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.k-table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: var(--k-s);
+  line-height: 1.5;
+}
+
+.k-table th,
+.k-table td {
+  padding: 14px 18px 14px 0;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.k-table tbody tr:last-child > * {
+  border-bottom: 1px solid var(--border);
+}
+
+.k-table thead th {
+  padding-top: 0;
+  border-top: 0;
+  color: var(--fg);
+  font-size: var(--k-b);
+  font-weight: 600;
+  vertical-align: bottom;
+}
+
+.k-table tbody th {
+  width: 28%;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.k-table td {
+  width: 36%;
+  color: var(--fg-muted);
+}
+
+@media (width <= 640px) {
+  .k-table tbody th,
+  .k-table thead th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    width: 9.5rem;
+    min-width: 9.5rem;
+    background: var(--bg);
+  }
+}
+
+/* ---- Prose: plain headings, lists, links and code from a page's slot ------- */
+
+.k-prose {
+  max-width: 68ch;
+  color: var(--fg-muted);
+  text-wrap: pretty;
+}
+
+.k-prose > * + * {
+  margin-top: 16px;
+}
+
+.k-prose h2 {
+  margin-top: clamp(44px, 5vw, 56px);
+  color: var(--fg);
+  font-size: var(--k-h2);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.k-prose h3 {
+  margin-top: 32px;
+  color: var(--fg);
+  font-size: var(--k-b);
+  font-weight: 600;
+}
+
+.k-prose h2 + *,
+.k-prose h3 + * {
+  margin-top: 14px;
+}
+
+.k-prose ul,
+.k-prose ol {
+  padding-left: 22px;
+}
+
+.k-prose li + li {
+  margin-top: 8px;
+}
+
+.k-prose li::marker {
+  color: var(--fg-faint);
+}
+
+.k-prose a {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: var(--underline);
+  text-underline-offset: 3px;
+  transition:
+    color 160ms var(--ease),
+    text-decoration-color 160ms var(--ease);
+}
+
+.k-prose a:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
+.k-prose strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Code wraps anywhere, so a long address never pushes the page sideways. */
+.k-prose code,
+.k-code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  overflow-wrap: anywhere;
+}
+
+/* ---- One-time entrance ----------------------------------------------------- */
+
+@keyframes k-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+.k-rise {
+  animation: k-rise 640ms var(--ease) both;
+  animation-delay: var(--d, 0ms);
+}
+
+/* ---- Narrower ---------------------------------------------------------------- */
+
+/* Steps run down the line itself once four no longer fit side by side. */
+@media (width <= 860px) {
+  .k-steps {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 18px;
+    padding-top: 0;
+  }
+
+  .k-steps > li {
+    padding-top: 0;
+  }
+
+  .k-steps > li::before {
+    left: calc(var(--k-rail-x) - var(--k-node) / 2);
+    top: calc(0.5lh - var(--k-node) / 2);
+  }
+}
+
+@media (width <= 640px) {
+  .k-rules {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .k-rules > li:nth-last-child(2):nth-child(odd) {
+    border-bottom: 0;
+  }
+
+  .k-facts > div {
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+  }
+}
+
+/* ---- Motion off: everything is drawn and still ----------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .k-rise {
+    animation: none;
+  }
+
+  [data-k-node]::before,
+  .k-art .k-dot,
+  .k-chip,
+  .k-arrow,
+  .k-faq summary svg {
+    transition: none;
+  }
+
+  a:hover > .k-arrow,
+  a.k-chip:hover,
+  a:hover > .k-chip {
+    transform: none;
+  }
+}

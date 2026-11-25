@@ -420,35 +420,6 @@ const siteStructuredData = {
     border: 0;
   }
 
-  .eyebrow {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--fg-dim);
-    font-weight: 500;
-  }
-
-  .display {
-    font-weight: 600;
-    letter-spacing: -0.035em;
-    line-height: 1.04;
-  }
-
-  /* The site's column: the nav, the footer and every page line up on it. */
-  .container {
-    width: 100%;
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 0 24px;
-  }
-
-  @media (max-width: 640px) {
-    .container {
-      padding: 0 20px;
-    }
-  }
-
   /* The site's one primary button. */
   .btn {
     display: inline-flex;
@@ -489,24 +460,6 @@ const siteStructuredData = {
     padding: 0 16px;
     border-radius: 8px;
     font-size: 0.875rem;
-  }
-
-  /* A clickable tile: the only card the site uses. Hover shifts color only. */
-  .tile {
-    display: block;
-    height: 100%;
-    padding: 18px 18px 20px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface);
-    transition:
-      border-color 0.2s ease,
-      background-color 0.2s ease;
-  }
-
-  .tile:hover {
-    border-color: var(--border-strong);
-    background: var(--surface-hover);
   }
 
   :focus-visible {

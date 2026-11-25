@@ -1,0 +1,75 @@
+---
+/**
+ * The trunk as a timeline: a stop per release, the version and date right-aligned to the trunk
+ * and the release to its right (stacked on phones). A feature release (x.y.0) gets a full node, a
+ * patch a small one, the newest a filled one. The whole release is one link; agents that joined
+ * at a release are chips beside it whose strands tap into the trunk there, and `roots` (the
+ * agents there from the start) rise into the trunk's end.
+ */
+import AgentChip from "./AgentChip.astro";
+import { agentPath, type Agent } from "../../lib/agents";
+import { changelogEntryPath, formatReleaseDate, type ChangelogEntry } from "../../lib/changelog";
+
+interface Props {
+  entries: ReadonlyArray<ChangelogEntry>;
+  /** Agents joining at each version (`agentJoins` in lib/agents.ts). */
+  joins?: ReadonlyMap<string, ReadonlyArray<Agent>>;
+  roots?: ReadonlyArray<Agent>;
+  /** The title's element: h2 on the changelog, plain text where the page's headings are its own. */
+  title?: "h2" | "p";
+  /** Fill the first entry's node: the newest release. */
+  fillFirst?: boolean;
+}
+
+const { entries, joins, roots = [], title = "h2", fillFirst = true } = Astro.props;
+const Title = title;
+const kind = (version: string) => (version.split(".")[2] === "0" ? "feature" : "patch");
+---
+
+<div class="k-timeline" data-k-region="ink">
+  {
+    entries.map((entry, index) => {
+      const joined = joins?.get(entry.data.version) ?? [];
+      const releaseKind = kind(entry.data.version);
+      const node =
+        fillFirst && index === 0 ? "fill" : releaseKind === "patch" ? "small" : "";
+      return (
+        <article class="k-entry" data-kind={releaseKind}>
+          <a class="k-entry-link" href={changelogEntryPath(entry)}>
+            <div class="k-entry-meta">
+              <span class="k-ver">v{entry.data.version}</span>
+              <time datetime={entry.data.date.toISOString()}>
+                {formatReleaseDate(entry.data.date)}
+              </time>
+            </div>{" "}
+            <div class="k-entry-body">
+              <Title class="k-entry-title" data-k-node={node}>
+                {entry.data.title}{" "}
+                <span class="k-arrow" aria-hidden="true">→</span>
+              </Title>{" "}
+              <p>{entry.data.summary}</p>
+            </div>
+          </a>
+          {joined.length > 0 && (
+            <div class="k-taps" data-k-taps="down">
+              {joined.map((agent) => (
+                <AgentChip agent={agent} small tap href={agentPath(agent)} />
+              ))}
+            </div>
+          )}
+        </article>
+      );
+    })
+  }
+  {
+    roots.length > 0 && (
+      <div class="k-roots" data-k-taps="up">
+        <div class="k-taps">
+          {roots.map((agent) => (
+            <AgentChip agent={agent} small tap href={agentPath(agent)} />
+          ))}
+        </div>
+      </div>
+    )
+  }
+</div>

@@ -1,0 +1,16 @@
+---
+/**
+ * Steps as stops on a short thread: in a row, a branch leaves the page's line and runs through
+ * them; stacked (860px and under), they sit on the line itself. The order is the thread's, so no
+ * numbers.
+ */
+interface Props {
+  steps: ReadonlyArray<string>;
+}
+
+const { steps } = Astro.props;
+---
+
+<ol class="k-steps" data-k-steps>
+  {steps.map((step) => <li data-k-node>{step}</li>)}
+</ol>

@@ -1,4 +1,5 @@
 ---
+import KitFrame from "../../components/kit/KitFrame.astro";
 import ThreadlinesGlyph from "../../components/ThreadlinesGlyph.astro";
 import Layout from "../../layouts/Layout.astro";
 import { comparisonPath, COMPARISONS } from "../../lib/comparisons";
@@ -43,146 +44,80 @@ const structuredData = [
   canonicalPath="/compare"
   structuredData={structuredData}
 >
-  <section class="compare-index">
-    <div class="container compare-index-wrap">
-      <header class="compare-index-header">
-        <p class="eyebrow">Compare</p>
-        <h1 class="display">Coding agent app alternatives, side by side</h1>
-        <p>
-          How Threadlines stacks up against other apps for running coding agents, including where
-          they're ahead. We check every page against the other app's own site, and the ones that
-          are changing hands or winding down say what happens and when.
-        </p>
-      </header>
+  <KitFrame line="ink" as="section">
+    <header class="k-head">
+      <h1 class="k-h1 k-rise" data-k-node data-k-start>Coding agent app alternatives, side by side</h1>
+      <p class="k-lede k-rise" style="--d: 80ms">
+        How Threadlines stacks up against other apps for running coding agents, including where
+        they're ahead. We check every page against the other app's own site, and the ones that are
+        changing hands or winding down say what happens and when.
+      </p>
+    </header>
 
-      <ul class="compare-grid">
-        {
-          COMPARISONS.map((comparison) => (
-            <li>
-              <a class="tile compare-tile" href={comparisonPath(comparison)}>
-                <span class="compare-tile-lockup">
-                  <ThreadlinesGlyph class="compare-tile-glyph" />
-                  <span class="compare-tile-vs">vs</span>
-                  <span class="compare-tile-name">{comparison.name}</span>
-                </span>
-                <span class="compare-tile-summary">{comparison.summary}</span>
-                <span class="compare-tile-checked">
+    <ul class="k-rows comparisons">
+      {
+        COMPARISONS.map((comparison) => (
+          <li>
+            <a href={comparisonPath(comparison)}>
+              <span class="k-row-name lockup" data-k-node="small">
+                <ThreadlinesGlyph class="lockup-glyph" />
+                <span class="lockup-vs">vs</span>
+                <span>{comparison.name}</span>
+              </span>
+              <span class="k-row-text">{comparison.summary}</span>
+              <span class="k-meta checked">
+                <span>
                   {comparison.status && `${comparison.status.label} · `}
                   Checked {formatDate(comparison.checkedOn)}
                 </span>
-              </a>
-            </li>
-          ))
-        }
-      </ul>
+              </span>
+            </a>
+          </li>
+        ))
+      }
+    </ul>
 
-      <p class="compare-index-agents">
-        Looking for a specific agent? See <a href="/agents">every agent Threadlines runs</a>.
-      </p>
-    </div>
-  </section>
+    <p class="k-small more">
+      Looking for a specific agent? See <a href="/agents">every agent Threadlines runs</a>.
+    </p>
+  </KitFrame>
 </Layout>
 
 <style>
-  .compare-index {
-    padding: 72px 0 96px;
+  .comparisons {
+    margin-top: clamp(56px, 7vw, 88px);
   }
 
-  .compare-index-wrap {
-    max-width: 960px;
-  }
-
-  .compare-index-header {
-    max-width: 680px;
-    margin-bottom: 32px;
-  }
-
-  .compare-index-header h1 {
-    margin: 12px 0 14px;
-    font-size: clamp(30px, 5vw, 40px);
-    text-wrap: balance;
-  }
-
-  .compare-index-header > p:last-child {
-    color: var(--fg-muted);
-    font-size: 16px;
-    line-height: 1.6;
-    text-wrap: pretty;
-  }
-
-  .compare-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-    list-style: none;
-  }
-
-  .compare-tile {
-    display: grid;
-    align-content: start;
-    gap: 10px;
-  }
-
-  .compare-tile-lockup {
+  .lockup {
     display: flex;
     align-items: center;
     gap: 10px;
+    font-size: 1.1875rem;
+    letter-spacing: -0.015em;
   }
 
-  .compare-tile :global(.compare-tile-glyph) {
+  .lockup :global(.lockup-glyph) {
     width: auto;
     height: 16px;
   }
 
-  .compare-tile-vs {
-    color: var(--fg-dim);
-    font-family: var(--font-mono);
-    font-size: 12px;
-  }
-
-  .compare-tile-name {
-    font-size: 18px;
-    font-weight: 600;
-    letter-spacing: -0.015em;
-  }
-
-  .compare-tile-summary {
+  .lockup-vs {
     color: var(--fg-muted);
-    font-size: 14px;
-    line-height: 1.5;
-  }
-
-  .compare-tile-checked {
-    color: var(--fg-dim);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--k-s);
+    font-weight: 400;
   }
 
-  .compare-index-agents {
-    margin-top: 22px;
-    color: var(--fg-dim);
-    font-size: 14px;
+  .checked {
+    margin-top: 4px;
   }
 
-  .compare-index-agents a {
+  .checked > span {
     color: var(--fg-muted);
-    text-decoration: underline;
-    text-decoration-color: var(--underline);
-    text-underline-offset: 3px;
-    transition: color 0.2s ease;
+    font-weight: 400;
   }
 
-  .compare-index-agents a:hover {
-    color: var(--fg);
-  }
-
-  @media (max-width: 620px) {
-    .compare-index {
-      padding: 56px 0 80px;
-    }
-
-    .compare-grid {
-      grid-template-columns: minmax(0, 1fr);
-    }
+  .more {
+    margin-top: clamp(40px, 5vw, 56px);
   }
 </style>

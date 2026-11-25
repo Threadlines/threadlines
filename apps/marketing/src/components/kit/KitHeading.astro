@@ -1,0 +1,19 @@
+---
+/** A section heading in the kit's type, with a ring node on the page's line (set `node={false}` for none). */
+interface Props {
+  level?: 2 | 3;
+  node?: boolean | "small" | "fill";
+  id?: string;
+  start?: boolean;
+}
+
+const { level = 2, node = true, id, start = false } = Astro.props;
+const Tag = `h${level}` as const;
+---
+
+<Tag
+  class={level === 2 ? "k-h2" : "k-h3"}
+  id={id}
+  data-k-node={node === true ? "" : node || undefined}
+  data-k-start={start ? "" : undefined}><slot /></Tag
+>

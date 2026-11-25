@@ -1,0 +1,45 @@
+---
+/**
+ * The frame every inner page sits in, with its line down the left gutter
+ * (styles/kit.css, scripts/pageThread.ts):
+ *
+ * - `line="ink"`: the homepage's trunk (changelog, compare, download).
+ * - `line={n}`: an agent's thread in its homepage color, `var(--t<n>)`; take
+ *   n from `agentThreadIndex` (lib/agents.ts).
+ * - `line="quiet"`: no line and no nodes, only the kit's type (privacy,
+ *   terms, support, docs).
+ *
+ * The page's content is one stretch of the line unless `region` is false, for
+ * a page that marks its own stretches (`data-k-region`). The `end` slot takes
+ * a KitEnd, the stretch where the line turns into the last button.
+ */
+import "../../styles/kit.css";
+
+interface Props {
+  line: "ink" | "quiet" | number;
+  region?: boolean;
+  as?: "article" | "section" | "div";
+}
+
+const { line, region = true, as: Tag = "article" } = Astro.props;
+const quiet = line === "quiet";
+const color = typeof line === "number" ? `var(--t${line})` : "var(--nt-ink)";
+---
+
+<Tag class:list={["k-frame", { "k-quiet": quiet }]} style={`--k-c: ${color}`}>
+  {!quiet && <svg class="k-art" aria-hidden="true" />}
+  {
+    region && !quiet ? (
+      <div data-k-region={String(line)}>
+        <slot />
+      </div>
+    ) : (
+      <slot />
+    )
+  }
+  <slot name="end" />
+</Tag>
+
+<script>
+  import "../../scripts/pageThread";
+</script>
