@@ -2,7 +2,7 @@
 
 import { lazy, Suspense, useEffect } from "react";
 
-import { CommandDialog } from "../ui/command";
+import { CommandDialog } from "../ui/commandDialog";
 import { useAddProjectStore } from "./addProjectStore";
 
 const OpenAddProjectDialog = lazy(() =>

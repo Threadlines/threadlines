@@ -90,7 +90,7 @@ import {
   useThreadHoverCardHandle,
   type ThreadHoverCardLineage,
 } from "./ThreadHoverCard";
-import { describedAwaitedTasks, formatBackgroundWaitWord } from "../../session-logic";
+import { describedAwaitedTasks, formatBackgroundWaitWord } from "../../sessionShellLogic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const ROW_ITEM_CLASS_NAME = "group/thread-row relative w-full";

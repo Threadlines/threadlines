@@ -26,9 +26,7 @@ import { preloadDestinationLists } from "../components/sidebar/destinationLists"
 import { PushAlertsRuntime } from "../pushAlerts/PushAlertsRuntime";
 import { AlertSoundRuntime } from "../components/AlertSoundRuntime";
 import { BrowserProfileReconciler } from "../components/desktop/BrowserProfileReconciler";
-import { DesktopUpdateInstallDialog } from "../components/desktop/DesktopUpdateInstallDialog";
-import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
-import { QuitConfirmationDialog } from "../components/desktop/QuitConfirmationDialog";
+import { DesktopRootDialogsHost } from "../components/desktop/DesktopRootDialogsHost";
 import { ThreadDeleteDialogHost } from "../components/ThreadDeleteDialog";
 import {
   preloadProjectSetupDialog,
@@ -115,7 +113,7 @@ import {
   describedAwaitedTasks,
   formatAwaitedTasks,
   isWaitingOnBackgroundTasks,
-} from "../session-logic";
+} from "../sessionShellLogic";
 import {
   type AppState,
   isThreadOnPrimaryEnvironment,
@@ -273,6 +271,10 @@ function RootRouteView() {
       <AnchoredToastProvider>
         {/* A theme's live art behind the window, and the desktop's theme events. */}
         <ThemeRuntime />
+        {/* Mounted before connection bootstraps and menu listeners so early
+            Electron SSH password prompts and quit-after-moves resends buffer
+            while the lazy dialog chunk loads. */}
+        <DesktopRootDialogsHost />
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
         <EnvironmentConnectionManagerBootstrap />
@@ -296,9 +298,6 @@ function RootRouteView() {
               <BrowserHostLayerLazy.Component />
             </Suspense>
           ) : null}
-          <SshPasswordPromptDialog />
-          <QuitConfirmationDialog />
-          <DesktopUpdateInstallDialog />
           <ThreadDeleteDialogHost />
           <ThreadMoveDialogHost />
           <MoveThreadsDialogHost />

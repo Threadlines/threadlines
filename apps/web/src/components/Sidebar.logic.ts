@@ -21,7 +21,7 @@ import {
   type ThreadSortInput,
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
-import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../session-logic";
+import { isLatestTurnSettled, isWaitingOnBackgroundTasks } from "../sessionShellLogic";
 import { startOfLocalDayMs } from "../timestampFormat";
 import { nextCheckBack } from "./chat/checkBacks";
 import { shortFamilyTitles } from "./familyTitles.logic";

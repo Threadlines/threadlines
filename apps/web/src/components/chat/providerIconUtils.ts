@@ -15,7 +15,7 @@ import {
   OpenCodeIcon,
   PiIcon,
 } from "../Icons";
-import { PROVIDER_OPTIONS } from "../../session-logic";
+import { PROVIDER_OPTIONS } from "../../sessionShellLogic";
 
 /**
  * The built-in glyph of each driver. Draw a provider through `ProviderGlyph`

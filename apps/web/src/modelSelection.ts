@@ -14,7 +14,7 @@ import {
   normalizeModelSlug,
   resolveSelectableModel,
 } from "@threadlines/shared/model";
-import { getComposerProviderState } from "./components/chat/composerProviderState";
+import { getComposerProviderState } from "./components/chat/composerProviderState.logic";
 import { modelMetaLabel } from "./modelRetirement";
 import { UnifiedSettings } from "@threadlines/contracts/settings";
 import {

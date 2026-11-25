@@ -198,7 +198,7 @@ import {
 } from "../environments/runtime";
 import type { SidebarThreadSummary } from "../types";
 
-import { CommandDialogTrigger } from "./ui/command";
+import { CommandDialogTrigger } from "./ui/commandDialog";
 
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
 /** One empty list for every row with no linked pull requests, so it never reads as a change. */
