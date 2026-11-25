@@ -1654,6 +1654,8 @@ function runCodexAppServerAction<A>(
           ...codexAppServerCommandOptions(context.config.binaryPath, context.environment),
           cwd: context.cwd,
           env: context.environment,
+          bufferNotifications: false,
+          bufferRequests: false,
         }),
       );
       const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
@@ -1756,6 +1758,8 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
             ...codexAppServerCommandOptions(input.config.binaryPath, env),
             cwd: input.cwd,
             env,
+            bufferNotifications: false,
+            bufferRequests: false,
           }),
         );
         const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
@@ -4354,6 +4358,8 @@ export const startProviderExtensionMcpOAuth = Effect.fn(
         ...codexAppServerCommandOptions(context.config.binaryPath, context.environment),
         cwd: context.cwd,
         env: context.environment,
+        bufferNotifications: false,
+        bufferRequests: false,
       }),
       scope,
     );

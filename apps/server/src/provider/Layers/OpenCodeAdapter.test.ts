@@ -164,7 +164,7 @@ const harnessWith = (overrides: Record<string, (input: any) => unknown> = {}) =>
 
     const threadId = ThreadId.make("thread-1");
     const cwd = realpathSync(mkdtempSync(join(tmpdir(), "opencode-adapter-")));
-    return { adapter, calls, send, next, drain, threadId, cwd };
+    return { adapter, calls, signals, events, send, next, drain, threadId, cwd };
   });
 const harness = harnessWith();
 
@@ -637,5 +637,104 @@ describe("OpenCodeAdapter", () => {
       yield* adapter.interruptTurn(threadId, "msg_tl_old" as never);
       expect(calls.some((call) => call.method === "session.interrupt")).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live("keeps tracking unconfirmed background shells across restart and ServerGone", () =>
+    Effect.gen(function* () {
+      let shellRunning = true;
+      const { adapter, signals, send, next, threadId, cwd } = yield* harnessWith({
+        "shell.get": () => ({
+          location: {},
+          data: { status: shellRunning ? "running" : "killed" },
+        }),
+        "shell.list": () => ({
+          location: {},
+          data: shellRunning ? [{ status: "running" }] : [],
+        }),
+      });
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, messageId: MessageId.make("m1"), input: "serve" });
+      yield* send("session.execution.started", { sessionID: ROOT });
+      yield* backgroundShell(send, "sh_1");
+      yield* next((event) => event.type === "task.started");
+
+      // Stop leaves sh_1 unconfirmed; restarting and cleanly stopping must not drop it.
+      yield* adapter.stopSession(threadId);
+      yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      yield* adapter.stopSession(threadId);
+
+      // Even after ServerGone drops the stale generation's client, confirmThreadStopped
+      // falls back to querying the server instead of trusting ranHere.
+      yield* PubSub.publish(signals, {
+        _tag: "ServerGone",
+        generation: 1,
+        unexpected: false,
+        detail: "disconnected",
+      });
+      yield* Effect.sleep(Duration.millis(20));
+
+      const known = [
+        { sessionKey: threadId, resumeCursor: { schemaVersion: 1, sessionId: ROOT }, cwd },
+      ];
+      expect(yield* adapter.confirmThreadStopped!(threadId, known)).toEqual({
+        confirmed: false,
+        reason: "OpenCode still runs 1 shell in its folder",
+      });
+
+      shellRunning = false;
+      expect(yield* adapter.confirmThreadStopped!(threadId, known)).toEqual({ confirmed: true });
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live(
+    "does not duplicate text when a queued text.ended frame arrives after reconnect resync",
+    () =>
+      Effect.gen(function* () {
+        const now = Date.now();
+        const { adapter, signals, events, send, next, threadId, cwd } = yield* harnessWith({
+          "session.active": () => ({}),
+          "message.list": () => ({
+            data: [
+              { type: "idle", outcome: "succeeded", time: { created: now + 1000 } },
+              {
+                id: "msg_1",
+                type: "assistant",
+                time: { created: now + 500, completed: now + 900 },
+                content: [{ type: "text", text: "Hello once" }],
+              },
+            ],
+            cursor: {},
+          }),
+        });
+        yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+        yield* adapter.sendTurn({ threadId, messageId: MessageId.make("m1"), input: "hi" });
+        yield* send("session.execution.started", { sessionID: ROOT });
+        yield* send("session.inbox.delivered", { sessionID: ROOT, inboxID: "msg_tl_m1" });
+
+        yield* PubSub.publish(signals, { _tag: "StreamOpened", generation: 1 });
+        const itemCompleted = yield* next(
+          (event) => event.type === "item.completed" && event.itemId === "msg_1:text:0",
+        );
+        expect(itemCompleted.payload).toMatchObject({
+          itemType: "assistant_message",
+          detail: "Hello once",
+        });
+        const completed = yield* next((event) => event.type === "turn.completed");
+        expect(completed.payload).toMatchObject({ state: "completed" });
+
+        // Drain any prior events, then replay a queued text.ended for the same block.
+        yield* Effect.sleep(Duration.millis(20));
+        yield* Queue.clear(events);
+        yield* send("session.text.ended", {
+          sessionID: ROOT,
+          assistantMessageID: "msg_1",
+          ordinal: 0,
+          text: "Hello once",
+        });
+        yield* Effect.sleep(Duration.millis(30));
+        const extra = yield* Queue.clear(events);
+        expect(extra.filter((event) => event.type === "item.completed")).toHaveLength(0);
+        expect(extra.filter((event) => event.type === "content.delta")).toHaveLength(0);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });

@@ -173,7 +173,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         promptSuggestions: ({ settings: effectiveSettings, environment, getSnapshot }) => {
           const isAllowed = (targetModelName: string | undefined) =>
             Effect.gen(function* () {
-              const on = yield* serverSettings.getSettings.pipe(
+              const on = yield* serverSettings.readStored.pipe(
                 Effect.map((current) => current.antigravitySuggestions),
                 Effect.orElseSucceed(() => false),
               );

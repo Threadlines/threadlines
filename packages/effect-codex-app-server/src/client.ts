@@ -38,6 +38,10 @@ export interface CodexAppServerClientOptions {
   readonly logger?: (
     event: CodexProtocol.CodexAppServerProtocolLogEvent,
   ) => Effect.Effect<void, never>;
+  /** Set `false` when using handlers without reading `raw.notifications`. */
+  readonly bufferNotifications?: boolean;
+  /** Set `false` when using handlers without reading `raw.requests`. */
+  readonly bufferRequests?: boolean;
 }
 
 interface CodexAppServerClientRaw {
@@ -165,6 +169,9 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     const handlers = notificationHandlers.get(notification.method) ?? [];
 
     if (schema) {
+      if (handlers.length === 0) {
+        return Effect.void;
+      }
       return decodeNotificationPayload(notification.method, schema, notification.params).pipe(
         Effect.map((decoded) => ({ decoded: true as const, value: decoded })),
         Effect.catch(() =>
@@ -239,6 +246,10 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.bufferNotifications !== undefined
+      ? { bufferNotifications: options.bufferNotifications }
+      : {}),
+    ...(options.bufferRequests !== undefined ? { bufferRequests: options.bufferRequests } : {}),
     onNotification: dispatchNotification,
     onRequest: dispatchRequest,
   });

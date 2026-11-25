@@ -16,34 +16,49 @@ const ACP_STREAM_FRAGMENT_SESSION_UPDATES = new Set<string>([
 function isAcpStreamFragmentRecord(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as {
+    readonly _tag?: unknown;
+    readonly tag?: unknown;
     readonly method?: unknown;
     readonly params?: { readonly update?: { readonly sessionUpdate?: unknown } };
+    readonly payload?: { readonly update?: { readonly sessionUpdate?: unknown } };
   };
-  if (record.method !== "session/update") return false;
-  const sessionUpdate = record.params?.update?.sessionUpdate;
+  let sessionUpdate: unknown;
+  if (record.method === "session/update") {
+    sessionUpdate = record.params?.update?.sessionUpdate;
+  } else if (record._tag === "Request" && record.tag === "session/update") {
+    sessionUpdate = record.payload?.update?.sessionUpdate;
+  } else {
+    return false;
+  }
   return (
     typeof sessionUpdate === "string" && ACP_STREAM_FRAGMENT_SESSION_UPDATES.has(sessionUpdate)
   );
+}
+
+const MAX_BUFFERED_RAW_LINE_CHARS = 2 * 1024 * 1024;
+
+function isRawStreamFragmentLine(line: string): boolean {
+  if (!line.includes('"agent_message_chunk"') && !line.includes('"agent_thought_chunk"')) {
+    return false;
+  }
+  try {
+    return isAcpStreamFragmentRecord(JSON.parse(line) as unknown);
+  } catch {
+    return false;
+  }
 }
 
 function isAcpProtocolStreamFragment(event: EffectAcpProtocol.AcpProtocolLogEvent): boolean {
   if (event.direction !== "incoming") return false;
   const payload = event.payload;
   if (event.stage === "raw" && typeof payload === "string") {
-    if (!payload.includes('"agent_message_chunk"') && !payload.includes('"agent_thought_chunk"')) {
-      return false;
-    }
     const lines = payload.split("\n");
     let sawLine = false;
     for (const rawLine of lines) {
       const line = rawLine.trim();
       if (line.length === 0) continue;
       sawLine = true;
-      try {
-        if (!isAcpStreamFragmentRecord(JSON.parse(line) as unknown)) {
-          return false;
-        }
-      } catch {
+      if (!isRawStreamFragmentLine(line)) {
         return false;
       }
     }
@@ -66,10 +81,16 @@ function writeNativeAcpLog(input: {
   readonly payload: unknown;
   readonly streamFragment?: boolean;
 }): Effect.Effect<void, never> {
+  if (
+    !input.nativeEventLogger ||
+    (input.streamFragment === true && input.nativeEventLogger.keepsStreamFragments === false)
+  ) {
+    return Effect.void;
+  }
+  const logger = input.nativeEventLogger;
   return Effect.gen(function* () {
-    if (!input.nativeEventLogger) return;
     const observedAt = DateTime.formatIso(yield* DateTime.now);
-    yield* input.nativeEventLogger.write(
+    yield* logger.write(
       {
         observedAt,
         event: {
@@ -99,10 +120,21 @@ const BEARER_TOKEN = /Bearer\s+[^\s"\\]+/gu;
  */
 export function redactAcpLogCredentials(value: unknown): unknown {
   if (typeof value === "string") {
-    return value.replace(BEARER_TOKEN, "Bearer [redacted]");
+    return value.includes("Bearer") ? value.replace(BEARER_TOKEN, "Bearer [redacted]") : value;
   }
   if (Array.isArray(value)) {
-    return value.map(redactAcpLogCredentials);
+    let next: Array<unknown> | undefined;
+    for (let index = 0; index < value.length; index += 1) {
+      const entry = value[index];
+      const redacted = redactAcpLogCredentials(entry);
+      if (redacted !== entry) {
+        next ??= value.slice(0, index);
+      }
+      if (next !== undefined) {
+        next.push(redacted);
+      }
+    }
+    return next ?? value;
   }
   if (typeof value === "object" && value !== null) {
     const record = value as Record<string, unknown>;
@@ -113,9 +145,26 @@ export function redactAcpLogCredentials(value: unknown): unknown {
     ) {
       return { ...record, value: "[redacted]" };
     }
-    return Object.fromEntries(
-      Object.entries(record).map(([key, entry]) => [key, redactAcpLogCredentials(entry)]),
-    );
+    const keys = Object.keys(record);
+    let result: Record<string, unknown> | undefined;
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index]!;
+      const entry = record[key];
+      const redacted = redactAcpLogCredentials(entry);
+      if (redacted !== entry) {
+        if (result === undefined) {
+          result = {};
+          for (let prev = 0; prev < index; prev += 1) {
+            const prevKey = keys[prev]!;
+            result[prevKey] = record[prevKey];
+          }
+        }
+      }
+      if (result !== undefined) {
+        result[key] = redacted;
+      }
+    }
+    return result ?? value;
   }
   return value;
 }
@@ -135,35 +184,100 @@ export function makeAcpNativeLoggers(input: {
   readonly provider: ProviderDriverKind;
   readonly threadId: ThreadId;
 }): Pick<AcpSessionRuntimeOptions, "requestLogger" | "protocolLogging"> {
+  if (!input.nativeEventLogger) {
+    return {};
+  }
+  const nativeEventLogger = input.nativeEventLogger;
+  const dropFragments = nativeEventLogger.keepsStreamFragments === false;
+  let rawIncomingRemainder = "";
   return {
     requestLogger: (event) =>
       writeNativeAcpLog({
-        nativeEventLogger: input.nativeEventLogger,
+        nativeEventLogger,
         provider: input.provider,
         threadId: input.threadId,
         kind: "request",
         payload: formatRequestLogPayload(event),
       }),
-    ...(input.nativeEventLogger
-      ? {
-          protocolLogging: {
-            logIncoming: true,
-            logOutgoing: true,
-            logger: (event: EffectAcpProtocol.AcpProtocolLogEvent) =>
-              writeNativeAcpLog({
-                nativeEventLogger: input.nativeEventLogger,
+    protocolLogging: {
+      logIncoming: true,
+      logOutgoing: true,
+      logger: (event: EffectAcpProtocol.AcpProtocolLogEvent) => {
+        if (dropFragments && event.direction === "incoming") {
+          if (event.stage === "raw" && typeof event.payload === "string") {
+            const combined = rawIncomingRemainder + event.payload;
+            const newlineIndex = combined.lastIndexOf("\n");
+            if (newlineIndex === -1) {
+              if (combined.length > MAX_BUFFERED_RAW_LINE_CHARS) {
+                rawIncomingRemainder = "";
+                return writeNativeAcpLog({
+                  nativeEventLogger,
+                  provider: input.provider,
+                  threadId: input.threadId,
+                  kind: "protocol",
+                  payload: { ...event, payload: combined },
+                });
+              }
+              rawIncomingRemainder = combined;
+              return Effect.void;
+            }
+            const complete = combined.slice(0, newlineIndex + 1);
+            rawIncomingRemainder = combined.slice(newlineIndex + 1);
+            const keptLines: Array<string> = [];
+            for (const rawLine of complete.split("\n")) {
+              const line = rawLine.trim();
+              if (line.length === 0) continue;
+              if (!isRawStreamFragmentLine(line)) {
+                keptLines.push(rawLine);
+              }
+            }
+            if (keptLines.length === 0) {
+              return Effect.void;
+            }
+            return writeNativeAcpLog({
+              nativeEventLogger,
+              provider: input.provider,
+              threadId: input.threadId,
+              kind: "protocol",
+              payload: { ...event, payload: `${keptLines.join("\n")}\n` },
+            });
+          }
+          if (event.stage === "decoded") {
+            if (Array.isArray(event.payload)) {
+              const kept = event.payload.filter((item) => !isAcpStreamFragmentRecord(item));
+              if (kept.length === 0) {
+                return Effect.void;
+              }
+              return writeNativeAcpLog({
+                nativeEventLogger,
                 provider: input.provider,
                 threadId: input.threadId,
                 kind: "protocol",
-                // Only what Threadlines sends can carry its credential.
-                payload:
-                  event.direction === "outgoing"
-                    ? { ...event, payload: redactAcpLogCredentials(event.payload) }
-                    : event,
-                streamFragment: isAcpProtocolStreamFragment(event),
-              }),
-          } satisfies NonNullable<AcpSessionRuntimeOptions["protocolLogging"]>,
+                payload: kept.length === event.payload.length ? event : { ...event, payload: kept },
+              });
+            }
+            if (isAcpStreamFragmentRecord(event.payload)) {
+              return Effect.void;
+            }
+          }
         }
-      : {}),
+        const streamFragment = isAcpProtocolStreamFragment(event);
+        if (streamFragment && dropFragments) {
+          return Effect.void;
+        }
+        return writeNativeAcpLog({
+          nativeEventLogger,
+          provider: input.provider,
+          threadId: input.threadId,
+          kind: "protocol",
+          // Only what Threadlines sends can carry its credential.
+          payload:
+            event.direction === "outgoing"
+              ? { ...event, payload: redactAcpLogCredentials(event.payload) }
+              : event,
+          streamFragment,
+        });
+      },
+    } satisfies NonNullable<AcpSessionRuntimeOptions["protocolLogging"]>,
   };
 }

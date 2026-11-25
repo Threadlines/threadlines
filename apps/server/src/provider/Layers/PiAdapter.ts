@@ -660,6 +660,11 @@ export function makePiAdapter(options: PiAdapterOptions) {
         if (ctx.activeTurn !== turn) return;
         yield* closeMessage(ctx, terminal.kind !== "completed");
         yield* closeOpenTools(ctx, turn.turnId, terminal.kind !== "completed");
+        for (const [key, state] of ctx.tools) {
+          if (state.turnId === turn.turnId && state.completed) {
+            ctx.tools.delete(key);
+          }
+        }
         yield* dropPendingDialogs(ctx, turn.turnId);
         // Once the turn stops being active its completion is published, even
         // if the process closes meanwhile (a revert restarting Pi).
@@ -985,12 +990,12 @@ export function makePiAdapter(options: PiAdapterOptions) {
         }
         if (event.type !== "tool_execution_end") return;
         state.completed = true;
-        const resultText = JSON.stringify(event.result?.content ?? "");
+        const failed = event.isError === true;
+        const resultText = failed ? JSON.stringify(event.result?.content ?? "") : "";
         const declined =
-          event.isError === true &&
+          failed &&
           (resultText.includes("was not approved in Threadlines") ||
             resultText.includes(PI_PLAN_MODE_REASON.slice(0, 30)));
-        const failed = event.isError === true;
         if (state.identity.kind === "shell") {
           const output = piCommandOutput(event.result);
           if (output.startsWith(state.streamed) && output.length > state.streamed.length) {
@@ -1025,6 +1030,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
             }),
           },
         });
+        state.args = undefined;
+        state.streamed = "";
       });
 
     // ── Dialogs: approvals and questions ─────────────────────────────────

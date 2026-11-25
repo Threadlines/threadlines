@@ -989,4 +989,90 @@ describe("MuseAdapter", () => {
       expect(allowed.hosts[0]!.calls.some((call) => call.method === "session/start")).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
+
+  it.effect(
+    "deduplicates replayed text deltas after an equal-revision snapshot and still publishes non-shell tool output",
+    () =>
+      Effect.gen(function* () {
+        const { hosts, events, nextEvent, start, send } = yield* setup();
+        yield* start();
+        const turn = yield* send("hi");
+        const host = hosts[0]!;
+        yield* host.notify("turn/started", { sessionId: SESSION, turnId: turn.turnId });
+        yield* host.notify("item/started", {
+          sessionId: SESSION,
+          item: {
+            itemId: "msg-gap",
+            kind: "agentMessage",
+            revision: 1,
+            status: "inProgress",
+            turnId: turn.turnId,
+            text: "",
+          },
+        });
+        yield* host.notify("item/delta", {
+          sessionId: SESSION,
+          itemId: "msg-gap",
+          delta: "Hello",
+          field: "text",
+        });
+        const first = yield* nextEvent((event) => event.type === "content.delta");
+        expect(first.type === "content.delta" && first.payload.delta).toBe("Hello");
+
+        // Equal-revision snapshot carries older prefix "He", followed by replayed "llo" and fresh "!".
+        yield* host.notify("item/updated", {
+          sessionId: SESSION,
+          item: {
+            itemId: "msg-gap",
+            kind: "agentMessage",
+            revision: 1,
+            status: "inProgress",
+            turnId: turn.turnId,
+            text: "He",
+          },
+        });
+        yield* host.notify("item/delta", {
+          sessionId: SESSION,
+          itemId: "msg-gap",
+          delta: "llo",
+          field: "text",
+        });
+        yield* host.notify("item/delta", {
+          sessionId: SESSION,
+          itemId: "msg-gap",
+          delta: "!",
+          field: "text",
+        });
+        const nextDelta = yield* nextEvent((event) => event.type === "content.delta");
+        expect(nextDelta.type === "content.delta" && nextDelta.payload.delta).toBe("!");
+
+        // Non-shell tool visibleOutput delta still emits live item.updated with data.result.
+        yield* host.notify("item/started", {
+          sessionId: SESSION,
+          item: {
+            itemId: "read-1",
+            kind: "toolCall",
+            toolName: "read_file",
+            revision: 1,
+            status: "inProgress",
+            turnId: turn.turnId,
+            args: JSON.stringify({ path: "README.md" }),
+          },
+        });
+        yield* nextEvent((event) => event.type === "item.started" && event.itemId === "read-1");
+        yield* Queue.clear(events);
+        yield* host.notify("item/delta", {
+          sessionId: SESSION,
+          itemId: "read-1",
+          delta: "line 1\n",
+          field: "visibleOutput",
+        });
+        const updated = yield* nextEvent(
+          (event) => event.type === "item.updated" && event.itemId === "read-1",
+        );
+        expect(updated.type === "item.updated" && updated.payload.data).toMatchObject({
+          result: "line 1\n",
+        });
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
 });

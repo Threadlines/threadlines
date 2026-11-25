@@ -49,8 +49,9 @@ export function decodeExtRequestRegistration<A, I>(
   payload: Schema.Codec<A, I>,
   handler: (payload: A) => Effect.Effect<unknown, AcpError.AcpError>,
 ) {
+  const decode = Schema.decodeUnknownEffect(payload);
   return (params: unknown): Effect.Effect<unknown, AcpError.AcpError> =>
-    Schema.decodeUnknownEffect(payload)(params).pipe(
+    decode(params).pipe(
       Effect.mapError((error) =>
         AcpError.AcpRequestError.invalidParams(
           `Invalid ${method} payload: ${formatSchemaIssue(error.issue)}`,
@@ -66,8 +67,9 @@ export function decodeExtNotificationRegistration<A, I>(
   payload: Schema.Codec<A, I>,
   handler: (payload: A) => Effect.Effect<void, AcpError.AcpError>,
 ) {
+  const decode = Schema.decodeUnknownEffect(payload);
   return (params: unknown): Effect.Effect<void, AcpError.AcpError> =>
-    Schema.decodeUnknownEffect(payload)(params).pipe(
+    decode(params).pipe(
       Effect.mapError(
         (error) =>
           new AcpError.AcpProtocolParseError({

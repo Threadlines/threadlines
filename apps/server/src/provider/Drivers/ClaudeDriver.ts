@@ -642,13 +642,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         // Read live, so turning Claude artifacts off stops a running
         // session's next upload. Unreadable settings count as off.
-        artifactsAllowed: serverSettings.getSettings.pipe(
+        artifactsAllowed: serverSettings.readStored.pipe(
           Effect.map((settings) => settings.enableAgentPages && settings.enableClaudeArtifacts),
           Effect.orElseSucceed(() => false),
         ),
         // Read live too, so a size chosen in Settings applies from the next
         // message. Unreadable settings leave Claude's own default.
-        workflowSize: serverSettings.getSettings.pipe(
+        workflowSize: serverSettings.readStored.pipe(
           Effect.map((settings) => settings.claudeWorkflowSize),
           Effect.orElseSucceed(() => "default" as const),
         ),
@@ -673,7 +673,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             return yield* Cache.get(launchVersionCache, statKey);
           }),
         // Read live as well. Unreadable settings leave Claude's own rule.
-        suggestionsWhenUsageRunsFast: serverSettings.getSettings.pipe(
+        suggestionsWhenUsageRunsFast: serverSettings.readStored.pipe(
           Effect.map((settings) => settings.claudeSuggestionsWhenUsageRunsFast),
           Effect.orElseSucceed(() => false),
         ),

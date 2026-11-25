@@ -285,7 +285,6 @@ import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { estimatePartialFileChangeStat } from "./claudePartialToolInput.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
-const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
 const COMPACT_CONTEXT_COMMAND = "/compact";
@@ -481,6 +480,79 @@ interface PendingUserInput {
   readonly elicitation?: McpElicitation;
 }
 
+interface PartialJsonScanState {
+  readonly startedObject: boolean;
+  readonly braceDepth: number;
+  readonly inString: boolean;
+  readonly escaped: boolean;
+  readonly complete: boolean;
+  readonly invalid: boolean;
+}
+
+const INITIAL_PARTIAL_JSON_SCAN: PartialJsonScanState = {
+  startedObject: false,
+  braceDepth: 0,
+  inString: false,
+  escaped: false,
+  complete: false,
+  invalid: false,
+};
+
+function advancePartialJsonScan(
+  previous: PartialJsonScanState | undefined,
+  chunk: string,
+): PartialJsonScanState {
+  const base = previous ?? INITIAL_PARTIAL_JSON_SCAN;
+  if (base.invalid || chunk.length === 0) return base;
+  let { startedObject, braceDepth, inString, escaped, complete } = base;
+  let invalid: boolean = base.invalid;
+  for (let index = 0; index < chunk.length; index += 1) {
+    const code = chunk.charCodeAt(index);
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (code === 92) {
+        escaped = true;
+      } else if (code === 34) {
+        inString = false;
+      }
+      continue;
+    }
+    if (!startedObject) {
+      if (code === 32 || code === 9 || code === 10 || code === 13) continue;
+      if (code === 123) {
+        startedObject = true;
+        braceDepth = 1;
+        complete = false;
+      } else {
+        invalid = true;
+        break;
+      }
+      continue;
+    }
+    if (complete) {
+      if (code === 32 || code === 9 || code === 10 || code === 13) continue;
+      complete = false;
+      invalid = true;
+      break;
+    }
+    if (code === 34) {
+      inString = true;
+    } else if (code === 123) {
+      braceDepth += 1;
+    } else if (code === 125) {
+      braceDepth -= 1;
+      if (braceDepth === 0) {
+        complete = true;
+      } else if (braceDepth < 0) {
+        invalid = true;
+        break;
+      }
+    }
+  }
+  return { startedObject, braceDepth, inString, escaped, complete, invalid };
+}
+
 interface ToolInFlight {
   readonly itemId: string;
   readonly itemType: CanonicalItemType;
@@ -489,6 +561,7 @@ interface ToolInFlight {
   readonly detail?: string;
   readonly input: Record<string, unknown>;
   readonly partialInputJson: string;
+  readonly partialInputScan?: PartialJsonScanState;
   readonly lastEmittedInputFingerprint?: string;
   /** Throttle marker for streamed file-change estimates: last emitted +/-
    *  counts and when, so unchanged counts and sub-interval deltas are
@@ -3894,14 +3967,14 @@ function tryParseJsonRecord(value: string): Record<string, unknown> | undefined 
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
     return undefined;
   }
-  const result = decodeUnknownJsonStringExit(trimmed);
-  if (!Exit.isSuccess(result)) {
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
     return undefined;
   }
-  const parsed = result.value;
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : undefined;
 }
 
 function toolInputFingerprint(input: Record<string, unknown>): string | undefined {
@@ -4516,7 +4589,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
-  const logNativeSdkMessage = Effect.fn("logNativeSdkMessage")(function* (
+  const logNativeSdkMessage = Effect.fnUntraced(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
   ) {
@@ -4524,9 +4597,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    const method = sdkNativeMethod(message);
+    const streamFragment = SDK_STREAM_FRAGMENT_METHODS.has(method);
+    if (streamFragment && nativeEventLogger.keepsStreamFragments === false) {
+      return;
+    }
+
     const observedAt = yield* nowIso;
     const itemId = sdkNativeItemId(message);
-    const method = sdkNativeMethod(message);
 
     yield* nativeEventLogger.write(
       {
@@ -4553,7 +4631,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       },
       context.session.threadId,
-      { streamFragment: SDK_STREAM_FRAGMENT_METHODS.has(method) },
+      { streamFragment },
     );
   });
 
@@ -4575,9 +4653,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
-  const updateResumeCursor = Effect.fn("updateResumeCursor")(function* (
-    context: ClaudeSessionContext,
-  ) {
+  const updateResumeCursor = Effect.fnUntraced(function* (context: ClaudeSessionContext) {
     const threadId = context.session.threadId;
     if (!threadId) return;
 
@@ -4598,7 +4674,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
-  const ensureAssistantTextBlock = Effect.fn("ensureAssistantTextBlock")(function* (
+  const ensureAssistantTextBlock = Effect.fnUntraced(function* (
     context: ClaudeSessionContext,
     blockIndex: number,
     options?: {
@@ -4732,7 +4808,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   /** Opens a thinking block's reasoning item, once per block. From here until
    *  the block stops, the working row says "Thinking", whether or not any
    *  summary text ever arrives. */
-  const ensureThinkingBlock = Effect.fn("ensureThinkingBlock")(function* (
+  const ensureThinkingBlock = Effect.fnUntraced(function* (
     context: ClaudeSessionContext,
     blockIndex: number,
     rawPayload: unknown,
@@ -4854,7 +4930,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
   });
 
-  const ensureThreadId = Effect.fn("ensureThreadId")(function* (
+  const ensureThreadId = Effect.fnUntraced(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
   ) {
@@ -4865,6 +4941,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
     const nextThreadId = message.session_id;
+    if (context.resumeSessionId === nextThreadId && context.lastThreadStartedId === nextThreadId) {
+      return;
+    }
     context.resumeSessionId = message.session_id;
     yield* updateResumeCursor(context);
 
@@ -5196,7 +5275,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
    * the partial buffer. The estimate rides the same `data.changes` shape as
    * the exact PostToolUse stat, which replaces it at completion.
    */
-  const emitPartialFileChangeProgress = Effect.fn("emitPartialFileChangeProgress")(function* (
+  const emitPartialFileChangeProgress = Effect.fnUntraced(function* (
     context: ClaudeSessionContext,
     blockIndex: number,
     tool: ToolInFlight,
@@ -5342,7 +5421,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
-  const handleStreamEvent = Effect.fn("handleStreamEvent")(function* (
+  const handleStreamEvent = Effect.fnUntraced(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
   ) {
@@ -5443,13 +5522,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
 
         const partialInputJson = tool.partialInputJson + event.delta.partial_json;
-        const parsedInput = tryParseJsonRecord(partialInputJson);
+        const partialInputScan = advancePartialJsonScan(
+          tool.partialInputScan,
+          event.delta.partial_json,
+        );
+        const parsedInput =
+          partialInputScan.complete && !partialInputScan.invalid
+            ? tryParseJsonRecord(partialInputJson)
+            : undefined;
         const detail = parsedInput
           ? summarizeToolRequest(tool.toolName, parsedInput, { cwd: context.session.cwd })
           : tool.detail;
         let nextTool: ToolInFlight = {
           ...tool,
           partialInputJson,
+          partialInputScan,
           ...(parsedInput ? { input: parsedInput } : {}),
           ...(detail ? { detail } : {}),
         };
@@ -8307,7 +8394,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
-  const handleSdkMessage = Effect.fn("handleSdkMessage")(function* (
+  const handleSdkMessage = Effect.fnUntraced(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
   ) {

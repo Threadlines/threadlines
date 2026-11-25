@@ -187,9 +187,10 @@ export interface AcpSessionRuntimeOptions {
   /**
    * Also hand the reader a tool call update that shows nothing new but
    * changes what the call would do (`toolCallSubstance`) as
-   * `ToolCallRevised`, for a client with approvals open.
+   * `ToolCallRevised`, for a client with approvals open. Passing a predicate
+   * skips serializing tool call substance when no approval is open for that call.
    */
-  readonly reportRevisedToolCalls?: boolean;
+  readonly reportRevisedToolCalls?: boolean | ((toolCallId: string) => boolean);
   /**
    * Text the agent appends when a prompt is cancelled. A reply chunk that is
    * just this text comes as `CancellationNotice`, before it starts a
@@ -592,6 +593,7 @@ const makeAcpSessionRuntime = (
 
     const acpContext = yield* Layer.build(
       EffectAcpClient.layerChildProcess(child, {
+        bufferNotifications: false,
         ...(options.protocolLogging?.logIncoming !== undefined
           ? { logIncoming: options.protocolLogging.logIncoming }
           : {}),
@@ -669,7 +671,9 @@ const makeAcpSessionRuntime = (
           ...(nativeControls ? { configOptionsRef } : {}),
           ...(options.normalizeToolCall ? { normalizeToolCall: options.normalizeToolCall } : {}),
           ...(options.trackSilentToolCalls ? { trackSilentToolCalls: true } : {}),
-          ...(options.reportRevisedToolCalls ? { reportRevisedToolCalls: true } : {}),
+          ...(options.reportRevisedToolCalls !== undefined
+            ? { reportRevisedToolCalls: options.reportRevisedToolCalls }
+            : {}),
           ...(options.cancellationNotice !== undefined
             ? { cancellationNotice: options.cancellationNotice }
             : {}),
@@ -1380,9 +1384,10 @@ const handleSessionUpdate = ({
   /**
    * Also hand the reader a tool call update that shows nothing new but
    * changes what the call would do (`toolCallSubstance`) as
-   * `ToolCallRevised`, for a client with approvals open.
+   * `ToolCallRevised`, for a client with approvals open. Passing a predicate
+   * skips serializing tool call substance when no approval is open for that call.
    */
-  readonly reportRevisedToolCalls?: boolean;
+  readonly reportRevisedToolCalls?: boolean | ((toolCallId: string) => boolean);
   readonly cancellationNotice?: string;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -1434,7 +1439,11 @@ const handleSessionUpdate = ({
           if (trackSilentToolCalls) {
             yield* Queue.offer(queue, { _tag: "ToolCallTracked", toolCall: merged });
           }
-          if (reportRevisedToolCalls && toolCallSubstance(previous) !== toolCallSubstance(merged)) {
+          const shouldReportRevised =
+            typeof reportRevisedToolCalls === "function"
+              ? reportRevisedToolCalls(merged.toolCallId)
+              : reportRevisedToolCalls === true;
+          if (shouldReportRevised && toolCallSubstance(previous) !== toolCallSubstance(merged)) {
             yield* Queue.offer(queue, { _tag: "ToolCallRevised", toolCall: merged });
           }
           continue;

@@ -434,6 +434,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     const stoppedWork = new Map<
       ThreadId,
       {
+        readonly generation: number;
         readonly client: OpenCodeClient;
         readonly directory: string;
         readonly sessionIds: ReadonlyArray<string>;
@@ -450,10 +451,22 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     const owners = new Map<string, SessionContext>();
     /** Which session registered each Threadlines tool server, so a stale stop never removes a newer one. */
     const toolServerOwners = new Map<string, SessionContext>();
-    const agentCache = new Map<string, ReadonlyArray<AgentInfo>>();
-    const modelCache = new Map<string, ReadonlyArray<ModelInfo>>();
-    const mcpServerCache = new Map<string, ReadonlyArray<string>>();
-    const commandCache = new Map<string, ReadonlySet<string>>();
+    const agentCache = new Map<
+      string,
+      { readonly generation: number; readonly value: ReadonlyArray<AgentInfo> }
+    >();
+    const modelCache = new Map<
+      string,
+      { readonly generation: number; readonly value: ReadonlyArray<ModelInfo> }
+    >();
+    const mcpServerCache = new Map<
+      string,
+      { readonly generation: number; readonly value: ReadonlyArray<string> }
+    >();
+    const commandCache = new Map<
+      string,
+      { readonly generation: number; readonly value: ReadonlySet<string> }
+    >();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const stamp = Effect.all({
@@ -522,10 +535,12 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         Effect.catch((error) => (error === "empty" ? Effect.succeed([]) : Effect.fail(error))),
       );
 
-    const loadAgents = (client: OpenCodeClient, directory: string) =>
+    const loadAgents = (client: OpenCodeClient, directory: string, generation: number) =>
       Effect.gen(function* () {
         const cached = agentCache.get(directory);
-        if (cached && cached.length > 0) return cached;
+        if (cached && cached.generation === generation && cached.value.length > 0) {
+          return cached.value;
+        }
         const agents = yield* loadNonEmpty(
           runOpenCode("agent.list", (signal) =>
             client.agent.list({ location: { directory } }, { signal }),
@@ -539,14 +554,18 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             ),
           ),
         );
-        if (agents.length > 0) agentCache.set(directory, agents);
+        if (agents.length > 0 && (agentCache.get(directory)?.generation ?? -1) <= generation) {
+          agentCache.set(directory, { generation, value: agents });
+        }
         return agents;
       });
 
-    const loadModels = (client: OpenCodeClient, directory: string) =>
+    const loadModels = (client: OpenCodeClient, directory: string, generation: number) =>
       Effect.gen(function* () {
         const cached = modelCache.get(directory);
-        if (cached && cached.length > 0) return cached;
+        if (cached && cached.generation === generation && cached.value.length > 0) {
+          return cached.value;
+        }
         const models = yield* loadNonEmpty(
           runOpenCode("model.list", (signal) =>
             client.model.list({ location: { directory } }, { signal }),
@@ -559,38 +578,48 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             ),
           ),
         );
-        if (models.length > 0) modelCache.set(directory, models);
+        if (models.length > 0 && (modelCache.get(directory)?.generation ?? -1) <= generation) {
+          modelCache.set(directory, { generation, value: models });
+        }
         return models;
       });
 
-    const loadMcpServers = (client: OpenCodeClient, directory: string) =>
+    const loadMcpServers = (client: OpenCodeClient, directory: string, generation: number) =>
       runOpenCode("mcp.list", (signal) =>
         client.mcp.list({ location: { directory } }, { signal }),
       ).pipe(
         Effect.map((result) => (result.data ?? []).map((server) => server.name)),
-        Effect.tap((names) => Effect.sync(() => mcpServerCache.set(directory, names))),
-        Effect.orElseSucceed(() => mcpServerCache.get(directory) ?? []),
+        Effect.tap((names) =>
+          Effect.sync(() => {
+            if ((mcpServerCache.get(directory)?.generation ?? -1) <= generation) {
+              mcpServerCache.set(directory, { generation, value: names });
+            }
+          }),
+        ),
+        Effect.orElseSucceed(() => mcpServerCache.get(directory)?.value ?? []),
       );
 
     /** The project's slash commands (`/init`, `/review`, the user's own). */
-    const loadCommands = (client: OpenCodeClient, directory: string) =>
+    const loadCommands = (client: OpenCodeClient, directory: string, generation: number) =>
       Effect.gen(function* () {
         const cached = commandCache.get(directory);
-        if (cached) return cached;
+        if (cached && cached.generation === generation) return cached.value;
         const names = yield* runOpenCode("command.list", (signal) =>
           client.command.list({ location: { directory } }, { signal }),
         ).pipe(
           Effect.map((result) => new Set((result.data ?? []).map((command) => command.name))),
           Effect.orElseSucceed(() => new Set<string>()),
         );
-        if (names.size > 0) commandCache.set(directory, names);
+        if (names.size > 0 && (commandCache.get(directory)?.generation ?? -1) <= generation) {
+          commandCache.set(directory, { generation, value: names });
+        }
         return names;
       });
 
     const contextLimitFor = (ctx: SessionContext, model: OpenCodeModelRef | undefined) =>
       Effect.gen(function* () {
         if (!model) return undefined;
-        const models = yield* loadModels(ctx.client, ctx.directory).pipe(
+        const models = yield* loadModels(ctx.client, ctx.directory, ctx.generation).pipe(
           Effect.orElseSucceed(() => []),
         );
         return models.find(
@@ -601,7 +630,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
 
     const rulesFor = (ctx: SessionContext, agentId: string) =>
       Effect.gen(function* () {
-        const agents = yield* loadAgents(ctx.client, ctx.directory).pipe(
+        const agents = yield* loadAgents(ctx.client, ctx.directory, ctx.generation).pipe(
           Effect.orElseSucceed(() => []),
         );
         return openCodeSessionRules({
@@ -699,6 +728,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           if (child && block.text.trim()) child.lastText = block.text.trim();
         }
         const summary = block.text.trim();
+        block.text = "";
         yield* emit({
           type: "item.completed",
           ...(yield* eventBase(ctx, block.sessionId, block.turnId)),
@@ -722,7 +752,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     const toolStarted = (ctx: SessionContext, sessionId: string, callId: string, name: string) =>
       Effect.gen(function* () {
         if (ctx.tools.has(callId)) return ctx.tools.get(callId)!;
-        const identity = identifyOpenCodeTool(name, mcpServerCache.get(ctx.directory) ?? []);
+        const identity = identifyOpenCodeTool(name, mcpServerCache.get(ctx.directory)?.value ?? []);
         const tool: ToolCall = {
           callId,
           sessionId,
@@ -876,6 +906,10 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                   },
           },
         });
+        ctx.approvalPreviews.delete(tool.callId);
+        if (tool.identity.kind !== "subagent" && tool.identity.kind !== "shell") {
+          tool.input = undefined;
+        }
       });
 
     const closeTools = (ctx: SessionContext, sessionId: string, failed: boolean) =>
@@ -1046,6 +1080,51 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         yield* closeBlocks(ctx, ctx.rootSessionId);
         yield* closeTools(ctx, ctx.rootSessionId, terminal.kind !== "succeeded");
         yield* dropPendingRequests(ctx, ctx.rootSessionId);
+        // Retain the just-finished turn's tombstones so queued stream frames
+        // arriving after a reconnect resync still deduplicate and attach
+        // background shells, while capping older finished turns' tombstones.
+        const MAX_RETAINED_DONE_BLOCKS = 256;
+        const MAX_RETAINED_DONE_TOOLS = 256;
+        const evictableBlocks: Array<string> = [];
+        for (const [key, block] of ctx.blocks) {
+          if (block.sessionId === ctx.rootSessionId && block.done && block.turnId !== turn.turnId) {
+            evictableBlocks.push(key);
+          }
+        }
+        const blocksToDrop = evictableBlocks.length - MAX_RETAINED_DONE_BLOCKS;
+        for (let index = 0; index < blocksToDrop; index += 1) {
+          ctx.blocks.delete(evictableBlocks[index]!);
+        }
+        const activeShellCallIds = new Set(
+          [...ctx.backgroundShells.values()].map((shell) => shell.callId),
+        );
+        const evictableTools: Array<string> = [];
+        for (const [callId, tool] of ctx.tools) {
+          if (tool.sessionId === ctx.rootSessionId && tool.done) {
+            ctx.approvalPreviews.delete(callId);
+            if (
+              tool.turnId !== turn.turnId &&
+              tool.identity.kind !== "subagent" &&
+              !activeShellCallIds.has(callId)
+            ) {
+              evictableTools.push(callId);
+            }
+          }
+        }
+        const toolsToDrop = evictableTools.length - MAX_RETAINED_DONE_TOOLS;
+        if (toolsToDrop > 0) {
+          const prunedCallIds = new Set<string>();
+          for (let index = 0; index < toolsToDrop; index += 1) {
+            const callId = evictableTools[index]!;
+            ctx.tools.delete(callId);
+            prunedCallIds.add(callId);
+          }
+          for (const [shellId, callId] of ctx.shellCalls) {
+            if (prunedCallIds.has(callId) && !ctx.backgroundShells.has(shellId)) {
+              ctx.shellCalls.delete(shellId);
+            }
+          }
+        }
         ctx.activeTurn = undefined;
         ctx.turns.push({ id: turn.turnId, promptId: turn.promptId });
         const { activeTurnId: _active, ...session } = ctx.session;
@@ -1557,6 +1636,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           case "session.tool.failed": {
             const tool = ctx.tools.get(event.data.id);
             if (!tool) return;
+            ctx.approvalPreviews.delete(tool.callId);
             const type = event.data.error?.type;
             yield* toolFinished(ctx, tool, {
               failed: true,
@@ -1664,6 +1744,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           const shell = ctx.backgroundShells.get(event.data.id);
           if (!shell) continue;
           ctx.backgroundShells.delete(event.data.id);
+          ctx.shellCalls.delete(event.data.id);
           yield* emit({
             type: "task.completed",
             ...(yield* eventBase(ctx, ctx.rootSessionId, undefined)),
@@ -1747,6 +1828,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             const state = isRecord(part.state) ? part.state : {};
             const tool = yield* toolStarted(ctx, sessionId, part.id, part.name);
             if (
+              !tool.done &&
               tool.input === undefined &&
               state.input !== undefined &&
               typeof state.input !== "string"
@@ -1907,6 +1989,26 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               if (ctx.generation !== signal.generation) continue;
               yield* stopContext(ctx, signal.unexpected ? signal.detail : undefined);
             }
+            for (const [threadId, work] of stoppedWork) {
+              if (work.generation === signal.generation) {
+                stoppedWork.delete(threadId);
+                // Clear `ranHere` too so confirmThreadStopped falls back to
+                // asking the server (an external server may keep shells running).
+                ranHere.delete(threadId);
+              }
+            }
+            for (const [dir, entry] of agentCache) {
+              if (entry.generation <= signal.generation) agentCache.delete(dir);
+            }
+            for (const [dir, entry] of modelCache) {
+              if (entry.generation <= signal.generation) modelCache.delete(dir);
+            }
+            for (const [dir, entry] of mcpServerCache) {
+              if (entry.generation <= signal.generation) mcpServerCache.delete(dir);
+            }
+            for (const [dir, entry] of commandCache) {
+              if (entry.generation <= signal.generation) commandCache.delete(dir);
+            }
             return;
           case "Event": {
             const event = signal.event;
@@ -2043,7 +2145,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             ),
           );
         }
-        yield* loadMcpServers(ctx.client, ctx.directory);
+        yield* loadMcpServers(ctx.client, ctx.directory, ctx.generation);
       });
 
     const instructionsFor = (ctx: SessionContext, managedWorktree: boolean) =>
@@ -2541,7 +2643,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     const switchAgent = (ctx: SessionContext, agent: string) =>
       Effect.gen(function* () {
         if (ctx.agent === agent) return;
-        const agents = yield* loadAgents(ctx.client, ctx.directory).pipe(
+        const agents = yield* loadAgents(ctx.client, ctx.directory, ctx.generation).pipe(
           Effect.orElseSucceed(() => []),
         );
         // OpenCode accepts an unknown agent and then fails every run.
@@ -2599,7 +2701,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             // `/name args` runs one of the project's commands. OpenCode gives
             // a command no prompt id, so its turn has no fork or rollback point.
             const command = /^\/(\S+)(?:\s+([\s\S]*))?$/u.exec(content.text);
-            const commands = command ? yield* loadCommands(ctx.client, ctx.directory) : undefined;
+            const commands = command
+              ? yield* loadCommands(ctx.client, ctx.directory, ctx.generation)
+              : undefined;
             if (command && commands?.has(command[1]!)) {
               const turn = yield* beginTurn(ctx, {
                 turnId: TurnId.make(`cmd_${(yield* randomUUIDv4).replaceAll("-", "")}`),
@@ -3105,11 +3209,16 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             .map((child) => child.sessionId),
         ];
         if (running.length > 0 || ctx.backgroundShells.size > 0) {
+          const prev = stoppedWork.get(threadId);
+          const sameGen = prev !== undefined && prev.generation === ctx.generation;
           stoppedWork.set(threadId, {
+            generation: ctx.generation,
             client: ctx.client,
             directory: ctx.directory,
-            sessionIds: running,
-            shellIds: [...ctx.backgroundShells.keys()],
+            sessionIds: sameGen ? [...new Set([...prev.sessionIds, ...running])] : running,
+            shellIds: sameGen
+              ? [...new Set([...prev.shellIds, ...ctx.backgroundShells.keys()])]
+              : [...ctx.backgroundShells.keys()],
           });
         }
         yield* Effect.forEach(
@@ -3181,6 +3290,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           // Nothing promises a shell.exited after a removal: whichever of the
           // two takes the shell out of the map first ends the task, once.
           if (ctx.backgroundShells.delete(taskId)) {
+            ctx.shellCalls.delete(taskId);
             yield* emit({
               type: "task.completed",
               ...(yield* eventBase(ctx, ctx.rootSessionId, undefined)),

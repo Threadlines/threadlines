@@ -313,7 +313,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         // count from the next one. Unreadable settings make none.
         promptSuggestions: {
           shouldSuggest: Effect.gen(function* () {
-            const on = yield* serverSettings.getSettings.pipe(
+            const on = yield* serverSettings.readStored.pipe(
               Effect.map((settings) => settings.codexSuggestions),
               Effect.orElseSucceed(() => false),
             );
