@@ -48,9 +48,15 @@ import {
   readProviderInstructionFiles,
   readProviderExtensionsInventory,
   readProviderExtensionSkill,
+  readProviderExtensionPlugin,
   createProviderExtensionSkill,
   deleteProviderExtensionSkill,
+  removeProviderExtensionMcpServer,
+  saveProviderExtensionMcpServer,
+  setProviderExtensionMcpServerEnabled,
+  setProviderExtensionPluginEnabled,
   setProviderExtensionSkillEnabled,
+  uninstallProviderExtensionPlugin,
   parseClaudeEnabledPlugins,
   parseClaudeHooks,
   parseSkillFrontMatter,
@@ -3644,6 +3650,154 @@ Per-component (rounded)
           stateDir,
         }).pipe(Effect.flip);
         assert.match(agyProjError.message, /does not support toggling/i);
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+    },
+  );
+
+  it.effect(
+    "manages Antigravity per-profile plugins and MCP servers without touching ~/.gemini/config",
+    () => {
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
+      );
+
+      return Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "threadlines-agy-mcp-plugins-" });
+        const fakeHome = path.join(root, "home");
+        const stateDir = path.join(root, "state");
+        const project = path.join(root, "project");
+        const userGeminiConfig = path.join(fakeHome, ".gemini", "config");
+        yield* fs.makeDirectory(userGeminiConfig, { recursive: true });
+        yield* fs.makeDirectory(path.join(project, ".git"), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(userGeminiConfig, "mcp_config.json"),
+          JSON.stringify({
+            mcpServers: { external: { serverUrl: "https://external.example/mcp" } },
+          }),
+        );
+
+        const settings = yield* Schema.decodeUnknownEffect(ServerSettings)({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: false },
+          },
+          providerInstances: {
+            antigravity: {
+              driver: "antigravity",
+              displayName: "Antigravity",
+              enabled: true,
+              environment: [{ name: "HOME", value: fakeHome }],
+              config: { enabled: true },
+            },
+          },
+        });
+        const instanceId = ProviderInstanceId.make("antigravity");
+
+        // Save an OAuth MCP server (PostHog) and a Streamable HTTP server into the profile.
+        yield* saveProviderExtensionMcpServer({
+          request: {
+            providerInstanceId: instanceId,
+            name: "posthog",
+            mode: "oauth",
+            url: "https://mcp.posthog.com/mcp",
+          },
+          settings,
+          stateDir,
+        });
+        yield* saveProviderExtensionMcpServer({
+          request: {
+            providerInstanceId: instanceId,
+            name: "internal",
+            mode: "http",
+            url: "https://api.example.com/mcp",
+            headers: { Authorization: "Bearer secret-123" },
+          },
+          settings,
+          stateDir,
+        });
+
+        // Verify ~/.gemini/config/mcp_config.json stayed untouched and isolated.
+        const userMcpRaw = yield* fs.readFileString(path.join(userGeminiConfig, "mcp_config.json"));
+        assert.isFalse(userMcpRaw.includes("posthog"));
+        assert.isTrue(userMcpRaw.includes("external"));
+
+        const inventory = yield* readProviderExtensionsInventory({
+          request: { cwd: project, providerInstanceId: instanceId, includePluginCatalog: false },
+          settings,
+          providers: [],
+          stateDir,
+        });
+        const agy = inventory.providers[0]!;
+        assert.equal(agy.capabilities?.plugins, true);
+        assert.equal(agy.capabilities?.mcpServers, true);
+        assert.equal(agy.capabilities?.mcpServerManage, true);
+        assert.equal(agy.capabilities?.pluginSourceInstall, true);
+        assert.deepEqual(
+          agy.mcpServers.map((s) => [s.name, s.transport, s.status]),
+          [
+            ["internal", "http", "Configured"],
+            ["posthog", "oauth (mcp-remote)", "Needs auth"],
+          ],
+        );
+
+        // Toggle & remove MCP servers via RPC functions.
+        const toggled = yield* setProviderExtensionMcpServerEnabled({
+          request: { providerInstanceId: instanceId, serverName: "internal", enabled: false },
+          settings,
+          stateDir,
+        });
+        assert.equal(toggled.effectiveEnabled, false);
+
+        const removed = yield* removeProviderExtensionMcpServer({
+          request: { providerInstanceId: instanceId, serverName: "posthog" },
+          settings,
+          stateDir,
+        });
+        assert.equal(removed.removed, true);
+
+        // Install a plugin manually inside the profile and test read, toggle, uninstall.
+        const { antigravityInstancePaths } = yield* Effect.promise(
+          () => import("./antigravity/AntigravityProfile.ts"),
+        );
+        const profileDir = antigravityInstancePaths(stateDir, String(instanceId)).profileDir;
+        const pluginDir = path.join(profileDir, "config", "plugins", "my-plug");
+        yield* fs.makeDirectory(path.join(pluginDir, "skills", "tip"), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(pluginDir, "plugin.json"),
+          JSON.stringify({ name: "my-plug", displayName: "My Plug", version: "1.0.0" }),
+        );
+        yield* fs.writeFileString(
+          path.join(pluginDir, "skills", "tip", "SKILL.md"),
+          "---\nname: tip\ndescription: A helpful tip\n---\nBody\n",
+        );
+
+        const detail = yield* readProviderExtensionPlugin({
+          request: { providerInstanceId: instanceId, pluginName: "my-plug" },
+          settings,
+          stateDir,
+        });
+        assert.equal(detail.plugin.name, "my-plug");
+        assert.deepEqual(
+          detail.plugin.components.map((c) => `${c.kind}:${c.name}`),
+          ["skill:tip"],
+        );
+
+        const disabledPlugin = yield* setProviderExtensionPluginEnabled({
+          request: { providerInstanceId: instanceId, pluginId: "my-plug", enabled: false },
+          settings,
+          stateDir,
+        });
+        assert.equal(disabledPlugin.effectiveEnabled, false);
+
+        const uninstalled = yield* uninstallProviderExtensionPlugin({
+          request: { providerInstanceId: instanceId, pluginId: "my-plug" },
+          settings,
+          stateDir,
+        });
+        assert.equal(uninstalled.uninstalled, true);
       }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
     },
   );

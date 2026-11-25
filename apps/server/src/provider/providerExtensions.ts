@@ -11,11 +11,13 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { spawn as spawnNodeProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import {
+  AntigravitySettings,
   ClaudeSettings,
   CodexSettings,
   ProviderDriverKind,
@@ -23,6 +25,12 @@ import {
   type ProviderExtensionMcpOAuthStartResult,
   type ProviderExtensionMcpReloadInput,
   type ProviderExtensionMcpReloadResult,
+  type ProviderExtensionMcpServerRemoveInput,
+  type ProviderExtensionMcpServerRemoveResult,
+  type ProviderExtensionMcpServerSaveInput,
+  type ProviderExtensionMcpServerSaveResult,
+  type ProviderExtensionMcpServerToggleInput,
+  type ProviderExtensionMcpServerToggleResult,
   type ProviderExtensionMcpResource,
   type ProviderExtensionMcpResourceReadInput,
   type ProviderExtensionMcpResourceReadResult,
@@ -100,6 +108,7 @@ import {
 import { buildCodexInitializeParams } from "./Layers/CodexProvider.ts";
 import { deriveProviderInstanceConfigMap } from "./Layers/ProviderInstanceRegistryHydration.ts";
 import {
+  ANTIGRAVITY_DRIVER,
   findRepositoryRoot,
   isExternalOpenCodeConfig,
   isPathWithinBoundary,
@@ -109,6 +118,22 @@ import {
   setOtherProviderSkillEnabled,
   syncOtherProviderAfterSkillMutation,
 } from "./otherProviderExtensions.ts";
+import {
+  clearAntigravityMcpRemoteCredentials,
+  extractMcpRemoteAuthorizationUrl,
+  hasAntigravityMcpRemoteTokens,
+  installAntigravityPlugin,
+  readAntigravityPluginDetail,
+  refreshAntigravityPluginCatalog,
+  removeAntigravityMcpServer,
+  resolveAntigravityMcpOAuthTarget,
+  saveAntigravityMcpServer,
+  setAntigravityMcpServerEnabled,
+  setAntigravityPluginEnabled,
+  terminateAntigravityChildProcessGroup,
+  uninstallAntigravityPlugin,
+} from "./antigravity/AntigravityExtensions.ts";
+import { antigravityInstancePaths } from "./antigravity/AntigravityProfile.ts";
 import { mergeProviderInstanceEnvironment } from "./ProviderInstanceEnvironment.ts";
 import { spawnAndCollect } from "./providerSnapshot.ts";
 import { planCliSpawn } from "../cliSpawn.ts";
@@ -179,6 +204,7 @@ const CLAUDE_NESTED_SKILL_ROOT_SKIP_DIRECTORIES = new Set([
 
 const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+const decodeAntigravitySettings = Schema.decodeUnknownSync(AntigravitySettings);
 
 function optionalText(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -737,10 +763,11 @@ const pluginComponentKindOrder = new Map<ProviderExtensionPluginComponentKind, n
   ["agent", 1],
   ["hook", 2],
   ["mcpServer", 3],
-  ["app", 4],
-  ["appTemplate", 5],
-  ["scheduledTask", 6],
-  ["lspServer", 7],
+  ["rule", 4],
+  ["app", 5],
+  ["appTemplate", 6],
+  ["scheduledTask", 7],
+  ["lspServer", 8],
 ]);
 
 function sortPluginComponents(
@@ -4080,6 +4107,7 @@ function fallbackSkillsFromSnapshot(
 const CODEX_CAPABILITIES = {
   plugins: true,
   mcpServers: true,
+  pluginMarketplaces: true,
   apps: true,
   hooks: true,
   skillCreate: true,
@@ -4088,6 +4116,7 @@ const CODEX_CAPABILITIES = {
 const CLAUDE_CAPABILITIES = {
   plugins: true,
   mcpServers: true,
+  pluginMarketplaces: true,
   apps: false,
   hooks: true,
   skillCreate: true,
@@ -4223,15 +4252,83 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
         ? { projectBoundary: resolvedProject.projectBoundary }
         : {}),
       ...(input.stateDir !== undefined ? { stateDir: input.stateDir } : {}),
+      ...(input.includePluginCatalog !== undefined
+        ? { includePluginCatalog: input.includePluginCatalog }
+        : {}),
     });
   },
 );
+
+const resolveAntigravityActionContext = Effect.fn(
+  "providerExtensions.resolveAntigravityActionContext",
+)(function* (input: {
+  readonly cwd?: string | undefined;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
+}): Effect.fn.Return<
+  {
+    readonly profileDir: string;
+    readonly tempRoot: string;
+    readonly stateDir: string;
+    readonly binaryPath?: string | undefined;
+    readonly env: NodeJS.ProcessEnv;
+    readonly projectCwd?: string | undefined;
+    readonly projectBoundary?: string | undefined;
+  },
+  ProviderExtensionsError,
+  FileSystem.FileSystem | Path.Path
+> {
+  const providerConfig = yield* resolveProviderActionConfig({
+    providerInstanceId: input.providerInstanceId,
+    settings: input.settings,
+  });
+  if (providerConfig.driver !== ANTIGRAVITY_DRIVER) {
+    return yield* unsupportedProviderExtensionAction(providerConfig.driver, "Antigravity action");
+  }
+  if (!resolveOtherProviderEnabled(providerConfig, undefined)) {
+    return yield* new ProviderExtensionsError({ message: "Provider is disabled." });
+  }
+  if (!input.stateDir) {
+    return yield* new ProviderExtensionsError({
+      message: "Antigravity profile state directory is unavailable.",
+    });
+  }
+  const decoded = yield* Effect.try({
+    try: () => decodeAntigravitySettings(providerConfig.config ?? {}),
+    catch: (cause) =>
+      new ProviderExtensionsError({
+        message: `Could not decode Antigravity settings for ${input.providerInstanceId}.`,
+        cause,
+      }),
+  });
+  const paths = antigravityInstancePaths(input.stateDir, String(input.providerInstanceId));
+  const projectCwd = optionalText(input.cwd);
+  let projectBoundary: string | undefined;
+  if (projectCwd) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const repoRoot = yield* findRepositoryRoot(projectCwd);
+    projectBoundary = yield* fileSystem
+      .realPath(repoRoot)
+      .pipe(Effect.catch(() => Effect.succeed(repoRoot)));
+  }
+  return {
+    profileDir: paths.profileDir,
+    tempRoot: paths.tempRoot,
+    stateDir: input.stateDir,
+    ...(optionalText(decoded.binaryPath) ? { binaryPath: optionalText(decoded.binaryPath) } : {}),
+    env: mergeProviderInstanceEnvironment(providerConfig.environment ?? []),
+    ...(projectCwd ? { projectCwd } : {}),
+    ...(projectBoundary ? { projectBoundary } : {}),
+  };
+});
 
 export const startProviderExtensionMcpOAuth = Effect.fn(
   "providerExtensions.startProviderExtensionMcpOAuth",
 )(function* (input: {
   readonly request: ProviderExtensionMcpOAuthStartInput;
   readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
 }): Effect.fn.Return<
   ProviderExtensionMcpOAuthStartResult,
   ProviderExtensionsError,
@@ -4241,6 +4338,184 @@ export const startProviderExtensionMcpOAuth = Effect.fn(
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
+  if (providerConfig.driver === ANTIGRAVITY_DRIVER) {
+    const context = yield* resolveAntigravityActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+      stateDir: input.stateDir,
+    });
+    const target = yield* Effect.tryPromise({
+      try: () =>
+        resolveAntigravityMcpOAuthTarget({
+          profileDir: context.profileDir,
+          serverName: input.request.serverName,
+          runtimeEnv: context.env,
+        }),
+      catch: toProviderExtensionsError,
+    });
+    const timeoutSecs = boundedOAuthTimeoutSeconds(input.request.timeoutSecs);
+    const operationId = randomUUID();
+    const expiresAt = yield* isoStringAfterSeconds(timeoutSecs);
+
+    yield* Effect.tryPromise({
+      try: () => clearAntigravityMcpRemoteCredentials(context.profileDir, target.urlHash),
+      catch: toProviderExtensionsError,
+    });
+
+    recordProviderExtensionOperation({
+      operationId,
+      kind: "mcp-oauth",
+      status: "running",
+      message: `Starting ${input.request.serverName} OAuth sign-in via mcp-remote.`,
+    });
+
+    const child = spawnNodeProcess(target.command, [...target.args], {
+      cwd: context.projectCwd ?? machineScopeCwd(),
+      env: { ...context.env, ...target.env },
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      ...hideWindowsConsole,
+    });
+
+    let combinedOutput = "";
+    let resolvedUrl: string | undefined;
+    let urlWaitResolve: ((url: string | undefined) => void) | null = null;
+    let settled = false;
+
+    const finishChild = () => {
+      try {
+        child.stdin?.end();
+      } catch {
+        // Ignore pipe shutdown errors.
+      }
+      void terminateAntigravityChildProcessGroup(child);
+    };
+
+    const onOutput = (chunk: Buffer) => {
+      combinedOutput += chunk.toString("utf8");
+      if (combinedOutput.length > 32_000) {
+        combinedOutput = combinedOutput.slice(-32_000);
+      }
+      if (!resolvedUrl) {
+        const extracted = extractMcpRemoteAuthorizationUrl(combinedOutput);
+        if (extracted) {
+          resolvedUrl = extracted;
+          urlWaitResolve?.(extracted);
+          urlWaitResolve = null;
+        }
+      }
+    };
+
+    child.stdout?.on("data", onOutput);
+    child.stderr?.on("data", onOutput);
+
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      urlWaitResolve?.(undefined);
+      urlWaitResolve = null;
+      recordProviderExtensionOperation({
+        operationId,
+        kind: "mcp-oauth",
+        status: "failed",
+        message: `${input.request.serverName} sign-in failed to start.`,
+        error: toErrorMessage(error),
+        completedAt: new Date().toISOString(),
+      });
+    });
+
+    child.on("close", (code) => {
+      urlWaitResolve?.(undefined);
+      urlWaitResolve = null;
+      if (settled) return;
+      void hasAntigravityMcpRemoteTokens(context.profileDir, target.urlHash).then((hasTokens) => {
+        if (settled) return;
+        settled = true;
+        if (hasTokens) {
+          recordProviderExtensionOperation({
+            operationId,
+            kind: "mcp-oauth",
+            status: "completed",
+            message: `${input.request.serverName} OAuth completed.`,
+            completedAt: new Date().toISOString(),
+          });
+        } else {
+          recordProviderExtensionOperation({
+            operationId,
+            kind: "mcp-oauth",
+            status: "failed",
+            message: `${input.request.serverName} sign-in did not complete.`,
+            error:
+              sanitizeErrorMessage(combinedOutput) ||
+              `mcp-remote exited with code ${code ?? "unknown"}.`,
+            completedAt: new Date().toISOString(),
+          });
+        }
+      });
+    });
+
+    // Wait briefly so we can hand the authorization URL straight to the client when available.
+    const authorizationUrl = yield* Effect.promise(
+      () =>
+        new Promise<string | undefined>((resolvePromise) => {
+          if (resolvedUrl) {
+            resolvePromise(resolvedUrl);
+            return;
+          }
+          urlWaitResolve = resolvePromise;
+          const timer = setTimeout(() => {
+            urlWaitResolve = null;
+            resolvePromise(resolvedUrl);
+          }, 8_000);
+          timer.unref?.();
+        }),
+    );
+
+    const deadlineMs = Date.now() + timeoutSecs * 1_000;
+    const poll = () => {
+      if (settled) return;
+      void hasAntigravityMcpRemoteTokens(context.profileDir, target.urlHash).then((hasTokens) => {
+        if (settled) return;
+        if (hasTokens) {
+          settled = true;
+          finishChild();
+          recordProviderExtensionOperation({
+            operationId,
+            kind: "mcp-oauth",
+            status: "completed",
+            message: `${input.request.serverName} OAuth completed.`,
+            completedAt: new Date().toISOString(),
+          });
+          return;
+        }
+        if (Date.now() >= deadlineMs) {
+          settled = true;
+          finishChild();
+          recordProviderExtensionOperation({
+            operationId,
+            kind: "mcp-oauth",
+            status: "expired",
+            message: `${input.request.serverName} OAuth timed out.`,
+            completedAt: new Date().toISOString(),
+          });
+          return;
+        }
+        const nextTimer = setTimeout(poll, 1_500);
+        nextTimer.unref?.();
+      });
+    };
+    const firstPoll = setTimeout(poll, 1_000);
+    firstPoll.unref?.();
+
+    return {
+      operationId,
+      serverName: input.request.serverName,
+      ...(authorizationUrl ? { authorizationUrl } : {}),
+      terminalCommand: target.terminalCommand,
+      expiresAt,
+    } satisfies ProviderExtensionMcpOAuthStartResult;
+  }
   if (providerConfig.driver === CLAUDE_DRIVER) {
     const context = yield* resolveClaudeActionContext({
       cwd: input.request.cwd,
@@ -4496,6 +4771,115 @@ export const reloadProviderExtensionMcpServers = Effect.fn(
     mapCodexRequestError(client.request("config/mcpServer/reload", undefined)),
   );
   return { reloaded: true };
+});
+
+export const saveProviderExtensionMcpServer = Effect.fn(
+  "providerExtensions.saveProviderExtensionMcpServer",
+)(function* (input: {
+  readonly request: ProviderExtensionMcpServerSaveInput;
+  readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
+}): Effect.fn.Return<
+  ProviderExtensionMcpServerSaveResult,
+  ProviderExtensionsError,
+  FileSystem.FileSystem | Path.Path
+> {
+  const providerConfig = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  if (providerConfig.driver !== ANTIGRAVITY_DRIVER) {
+    return yield* unsupportedProviderExtensionAction(
+      providerConfig.driver,
+      "MCP server management",
+    );
+  }
+  const context = yield* resolveAntigravityActionContext({
+    cwd: input.request.cwd,
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+    stateDir: input.stateDir,
+  });
+  return yield* Effect.tryPromise({
+    try: () =>
+      saveAntigravityMcpServer({
+        profileDir: context.profileDir,
+        request: input.request,
+      }),
+    catch: toProviderExtensionsError,
+  });
+});
+
+export const removeProviderExtensionMcpServer = Effect.fn(
+  "providerExtensions.removeProviderExtensionMcpServer",
+)(function* (input: {
+  readonly request: ProviderExtensionMcpServerRemoveInput;
+  readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
+}): Effect.fn.Return<
+  ProviderExtensionMcpServerRemoveResult,
+  ProviderExtensionsError,
+  FileSystem.FileSystem | Path.Path
+> {
+  const providerConfig = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  if (providerConfig.driver !== ANTIGRAVITY_DRIVER) {
+    return yield* unsupportedProviderExtensionAction(providerConfig.driver, "MCP server removal");
+  }
+  const context = yield* resolveAntigravityActionContext({
+    cwd: input.request.cwd,
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+    stateDir: input.stateDir,
+  });
+  return yield* Effect.tryPromise({
+    try: () =>
+      removeAntigravityMcpServer({
+        profileDir: context.profileDir,
+        serverName: input.request.serverName,
+      }),
+    catch: toProviderExtensionsError,
+  });
+});
+
+export const setProviderExtensionMcpServerEnabled = Effect.fn(
+  "providerExtensions.setProviderExtensionMcpServerEnabled",
+)(function* (input: {
+  readonly request: ProviderExtensionMcpServerToggleInput;
+  readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
+}): Effect.fn.Return<
+  ProviderExtensionMcpServerToggleResult,
+  ProviderExtensionsError,
+  FileSystem.FileSystem | Path.Path
+> {
+  const providerConfig = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  if (providerConfig.driver !== ANTIGRAVITY_DRIVER) {
+    return yield* unsupportedProviderExtensionAction(
+      providerConfig.driver,
+      "MCP server enablement",
+    );
+  }
+  const context = yield* resolveAntigravityActionContext({
+    cwd: input.request.cwd,
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+    stateDir: input.stateDir,
+  });
+  return yield* Effect.tryPromise({
+    try: () =>
+      setAntigravityMcpServerEnabled({
+        profileDir: context.profileDir,
+        serverName: input.request.serverName,
+        enabled: input.request.enabled,
+      }),
+    catch: toProviderExtensionsError,
+  });
 });
 
 /**
@@ -5008,6 +5392,7 @@ export const readProviderExtensionPlugin = Effect.fn(
 )(function* (input: {
   readonly request: ProviderExtensionPluginReadInput;
   readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
 }): Effect.fn.Return<
   ProviderExtensionPluginReadResult,
   ProviderExtensionsError,
@@ -5017,6 +5402,28 @@ export const readProviderExtensionPlugin = Effect.fn(
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
+  if (providerConfig.driver === ANTIGRAVITY_DRIVER) {
+    const context = yield* resolveAntigravityActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+      stateDir: input.stateDir,
+    });
+    const plugin = yield* Effect.tryPromise({
+      try: () =>
+        readAntigravityPluginDetail({
+          profileDir: context.profileDir,
+          ...(context.projectCwd ? { projectCwd: context.projectCwd } : {}),
+          ...(context.projectBoundary ? { projectBoundary: context.projectBoundary } : {}),
+          pluginName: input.request.pluginName,
+          ...(input.request.remoteMarketplaceName
+            ? { remoteMarketplaceName: input.request.remoteMarketplaceName }
+            : {}),
+        }),
+      catch: toProviderExtensionsError,
+    });
+    return { plugin };
+  }
   if (providerConfig.driver === CLAUDE_DRIVER) {
     const context = yield* resolveClaudeActionContext({
       cwd: input.request.cwd,
@@ -5114,6 +5521,7 @@ export const installProviderExtensionPlugin = Effect.fn(
 )(function* (input: {
   readonly request: ProviderExtensionPluginInstallInput;
   readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
 }): Effect.fn.Return<
   ProviderExtensionPluginInstallResult,
   ProviderExtensionsError,
@@ -5123,6 +5531,34 @@ export const installProviderExtensionPlugin = Effect.fn(
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
+  if (providerConfig.driver === ANTIGRAVITY_DRIVER) {
+    const context = yield* resolveAntigravityActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+      stateDir: input.stateDir,
+    });
+    yield* Effect.tryPromise({
+      try: () =>
+        installAntigravityPlugin({
+          profileDir: context.profileDir,
+          tempRoot: context.tempRoot,
+          stateDir: context.stateDir,
+          ...(context.binaryPath ? { binaryPath: context.binaryPath } : {}),
+          env: context.env,
+          pluginName: input.request.pluginName,
+          ...(input.request.source ? { source: input.request.source } : {}),
+          ...(input.request.remoteMarketplaceName
+            ? { remoteMarketplaceName: input.request.remoteMarketplaceName }
+            : {}),
+        }),
+      catch: toProviderExtensionsError,
+    });
+    return {
+      authPolicy: "provider-managed",
+      appsNeedingAuth: [],
+    };
+  }
   if (providerConfig.driver === CLAUDE_DRIVER) {
     const context = yield* resolveClaudeActionContext({
       cwd: input.request.cwd,
@@ -5174,6 +5610,7 @@ export const uninstallProviderExtensionPlugin = Effect.fn(
 )(function* (input: {
   readonly request: ProviderExtensionPluginUninstallInput;
   readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
 }): Effect.fn.Return<
   ProviderExtensionPluginUninstallResult,
   ProviderExtensionsError,
@@ -5183,6 +5620,22 @@ export const uninstallProviderExtensionPlugin = Effect.fn(
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
+  if (providerConfig.driver === ANTIGRAVITY_DRIVER) {
+    const context = yield* resolveAntigravityActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+      stateDir: input.stateDir,
+    });
+    return yield* Effect.tryPromise({
+      try: () =>
+        uninstallAntigravityPlugin({
+          profileDir: context.profileDir,
+          pluginId: input.request.pluginId,
+        }),
+      catch: toProviderExtensionsError,
+    });
+  }
   if (providerConfig.driver === CLAUDE_DRIVER) {
     const context = yield* resolveClaudeActionContext({
       cwd: input.request.cwd,
@@ -5217,6 +5670,7 @@ export const setProviderExtensionPluginEnabled = Effect.fn(
 )(function* (input: {
   readonly request: ProviderExtensionPluginToggleInput;
   readonly settings: ServerSettings;
+  readonly stateDir?: string | undefined;
 }): Effect.fn.Return<
   ProviderExtensionPluginToggleResult,
   ProviderExtensionsError,
@@ -5226,6 +5680,23 @@ export const setProviderExtensionPluginEnabled = Effect.fn(
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
+  if (providerConfig.driver === ANTIGRAVITY_DRIVER) {
+    const context = yield* resolveAntigravityActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+      stateDir: input.stateDir,
+    });
+    return yield* Effect.tryPromise({
+      try: () =>
+        setAntigravityPluginEnabled({
+          profileDir: context.profileDir,
+          pluginId: input.request.pluginId,
+          enabled: input.request.enabled,
+        }),
+      catch: toProviderExtensionsError,
+    });
+  }
   if (providerConfig.driver === CODEX_DRIVER) {
     const context = yield* resolveCodexActionContext({
       cwd: input.request.cwd,
@@ -5305,6 +5776,17 @@ export const refreshProviderExtensionPluginMarketplaces = Effect.fn(
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
+  if (providerConfig.driver === ANTIGRAVITY_DRIVER) {
+    const result = yield* Effect.tryPromise({
+      try: () => refreshAntigravityPluginCatalog(),
+      catch: toProviderExtensionsError,
+    });
+    return {
+      refreshed: result.refreshed,
+      refreshedMarketplaces: result.refreshedMarketplaces,
+      errors: result.errors,
+    };
+  }
   if (providerConfig.driver === CLAUDE_DRIVER) {
     const context = yield* resolveClaudeActionContext({
       cwd: input.request.cwd,

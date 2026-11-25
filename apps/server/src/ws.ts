@@ -67,6 +67,7 @@ import {
   SourceControlToolUpdateError,
   WS_METHODS,
   WsCoreRpcGroup,
+  WsProviderExtensionsRpcGroup,
   WsOutsideAgentsRpcGroup,
   WsRpcGroup,
   WsMovesRpcGroup,
@@ -152,7 +153,10 @@ import {
   readProviderExtensionSkill,
   refreshProviderExtensionPluginMarketplaces,
   removeProviderExtensionMarketplace,
+  removeProviderExtensionMcpServer,
   reloadProviderExtensionMcpServers,
+  saveProviderExtensionMcpServer,
+  setProviderExtensionMcpServerEnabled,
   setProviderExtensionPluginEnabled,
   setProviderExtensionSkillEnabled,
   startProviderExtensionMcpOAuth,
@@ -1001,6 +1005,289 @@ const makeToShellStreamEvent =
     }
   };
 
+/**
+ * Provider extensions (plugins, skills, MCP connections, marketplaces): its own
+ * RPC group and layer (WsProviderExtensionsRpcGroup), merged in makeWsRpcLayer.
+ */
+const ProviderExtensionsRpcLayer = WsProviderExtensionsRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const config = yield* ServerConfig;
+    const serverSettings = yield* ServerSettingsService;
+    const providerRegistry = yield* ProviderRegistry;
+    const providerService = yield* ProviderService;
+
+    const loadProviderExtensionSettings = serverSettings.getSettings.pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderExtensionsError({
+            message: cause.message,
+            cause,
+          }),
+      ),
+    );
+    // Settings changed a provider's plugins, MCP servers, or skills. Its open sessions pick that up
+    // before their next turn (see ProviderAdapter.noteExtensionsChanged).
+    const noteExtensionsChanged = (input: { readonly providerInstanceId: ProviderInstanceId }) =>
+      providerService.noteExtensionsChanged({ providerInstanceId: input.providerInstanceId });
+
+    return WsProviderExtensionsRpcGroup.of({
+      [WS_METHODS.serverGetProviderExtensions]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverGetProviderExtensions,
+          Effect.gen(function* () {
+            const [settings, providers] = yield* Effect.all(
+              [serverSettings.getSettings, providerRegistry.getProviders],
+              { concurrency: "unbounded" },
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderExtensionsError({
+                    message: cause.message,
+                    cause,
+                  }),
+              ),
+            );
+            return yield* readProviderExtensionsInventory({
+              request: input,
+              settings,
+              providers,
+              stateDir: config.stateDir,
+            });
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverStartProviderExtensionMcpOAuth]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverStartProviderExtensionMcpOAuth,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* startProviderExtensionMcpOAuth({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            });
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverGetProviderExtensionOperationStatus]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverGetProviderExtensionOperationStatus,
+          getProviderExtensionOperationStatus(input),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverReloadProviderExtensionMcpServers]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverReloadProviderExtensionMcpServers,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* reloadProviderExtensionMcpServers({ request: input, settings });
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverSaveProviderExtensionMcpServer]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverSaveProviderExtensionMcpServer,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* saveProviderExtensionMcpServer({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverRemoveProviderExtensionMcpServer]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverRemoveProviderExtensionMcpServer,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* removeProviderExtensionMcpServer({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverSetProviderExtensionMcpServerEnabled]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverSetProviderExtensionMcpServerEnabled,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* setProviderExtensionMcpServerEnabled({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverSetProviderExtensionSkillEnabled]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverSetProviderExtensionSkillEnabled,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* setProviderExtensionSkillEnabled({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverReadProviderExtensionSkill]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverReadProviderExtensionSkill,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* readProviderExtensionSkill({ request: input, settings });
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverCreateProviderExtensionSkill]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverCreateProviderExtensionSkill,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* createProviderExtensionSkill({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverDeleteProviderExtensionSkill]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverDeleteProviderExtensionSkill,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* deleteProviderExtensionSkill({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverReadProviderExtensionPlugin]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverReadProviderExtensionPlugin,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* readProviderExtensionPlugin({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            });
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverInstallProviderExtensionPlugin]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverInstallProviderExtensionPlugin,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* installProviderExtensionPlugin({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverUninstallProviderExtensionPlugin]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverUninstallProviderExtensionPlugin,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* uninstallProviderExtensionPlugin({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverSetProviderExtensionPluginEnabled]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverSetProviderExtensionPluginEnabled,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* setProviderExtensionPluginEnabled({
+              request: input,
+              settings,
+              stateDir: config.stateDir,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverUpdateProviderExtensionPlugin]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverUpdateProviderExtensionPlugin,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* updateProviderExtensionPlugin({ request: input, settings }).pipe(
+              Effect.tap(() => noteExtensionsChanged(input)),
+            );
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* refreshProviderExtensionPluginMarketplaces({
+              request: input,
+              settings,
+            }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverAddProviderExtensionMarketplace]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverAddProviderExtensionMarketplace,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* addProviderExtensionMarketplace({ request: input, settings });
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverRemoveProviderExtensionMarketplace]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverRemoveProviderExtensionMarketplace,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* removeProviderExtensionMarketplace({ request: input, settings }).pipe(
+              Effect.tap(() => noteExtensionsChanged(input)),
+            );
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverCallProviderExtensionMcpTool]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverCallProviderExtensionMcpTool,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* callProviderExtensionMcpTool({ request: input, settings });
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+      [WS_METHODS.serverReadProviderExtensionMcpResource]: (input) =>
+        observeRpcEffect(
+          WS_METHODS.serverReadProviderExtensionMcpResource,
+          Effect.gen(function* () {
+            const settings = yield* loadProviderExtensionSettings;
+            return yield* readProviderExtensionMcpResource({ request: input, settings });
+          }),
+          { "rpc.aggregate": "server" },
+        ),
+    });
+  }),
+);
+
 /** Every RPC the WebSocket serves, for one connection. */
 const makeWsRpcLayer = (
   currentSession: {
@@ -1016,6 +1303,7 @@ const makeWsRpcLayer = (
 ) =>
   Layer.mergeAll(
     makeCoreRpcLayer(currentSession, viewerId, sentFromRef, devicePlace, subscribeShell),
+    ProviderExtensionsRpcLayer,
     makeOutsideAgentsRpcLayer(currentSession.role),
     ThemesRpcLayer,
     ThemeShowcaseRpcLayer,
@@ -1447,20 +1735,6 @@ const makeCoreRpcLayer = (
             }),
           ),
         );
-
-      const loadProviderExtensionSettings = serverSettings.getSettings.pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderExtensionsError({
-              message: cause.message,
-              cause,
-            }),
-        ),
-      );
-      // Settings changed a provider's plugins or skills. Its open sessions pick that up before
-      // their next turn (see ProviderAdapter.noteExtensionsChanged).
-      const noteExtensionsChanged = (input: { readonly providerInstanceId: ProviderInstanceId }) =>
-        providerService.noteExtensionsChanged({ providerInstanceId: input.providerInstanceId });
 
       /**
        * A command as a client sends it, with what an archive brings along
@@ -2328,206 +2602,6 @@ const makeCoreRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverSaveWorkflowCommand,
             workflowRunRequests.saveCommand(input),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverGetProviderExtensions]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverGetProviderExtensions,
-            Effect.gen(function* () {
-              const [settings, providers] = yield* Effect.all(
-                [serverSettings.getSettings, providerRegistry.getProviders],
-                { concurrency: "unbounded" },
-              ).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderExtensionsError({
-                      message: cause.message,
-                      cause,
-                    }),
-                ),
-              );
-              return yield* readProviderExtensionsInventory({
-                request: input,
-                settings,
-                providers,
-                stateDir: config.stateDir,
-              });
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverStartProviderExtensionMcpOAuth]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverStartProviderExtensionMcpOAuth,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* startProviderExtensionMcpOAuth({ request: input, settings });
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverGetProviderExtensionOperationStatus]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverGetProviderExtensionOperationStatus,
-            getProviderExtensionOperationStatus(input),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverReloadProviderExtensionMcpServers]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverReloadProviderExtensionMcpServers,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* reloadProviderExtensionMcpServers({ request: input, settings });
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverSetProviderExtensionSkillEnabled]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverSetProviderExtensionSkillEnabled,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* setProviderExtensionSkillEnabled({
-                request: input,
-                settings,
-                stateDir: config.stateDir,
-              }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverReadProviderExtensionSkill]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverReadProviderExtensionSkill,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* readProviderExtensionSkill({ request: input, settings });
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverCreateProviderExtensionSkill]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverCreateProviderExtensionSkill,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* createProviderExtensionSkill({
-                request: input,
-                settings,
-                stateDir: config.stateDir,
-              }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverDeleteProviderExtensionSkill]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverDeleteProviderExtensionSkill,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* deleteProviderExtensionSkill({
-                request: input,
-                settings,
-                stateDir: config.stateDir,
-              }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverReadProviderExtensionPlugin]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverReadProviderExtensionPlugin,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* readProviderExtensionPlugin({ request: input, settings });
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverInstallProviderExtensionPlugin]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverInstallProviderExtensionPlugin,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* installProviderExtensionPlugin({ request: input, settings }).pipe(
-                Effect.tap(() => noteExtensionsChanged(input)),
-              );
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverUninstallProviderExtensionPlugin]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverUninstallProviderExtensionPlugin,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* uninstallProviderExtensionPlugin({ request: input, settings }).pipe(
-                Effect.tap(() => noteExtensionsChanged(input)),
-              );
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverSetProviderExtensionPluginEnabled]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverSetProviderExtensionPluginEnabled,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* setProviderExtensionPluginEnabled({ request: input, settings }).pipe(
-                Effect.tap(() => noteExtensionsChanged(input)),
-              );
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverUpdateProviderExtensionPlugin]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverUpdateProviderExtensionPlugin,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* updateProviderExtensionPlugin({ request: input, settings }).pipe(
-                Effect.tap(() => noteExtensionsChanged(input)),
-              );
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* refreshProviderExtensionPluginMarketplaces({
-                request: input,
-                settings,
-              }).pipe(Effect.tap(() => noteExtensionsChanged(input)));
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverAddProviderExtensionMarketplace]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverAddProviderExtensionMarketplace,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* addProviderExtensionMarketplace({ request: input, settings });
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverRemoveProviderExtensionMarketplace]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverRemoveProviderExtensionMarketplace,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* removeProviderExtensionMarketplace({ request: input, settings }).pipe(
-                Effect.tap(() => noteExtensionsChanged(input)),
-              );
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverCallProviderExtensionMcpTool]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverCallProviderExtensionMcpTool,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* callProviderExtensionMcpTool({ request: input, settings });
-            }),
-            { "rpc.aggregate": "server" },
-          ),
-        [WS_METHODS.serverReadProviderExtensionMcpResource]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverReadProviderExtensionMcpResource,
-            Effect.gen(function* () {
-              const settings = yield* loadProviderExtensionSettings;
-              return yield* readProviderExtensionMcpResource({ request: input, settings });
-            }),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverGetProviderInstructionFiles]: (input) =>

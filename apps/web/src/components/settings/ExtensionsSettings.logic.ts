@@ -324,6 +324,26 @@ export function providerSupportsSkillCreate(
   return provider.capabilities?.skillCreate ?? isLegacyManagedDriver(String(provider.driver));
 }
 
+export function providerSupportsMcpServerManage(
+  provider: Pick<ProviderExtensionProviderInventory, "driver" | "capabilities">,
+): boolean {
+  return provider.capabilities?.mcpServerManage === true;
+}
+
+export function providerSupportsPluginMarketplaces(
+  provider: Pick<ProviderExtensionProviderInventory, "driver" | "capabilities">,
+): boolean {
+  return (
+    provider.capabilities?.pluginMarketplaces ?? isLegacyManagedDriver(String(provider.driver))
+  );
+}
+
+export function providerSupportsPluginSourceInstall(
+  provider: Pick<ProviderExtensionProviderInventory, "driver" | "capabilities">,
+): boolean {
+  return provider.capabilities?.pluginSourceInstall === true;
+}
+
 const EXTENSION_BROWSER_MAX_SINGLETON_GROUP_RATIO = 0.6;
 
 export function formatExtensionGroupLabel(value: string): string {
@@ -374,6 +394,7 @@ const PLUGIN_COMPONENT_KIND_ORDER = [
   "agent",
   "mcpServer",
   "hook",
+  "rule",
   "app",
   "appTemplate",
   "scheduledTask",
@@ -388,6 +409,7 @@ const PLUGIN_COMPONENT_KIND_LABELS: Record<
   agent: { one: "Agent", many: "Agents" },
   hook: { one: "Hook", many: "Hooks" },
   mcpServer: { one: "MCP server", many: "MCP servers" },
+  rule: { one: "Rule", many: "Rules" },
   app: { one: "App", many: "Apps" },
   appTemplate: { one: "App template", many: "App templates" },
   scheduledTask: { one: "Scheduled task", many: "Scheduled tasks" },

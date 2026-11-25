@@ -38,6 +38,11 @@ import {
 } from "@threadlines/contracts";
 
 import { expandHomePath } from "../pathExpansion.ts";
+import {
+  annotateAntigravityPluginSkills,
+  listAntigravityMcpServers,
+  listAntigravityPlugins,
+} from "./antigravity/AntigravityExtensions.ts";
 import { antigravityInstancePaths } from "./antigravity/AntigravityProfile.ts";
 import { makeAntigravitySkillsLister } from "./antigravity/AntigravitySkills.ts";
 import {
@@ -849,12 +854,25 @@ const mapSnapshotSkillsForScope = Effect.fn("otherProviderExtensions.mapSnapshot
 );
 
 function readOnlyCapabilities(overrides?: {
+  readonly plugins?: boolean;
   readonly mcpServers?: boolean;
+  readonly mcpServerManage?: boolean;
+  readonly pluginMarketplaces?: boolean;
+  readonly pluginSourceInstall?: boolean;
   readonly skillCreate?: boolean;
 }): ProviderExtensionProviderCapabilities {
   return {
-    plugins: false,
+    plugins: overrides?.plugins ?? false,
     mcpServers: overrides?.mcpServers ?? false,
+    ...(overrides?.mcpServerManage !== undefined
+      ? { mcpServerManage: overrides.mcpServerManage }
+      : {}),
+    ...(overrides?.pluginMarketplaces !== undefined
+      ? { pluginMarketplaces: overrides.pluginMarketplaces }
+      : {}),
+    ...(overrides?.pluginSourceInstall !== undefined
+      ? { pluginSourceInstall: overrides.pluginSourceInstall }
+      : {}),
     apps: false,
     hooks: false,
     skillCreate: overrides?.skillCreate ?? false,
@@ -872,6 +890,7 @@ export const readOtherProviderInventory = Effect.fn(
   readonly stateDir?: string | undefined;
   readonly repoRoot?: string | undefined;
   readonly projectBoundary?: string | undefined;
+  readonly includePluginCatalog?: boolean | undefined;
 }): Effect.fn.Return<ProviderExtensionProviderInventory, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1150,14 +1169,58 @@ export const readOtherProviderInventory = Effect.fn(
       }
       return skill;
     });
+    const [pluginInventory, mcpInventory] = profileDir
+      ? yield* Effect.gen(function* () {
+          const pluginsResult = yield* Effect.promise(() =>
+            listAntigravityPlugins({
+              profileDir,
+              ...(projectCwd ? { projectCwd } : {}),
+              ...(projectBoundary ? { projectBoundary } : {}),
+              includeCatalog: input.includePluginCatalog === true,
+            }),
+          );
+          const mcpResult = yield* Effect.promise(() =>
+            listAntigravityMcpServers({
+              profileDir,
+              ...(projectCwd ? { projectCwd } : {}),
+              ...(projectBoundary ? { projectBoundary } : {}),
+              installedPlugins: pluginsResult.installedRecords,
+            }),
+          );
+          return [pluginsResult, mcpResult] as const;
+        })
+      : [null, null];
+
+    const skillsWithPlugins = pluginInventory
+      ? annotateAntigravityPluginSkills(annotatedSkills, pluginInventory.installedRecords)
+      : annotatedSkills;
+
+    const mcpServers = mcpInventory?.servers ?? [];
+    const mcpErrors = mcpInventory?.errors ?? [];
+
     return {
       ...base,
       status: "ready",
-      capabilities: readOnlyCapabilities({ skillCreate: writableRoots !== null }),
-      plugins: [],
-      marketplaces: [],
-      skills: annotatedSkills,
-      mcpServers: [],
+      capabilities: readOnlyCapabilities({
+        plugins: profileDir !== undefined,
+        mcpServers: profileDir !== undefined,
+        mcpServerManage: profileDir !== undefined,
+        pluginMarketplaces: false,
+        pluginSourceInstall: profileDir !== undefined,
+        skillCreate: writableRoots !== null,
+      }),
+      plugins: pluginInventory?.plugins ?? [],
+      marketplaces: pluginInventory?.marketplaces ?? [],
+      ...(pluginInventory ? { pluginCatalogStatus: pluginInventory.pluginCatalogStatus } : {}),
+      skills: skillsWithPlugins,
+      mcpServers,
+      mcpServersStatus:
+        profileDir === undefined
+          ? "ready"
+          : mcpErrors.length > 0 && mcpServers.length === 0
+            ? "error"
+            : "ready",
+      ...(mcpErrors.length > 0 ? { mcpServersMessage: mcpErrors.join(" ") } : {}),
       apps: [],
     };
   }

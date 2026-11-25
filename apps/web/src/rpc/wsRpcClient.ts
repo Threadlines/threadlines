@@ -345,6 +345,15 @@ export interface WsRpcClient {
     readonly reloadProviderExtensionMcpServers: RpcUnaryMethod<
       typeof WS_METHODS.serverReloadProviderExtensionMcpServers
     >;
+    readonly saveProviderExtensionMcpServer: RpcUnaryMethod<
+      typeof WS_METHODS.serverSaveProviderExtensionMcpServer
+    >;
+    readonly removeProviderExtensionMcpServer: RpcUnaryMethod<
+      typeof WS_METHODS.serverRemoveProviderExtensionMcpServer
+    >;
+    readonly setProviderExtensionMcpServerEnabled: RpcUnaryMethod<
+      typeof WS_METHODS.serverSetProviderExtensionMcpServerEnabled
+    >;
     readonly setProviderExtensionSkillEnabled: RpcUnaryMethod<
       typeof WS_METHODS.serverSetProviderExtensionSkillEnabled
     >;
@@ -1166,6 +1175,24 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       reloadProviderExtensionMcpServers: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverReloadProviderExtensionMcpServers](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      saveProviderExtensionMcpServer: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverSaveProviderExtensionMcpServer](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      removeProviderExtensionMcpServer: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverRemoveProviderExtensionMcpServer](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      setProviderExtensionMcpServerEnabled: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverSetProviderExtensionMcpServerEnabled](input).pipe(
             Effect.withTracerEnabled(false),
           ),
         ),

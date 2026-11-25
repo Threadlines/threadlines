@@ -395,6 +395,12 @@ import {
   ProviderExtensionMcpOAuthStartResult,
   ProviderExtensionMcpReloadInput,
   ProviderExtensionMcpReloadResult,
+  ProviderExtensionMcpServerRemoveInput,
+  ProviderExtensionMcpServerRemoveResult,
+  ProviderExtensionMcpServerSaveInput,
+  ProviderExtensionMcpServerSaveResult,
+  ProviderExtensionMcpServerToggleInput,
+  ProviderExtensionMcpServerToggleResult,
   ProviderExtensionMcpResourceReadInput,
   ProviderExtensionMcpResourceReadResult,
   ProviderExtensionMcpToolCallInput,
@@ -721,6 +727,9 @@ export const WS_METHODS = {
   serverStartProviderExtensionMcpOAuth: "server.startProviderExtensionMcpOAuth",
   serverGetProviderExtensionOperationStatus: "server.getProviderExtensionOperationStatus",
   serverReloadProviderExtensionMcpServers: "server.reloadProviderExtensionMcpServers",
+  serverSaveProviderExtensionMcpServer: "server.saveProviderExtensionMcpServer",
+  serverRemoveProviderExtensionMcpServer: "server.removeProviderExtensionMcpServer",
+  serverSetProviderExtensionMcpServerEnabled: "server.setProviderExtensionMcpServerEnabled",
   serverSetProviderExtensionSkillEnabled: "server.setProviderExtensionSkillEnabled",
   serverReadProviderExtensionSkill: "server.readProviderExtensionSkill",
   serverCreateProviderExtensionSkill: "server.createProviderExtensionSkill",
@@ -1196,6 +1205,33 @@ export const WsServerReloadProviderExtensionMcpServersRpc = Rpc.make(
   {
     payload: ProviderExtensionMcpReloadInput,
     success: ProviderExtensionMcpReloadResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerSaveProviderExtensionMcpServerRpc = Rpc.make(
+  WS_METHODS.serverSaveProviderExtensionMcpServer,
+  {
+    payload: ProviderExtensionMcpServerSaveInput,
+    success: ProviderExtensionMcpServerSaveResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerRemoveProviderExtensionMcpServerRpc = Rpc.make(
+  WS_METHODS.serverRemoveProviderExtensionMcpServer,
+  {
+    payload: ProviderExtensionMcpServerRemoveInput,
+    success: ProviderExtensionMcpServerRemoveResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerSetProviderExtensionMcpServerEnabledRpc = Rpc.make(
+  WS_METHODS.serverSetProviderExtensionMcpServerEnabled,
+  {
+    payload: ProviderExtensionMcpServerToggleInput,
+    success: ProviderExtensionMcpServerToggleResult,
     error: ProviderExtensionsError,
   },
 );
@@ -2980,24 +3016,6 @@ export const WsCoreRpcGroup = RpcGroup.make(
   WsServerReadWorkflowRunFileRpc,
   WsServerReadWorkflowAgentTranscriptRpc,
   WsServerSaveWorkflowCommandRpc,
-  WsServerGetProviderExtensionsRpc,
-  WsServerStartProviderExtensionMcpOAuthRpc,
-  WsServerGetProviderExtensionOperationStatusRpc,
-  WsServerReloadProviderExtensionMcpServersRpc,
-  WsServerSetProviderExtensionSkillEnabledRpc,
-  WsServerReadProviderExtensionSkillRpc,
-  WsServerCreateProviderExtensionSkillRpc,
-  WsServerDeleteProviderExtensionSkillRpc,
-  WsServerReadProviderExtensionPluginRpc,
-  WsServerInstallProviderExtensionPluginRpc,
-  WsServerUninstallProviderExtensionPluginRpc,
-  WsServerSetProviderExtensionPluginEnabledRpc,
-  WsServerUpdateProviderExtensionPluginRpc,
-  WsServerRefreshProviderExtensionPluginMarketplacesRpc,
-  WsServerAddProviderExtensionMarketplaceRpc,
-  WsServerRemoveProviderExtensionMarketplaceRpc,
-  WsServerCallProviderExtensionMcpToolRpc,
-  WsServerReadProviderExtensionMcpResourceRpc,
   WsServerGetProviderInstructionFilesRpc,
   WsServerWriteProviderInstructionFileRpc,
   WsUsageSummaryRpc,
@@ -3270,7 +3288,37 @@ export const WsDeviceRpcGroup = RpcGroup.make(
   WsDeviceChannelCreditRpc,
 );
 
+/**
+ * Provider extensions (plugins, skills, MCP connections, marketplaces). A group
+ * of its own, merged into WsRpcGroup, so WsCoreRpcGroup stays well below
+ * TypeScript's cap on type work per statement.
+ */
+export const WsProviderExtensionsRpcGroup = RpcGroup.make(
+  WsServerGetProviderExtensionsRpc,
+  WsServerStartProviderExtensionMcpOAuthRpc,
+  WsServerGetProviderExtensionOperationStatusRpc,
+  WsServerReloadProviderExtensionMcpServersRpc,
+  WsServerSaveProviderExtensionMcpServerRpc,
+  WsServerRemoveProviderExtensionMcpServerRpc,
+  WsServerSetProviderExtensionMcpServerEnabledRpc,
+  WsServerSetProviderExtensionSkillEnabledRpc,
+  WsServerReadProviderExtensionSkillRpc,
+  WsServerCreateProviderExtensionSkillRpc,
+  WsServerDeleteProviderExtensionSkillRpc,
+  WsServerReadProviderExtensionPluginRpc,
+  WsServerInstallProviderExtensionPluginRpc,
+  WsServerUninstallProviderExtensionPluginRpc,
+  WsServerSetProviderExtensionPluginEnabledRpc,
+  WsServerUpdateProviderExtensionPluginRpc,
+  WsServerRefreshProviderExtensionPluginMarketplacesRpc,
+  WsServerAddProviderExtensionMarketplaceRpc,
+  WsServerRemoveProviderExtensionMarketplaceRpc,
+  WsServerCallProviderExtensionMcpToolRpc,
+  WsServerReadProviderExtensionMcpResourceRpc,
+);
+
 export const WsRpcGroup = WsCoreRpcGroup.merge(
+  WsProviderExtensionsRpcGroup,
   WsOutsideAgentsRpcGroup,
   WsThemesRpcGroup,
   WsThemeShowcaseRpcGroup,

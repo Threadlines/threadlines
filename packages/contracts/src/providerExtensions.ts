@@ -89,6 +89,7 @@ export const ProviderExtensionPluginComponentKind = Schema.Literals([
   "agent",
   "hook",
   "mcpServer",
+  "rule",
   "app",
   "appTemplate",
   "scheduledTask",
@@ -237,6 +238,28 @@ export const ProviderExtensionMcpOrigin = Schema.Struct({
 });
 export type ProviderExtensionMcpOrigin = typeof ProviderExtensionMcpOrigin.Type;
 
+export const ProviderExtensionMcpServerMode = Schema.Literals(["stdio", "http", "oauth"]);
+export type ProviderExtensionMcpServerMode = typeof ProviderExtensionMcpServerMode.Type;
+
+export const ProviderExtensionMcpServerAuthProviderType = Schema.Literals(["google_credentials"]);
+export type ProviderExtensionMcpServerAuthProviderType =
+  typeof ProviderExtensionMcpServerAuthProviderType.Type;
+
+/** Non-secret configuration summary used to prefill edit forms without returning raw credentials. */
+export const ProviderExtensionMcpServerConfigSummary = Schema.Struct({
+  mode: ProviderExtensionMcpServerMode,
+  command: Schema.optional(TrimmedNonEmptyString),
+  args: Schema.optional(Schema.Array(Schema.String)),
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  envKeys: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  url: Schema.optional(TrimmedNonEmptyString),
+  headerKeys: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  authProviderType: Schema.optional(ProviderExtensionMcpServerAuthProviderType),
+  timeoutSeconds: Schema.optional(Schema.Int),
+});
+export type ProviderExtensionMcpServerConfigSummary =
+  typeof ProviderExtensionMcpServerConfigSummary.Type;
+
 export const ProviderExtensionMcpServer = Schema.Struct({
   /** Display name. Providers namespace plugin-owned servers, and that prefix is noise on screen. */
   name: TrimmedNonEmptyString,
@@ -249,6 +272,11 @@ export const ProviderExtensionMcpServer = Schema.Struct({
   authStatus: Schema.optional(TrimmedNonEmptyString),
   status: Schema.optional(TrimmedNonEmptyString),
   transport: Schema.optional(TrimmedNonEmptyString),
+  enabled: Schema.optional(Schema.Boolean),
+  canToggle: Schema.optional(Schema.Boolean),
+  canEdit: Schema.optional(Schema.Boolean),
+  configPath: Schema.optional(TrimmedNonEmptyString),
+  config: Schema.optional(ProviderExtensionMcpServerConfigSummary),
   tools: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   toolDefinitions: Schema.optional(Schema.Array(ProviderExtensionMcpTool)),
   resources: Schema.optional(Schema.Array(ProviderExtensionMcpResource)),
@@ -321,6 +349,9 @@ export type ProviderExtensionHook = typeof ProviderExtensionHook.Type;
 export const ProviderExtensionProviderCapabilities = Schema.Struct({
   plugins: Schema.optional(Schema.Boolean),
   mcpServers: Schema.optional(Schema.Boolean),
+  mcpServerManage: Schema.optional(Schema.Boolean),
+  pluginMarketplaces: Schema.optional(Schema.Boolean),
+  pluginSourceInstall: Schema.optional(Schema.Boolean),
   apps: Schema.optional(Schema.Boolean),
   hooks: Schema.optional(Schema.Boolean),
   skillCreate: Schema.optional(Schema.Boolean),
@@ -478,6 +509,66 @@ export const ProviderExtensionMcpReloadResult = Schema.Struct({
 });
 export type ProviderExtensionMcpReloadResult = typeof ProviderExtensionMcpReloadResult.Type;
 
+export const ProviderExtensionMcpServerName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+);
+
+export const ProviderExtensionMcpServerSaveInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  name: ProviderExtensionMcpServerName,
+  /** When renaming an existing user-managed server, the previous key to replace. */
+  previousName: Schema.optional(ProviderExtensionMcpServerName),
+  mode: ProviderExtensionMcpServerMode,
+  command: Schema.optional(TrimmedNonEmptyString),
+  args: Schema.optional(Schema.Array(Schema.String)),
+  serverCwd: Schema.optional(TrimmedNonEmptyString),
+  env: Schema.optional(Schema.Record(TrimmedNonEmptyString, Schema.String)),
+  /** Existing env keys to keep unchanged when editing without re-entering secrets. */
+  keepEnvKeys: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  url: Schema.optional(TrimmedNonEmptyString),
+  headers: Schema.optional(Schema.Record(TrimmedNonEmptyString, Schema.String)),
+  /** Existing header keys to keep unchanged when editing without re-entering secrets. */
+  keepHeaderKeys: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  authProviderType: Schema.optional(ProviderExtensionMcpServerAuthProviderType),
+  timeoutSeconds: Schema.optional(Schema.Int),
+  enabled: Schema.optional(Schema.Boolean),
+});
+export type ProviderExtensionMcpServerSaveInput = typeof ProviderExtensionMcpServerSaveInput.Type;
+
+export const ProviderExtensionMcpServerSaveResult = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  configPath: TrimmedNonEmptyString,
+});
+export type ProviderExtensionMcpServerSaveResult = typeof ProviderExtensionMcpServerSaveResult.Type;
+
+export const ProviderExtensionMcpServerRemoveInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  serverName: TrimmedNonEmptyString,
+});
+export type ProviderExtensionMcpServerRemoveInput =
+  typeof ProviderExtensionMcpServerRemoveInput.Type;
+
+export const ProviderExtensionMcpServerRemoveResult = Schema.Struct({
+  removed: Schema.Boolean,
+});
+export type ProviderExtensionMcpServerRemoveResult =
+  typeof ProviderExtensionMcpServerRemoveResult.Type;
+
+export const ProviderExtensionMcpServerToggleInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  serverName: TrimmedNonEmptyString,
+  enabled: Schema.Boolean,
+});
+export type ProviderExtensionMcpServerToggleInput =
+  typeof ProviderExtensionMcpServerToggleInput.Type;
+
+export const ProviderExtensionMcpServerToggleResult = Schema.Struct({
+  effectiveEnabled: Schema.Boolean,
+});
+export type ProviderExtensionMcpServerToggleResult =
+  typeof ProviderExtensionMcpServerToggleResult.Type;
+
 export const ProviderExtensionSkillToggleInput = Schema.Struct({
   ...ProviderExtensionActionBaseInput,
   name: Schema.optional(TrimmedNonEmptyString),
@@ -555,6 +646,8 @@ export type ProviderExtensionPluginReadResult = typeof ProviderExtensionPluginRe
 export const ProviderExtensionPluginInstallInput = Schema.Struct({
   ...ProviderExtensionActionBaseInput,
   pluginName: TrimmedNonEmptyString,
+  /** Optional direct install source (GitHub URL or local directory path) for drivers that support it. */
+  source: Schema.optional(TrimmedNonEmptyString),
   marketplacePath: Schema.optional(TrimmedNonEmptyString),
   remoteMarketplaceName: Schema.optional(TrimmedNonEmptyString),
   scope: Schema.optional(TrimmedNonEmptyString),
