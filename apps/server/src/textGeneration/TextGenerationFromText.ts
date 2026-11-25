@@ -139,18 +139,37 @@ export function makeTextGenerationFromText(input: {
       }),
     generateThreadTitle: (request) =>
       Effect.gen(function* () {
+        const wantsBranch = request.includeBranch === true;
         const { prompt, outputSchema } = buildThreadTitlePrompt({
           message: request.message,
           attachments: request.attachments,
+          includeBranch: wantsBranch,
+          policy: request.policy,
         });
+        // Text-returning providers may omit `branch` in a combined reply;
+        // accept a title-only JSON object instead of discarding the title so
+        // the caller can fall back to standalone branch generation.
+        const decodedSchema = wantsBranch
+          ? Schema.Struct({
+              title: Schema.String,
+              branch: Schema.optional(Schema.String),
+            })
+          : outputSchema;
         const generated = yield* generateJson({
           operation: "generateThreadTitle",
           cwd: request.cwd,
           prompt,
-          outputSchema,
+          outputSchema: decodedSchema,
           modelSelection: request.modelSelection,
         });
-        return { title: sanitizeThreadTitle(generated.title) };
+        return {
+          title: sanitizeThreadTitle(generated.title),
+          ...("branch" in generated &&
+          typeof generated.branch === "string" &&
+          generated.branch.trim().length > 0
+            ? { branch: sanitizeBranchFragment(generated.branch) }
+            : {}),
+        };
       }),
   };
 }

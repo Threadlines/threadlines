@@ -807,6 +807,32 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
+  it.effect("generates thread title and branch together at low effort with rules ignored", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          title: "Fix reconnect backoff",
+          branch: "  Fix/Reconnect-Backoff  ",
+        }),
+        requireIgnoreRules: true,
+        requireReasoningEffort: "low",
+        stdinMustContain: "Return a JSON object with keys: title, branch.",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Fix reconnect backoff after restart.",
+            includeBranch: true,
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          });
+
+          expect(generated.title).toBe("Fix reconnect backoff");
+          expect(generated.branch).toBe("fix/reconnect-backoff");
+        }),
+    ),
+  );
+
   it.effect("generates branch names and normalizes branch fragments", () =>
     withFakeCodexEnv(
       {

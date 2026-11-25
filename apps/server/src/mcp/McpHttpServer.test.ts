@@ -550,12 +550,14 @@ describe("MCP endpoints", () => {
     );
   });
 
-  it("lists no schedule tools while agents may not start threads, but a run keeps its own", async () => {
+  it("lists no schedule or thread tools while agents may not start threads, but a run keeps its own", async () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const base = yield* serve(
-            McpRoomServer.layer.pipe(Layer.provide(roomServerStubs({ agentThreads: "off" }))),
+            McpRoomServer.layer.pipe(
+              Layer.provide(roomServerStubs({ agentThreads: "off", agentInvites: "off" })),
+            ),
           );
           const scheduledRun = yield* mcpSessionRegistry.credentialFor({
             sessionKey: RUN_THREAD,
@@ -570,7 +572,48 @@ describe("MCP endpoints", () => {
           expect(tools).toContain("scheduled_run_finish");
           expect(tools).toContain("room_agents");
           expect(tools.filter((name) => name.startsWith("schedule_"))).toEqual([]);
+          expect(tools.filter((name) => name.startsWith("thread_"))).toEqual([]);
+          expect(tools).not.toContain("room_invite");
+          expect(tools).not.toContain("room_available_agents");
           yield* mcpSessionRegistry.revoke(RUN_THREAD, scheduledRun.generation);
+        }),
+      ).pipe(onLoopback),
+    );
+  });
+
+  it("hides multi-agent room tools on solo threads while keeping invite, thread, schedule, and app tools", async () => {
+    const soloThread = {
+      ...ROOM_THREAD,
+      participants: [],
+    };
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = yield* serve(
+            McpRoomServer.layer.pipe(Layer.provide(roomServerStubs(undefined, soloThread))),
+          );
+          const main = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: THREAD,
+            browser: true,
+            room: true,
+          });
+          const listed = yield* Effect.promise(() => listTools(`${base}/mcp/room`, main.token));
+          const tools = "tools" in listed ? listed.tools : [];
+          for (const roomOnly of [
+            "room_agents",
+            "room_ask",
+            "room_review",
+            "room_hand_off",
+            "room_history",
+            "room_diff",
+          ]) {
+            expect(tools).not.toContain(roomOnly);
+          }
+          expect(tools).toContain("room_invite");
+          expect(tools).toContain("room_available_agents");
+          expect(tools).toContain("thread_start");
+          expect(tools).toContain("app_guide");
+          yield* mcpSessionRegistry.revoke(THREAD, main.generation);
         }),
       ).pipe(onLoopback),
     );

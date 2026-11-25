@@ -107,6 +107,14 @@ function isUnsupportedIgnoreUserConfigFlagError(error: TextGenerationError): boo
   );
 }
 
+function isUnsupportedIgnoreRulesFlagError(error: TextGenerationError): boolean {
+  const detail = error.detail.toLowerCase();
+  return (
+    detail.includes("--ignore-rules") &&
+    (detail.includes("unexpected argument") || detail.includes("wasn't expected"))
+  );
+}
+
 function shouldRetryWithDefaultCodexModel(
   modelSelection: ModelSelection,
   error: TextGenerationError,
@@ -299,10 +307,15 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
 
     const runCodexCommand = Effect.fn("runCodexJson.runCodexCommand")(function* (options: {
       readonly ignoreUserConfig: boolean;
+      readonly ignoreRules: boolean;
     }) {
+      const defaultReasoningEffort =
+        operation === "generateThreadTitle" || operation === "generateBranchName"
+          ? "low"
+          : DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT;
       const reasoningEffort =
         getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
-        DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT;
+        defaultReasoningEffort;
       const serviceTier = resolveCodexCliServiceTier(modelSelection);
       // On a gateway the run gets a home of its own, holding the provider
       // alone (see codexModelProviderLaunch.ts). That stands in for
@@ -333,11 +346,23 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             ? ["--ignore-user-config", ...(gatewayLaunch?.args ?? [])]
             : []),
           "--skip-git-repo-check",
-          ...(operation === "generateCommitMessage" ? ["--ignore-rules"] : []),
+          // PR descriptions keep repository rules enabled; titles, branch
+          // names, and commit messages carry their own policy in the prompt.
+          ...(options.ignoreRules ? ["--ignore-rules"] : []),
           "-s",
           "read-only",
           "--model",
           modelSelection.model,
+          // Keep project instruction docs, memories, hooks, and apps out of
+          // ephemeral text-generation runs (applies to gateway homes too).
+          "--config",
+          "project_doc_max_bytes=0",
+          "--config",
+          "features.memories=false",
+          "--config",
+          "features.hooks=false",
+          "--config",
+          "features.apps=false",
           "--config",
           `model_reasoning_effort="${reasoningEffort}"`,
           ...(serviceTier ? ["--config", `service_tier="${serviceTier}"`] : []),
@@ -410,15 +435,34 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       },
     ).pipe(Effect.asVoid);
 
-    return yield* Effect.gen(function* () {
-      yield* runCodexCommand({ ignoreUserConfig: true }).pipe(
+    const runWithFlagFallback = (options: {
+      readonly ignoreUserConfig: boolean;
+      readonly ignoreRules: boolean;
+    }): Effect.Effect<void, TextGenerationError> =>
+      runCodexCommand(options).pipe(
         Effect.scoped,
-        Effect.catchIf(isUnsupportedIgnoreUserConfigFlagError, () =>
-          Effect.logWarning(
-            "Codex CLI does not support --ignore-user-config; retrying without it",
-            { operation },
-          ).pipe(Effect.andThen(runCodexCommand({ ignoreUserConfig: false }).pipe(Effect.scoped))),
+        Effect.catchIf(
+          (error) => options.ignoreUserConfig && isUnsupportedIgnoreUserConfigFlagError(error),
+          () =>
+            Effect.logWarning(
+              "Codex CLI does not support --ignore-user-config; retrying without it",
+              { operation },
+            ).pipe(Effect.andThen(runWithFlagFallback({ ...options, ignoreUserConfig: false }))),
         ),
+        Effect.catchIf(
+          (error) => options.ignoreRules && isUnsupportedIgnoreRulesFlagError(error),
+          () =>
+            Effect.logWarning("Codex CLI does not support --ignore-rules; retrying without it", {
+              operation,
+            }).pipe(Effect.andThen(runWithFlagFallback({ ...options, ignoreRules: false }))),
+        ),
+      );
+
+    return yield* Effect.gen(function* () {
+      yield* runWithFlagFallback({
+        ignoreUserConfig: true,
+        ignoreRules: operation !== "generatePrContent",
+      }).pipe(
         Effect.timeoutOption(timeoutMs),
         Effect.flatMap(
           Option.match({
@@ -606,6 +650,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     const { prompt, outputSchema } = buildThreadTitlePrompt({
       message: input.message,
       attachments: input.attachments,
+      includeBranch: input.includeBranch === true,
+      policy: input.policy,
     });
 
     const generated = yield* runCodexJsonWithCapacityFallback({
@@ -619,6 +665,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
 
     return {
       title: sanitizeThreadTitle(generated.title),
+      ...("branch" in generated && typeof generated.branch === "string"
+        ? { branch: sanitizeBranchFragment(generated.branch) }
+        : {}),
     } satisfies ThreadTitleGenerationResult;
   });
 

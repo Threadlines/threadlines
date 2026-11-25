@@ -7,6 +7,7 @@ import {
   PROMPT_SUGGESTION_MAX_MESSAGES,
 } from "../promptSuggestions.ts";
 import {
+  isAntigravityPromptSuggestionAuthSupported,
   isAntigravitySuggestionUsageNearLimit,
   selectAntigravitySuggestionTarget,
 } from "./AntigravityPromptSuggestions.ts";
@@ -43,7 +44,7 @@ describe("selectAntigravitySuggestionTarget", () => {
       makeModel("claude-opus-5-5", "Claude Opus 5.5", ["high"]),
     ];
 
-    expect(selectAntigravitySuggestionTarget(models, "claude-opus-5-5")).toEqual({
+    expect(selectAntigravitySuggestionTarget(models)).toEqual({
       model: "gemini-4-hydrogen",
       modelName: "Gemini 4 Hydrogen",
       options: [{ id: "thought_level", value: "low" }],
@@ -57,34 +58,31 @@ describe("selectAntigravitySuggestionTarget", () => {
       makeModel("gemini-3.8-flash", "Gemini 3.8 Flash", ["minimal", "high"]),
     ];
 
-    expect(selectAntigravitySuggestionTarget(models, "gemini-4-argon")).toEqual({
+    expect(selectAntigravitySuggestionTarget(models)).toEqual({
       model: "gemini-3.8-flash",
       modelName: "Gemini 3.8 Flash",
       options: [{ id: "thought_level", value: "minimal" }],
     });
   });
 
-  it("falls back to the thread model when neither Hydrogen nor Flash is listed", () => {
+  it("skips suggestions rather than falling back to frontier models when neither Hydrogen nor Flash is listed", () => {
     const models = [makeModel("gemini-4-argon", "Gemini 4 Argon", ["low", "high"])];
 
-    expect(selectAntigravitySuggestionTarget(models, "gemini-4-argon")).toEqual({
-      model: "gemini-4-argon",
-      modelName: "Gemini 4 Argon",
-      options: [{ id: "thought_level", value: "low" }],
-    });
-    expect(selectAntigravitySuggestionTarget([], "claude-opus-5-5")).toEqual({
-      model: "claude-opus-5-5",
-      modelName: "claude-opus-5-5",
-      options: [],
-    });
+    expect(selectAntigravitySuggestionTarget(models)).toBeUndefined();
+    expect(selectAntigravitySuggestionTarget([])).toBeUndefined();
     const catalogWithDefault: ReadonlyArray<ServerProviderModel> = [
       { ...makeModel("gemini-4-argon", "Gemini 4 Argon", ["low", "high"]), isDefault: true },
     ];
-    expect(selectAntigravitySuggestionTarget(catalogWithDefault, undefined)).toEqual({
-      model: "gemini-4-argon",
-      modelName: "Gemini 4 Argon",
-      options: [{ id: "thought_level", value: "low" }],
-    });
+    expect(selectAntigravitySuggestionTarget(catalogWithDefault)).toBeUndefined();
+  });
+});
+
+describe("isAntigravityPromptSuggestionAuthSupported", () => {
+  it("allows Google OAuth sign-ins and skips pay-per-token API key and Vertex AI methods", () => {
+    expect(isAntigravityPromptSuggestionAuthSupported("oauth-personal")).toBe(true);
+    expect(isAntigravityPromptSuggestionAuthSupported("oauth-business")).toBe(true);
+    expect(isAntigravityPromptSuggestionAuthSupported("gemini-api-key")).toBe(false);
+    expect(isAntigravityPromptSuggestionAuthSupported("agent-platform")).toBe(false);
   });
 });
 

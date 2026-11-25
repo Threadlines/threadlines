@@ -103,6 +103,12 @@ export interface McpCredential {
   readonly generation: number;
 }
 
+export interface McpListedRoomScope {
+  readonly inRoom: boolean;
+  readonly invitesOn: boolean;
+  readonly threadsOn: boolean;
+}
+
 export interface McpSessionRegistryShape {
   /**
    * Mint the credential for one provider runtime. A room agent's key maps
@@ -120,6 +126,19 @@ export interface McpSessionRegistryShape {
   readonly sharingDirectory: (
     directory: string,
   ) => Effect.Effect<ReadonlyArray<McpInvocationScope>>;
+  /**
+   * Records which optional room-endpoint tool groups were listed for a live
+   * main runtime (including runtimes recovered directly by ProviderService).
+   */
+  readonly recordListedRoomScope: (
+    sessionKey: ThreadId,
+    generation: number,
+    scope: McpListedRoomScope,
+  ) => Effect.Effect<void>;
+  /** The optional room-endpoint groups last listed for `sessionKey`, if any. */
+  readonly lastListedRoomScope: (
+    sessionKey: ThreadId,
+  ) => Effect.Effect<McpListedRoomScope | undefined>;
 }
 
 /**
@@ -133,6 +152,10 @@ export interface McpSessionRegistryShape {
  */
 export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
   const byToken = new Map<string, McpInvocationScope>();
+  const listedRoomScopeBySession = new Map<
+    ThreadId,
+    { readonly generation: number; readonly scope: McpListedRoomScope }
+  >();
   let nextGeneration = 1;
 
   return {
@@ -200,9 +223,22 @@ export const makeMcpSessionRegistry = (): McpSessionRegistryShape => {
             byToken.delete(token);
           }
         }
+        const recorded = listedRoomScopeBySession.get(sessionKey);
+        if (recorded !== undefined && recorded.generation === generation) {
+          listedRoomScopeBySession.delete(sessionKey);
+        }
       }),
     sharingDirectory: (directory) =>
       Effect.sync(() => [...byToken.values()].filter((scope) => scope.toolDirectory === directory)),
+    recordListedRoomScope: (sessionKey, generation, scope) =>
+      Effect.sync(() => {
+        const current = listedRoomScopeBySession.get(sessionKey);
+        if (current === undefined || generation >= current.generation) {
+          listedRoomScopeBySession.set(sessionKey, { generation, scope });
+        }
+      }),
+    lastListedRoomScope: (sessionKey) =>
+      Effect.sync(() => listedRoomScopeBySession.get(sessionKey)?.scope),
   };
 };
 

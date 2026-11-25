@@ -7852,7 +7852,7 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.title).toBe("Reconnect spinner resume bug");
   });
 
-  it("generates a worktree branch name for the first turn", async () => {
+  it("generates a worktree branch name for the first turn when the title is already set", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -7861,6 +7861,7 @@ describe("ProviderCommandReactor", () => {
         type: "thread.meta.update",
         commandId: CommandId.make("cmd-thread-branch"),
         threadId: ThreadId.make("thread-1"),
+        title: "Keep this custom title",
         branch: "t3code/1234abcd",
         worktreePath: PROJECT_WORKTREE_ROOT,
       }),
@@ -7909,6 +7910,115 @@ describe("ProviderCommandReactor", () => {
       newBranch: expect.stringMatching(/^feat\/[a-z0-9-]+$/),
     });
     expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe(PROJECT_WORKTREE_ROOT);
+  });
+
+  it("generates thread title and worktree branch in a single call when they share one model", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const seededTitle = "Add a safer reconnect backoff.";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-combined-worktree"),
+        threadId: ThreadId.make("thread-1"),
+        title: seededTitle,
+        branch: "t3code/5678abcd",
+        worktreePath: PROJECT_WORKTREE_ROOT,
+      }),
+    );
+
+    harness.generateThreadTitle.mockReturnValue(
+      Effect.succeed({
+        title: "Safer reconnect backoff",
+        branch: "feature/safer-reconnect-backoff",
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-combined"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-combined"),
+          role: "user",
+          text: "Add a safer reconnect backoff.",
+          attachments: [],
+        },
+        titleSeed: seededTitle,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.generateThreadTitle.mock.calls.length === 1);
+    await waitFor(() => harness.refreshStatus.mock.calls.length === 1);
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      return (
+        readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.title ===
+        "Safer reconnect backoff"
+      );
+    });
+
+    expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
+      includeBranch: true,
+      message: "Add a safer reconnect backoff.",
+    });
+    expect(harness.generateBranchName).not.toHaveBeenCalled();
+    expect(harness.renameBranch.mock.calls[0]?.[0]).toMatchObject({
+      oldBranch: "t3code/5678abcd",
+      newBranch: "feat/safer-reconnect-backoff",
+    });
+  });
+
+  it("disables provider prompt suggestions when starting an automated attached-child thread", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const childId = ThreadId.make("thread-child-auto");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-child-auto"),
+        threadId: childId,
+        projectId: asProjectId("project-1"),
+        title: "Background worker",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+        ),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        parentThreadId: ThreadId.make("thread-1"),
+        attachedToParent: true,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-child-auto"),
+        threadId: childId,
+        message: {
+          messageId: asMessageId("user-message-child-auto"),
+          role: "user",
+          text: "Run the audit.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.some(([key]) => key === childId));
+    const started = harness.startSession.mock.calls.find(([key]) => key === childId)?.[1];
+    expect(started).toMatchObject({ promptSuggestions: false });
   });
 
   it("never renames the branch of a worktree another thread lent", async () => {

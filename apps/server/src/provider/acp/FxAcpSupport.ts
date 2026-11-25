@@ -500,4 +500,7 @@ export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
   // Switching models takes ~10ms, so one session probes all ~150 in seconds.
   modelCapabilitiesVaryByModel: true,
   modelCapabilityProbeSessions: 1,
+  // Run throwaway text generation in an empty directory so workspace rules
+  // and project configs stay out of title/branch/commit prompts.
+  isolateTextGeneration: true,
 };

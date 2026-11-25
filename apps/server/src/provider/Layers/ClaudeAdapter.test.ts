@@ -971,6 +971,28 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "disables Claude prompt suggestions when the session start input sets promptSuggestions false",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          promptSuggestions: false,
+        });
+
+        const createInput = harness.getLastCreateQueryInput();
+        assert.equal(createInput?.options.promptSuggestions, false);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("forwards configured Claude fallback model chains into query options", () => {
     const harness = makeHarness({
       claudeConfig: {

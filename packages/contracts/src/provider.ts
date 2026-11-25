@@ -235,6 +235,13 @@ export const ProviderSessionStartInput = Schema.Struct({
    * a locked-down side runtime.
    */
   deviceTools: Schema.optional(Schema.Boolean),
+  /**
+   * Whether provider-native prompt suggestions may run in this session.
+   * Defaults to true when omitted; set to false for automated or
+   * non-interactive threads (attached children, scheduled runs, outside-agent
+   * threads) where no person is waiting in the composer.
+   */
+  promptSuggestions: Schema.optional(Schema.Boolean),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

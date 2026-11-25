@@ -640,6 +640,36 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     }),
   );
 
+  it.effect("generates thread title and branch name together without persisting a session", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Fix reconnect backoff",
+            branch: "fix/reconnect-backoff",
+          },
+        }),
+        argsMustContain: "--no-session-persistence",
+        stdinMustContain: "Return a JSON object with keys: title, branch.",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Fix reconnect backoff after restart.",
+            includeBranch: true,
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-sonnet-4-6",
+            },
+          });
+
+          expect(generated.title).toBe("Fix reconnect backoff");
+          expect(generated.branch).toBe("fix/reconnect-backoff");
+        }),
+    ),
+  );
+
   it.effect("falls back when Claude thread title normalization becomes whitespace-only", () =>
     withFakeClaudeEnv(
       {

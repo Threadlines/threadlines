@@ -1125,7 +1125,16 @@ export function buildClaudeSystemPromptAppend(input: {
       : [
           buildOnDemandToolInstructions({
             browserPrefix: `mcp__${BROWSER_MCP_SERVER_NAME}__`,
-            ...(input.room !== undefined ? { roomPrefix, roomTools: input.room.tools } : {}),
+            ...(input.room !== undefined
+              ? {
+                  roomPrefix,
+                  // When agent threads are off (`schedules` is false), McpRoomServer
+                  // hides `thread_*` from tools/list, so omit them from ToolSearch hints.
+                  roomTools: input.room.schedules
+                    ? input.room.tools
+                    : input.room.tools.filter((tool) => !tool.startsWith("thread_")),
+                }
+              : {}),
             ...(input.pageAssetsDir !== undefined
               ? {
                   vsCodeThemeTool: `mcp__${PAGES_MCP_SERVER_NAME}__${THEME_FIND_VSCODE_TOOL_NAME}`,
@@ -9907,7 +9916,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
         enableFileCheckpointing: true,
-        promptSuggestions: true,
+        promptSuggestions: input.promptSuggestions !== false,
         persistSession: true,
         // Subagent conversations arrive as messages tagged with
         // parent_tool_use_id; routing keeps them out of the main transcript

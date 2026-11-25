@@ -119,6 +119,8 @@ import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { makeSessionLaunchGenerations, withoutLaunchMark } from "../sessionLaunches.ts";
 import { buildIndependentReviewPrompt } from "../roomReviewPrompt.ts";
 import { messageSentFromNote, previousMessageSentFrom } from "../messageSentFrom.ts";
+import { sameProviderOptionSelections } from "@threadlines/shared/model";
+import { mcpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import { shouldSuggestNextMessage, turnMessageOrigin } from "../turnOrigin.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { agentMessageFrame, buildRoomCatchUp } from "../roomCatchUp.ts";
@@ -728,6 +730,23 @@ const make = Effect.gen(function* () {
    * session starts again with the thread as it is then.
    */
   const sessionsStartedFenced = new Set<ThreadId>();
+
+  /**
+   * Which optional groups on `threadlines_room` were listed when a live
+   * runtime started (McpRoomServer hides multi-agent room tools on solo
+   * threads, invite tools when invites are off, and thread/schedule tools
+   * when agent threads are off). If any flips from off to on while the
+   * session is alive, `roomToolsMissing` restarts it with resume so the
+   * provider's cached tool list picks them up. In memory only.
+   */
+  const sessionsStartedRoomScope = new Map<
+    ThreadId,
+    {
+      readonly inRoom: boolean;
+      readonly invitesOn: boolean;
+      readonly threadsOn: boolean;
+    }
+  >();
 
   /**
    * Sessions that came up without their conversation (the provider couldn't
@@ -1607,19 +1626,34 @@ const make = Effect.gen(function* () {
     // message (Part 3e).
     const scheduledRunTools = (thread.scheduledRun ?? null) !== null && participantId === null;
     const fencedOff = isLinkFenced(thread) || (thread.outsideOrigin ?? null) !== null;
+    const threadInRoom = hasAgentRecords(thread);
+    const invitesOn = agentInvitesMode(toolSettings) !== "off";
+    const threadsOn = agentThreadsMode(toolSettings) !== "off";
     const roomToolsWanted =
-      !fencedOff &&
-      (hasAgentRecords(thread) ||
-        agentInvitesMode(toolSettings) !== "off" ||
-        agentThreadsMode(toolSettings) !== "off" ||
-        scheduledRunTools);
+      !fencedOff && (threadInRoom || invitesOn || threadsOn || scheduledRunTools);
     // Every other local thread still gets the app guide, alone: asked why
     // it can't start threads, its agent can say where that is turned on
     // (docs/design/app-guide.md, "The tool").
     const guideTools = !fencedOff && !roomToolsWanted;
+    // Automated/non-interactive threads have no human waiting in the composer,
+    // so provider-native prompt suggestions (Claude) stay off there.
+    const suppressPromptSuggestions =
+      isAttachedChild(thread) ||
+      (thread.remoteOrigin ?? null) !== null ||
+      (thread.scheduledRun ?? null) !== null ||
+      (thread.outsideOrigin ?? null) !== null;
     const noteSessionFence = Effect.sync(() => {
       if (fencedOff) sessionsStartedFenced.add(sessionKey);
       else sessionsStartedFenced.delete(sessionKey);
+      if (roomToolsWanted) {
+        sessionsStartedRoomScope.set(sessionKey, {
+          inRoom: threadInRoom,
+          invitesOn,
+          threadsOn,
+        });
+      } else {
+        sessionsStartedRoomScope.delete(sessionKey);
+      }
     });
 
     const desiredRuntimeMode = early?.runtimeMode ?? thread.runtimeMode;
@@ -1825,6 +1859,7 @@ const make = Effect.gen(function* () {
       toolSettings.agentDeviceAccess === true
         ? { deviceTools: true }
         : {}),
+      ...(suppressPromptSuggestions ? { promptSuggestions: false } : {}),
       runtimeMode: desiredRuntimeMode,
     });
 
@@ -1998,8 +2033,15 @@ const make = Effect.gen(function* () {
         !isSeededHandoff &&
         (activeSession === undefined || (yield* providerService.isEarlySession(sessionKey)))
       ) {
-        yield* providerService.startEarlySession(sessionKey, sessionStartInput());
-        yield* noteSessionFence;
+        const earlyOutcome = yield* providerService.startEarlySession(
+          sessionKey,
+          sessionStartInput(),
+        );
+        // Only record the startup fence/room-scope when a new runtime actually
+        // started; a renewal keeps the earlier runtime and its cached tools.
+        if (earlyOutcome === "started") {
+          yield* noteSessionFence;
+        }
       }
       return { sessionThreadId: sessionKey, nativeForkApplied: false };
     }
@@ -2146,12 +2188,23 @@ const make = Effect.gen(function* () {
               : Effect.void;
 
       // A runtime started before its thread became a room, or before invites
-      // were turned on, or behind a fence that has lifted since, has no room
-      // tools (or no guide). It gets them by restarting with resume, once; an
-      // adapter that could not attach them reports false, and restarting
-      // again would not help.
+      // or agent threads were turned on, or behind a fence that has lifted
+      // since, lacks the newly enabled room tools. It gets them by restarting
+      // with resume, once; an adapter that could not attach them reports
+      // false, and restarting again would not help.
+      const startedRoomScope =
+        sessionsStartedRoomScope.get(sessionKey) ??
+        (yield* mcpSessionRegistry.lastListedRoomScope(sessionKey));
+      const roomScopeExpanded =
+        roomToolsWanted &&
+        activeSession?.roomTools === true &&
+        startedRoomScope !== undefined &&
+        ((threadInRoom && !startedRoomScope.inRoom) ||
+          (invitesOn && !startedRoomScope.invitesOn) ||
+          (threadsOn && !startedRoomScope.threadsOn));
       const roomToolsMissing =
         (roomToolsWanted && activeSession?.roomTools === undefined) ||
+        roomScopeExpanded ||
         (!fencedOff && activeSession !== undefined && sessionsStartedFenced.has(sessionKey));
       // An agent outside text reached sheds it by starting fresh for a turn
       // that isn't from outside: the old runtime, and whatever it left
@@ -3322,6 +3375,35 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const sameModelSelection = (left: ModelSelection, right: ModelSelection): boolean =>
+    left.instanceId === right.instanceId &&
+    left.model === right.model &&
+    sameProviderOptionSelections(left.options, right.options);
+
+  const applyRenamedWorktreeBranch = Effect.fn("applyRenamedWorktreeBranch")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly cwd: string;
+    readonly oldBranch: string;
+    readonly generatedBranch: string;
+  }) {
+    const targetBranch = buildWorkBranchName(input.generatedBranch);
+    if (targetBranch === input.oldBranch) return;
+
+    const renamed = yield* gitWorkflow.renameBranch({
+      cwd: input.cwd,
+      oldBranch: input.oldBranch,
+      newBranch: targetBranch,
+    });
+    yield* orchestrationEngine.dispatch({
+      type: "thread.meta.update",
+      commandId: serverCommandId("worktree-branch-rename"),
+      threadId: input.threadId,
+      branch: renamed.branch,
+      worktreePath: input.cwd,
+    });
+    yield* vcsStatusBroadcaster.refreshStatus(input.cwd).pipe(Effect.ignoreCause({ log: true }));
+  });
+
   const maybeGenerateAndRenameWorktreeBranchForFirstTurn = Effect.fn(
     "maybeGenerateAndRenameWorktreeBranchForFirstTurn",
   )(function* (input: {
@@ -3357,18 +3439,12 @@ const make = Effect.gen(function* () {
       });
       if (!generated) return;
 
-      const targetBranch = buildWorkBranchName(generated.branch);
-      if (targetBranch === oldBranch) return;
-
-      const renamed = yield* gitWorkflow.renameBranch({ cwd, oldBranch, newBranch: targetBranch });
-      yield* orchestrationEngine.dispatch({
-        type: "thread.meta.update",
-        commandId: serverCommandId("worktree-branch-rename"),
+      yield* applyRenamedWorktreeBranch({
         threadId: input.threadId,
-        branch: renamed.branch,
-        worktreePath: cwd,
+        cwd,
+        oldBranch,
+        generatedBranch: generated.branch,
       });
-      yield* vcsStatusBroadcaster.refreshStatus(cwd).pipe(Effect.ignoreCause({ log: true }));
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("provider command reactor failed to generate or rename worktree branch", {
@@ -3428,6 +3504,123 @@ const make = Effect.gen(function* () {
       );
     },
   );
+
+  /**
+   * When a new worktree thread needs both a thread title and a branch name and
+   * both resolve to the same writer model, ask for both in a single
+   * text-generation call instead of spawning two concurrent LLM requests on
+   * the same first message and image attachments.
+   */
+  const maybeGenerateThreadTitleAndBranchForFirstTurn = Effect.fn(
+    "maybeGenerateThreadTitleAndBranchForFirstTurn",
+  )(function* (input: {
+    readonly threadId: ThreadId;
+    readonly cwd: string;
+    readonly branch: string;
+    readonly worktreePath: string;
+    readonly messageText: string;
+    readonly attachments?: ReadonlyArray<ChatAttachment>;
+    readonly titleSeed?: string;
+  }) {
+    const attachments = input.attachments ?? [];
+    yield* Effect.gen(function* () {
+      const settings = yield* serverSettingsService.getSettings;
+      const titleModelSelection = settings.textGenerationModelSelection;
+      const branchModelSelection = resolveSourceControlWriterModelSelection(settings);
+      if (!sameModelSelection(titleModelSelection, branchModelSelection)) {
+        yield* Effect.all(
+          [
+            maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+              threadId: input.threadId,
+              branch: input.branch,
+              worktreePath: input.worktreePath,
+              messageText: input.messageText,
+              ...(attachments.length > 0 ? { attachments } : {}),
+            }),
+            maybeGenerateThreadTitleForFirstTurn({
+              threadId: input.threadId,
+              cwd: input.cwd,
+              messageText: input.messageText,
+              ...(attachments.length > 0 ? { attachments } : {}),
+              ...(input.titleSeed !== undefined ? { titleSeed: input.titleSeed } : {}),
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        return;
+      }
+
+      const generated = yield* textGeneration.generateThreadTitle({
+        cwd: input.worktreePath,
+        message: input.messageText,
+        ...(attachments.length > 0 ? { attachments } : {}),
+        includeBranch: true,
+        modelSelection: titleModelSelection,
+        backupModelSelection: settings.textGenerationBackupModelSelection,
+      });
+      if (!generated) return;
+
+      const latestThread = yield* resolveThread(input.threadId);
+      if (latestThread && canReplaceThreadTitle(latestThread.title, input.titleSeed)) {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.meta.update",
+            commandId: serverCommandId("thread-title-rename"),
+            threadId: input.threadId,
+            title: generated.title,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider command reactor failed to rename thread title", {
+                threadId: input.threadId,
+                cwd: input.cwd,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+      }
+
+      if (generated.branch) {
+        yield* applyRenamedWorktreeBranch({
+          threadId: input.threadId,
+          cwd: input.worktreePath,
+          oldBranch: input.branch,
+          generatedBranch: generated.branch,
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider command reactor failed to rename worktree branch", {
+              threadId: input.threadId,
+              cwd: input.worktreePath,
+              oldBranch: input.branch,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      } else {
+        // Fallback if the combined response omitted `branch`: keep the branch
+        // rename working instead of silently leaving the temporary branch name.
+        yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+          threadId: input.threadId,
+          branch: input.branch,
+          worktreePath: input.worktreePath,
+          messageText: input.messageText,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        });
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          "provider command reactor failed to generate first-turn thread title and branch",
+          {
+            threadId: input.threadId,
+            cwd: input.worktreePath,
+            oldBranch: input.branch,
+            cause: Cause.pretty(cause),
+          },
+        ),
+      ),
+    );
+  });
 
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
@@ -3497,21 +3690,38 @@ const make = Effect.gen(function* () {
 
       // A worktree another thread lent is that thread's to name
       // (ThreadWorktreeOrigin): a guest's first message never renames it.
-      if ((thread.worktreeOrigin ?? null) === null) {
-        yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+      const shouldRenameBranch =
+        (thread.worktreeOrigin ?? null) === null &&
+        thread.branch !== null &&
+        thread.worktreePath !== null &&
+        isTemporaryWorktreeBranch(thread.branch);
+      const shouldGenerateTitle = canReplaceThreadTitle(thread.title, event.payload.titleSeed);
+
+      if (shouldRenameBranch && shouldGenerateTitle && thread.branch && thread.worktreePath) {
+        yield* maybeGenerateThreadTitleAndBranchForFirstTurn({
           threadId: event.payload.threadId,
+          cwd: generationCwd,
           branch: thread.branch,
           worktreePath: thread.worktreePath,
           ...generationInput,
         }).pipe(Effect.forkScoped);
-      }
+      } else {
+        if (shouldRenameBranch) {
+          yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+            threadId: event.payload.threadId,
+            branch: thread.branch,
+            worktreePath: thread.worktreePath,
+            ...generationInput,
+          }).pipe(Effect.forkScoped);
+        }
 
-      if (canReplaceThreadTitle(thread.title, event.payload.titleSeed)) {
-        yield* maybeGenerateThreadTitleForFirstTurn({
-          threadId: event.payload.threadId,
-          cwd: generationCwd,
-          ...generationInput,
-        }).pipe(Effect.forkScoped);
+        if (shouldGenerateTitle) {
+          yield* maybeGenerateThreadTitleForFirstTurn({
+            threadId: event.payload.threadId,
+            cwd: generationCwd,
+            ...generationInput,
+          }).pipe(Effect.forkScoped);
+        }
       }
     }
 
@@ -6871,18 +7081,79 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  /** The checkout's uncommitted changes, bounded, for a side answer to read. */
-  const describeCheckoutChanges = (cwd: string) =>
+  const SIDE_TURN_DIFF_SUMMARY_CHAR_LIMIT = 1_500;
+
+  /**
+   * Compact per-file summary of a unified `git diff`, used when the side
+   * answer already has `room_diff` to inspect full hunks on demand.
+   */
+  const summarizeWorkingTreeDiff = (diff: string): string => {
+    const truncated = diff.includes("\n[truncated]") || diff.trimEnd().endsWith("[truncated]");
+    const files: Array<{ path: string; added: number; removed: number }> = [];
+    let current: { path: string; added: number; removed: number } | undefined;
+    for (const line of diff.split("\n")) {
+      if (line.startsWith("diff --git ")) {
+        const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+        const filePath = match?.[2] ?? line.slice("diff --git ".length).trim();
+        current = { path: filePath, added: 0, removed: 0 };
+        files.push(current);
+        continue;
+      }
+      if (!current) continue;
+      if (line.startsWith("+") && !line.startsWith("+++ ")) {
+        current.added += 1;
+      } else if (line.startsWith("-") && !line.startsWith("--- ")) {
+        current.removed += 1;
+      }
+    }
+    if (files.length === 0) {
+      const preview =
+        diff.length > SIDE_TURN_DIFF_SUMMARY_CHAR_LIMIT
+          ? `${diff.slice(0, SIDE_TURN_DIFF_SUMMARY_CHAR_LIMIT)}\n[diff clipped]`
+          : diff;
+      return `The checkout has uncommitted changes right now:\n${preview}\nCall room_diff to inspect the full uncommitted changes if needed.`;
+    }
+    const lines: Array<string> = [];
+    let usedChars = 0;
+    let omitted = 0;
+    for (const file of files) {
+      const entry = `- ${file.path} (+${file.added}/-${file.removed})`;
+      if (lines.length > 0 && usedChars + entry.length + 1 > SIDE_TURN_DIFF_SUMMARY_CHAR_LIMIT) {
+        omitted += 1;
+        continue;
+      }
+      lines.push(entry);
+      usedChars += entry.length + 1;
+    }
+    if (omitted > 0) {
+      lines.push(`- ...and ${omitted} more file${omitted === 1 ? "" : "s"}`);
+    }
+    const header = truncated
+      ? `The checkout has large uncommitted changes (diff output truncated; at least ${files.length} file${files.length === 1 ? "" : "s"} changed, counts below may be partial):`
+      : `The checkout has uncommitted changes in ${files.length} file${files.length === 1 ? "" : "s"}:`;
+    return `${header}\n${lines.join("\n")}\nCall room_diff to inspect the full uncommitted changes if needed.`;
+  };
+
+  /**
+   * The checkout's uncommitted changes for a side answer: a compact file
+   * summary when `room_diff` is attached (avoiding dumping up to 20k chars of
+   * raw diff into unrelated questions), or a bounded raw diff otherwise.
+   */
+  const describeCheckoutChanges = (cwd: string, options: { readonly hasDiffTool: boolean }) =>
     gitWorkflow.workingTreeDiff({ cwd, readOnlyProfile: true }).pipe(
-      Effect.map(({ diff }) =>
-        diff.trim().length === 0
-          ? "There are no uncommitted changes in the checkout right now."
-          : `The checkout's uncommitted changes right now (git diff):\n${
-              diff.length > SIDE_TURN_DIFF_CHAR_LIMIT
-                ? `${diff.slice(0, SIDE_TURN_DIFF_CHAR_LIMIT)}\n[diff clipped]`
-                : diff
-            }`,
-      ),
+      Effect.map(({ diff }) => {
+        if (diff.trim().length === 0) {
+          return "There are no uncommitted changes in the checkout right now.";
+        }
+        if (options.hasDiffTool) {
+          return summarizeWorkingTreeDiff(diff);
+        }
+        return `The checkout's uncommitted changes right now (git diff):\n${
+          diff.length > SIDE_TURN_DIFF_CHAR_LIMIT
+            ? `${diff.slice(0, SIDE_TURN_DIFF_CHAR_LIMIT)}\n[diff clipped]`
+            : diff
+        }`;
+      }),
       Effect.catchCause(() => Effect.succeed(undefined)),
     );
 
@@ -6970,21 +7241,23 @@ const make = Effect.gen(function* () {
       roomTools: true,
       ...(withFork && forkFrom !== undefined ? { forkFrom } : {}),
     });
-    const forked = yield* providerService.startSession(key, startInput(true)).pipe(
-      Effect.as(forkFrom !== undefined),
-      Effect.catch((error) =>
-        forkFrom === undefined
-          ? Effect.fail(error)
-          : Effect.logWarning("side answer could not fork the agent's conversation", {
-              threadId,
-              sideTurnId,
-              detail: String(error),
-            }).pipe(
-              Effect.andThen(providerService.startSession(key, startInput(false))),
-              Effect.as(false),
-            ),
-      ),
-    );
+    const { session: sideSession, forked } = yield* providerService
+      .startSession(key, startInput(true))
+      .pipe(
+        Effect.map((session) => ({ session, forked: forkFrom !== undefined })),
+        Effect.catch((error) =>
+          forkFrom === undefined
+            ? Effect.fail(error)
+            : Effect.logWarning("side answer could not fork the agent's conversation", {
+                threadId,
+                sideTurnId,
+                detail: String(error),
+              }).pipe(
+                Effect.andThen(providerService.startSession(key, startInput(false))),
+                Effect.map((session) => ({ session, forked: false })),
+              ),
+        ),
+      );
     const storedCursor = thread.roomContext?.[roomAgentKey(sideTurn.participantId)] ?? null;
     const catchUp = isReview
       ? undefined
@@ -7006,7 +7279,9 @@ const make = Effect.gen(function* () {
           ...(sideTurn.askedBy !== undefined ? { askedBy: sideTurn.askedBy.participantId } : {}),
         });
     const changes =
-      cwd !== undefined && !isReview ? yield* describeCheckoutChanges(cwd) : undefined;
+      cwd !== undefined && !isReview
+        ? yield* describeCheckoutChanges(cwd, { hasDiffTool: sideSession.roomTools === true })
+        : undefined;
     const note = [catchUp?.note, changes]
       .filter((part): part is string => part !== undefined && part.length > 0)
       .join("\n\n");

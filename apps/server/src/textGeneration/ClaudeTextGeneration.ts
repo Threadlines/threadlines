@@ -183,6 +183,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
       const claudeBinary = claudeSettings.binaryPath || "claude";
+      const runEnv = {
+        ...claudeEnvironment,
+        // One-shot text generation needs no auto-memory files loaded.
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      };
       // `--json-schema` (and `--settings`) carry inline JSON that must reach
       // the CLI verbatim; planCliSpawn spawns native executables directly and
       // quotes a composed command line for batch shims that need cmd.exe.
@@ -212,15 +217,17 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           // No MCP servers: generation needs no tools, and a run that exits
           // mid OAuth refresh loses the server's rotated refresh token.
           "--strict-mcp-config",
+          // Throwaway one-shot runs should not persist JSONL transcripts on disk.
+          "--no-session-persistence",
           "--dangerously-skip-permissions",
         ],
-        claudeEnvironment,
+        runEnv,
       );
       const command = ChildProcess.make(
         spawnPlan.command,
         [...spawnPlan.args],
         hideWindowsConsole({
-          env: claudeEnvironment,
+          env: runEnv,
           cwd,
           ...spawnPlan.options,
           stdin: {
@@ -393,6 +400,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     const { prompt, outputSchema } = buildThreadTitlePrompt({
       message: input.message,
       attachments: input.attachments,
+      includeBranch: input.includeBranch === true,
+      policy: input.policy,
     });
 
     const generated = yield* runClaudeJson({
@@ -405,6 +414,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
 
     return {
       title: sanitizeThreadTitle(generated.title),
+      ...("branch" in generated && typeof generated.branch === "string"
+        ? { branch: sanitizeBranchFragment(generated.branch) }
+        : {}),
     };
   });
 
