@@ -90,7 +90,7 @@ import {
 } from "../CommandPalette.logic";
 import { CommandPaletteResults } from "../CommandPaletteResults";
 import { addComputerNotConnectedNotice } from "../computerConnectionNotices";
-import { editorLabel } from "../EditorOpenOptions";
+import { editorLabel } from "../../editorLabels";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "../Icons";
 import { Button } from "../ui/button";
 import {

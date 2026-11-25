@@ -31,6 +31,8 @@ import {
 } from "@threadlines/contracts";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import {
+  Suspense,
+  lazy,
   memo,
   type ReactNode,
   useCallback,
@@ -152,7 +154,12 @@ import {
 } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { NEW_THEME_PROMPT, NewThemeHint } from "../theme/ui/NewThemeHint";
-import { ThemePickerStrip } from "../theme/ui/ThemePickerStrip";
+
+const LazyThemePickerStrip = lazy(() =>
+  import("../theme/ui/ThemePickerStrip").then((module) => ({
+    default: module.ThemePickerStrip,
+  })),
+);
 import { type ComposerNotice, selectComposerNotices } from "./composerNotices";
 import { useModelRetirementNotice } from "./modelRetirementNotice";
 import { ComposerDock, hasComposerDockContent } from "./ComposerDock";
@@ -176,7 +183,8 @@ import { buildExpandedImagePreview, type ExpandedImagePreview } from "./Expanded
 import { usePinchToExpand } from "./usePinchToExpand";
 import { ComposerPdfThumbnail } from "./ComposerPdfThumbnail";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
-import { basenameOfPath } from "../../vscode-icons";
+import { SuspenseEscapeTrap } from "../SuspenseEscapeTrap";
+import { basenameOfPath } from "../../lib/vscodeIconPath";
 import { cn, randomUUID } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
@@ -3659,16 +3667,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           data-glass-surface="theme-picker"
           className="mx-auto mb-1.5 w-full overflow-hidden rounded-[var(--app-radius-xlarge)] border border-border bg-card"
         >
-          <ThemePickerStrip
-            onClose={() => {
-              setIsThemePickerOpen(false);
-              composerEditorRef.current?.focusAtEnd();
-            }}
-            onNewTheme={() => {
-              fillComposerPrompt(NEW_THEME_PROMPT);
-              setNewThemeHintDismissed(false);
-            }}
-          />
+          <Suspense
+            fallback={
+              <SuspenseEscapeTrap
+                onClose={() => {
+                  setIsThemePickerOpen(false);
+                  composerEditorRef.current?.focusAtEnd();
+                }}
+              />
+            }
+          >
+            <LazyThemePickerStrip
+              onClose={() => {
+                setIsThemePickerOpen(false);
+                composerEditorRef.current?.focusAtEnd();
+              }}
+              onNewTheme={() => {
+                fillComposerPrompt(NEW_THEME_PROMPT);
+                setNewThemeHintDismissed(false);
+              }}
+            />
+          </Suspense>
         </div>
       ) : null}
       {!isComposerCollapsedMobile && !isThemePickerOpen && showNewThemeHint ? (

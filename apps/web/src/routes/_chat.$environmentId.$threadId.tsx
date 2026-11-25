@@ -25,8 +25,6 @@ import {
 } from "../environments/runtime";
 import { deriveHostedStaticThreadRouteState } from "./-chatIndexState";
 import { type DiffRouteSearch, parseDiffRouteSearch } from "../diffRouteSearch";
-import { AgentsPanel } from "../components/chat/AgentsPanel";
-import { ProjectBoardPanel } from "../components/chat/ProjectBoardPanel";
 import {
   ThreadPullRequestLinkContext,
   type ThreadPullRequestLinks,
@@ -128,10 +126,7 @@ import {
   type MediaChatTarget,
   turnSummariesRevision,
 } from "../components/media/mediaPanel.logic";
-import {
-  SourceControlPanel,
-  type SourceControlProjectTarget,
-} from "../components/source-control/SourceControlPanel";
+import type { SourceControlProjectTarget } from "../components/source-control/SourceControlPanel";
 import { useCommandHandlers } from "../commands/commandHandlers";
 import { usePanelTabCommands } from "../commands/panelTabCommands";
 
@@ -176,6 +171,21 @@ const DevicePanel = lazy(() =>
 const DeviceFloatingWindow = lazy(() =>
   import("../components/device/DeviceFloatingWindow").then((module) => ({
     default: module.DeviceFloatingWindow,
+  })),
+);
+const AgentsPanel = lazy(() =>
+  import("../components/chat/AgentsPanel").then((module) => ({
+    default: module.AgentsPanel,
+  })),
+);
+const ProjectBoardPanel = lazy(() =>
+  import("../components/chat/ProjectBoardPanel").then((module) => ({
+    default: module.ProjectBoardPanel,
+  })),
+);
+const SourceControlPanel = lazy(() =>
+  import("../components/source-control/SourceControlPanel").then((module) => ({
+    default: module.SourceControlPanel,
   })),
 );
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
@@ -1131,22 +1141,26 @@ function ChatThreadRouteView() {
     <>
       {openTabs.includes("agents") ? (
         <div className={cn("h-full w-full min-w-0 flex-col", agentsOpen ? "flex" : "hidden")}>
-          <AgentsPanel
-            environmentId={threadRef.environmentId}
-            threadId={threadRef.threadId}
-            subagents={agentsSource?.subagents ?? EMPTY_SUBAGENTS}
-            subagentRuns={agentsSource?.subagentRuns}
-            history={agentsSource?.history ?? EMPTY_SUBAGENT_HISTORY}
-            providerInstanceId={agentsSource?.providerInstanceId}
-            providerLabel={agentsSource?.providerLabel}
-            turnInFlight={agentsSource?.turnInFlight ?? false}
-            threadCwd={agentsSource?.threadCwd}
-            embedded
-            workflowRuns={agentsSource?.workflowRuns}
-            onStopWorkflowRun={agentsSource?.onStopWorkflowRun}
-            onStopBackgroundRun={agentsSource?.onStopBackgroundRun ?? noopStopRun}
-            onMessageThroughParent={messageSubagentThroughParent}
-          />
+          <Suspense
+            fallback={<p className="px-3 py-3 text-xs text-muted-foreground">Loading agents…</p>}
+          >
+            <AgentsPanel
+              environmentId={threadRef.environmentId}
+              threadId={threadRef.threadId}
+              subagents={agentsSource?.subagents ?? EMPTY_SUBAGENTS}
+              subagentRuns={agentsSource?.subagentRuns}
+              history={agentsSource?.history ?? EMPTY_SUBAGENT_HISTORY}
+              providerInstanceId={agentsSource?.providerInstanceId}
+              providerLabel={agentsSource?.providerLabel}
+              turnInFlight={agentsSource?.turnInFlight ?? false}
+              threadCwd={agentsSource?.threadCwd}
+              embedded
+              workflowRuns={agentsSource?.workflowRuns}
+              onStopWorkflowRun={agentsSource?.onStopWorkflowRun}
+              onStopBackgroundRun={agentsSource?.onStopBackgroundRun ?? noopStopRun}
+              onMessageThroughParent={messageSubagentThroughParent}
+            />
+          </Suspense>
         </div>
       ) : null}
       {openTabs.includes("media") && serverThread ? (
@@ -1167,12 +1181,16 @@ function ChatThreadRouteView() {
       ) : null}
       {openTabs.includes("threads") && serverThread ? (
         <div className={cn("h-full w-full min-w-0 flex-col", threadsOpen ? "flex" : "hidden")}>
-          <ProjectBoardPanel
-            environmentId={threadRef.environmentId}
-            threadId={threadRef.threadId}
-            projectId={serverThread.projectId}
-            onOpenThread={openThreadFromBoard}
-          />
+          <Suspense
+            fallback={<p className="px-3 py-3 text-xs text-muted-foreground">Loading threads…</p>}
+          >
+            <ProjectBoardPanel
+              environmentId={threadRef.environmentId}
+              threadId={threadRef.threadId}
+              projectId={serverThread.projectId}
+              onOpenThread={openThreadFromBoard}
+            />
+          </Suspense>
         </div>
       ) : null}
       {openTabs.includes("device") && serverThread && currentThreadKey !== null ? (
@@ -1194,24 +1212,28 @@ function ChatThreadRouteView() {
         <div
           className={cn("h-full w-full min-w-0 flex-col", sourceControlOpen ? "flex" : "hidden")}
         >
-          <SourceControlPanel
-            target={sourceControlTarget}
-            activeThreadRef={threadRef}
-            embedded
-            onPrefetchDiff={prefetchWorkingTreeDiff}
-            onOpenDiff={(filePath?: string) => {
-              activateDiffTab({
-                diffMode: "workingTree",
-                ...(filePath ? { diffFilePath: filePath } : {}),
-              });
-            }}
-            {...(availableTabs.includes("pullRequest")
-              ? { onOpenPullRequest: () => selectTab("pullRequest") }
-              : {})}
-            {...(!serverThread && draftThread
-              ? { onActiveBranchChange: handleDraftSourceControlBranchChange }
-              : {})}
-          />
+          <Suspense
+            fallback={<p className="px-3 py-3 text-xs text-muted-foreground">Loading source…</p>}
+          >
+            <SourceControlPanel
+              target={sourceControlTarget}
+              activeThreadRef={threadRef}
+              embedded
+              onPrefetchDiff={prefetchWorkingTreeDiff}
+              onOpenDiff={(filePath?: string) => {
+                activateDiffTab({
+                  diffMode: "workingTree",
+                  ...(filePath ? { diffFilePath: filePath } : {}),
+                });
+              }}
+              {...(availableTabs.includes("pullRequest")
+                ? { onOpenPullRequest: () => selectTab("pullRequest") }
+                : {})}
+              {...(!serverThread && draftThread
+                ? { onActiveBranchChange: handleDraftSourceControlBranchChange }
+                : {})}
+            />
+          </Suspense>
         </div>
       ) : null}
       {openTabs.includes("pullRequest") ? (

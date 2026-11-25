@@ -2,6 +2,7 @@ import { WorkerPoolContextProvider, useWorkerPool } from "@pierre/diffs/react";
 import DiffsWorker from "../lib/diffsWorker.ts?worker";
 import { useEffect, useMemo, type ReactNode } from "react";
 import type { DiffThemeName } from "../lib/diffRendering";
+import "../theme/attachPierreCodeThemes";
 import { useCodeThemeName } from "../theme/codeTheme";
 
 function DiffWorkerThemeSync({ themeName }: { themeName: DiffThemeName }) {

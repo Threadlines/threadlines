@@ -10,7 +10,7 @@ import { create } from "zustand";
 
 import type { InlineSkill } from "../../lib/inlineMarkdownTokens";
 import type { ChatMessage } from "../../types";
-import { markdownFirstLine } from "./chatFind/chatFindText";
+import { markdownFirstLine } from "./chatFind/chatMarkdownTextCore";
 
 interface OpenedAgentMessagesState {
   readonly opened: ReadonlySet<string>;

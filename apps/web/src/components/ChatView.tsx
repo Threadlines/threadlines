@@ -62,6 +62,8 @@ import { Debouncer } from "@tanstack/react-pacer";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Option from "effect/Option";
 import {
+  Suspense,
+  lazy,
   memo,
   useCallback,
   useEffect,
@@ -191,7 +193,7 @@ import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { isKeyboardOwnedByDialog } from "../commands/shortcutBlock";
 import { useChatFindStore } from "../chatFindStore";
 import { installFindRegionTracking, resolveFindShortcutOwner } from "../lib/findShortcutOwner";
-import { selectedChatText } from "./chat/chatFind/ChatFind";
+import { selectedChatText } from "./chat/chatFind/chatFindSelection";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   draftRightPanelStateKey,
@@ -319,7 +321,6 @@ import { McpAppSidePanel } from "./chat/McpAppCard";
 import { NO_COMPOSER_PULL_REQUESTS, type ComposerPullRequest } from "./chat/ComposerPullRequestRow";
 import { type ComposerGoalSetInput, threadGoalControls } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
-import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { useProjectBriefSupport } from "../projectBrief";
 import { linkedThreadRouteParams } from "../environments/links/linkedThreads";
 import { changeProjectNote, useThreadNoteSuggestions } from "../projectContext";
@@ -359,7 +360,29 @@ import {
 } from "./chat/threadActivity";
 import { currentWorkLine } from "./chat/activitySteps";
 import { closeExpandedImagePreview, openExpandedImagePreview } from "./chat/ExpandedImagePreview";
-import { FilePreviewDialog, type FilePreviewRequest } from "./chat/FilePreviewDialog";
+import type { FilePreviewRequest } from "./chat/FilePreviewDialog";
+import { SuspenseEscapeTrap } from "./SuspenseEscapeTrap";
+
+const LazyPullRequestThreadDialog = lazy(() =>
+  import("./PullRequestThreadDialog").then((module) => ({
+    default: module.PullRequestThreadDialog,
+  })),
+);
+const LazyFilePreviewDialog = lazy(() =>
+  import("./chat/FilePreviewDialog").then((module) => ({
+    default: module.FilePreviewDialog,
+  })),
+);
+const LazyBrowserPanel = lazy(() =>
+  import("./browser/BrowserPanel").then((module) => ({
+    default: module.BrowserPanel,
+  })),
+);
+const LazyBrowserSplitHandle = lazy(() =>
+  import("./browser/BrowserSplitHandle").then((module) => ({
+    default: module.BrowserSplitHandle,
+  })),
+);
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import {
@@ -456,8 +479,6 @@ import {
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { selectThreadBrowserState, useBrowserPanelStore } from "../browserPanelStore";
-import { BrowserPanel } from "./browser/BrowserPanel";
-import { BrowserSplitHandle } from "./browser/BrowserSplitHandle";
 import { useComposerHandleContext } from "../composerHandleContext";
 import {
   useServerAvailableEditors,
@@ -9364,33 +9385,35 @@ export default function ChatView(props: ChatViewProps) {
             ) : null}
 
             {pullRequestDialogState ? (
-              <PullRequestThreadDialog
-                key={pullRequestDialogState.key}
-                open
-                environmentId={activeThread.environmentId}
-                threadId={pullRequestDialogState.threadId}
-                cwd={activeProject?.cwd ?? null}
-                initialReference={pullRequestDialogState.initialReference}
-                onOpenChange={(open) => {
-                  if (!open) {
-                    closePullRequestDialog();
-                  }
-                }}
-                onPrepared={handlePreparedPullRequestThread}
-              />
+              <Suspense fallback={<SuspenseEscapeTrap onClose={closePullRequestDialog} />}>
+                <LazyPullRequestThreadDialog
+                  key={pullRequestDialogState.key}
+                  open
+                  environmentId={activeThread.environmentId}
+                  threadId={pullRequestDialogState.threadId}
+                  cwd={activeProject?.cwd ?? null}
+                  initialReference={pullRequestDialogState.initialReference}
+                  onOpenChange={(open) => {
+                    if (!open) {
+                      closePullRequestDialog();
+                    }
+                  }}
+                  onPrepared={handlePreparedPullRequestThread}
+                />
+              </Suspense>
             ) : null}
           </div>
         </SurfaceShownContext>
         {/* end chat column */}
         {browserOpen && routeThreadRef !== null ? (
-          <>
+          <Suspense fallback={null}>
             {browserExpanded ? null : (
-              <BrowserSplitHandle
+              <LazyBrowserSplitHandle
                 chatFraction={splitChatFraction}
                 onChange={setSplitChatFraction}
               />
             )}
-            <BrowserPanel
+            <LazyBrowserPanel
               threadRef={routeThreadRef}
               projectId={activeThread?.projectId ?? null}
               flexGrow={browserExpanded ? 1 : 1 - splitChatFraction}
@@ -9402,7 +9425,7 @@ export default function ChatView(props: ChatViewProps) {
               pendingReveal={pendingElementReveal}
               onRevealHandled={() => setPendingElementReveal(null)}
             />
-          </>
+          </Suspense>
         ) : null}
       </div>
       {/* end horizontal flex container */}
@@ -9436,7 +9459,11 @@ export default function ChatView(props: ChatViewProps) {
           setPendingTerminalAction(null);
         }}
       />
-      {previewedFile && <FilePreviewDialog request={previewedFile} onClose={closePreviewedFile} />}
+      {previewedFile ? (
+        <Suspense fallback={<SuspenseEscapeTrap onClose={closePreviewedFile} />}>
+          <LazyFilePreviewDialog request={previewedFile} onClose={closePreviewedFile} />
+        </Suspense>
+      ) : null}
     </div>
   );
 }

@@ -10,7 +10,7 @@ import { CodeIcon, Maximize2Icon, WorkflowIcon } from "lucide-react";
 import { memo, type ReactNode, useState } from "react";
 
 import { useCachedRender } from "../../hooks/useCachedRender";
-import { fnv1a32 } from "../../lib/diffRendering";
+import { fnv1a32 } from "../../lib/diffThemeName";
 import { LRUCache } from "../../lib/lruCache";
 import { useActiveTheme } from "../../theme/themeStore";
 import { Button } from "../ui/button";

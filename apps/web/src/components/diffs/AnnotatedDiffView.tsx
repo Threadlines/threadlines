@@ -19,6 +19,7 @@ import { useCallback, useMemo, type ReactNode, type Ref } from "react";
 
 import { useSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
+import "~/theme/attachPierreCodeThemes";
 import { useCodeThemeName } from "~/theme/codeTheme";
 import { cn } from "~/lib/utils";
 import { computeFileDiffStat } from "../DiffPanel.logic";

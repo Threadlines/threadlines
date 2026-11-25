@@ -23,7 +23,9 @@ import { TickingText } from "../ui/TickingText";
 import {
   createContext,
   Fragment,
+  lazy,
   memo,
+  Suspense,
   use,
   useCallback,
   useEffect,
@@ -104,7 +106,6 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   BotIcon,
-  CalendarClockIcon,
   CheckIcon,
   ChevronRightIcon,
   CircleAlertIcon,
@@ -173,13 +174,6 @@ import {
 } from "../Sidebar.logic";
 import { useComputerLabel } from "../sidebar/linkedComputers";
 import { useConnectedComputerCapability } from "../../environments/computerCapabilities";
-import {
-  describeScheduleCall,
-  parseScheduleCallResult,
-  type ScheduleChangeTool,
-} from "../scheduled/scheduled.logic";
-import { useScheduledNavigation } from "../scheduled/useScheduledPage";
-import { useScheduledTasksStore } from "../../lib/scheduledTasksState";
 import { ThreadProviderGlyph, ThreadStatusText } from "../sidebar/InboxRows";
 import {
   computeStableMessagesTimelineRows,
@@ -196,6 +190,7 @@ import {
   timelineMessageView,
   timelineRowTurnIds,
   type StableMessagesTimelineRowsState,
+  type TimelineWorkEntry,
   type TurnSummary,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
@@ -2418,7 +2413,7 @@ function keyExtractor(item: MessagesTimelineRow) {
 // TimelineRowContent — the actual row component
 // ---------------------------------------------------------------------------
 
-type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"][number];
+const LazyScheduleCallRecordLine = lazy(() => import("./ScheduleCallRecordLine"));
 type TimelineRow = MessagesTimelineRow;
 type TimelineImagePreviewItem = {
   id: string;
@@ -4864,6 +4859,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
   row: Extract<MessagesTimelineRow, { kind: "work" }>;
 }) {
   const {
+    activeThreadEnvironmentId,
     workspaceRoot,
     roomAgentNames,
     turnDiffSummaryByTurnId,
@@ -5010,9 +5006,21 @@ const WorkGroupSection = memo(function WorkGroupSection({
       {recordedThreadStartEntries.map((entry) => (
         <StartedThreadsRecord key={entry.id} entry={entry} />
       ))}
-      {scheduleCallEntries.map((entry) => (
-        <ScheduleCallRecordLine key={entry.id} entry={entry} />
-      ))}
+      {scheduleCallEntries.length > 0 ? (
+        <Suspense
+          fallback={scheduleCallEntries.map((entry) => (
+            <div key={entry.id} aria-hidden="true" className="h-5" />
+          ))}
+        >
+          {scheduleCallEntries.map((entry) => (
+            <LazyScheduleCallRecordLine
+              key={entry.id}
+              activeThreadEnvironmentId={activeThreadEnvironmentId}
+              entry={entry}
+            />
+          ))}
+        </Suspense>
+      ) : null}
     </div>
   );
 });
@@ -5022,77 +5030,6 @@ function isSettledScheduleChangeEntry(entry: TimelineWorkEntry): boolean {
   if (entry.executionState === "running") return false;
   const tool = threadlinesRoomToolOf(entry);
   return tool === "schedule_create" || tool === "schedule_update";
-}
-
-/**
- * Where the agent created or changed a scheduled task: one line with the task
- * as it is now (its schedule and next run), or its card still waiting for the
- * user. A click opens the task on the Scheduled page.
- */
-function ScheduleCallRecordLine({ entry }: { entry: TimelineWorkEntry }) {
-  const { activeThreadEnvironmentId } = use(TimelineRowCtx);
-  const nowMs = useRelativeTimeTick(30_000);
-  const navigation = useScheduledNavigation();
-  const snapshot = useScheduledTasksStore(
-    (state) => state.byEnvironment[activeThreadEnvironmentId],
-  );
-  const result = useMemo(
-    () => parseScheduleCallResult(entry.toolResult ?? entry.outputPreview),
-    [entry.outputPreview, entry.toolResult],
-  );
-  const tool: ScheduleChangeTool =
-    threadlinesRoomToolOf(entry) === "schedule_update" ? "schedule_update" : "schedule_create";
-  const record = describeScheduleCall({
-    tool,
-    result,
-    task:
-      result.taskId === null
-        ? null
-        : (snapshot?.tasks.find((task) => task.id === result.taskId) ?? null),
-    waiting:
-      result.requestId !== null &&
-      (snapshot?.requests.some((request) => request.requestId === result.requestId) ?? false),
-    failed: entry.executionState === "failed",
-    followed: snapshot !== undefined,
-    nowMs,
-  });
-  const line = (
-    <>
-      <CalendarClockIcon aria-hidden className="size-3 shrink-0 text-muted-foreground/60" />
-      <span className="max-w-[70%] min-w-0 shrink-0 truncate" data-schedule-call-heading>
-        {record.heading}
-      </span>
-      {record.outcome !== null ? (
-        <>
-          <span className="shrink-0 text-muted-foreground/50">·</span>
-          <span className="min-w-0 truncate text-muted-foreground" data-schedule-call-outcome>
-            {record.outcome}
-          </span>
-        </>
-      ) : null}
-    </>
-  );
-  const className = "flex min-w-0 items-center gap-[7px] text-xs leading-5 text-foreground/80";
-  const open = record.open;
-  return open === null ? (
-    <div className={className} data-schedule-call={entry.id}>
-      {line}
-    </div>
-  ) : (
-    <button
-      type="button"
-      className={cn(
-        className,
-        "w-full cursor-pointer text-left transition-colors hover:text-foreground",
-      )}
-      data-schedule-call={entry.id}
-      onClick={() =>
-        navigation.openTask({ environmentId: activeThreadEnvironmentId, taskId: open })
-      }
-    >
-      {line}
-    </button>
-  );
 }
 
 /**

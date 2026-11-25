@@ -37,6 +37,7 @@ import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch"
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useTheme } from "../hooks/useTheme";
 import { buildFileDiffRenderKey, getRenderablePatch } from "../lib/diffRendering";
+import "../theme/attachPierreCodeThemes";
 import { useCodeThemeName } from "../theme/codeTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useStore } from "../store";

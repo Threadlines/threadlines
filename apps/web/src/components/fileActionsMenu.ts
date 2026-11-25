@@ -17,7 +17,7 @@ import {
 } from "../environments/primary/context";
 import { readLocalApi } from "../localApi";
 import { getServerConfig, useServerAvailableEditors } from "../rpc/serverState";
-import { editorLabel } from "./EditorOpenOptions";
+import { editorLabel } from "../editorLabels";
 import { copyWithNotice } from "./ui/copyWithNotice";
 import { failureNotice, toastManager } from "./ui/toast";
 
