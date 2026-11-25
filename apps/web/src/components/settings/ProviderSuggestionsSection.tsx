@@ -48,6 +48,8 @@ const PROVIDER_SUGGESTION_CONFIG: Record<SuggestionDriverKind, ProviderSuggestio
   },
 };
 
+export const SUGGESTIONS_SECTION_PLACE = { place: "providers.suggestions" } as const;
+
 export const SUGGESTION_PLACE_DRIVER: Readonly<Record<SuggestionPlaceId, SuggestionDriverKind>> = {
   "providers.claudeSuggestions": "claudeAgent",
   "providers.codexSuggestions": "codex",
@@ -125,7 +127,10 @@ export function ProviderConfigurationSuggestionsSection({
 
   return (
     <section className="px-3.5 py-3.5" data-place={includePlaceAnchor ? config.place : undefined}>
-      <div className="flex min-w-0 items-start justify-between gap-4">
+      <div
+        className="flex min-w-0 items-start justify-between gap-4"
+        data-place={includePlaceAnchor ? SUGGESTIONS_SECTION_PLACE.place : undefined}
+      >
         <div className="min-w-0 space-y-0.5">
           <h4 className="text-[13px] font-medium text-foreground">Suggestions</h4>
           <p className="text-[12.5px] text-muted-foreground">{description}</p>

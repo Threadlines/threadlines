@@ -151,6 +151,7 @@ import {
 import {
   isSuggestionDriverKind,
   SUGGESTION_PLACE_DRIVER,
+  SUGGESTIONS_SECTION_PLACE,
   type SuggestionDriverKind,
 } from "./ProviderSuggestionsSection";
 import { addAccountMenuLabel, isThreadlinesAccountFolder } from "./providerAccounts.logic";
@@ -1932,7 +1933,17 @@ export function ProviderSettingsPanel({
   const arrivalSuggestionDriver =
     arrivalPlace !== null && arrivalPlace in SUGGESTION_PLACE_DRIVER
       ? SUGGESTION_PLACE_DRIVER[arrivalPlace as keyof typeof SUGGESTION_PLACE_DRIVER]
-      : null;
+      : arrivalPlace === SUGGESTIONS_SECTION_PLACE.place
+        ? ((["claudeAgent", "codex", "antigravity"] as const).find((driver) => {
+            const anchorId = suggestionAnchorByDriver.get(driver);
+            const anchorRow = rows.find((row) => row.instanceId === anchorId);
+            return anchorRow !== undefined && isProviderRowEnabled(anchorRow);
+          }) ??
+          (["claudeAgent", "codex", "antigravity"] as const).find((driver) =>
+            suggestionAnchorByDriver.has(driver),
+          ) ??
+          null)
+        : null;
   const arrivalAnchorId =
     arrivalSuggestionDriver !== null
       ? suggestionAnchorByDriver.get(arrivalSuggestionDriver)
