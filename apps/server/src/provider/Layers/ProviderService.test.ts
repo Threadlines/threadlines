@@ -2754,6 +2754,115 @@ routing.layer("ProviderServiceLive routing", (it) => {
       }),
   );
 
+  it.effect(
+    "brings a recovered runtime back with all tool grants it started with, and clears grants dropped on a later start",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId("thread-all-tools-recover");
+        const initial = yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-tools",
+          runtimeMode: "full-access",
+          roomTools: true,
+          scheduleTools: true,
+          scheduledRunTools: true,
+          agentPages: true,
+          artifacts: true,
+          commandRequests: true,
+          deviceTools: true,
+        });
+
+        yield* routing.codex.stopAll();
+        routing.codex.startSession.mockClear();
+        yield* provider.sendTurn({ threadId: initial.threadId, input: "resume", attachments: [] });
+
+        const resumed = routing.codex.startSession.mock.calls[0]?.[0] as
+          | {
+              readonly roomTools?: boolean;
+              readonly scheduleTools?: boolean;
+              readonly scheduledRunTools?: boolean;
+              readonly agentPages?: boolean;
+              readonly artifacts?: boolean;
+              readonly commandRequests?: boolean;
+              readonly deviceTools?: boolean;
+            }
+          | undefined;
+        assert.equal(resumed?.roomTools, true);
+        assert.equal(resumed?.scheduleTools, true);
+        assert.equal(resumed?.scheduledRunTools, true);
+        assert.equal(resumed?.agentPages, true);
+        assert.equal(resumed?.artifacts, true);
+        assert.equal(resumed?.commandRequests, true);
+        assert.equal(resumed?.deviceTools, true);
+
+        // A later start with those grants turned off clears them for subsequent recoveries.
+        yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-tools",
+          runtimeMode: "full-access",
+          guideTools: true,
+        });
+        yield* routing.codex.stopAll();
+        routing.codex.startSession.mockClear();
+        yield* provider.sendTurn({ threadId, input: "resume-narrowed", attachments: [] });
+
+        const narrowed = routing.codex.startSession.mock.calls[0]?.[0] as
+          | {
+              readonly guideTools?: boolean;
+              readonly roomTools?: boolean;
+              readonly scheduleTools?: boolean;
+              readonly scheduledRunTools?: boolean;
+              readonly agentPages?: boolean;
+              readonly artifacts?: boolean;
+              readonly commandRequests?: boolean;
+              readonly deviceTools?: boolean;
+            }
+          | undefined;
+        assert.equal(narrowed?.guideTools, true);
+        assert.equal(narrowed?.roomTools, undefined);
+        assert.equal(narrowed?.scheduleTools, undefined);
+        assert.equal(narrowed?.scheduledRunTools, undefined);
+        assert.equal(narrowed?.agentPages, undefined);
+        assert.equal(narrowed?.artifacts, undefined);
+        assert.equal(narrowed?.commandRequests, undefined);
+        assert.equal(narrowed?.deviceTools, undefined);
+      }),
+  );
+
+  it.effect(
+    "does not recover a stopped session for a subagent transcript read when the adapter lacks support",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId("thread-transcript-stopped");
+        yield* provider.startSession(threadId, {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-transcript-stopped",
+          runtimeMode: "full-access",
+        });
+
+        yield* routing.codex.stopAll();
+        routing.codex.startSession.mockClear();
+
+        const result = yield* provider
+          .readSubagentTranscript({
+            threadId,
+            agentId: "agent-1",
+          })
+          .pipe(Effect.result);
+
+        assert.equal(result._tag, "Failure");
+        assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      }),
+  );
+
   it.effect("puts the device note in front for a driver without its own way to send it", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

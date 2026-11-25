@@ -321,28 +321,54 @@ export default async function threadlines(pi: ExtensionAPI) {
     }
   };
 
-  const started = new Map<string, Promise<void>>();
-  const start = (server: ToolServer) => {
-    const existing = started.get(server.name);
+  const connected = new Map<
+    string,
+    Promise<{ readonly client: ReturnType<typeof createClient>; readonly tools: McpTool[] }>
+  >();
+  const registered = new Set<string>();
+  const connect = (server: ToolServer) => {
+    const existing = connected.get(server.name);
     if (existing) return existing;
     const attempt = (async () => {
       const client = createClient(server.url, token);
       const signal = AbortSignal.timeout(10000);
       await client.connect(signal);
-      register(server, client, await client.listTools(signal));
+      return { client, tools: await client.listTools(signal) };
     })();
-    started.set(server.name, attempt);
+    connected.set(server.name, attempt);
     void attempt.catch(() => {
-      if (started.get(server.name) === attempt) started.delete(server.name);
+      if (connected.get(server.name) === attempt) connected.delete(server.name);
     });
     return attempt;
   };
+  // Connect concurrently, then register in the fixed server order so tool
+  // definitions stay in a deterministic sequence across restarts and threads.
+  const connectAndRegisterAll = async () => {
+    const results = await Promise.allSettled(servers.map(connect));
+    let failed = 0;
+    for (let index = 0; index < servers.length; index += 1) {
+      const server = servers[index]!;
+      const result = results[index]!;
+      if (result.status !== "fulfilled") {
+        failed += 1;
+        continue;
+      }
+      if (registered.has(server.name)) continue;
+      try {
+        register(server, result.value.client, result.value.tools);
+        registered.add(server.name);
+      } catch {
+        connected.delete(server.name);
+        failed += 1;
+      }
+    }
+    return failed;
+  };
 
   // Registered at load, so Threadlines owns these names before other extensions.
-  await Promise.allSettled(servers.map(start));
+  await connectAndRegisterAll();
   pi.on("session_start", async (_event, ctx) => {
-    const results = await Promise.allSettled(servers.map(start));
-    const failed = results.filter((r) => r.status === "rejected").length;
+    const failed = await connectAndRegisterAll();
     if (failed > 0) ctx.ui.notify("Some Threadlines tools are unavailable in this Pi session.", "warning");
   });
 }

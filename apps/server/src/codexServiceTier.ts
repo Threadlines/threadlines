@@ -8,18 +8,10 @@ export const DEFAULT_CODEX_SERVICE_TIER_SELECTION = "default";
 
 const SERVICE_TIER_ID_PATTERN = /^[A-Za-z0-9_-]+$/u;
 
-function normalizeServiceTierId(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed || trimmed === DEFAULT_CODEX_SERVICE_TIER_SELECTION) {
-    return undefined;
-  }
-  return SERVICE_TIER_ID_PATTERN.test(trimmed) ? trimmed : undefined;
-}
-
-export function resolveCodexServiceTier(
+export function resolveCodexAppServerServiceTier(
   modelSelection: ModelSelection | null | undefined,
   options?: { readonly instanceId?: ProviderInstanceId },
-): string | undefined {
+): string | null | undefined {
   if (!modelSelection) {
     return undefined;
   }
@@ -27,16 +19,32 @@ export function resolveCodexServiceTier(
     return undefined;
   }
 
-  const selectedServiceTier = normalizeServiceTierId(
-    getModelSelectionStringOptionValue(modelSelection, "serviceTier"),
-  );
-  if (selectedServiceTier) {
-    return selectedServiceTier;
+  const rawServiceTier = getModelSelectionStringOptionValue(modelSelection, "serviceTier")?.trim();
+  if (rawServiceTier) {
+    if (rawServiceTier === DEFAULT_CODEX_SERVICE_TIER_SELECTION) {
+      return null;
+    }
+    if (SERVICE_TIER_ID_PATTERN.test(rawServiceTier)) {
+      return rawServiceTier;
+    }
   }
 
-  return getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true
-    ? "fast"
-    : undefined;
+  const fastMode = getModelSelectionBooleanOptionValue(modelSelection, "fastMode");
+  if (fastMode === true) {
+    return "fast";
+  }
+  if (fastMode === false) {
+    return null;
+  }
+  return undefined;
+}
+
+export function resolveCodexServiceTier(
+  modelSelection: ModelSelection | null | undefined,
+  options?: { readonly instanceId?: ProviderInstanceId },
+): string | undefined {
+  const tier = resolveCodexAppServerServiceTier(modelSelection, options);
+  return tier ?? undefined;
 }
 
 export function resolveCodexCliServiceTier(

@@ -1175,6 +1175,40 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         model: "gpt-5.4",
         serviceTier: "fast",
       });
+
+      runtime.sendTurnImpl.mockClear();
+      yield* Effect.ignore(
+        adapter.sendTurn({
+          threadId: asThreadId("sess-legacy-fast"),
+          input: "standard again",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
+            { id: "fastMode", value: false },
+          ]),
+          attachments: [],
+        }),
+      );
+      assert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
+        input: "standard again",
+        model: "gpt-5.4",
+        serviceTier: null,
+      });
+
+      runtime.sendTurnImpl.mockClear();
+      yield* Effect.ignore(
+        adapter.sendTurn({
+          threadId: asThreadId("sess-legacy-fast"),
+          input: "explicit default tier",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
+            { id: "serviceTier", value: "default" },
+          ]),
+          attachments: [],
+        }),
+      );
+      assert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
+        input: "explicit default tier",
+        model: "gpt-5.4",
+        serviceTier: null,
+      });
     }),
   );
 

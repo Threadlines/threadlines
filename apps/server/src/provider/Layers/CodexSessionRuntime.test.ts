@@ -365,12 +365,41 @@ describe("buildTurnStartParams", () => {
           prompt: "Every weekday at 9, review yesterday's commits",
           interactionMode: "default",
           scheduleTools: true,
+          managedWorktree: true,
+          agentPageAssetsDir: "/tmp/threadlines-page-assets/thread-1",
+          commandRequests: true,
+          deviceTools: true,
+          guide: true,
           ...input,
         }),
       ).collaborationMode?.settings.developer_instructions ?? "";
 
-    assert.ok(instructionsOf({}).includes("`mcp__threadlines_room__schedule_create`"));
-    assert.ok(!instructionsOf({ lockdown: true }).includes("<threadlines_schedules>"));
+    const normal = instructionsOf({});
+    assert.ok(normal.includes("`mcp__threadlines_room__schedule_create`"));
+    assert.ok(normal.includes("<threadlines_browser>"));
+
+    const lockedDown = instructionsOf({ lockdown: true });
+    assert.ok(!lockedDown.includes("<threadlines_schedules>"));
+    assert.ok(!lockedDown.includes("<threadlines_browser>"));
+    assert.ok(!lockedDown.includes("<threadlines_pages>"));
+    assert.ok(!lockedDown.includes("<threadlines_commands>"));
+    assert.ok(!lockedDown.includes("<threadlines_devices>"));
+    assert.ok(!lockedDown.includes("<threadlines_guide>"));
+    assert.ok(!lockedDown.includes("git worktree remove"));
+    assert.ok(lockedDown.includes("<threadlines_file_links>"));
+  });
+
+  it("forwards explicit null serviceTier so Codex clears a sticky fast tier", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Back to standard speed",
+        serviceTier: null,
+      }),
+    );
+
+    assert.equal(params.serviceTier, null);
   });
 
   it("omits collaboration mode when interaction mode is absent", () => {
