@@ -33,7 +33,7 @@ import * as Option from "effect/Option";
 import { DeepMutable } from "effect/Types";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import { useMemo } from "react";
-import { getLocalStorageItemWithLegacyKeys } from "./hooks/useLocalStorage";
+import { getLocalStorageItem } from "./hooks/useLocalStorage";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
 import {
   DEFAULT_INTERACTION_MODE,
@@ -77,7 +77,14 @@ const isRuntimeMode = Schema.is(RuntimeMode);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "threadlines:composer-drafts:v1";
-const LEGACY_COMPOSER_DRAFT_STORAGE_KEYS = ["t3code:composer-drafts:v1"] as const;
+export const LEGACY_COMPOSER_DRAFT_STORAGE_KEYS = ["t3code:composer-drafts:v1"] as const;
+
+const draftAttachmentBlobKey = (attachmentId: string): string => `draft:${attachmentId}`;
+
+function deleteAttachmentBlobs(keys: ReadonlyArray<string>): void {
+  if (keys.length === 0) return;
+  void import("./lib/attachmentBlobStore").then((m) => m.deleteAttachmentBlobs(keys));
+}
 const COMPOSER_DRAFT_STORAGE_VERSION = 6;
 const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
@@ -210,16 +217,72 @@ function mergeComposerDraftsWithStored(
   };
 }
 
+const composerRawStorage =
+  typeof localStorage !== "undefined" ? localStorage : createMemoryStorage();
+
+/**
+ * Removes legacy `t3code:composer-drafts:v1` keys once the current key holds a
+ * durable write, so old inline base64 payloads stop consuming localStorage quota.
+ */
+function retireLegacyComposerDraftKeys(): void {
+  try {
+    if (composerRawStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) === null) {
+      return;
+    }
+    for (const legacyKey of LEGACY_COMPOSER_DRAFT_STORAGE_KEYS) {
+      composerRawStorage.removeItem(legacyKey);
+    }
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+/**
+ * Depth counter for internal hydration/migration store updates that only
+ * populate transient in-memory fields (or sync already-written storage state).
+ * While positive, updates neither dirty `changedSinceWrite` nor schedule a
+ * debounced localStorage write, so background hydration can never overwrite a
+ * newer prompt saved by another tab.
+ */
+let internalHydrationDepth = 0;
+
+function runInternalHydrationUpdate<T>(fn: () => T): T {
+  internalHydrationDepth += 1;
+  try {
+    return fn();
+  } finally {
+    internalHydrationDepth -= 1;
+  }
+}
+
 // Every keystroke is a store update, so serializing waits for the debounce too.
-const composerDebouncedStorage = createDebouncedJSONStorage<PersistedComposerDraftStoreState>(
+const baseComposerDebouncedStorage = createDebouncedJSONStorage<PersistedComposerDraftStoreState>(
   withLegacyFallbackStorage(
-    typeof localStorage !== "undefined" ? localStorage : createMemoryStorage(),
+    composerRawStorage,
     COMPOSER_DRAFT_STORAGE_KEY,
     LEGACY_COMPOSER_DRAFT_STORAGE_KEYS,
+    { copyOnRead: false },
   ),
   COMPOSER_PERSIST_DEBOUNCE_MS,
-  { mergeWithStored: mergeComposerDraftsWithStored, onWritten: resetChangedSinceWrite },
+  {
+    mergeWithStored: mergeComposerDraftsWithStored,
+    onWritten: () => {
+      resetChangedSinceWrite();
+      retireLegacyComposerDraftKeys();
+    },
+  },
 );
+
+const composerDebouncedStorage: typeof baseComposerDebouncedStorage = {
+  getItem: (name) => baseComposerDebouncedStorage.getItem(name),
+  setItem: (name, value) => {
+    if (internalHydrationDepth > 0) return;
+    baseComposerDebouncedStorage.setItem(name, value);
+  },
+  removeItem: (name) => baseComposerDebouncedStorage.removeItem(name),
+  flush: () => baseComposerDebouncedStorage.flush(),
+  cancel: () => baseComposerDebouncedStorage.cancel(),
+};
 
 // Flush pending composer draft writes before page unload to prevent data loss.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -233,7 +296,12 @@ export const PersistedComposerAttachment = Schema.Struct({
   name: Schema.String,
   mimeType: Schema.String,
   sizeBytes: Schema.Number,
-  dataUrl: Schema.String,
+  /**
+   * Legacy inline base64 payload from before attachments moved to IndexedDB.
+   * Omitted on new writes; retained on unmigrated entries until their blob
+   * commits to IndexedDB.
+   */
+  dataUrl: Schema.optionalKey(Schema.String),
 });
 export type PersistedComposerAttachment = typeof PersistedComposerAttachment.Type;
 
@@ -454,20 +522,30 @@ const PersistedComposerDraftStoreState = Schema.Struct({
 });
 type PersistedComposerDraftStoreState = typeof PersistedComposerDraftStoreState.Type;
 
-const PersistedComposerDraftStoreStorage = Schema.Struct({
-  version: Schema.Number,
-  state: PersistedComposerDraftStoreState,
-});
-
-/**
- * Composer content keyed by either a draft session (`DraftId`) or a real server
- * thread (`ScopedThreadRef`). This is the editable payload shown in the composer.
- */
+export interface StashableComposerSnapshot {
+  readonly prompt: string;
+  readonly attachmentIds: ReadonlyArray<string>;
+  readonly terminalContextIds: ReadonlyArray<string>;
+  readonly transcriptHighlightContextIds: ReadonlyArray<string>;
+  readonly fileSelectionContextIds: ReadonlyArray<string>;
+  readonly pickedElementContextIds: ReadonlyArray<string>;
+}
 export interface ComposerThreadDraftState {
   prompt: string;
   attachments: ComposerAttachment[];
   nonPersistedAttachmentIds: string[];
   persistedAttachments: PersistedComposerAttachment[];
+  /**
+   * Transient ids of IndexedDB-backed persisted attachments whose binary bytes
+   * are currently being loaded after a reload. Never persisted.
+   */
+  hydratingAttachmentIds: string[];
+  /**
+   * Transient ids of IndexedDB-backed persisted attachments whose read hit a
+   * storage error. Metadata stays in `persistedAttachments` so a temporary
+   * failure never deletes the user's files. Never persisted.
+   */
+  failedHydrationAttachmentIds: string[];
   terminalContexts: TerminalContextDraft[];
   transcriptHighlightContexts: TranscriptHighlightContextDraft[];
   fileSelectionContexts: FileSelectionContextDraft[];
@@ -503,6 +581,34 @@ export interface ComposerThreadDraftState {
  * the new-thread flow (an invested draft is never repurposed or garbage
  * collected; a fresh draft is minted beside it).
  */
+/**
+ * Number of attachment slots occupied by a draft, including IndexedDB-backed
+ * attachments still hydrating (or awaiting retry after a read error) so file
+ * pickers, stash restore, and recordings respect the per-message slot limit.
+ */
+export function composerDraftAttachmentCount(
+  draft:
+    | Pick<
+        ComposerThreadDraftState,
+        "attachments" | "hydratingAttachmentIds" | "failedHydrationAttachmentIds"
+      >
+    | null
+    | undefined,
+): number {
+  if (!draft) return 0;
+  if (
+    draft.hydratingAttachmentIds.length === 0 &&
+    draft.failedHydrationAttachmentIds.length === 0
+  ) {
+    return draft.attachments.length;
+  }
+  const ids = new Set<string>();
+  for (const attachment of draft.attachments) ids.add(attachment.id);
+  for (const id of draft.hydratingAttachmentIds) ids.add(id);
+  for (const id of draft.failedHydrationAttachmentIds) ids.add(id);
+  return ids.size;
+}
+
 export function composerDraftHasUserContent(
   draft: ComposerThreadDraftState | null | undefined,
 ): boolean {
@@ -800,11 +906,15 @@ interface ComposerDraftStoreState {
   ) => Promise<void>;
   clearComposerContent: (threadRef: ComposerThreadTarget) => void;
   /**
-   * Clears exactly what a stash takes: prompt, attachments and the four
-   * persisted chip types. Drawings stay put, since the stash cannot carry
-   * their image and a chip without its picture shows nothing.
+   * Clears what a stash took: prompt, attachments and the four persisted chip
+   * types. Drawings stay put, since the stash cannot carry their image. When
+   * `snapshot` is supplied, only the captured prompt, attachment ids, and chip
+   * ids are removed so edits made while stashing stay intact.
    */
-  clearStashableComposerContent: (threadRef: ComposerThreadTarget) => void;
+  clearStashableComposerContent: (
+    threadRef: ComposerThreadTarget,
+    snapshot?: StashableComposerSnapshot,
+  ) => void;
 }
 
 export interface EffectiveComposerModelState {
@@ -893,6 +1003,8 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   attachments: EMPTY_ATTACHMENTS,
   nonPersistedAttachmentIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
+  hydratingAttachmentIds: EMPTY_IDS,
+  failedHydrationAttachmentIds: EMPTY_IDS,
   terminalContexts: EMPTY_TERMINAL_CONTEXTS,
   transcriptHighlightContexts: EMPTY_TRANSCRIPT_HIGHLIGHT_CONTEXTS,
   fileSelectionContexts: EMPTY_FILE_SELECTION_CONTEXTS,
@@ -910,6 +1022,8 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     attachments: [],
     nonPersistedAttachmentIds: [],
     persistedAttachments: [],
+    hydratingAttachmentIds: [],
+    failedHydrationAttachmentIds: [],
     terminalContexts: [],
     transcriptHighlightContexts: [],
     fileSelectionContexts: [],
@@ -920,21 +1034,6 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     runtimeMode: null,
     interactionMode: null,
   };
-}
-
-/**
- * Drafts are saved in local storage, which holds about 5 million characters
- * per site. An attachment whose data URL alone is longer (a third more than
- * its bytes) can never be saved there, and trying makes the whole write fail,
- * every draft's prompt with it. Such an attachment stays in memory only and
- * is marked unsaved.
- */
-export const COMPOSER_DRAFT_ATTACHMENT_MAX_SAVED_BYTES = 3_500_000;
-
-export function composerAttachmentFitsDraftStorage(
-  attachment: Pick<ComposerAttachment, "sizeBytes">,
-) {
-  return attachment.sizeBytes <= COMPOSER_DRAFT_ATTACHMENT_MAX_SAVED_BYTES;
 }
 
 /**
@@ -1141,6 +1240,8 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.prompt.length === 0 &&
     draft.attachments.length === 0 &&
     draft.persistedAttachments.length === 0 &&
+    draft.hydratingAttachmentIds.length === 0 &&
+    draft.failedHydrationAttachmentIds.length === 0 &&
     draft.terminalContexts.length === 0 &&
     draft.transcriptHighlightContexts.length === 0 &&
     draft.fileSelectionContexts.length === 0 &&
@@ -1508,6 +1609,18 @@ function revokeDraftThreadPreviewUrls(draft: ComposerThreadDraftState | undefine
   }
 }
 
+export function collectDraftAttachmentBlobKeys(
+  draft: ComposerThreadDraftState | undefined,
+): string[] {
+  if (!draft) return [];
+  const ids = new Set<string>();
+  for (const attachment of draft.attachments) ids.add(attachment.id);
+  for (const attachment of draft.persistedAttachments) ids.add(attachment.id);
+  for (const id of draft.hydratingAttachmentIds) ids.add(id);
+  for (const id of draft.failedHydrationAttachmentIds) ids.add(id);
+  return Array.from(ids, draftAttachmentBlobKey);
+}
+
 function normalizePersistedAttachment(value: unknown): PersistedComposerAttachment | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -1524,9 +1637,9 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerAttachme
     typeof mimeType !== "string" ||
     typeof sizeBytes !== "number" ||
     !Number.isFinite(sizeBytes) ||
-    typeof dataUrl !== "string" ||
+    sizeBytes < 0 ||
     id.length === 0 ||
-    dataUrl.length === 0
+    (dataUrl !== undefined && (typeof dataUrl !== "string" || dataUrl.length === 0))
   ) {
     return null;
   }
@@ -1535,7 +1648,7 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerAttachme
     name,
     mimeType,
     sizeBytes,
-    dataUrl,
+    ...(typeof dataUrl === "string" ? { dataUrl } : {}),
   };
 }
 
@@ -1948,6 +2061,7 @@ function removeDraftThreadReferences(
     state.draftThreadsByThreadKey;
   const { [threadKey]: removedComposerDraft, ...restDraftsByThreadKey } = state.draftsByThreadKey;
   revokeDraftThreadPreviewUrls(removedComposerDraft);
+  void deleteAttachmentBlobs(collectDraftAttachmentBlobKeys(removedComposerDraft));
   return {
     draftsByThreadKey: restDraftsByThreadKey,
     draftThreadsByThreadKey: restDraftThreadsByThreadKey,
@@ -2558,21 +2672,35 @@ function normalizeCurrentPersistedComposerDraftStoreState(
 }
 
 function readPersistedAttachmentIdsFromStorage(threadKey: string): string[] {
-  if (threadKey.length === 0) {
-    return [];
-  }
+  if (threadKey.length === 0) return [];
   try {
-    const persisted = getLocalStorageItemWithLegacyKeys(
-      COMPOSER_DRAFT_STORAGE_KEY,
-      LEGACY_COMPOSER_DRAFT_STORAGE_KEYS,
-      PersistedComposerDraftStoreStorage,
-    );
-    if (!persisted || persisted.version !== COMPOSER_DRAFT_STORAGE_VERSION) {
-      return [];
+    const current = getLocalStorageItem(COMPOSER_DRAFT_STORAGE_KEY, Schema.Unknown);
+    const isLegacy = current === null;
+    const raw = isLegacy
+      ? LEGACY_COMPOSER_DRAFT_STORAGE_KEYS.map((key) =>
+          getLocalStorageItem(key, Schema.Unknown),
+        ).find((value) => value !== null)
+      : current;
+    if (!raw || typeof raw !== "object") return [];
+    const { version, state } = raw as { version?: unknown; state?: unknown };
+    if (typeof version !== "number" || !state || typeof state !== "object") return [];
+    if (isLegacy) {
+      const migrated =
+        version === COMPOSER_DRAFT_STORAGE_VERSION
+          ? normalizeCurrentPersistedComposerDraftStoreState(state)
+          : migratePersistedComposerDraftStoreState(state);
+      return (migrated.draftsByThreadKey[threadKey]?.attachments ?? []).map((a) => a.id);
     }
-    return (persisted.state.draftsByThreadKey[threadKey]?.attachments ?? []).map(
-      (attachment) => attachment.id,
-    );
+    if (version !== COMPOSER_DRAFT_STORAGE_VERSION) return [];
+    const drafts = (state as { draftsByThreadKey?: Record<string, { attachments?: unknown }> })
+      .draftsByThreadKey;
+    const list = drafts && typeof drafts === "object" ? drafts[threadKey]?.attachments : null;
+    return Array.isArray(list)
+      ? list.flatMap((entry) => {
+          const normalized = normalizePersistedAttachment(entry);
+          return normalized ? [normalized.id] : [];
+        })
+      : [];
   } catch {
     return [];
   }
@@ -2610,9 +2738,13 @@ function verifyPersistedAttachments(
     if (!current) {
       return state;
     }
-    const attachmentIdSet = new Set(current.attachments.map((attachment) => attachment.id));
+    const activeIdSet = new Set<string>([
+      ...current.attachments.map((attachment) => attachment.id),
+      ...current.hydratingAttachmentIds,
+      ...current.failedHydrationAttachmentIds,
+    ]);
     const persistedAttachments = attachments.filter(
-      (attachment) => attachmentIdSet.has(attachment.id) && persistedIdSet.has(attachment.id),
+      (attachment) => activeIdSet.has(attachment.id) && persistedIdSet.has(attachment.id),
     );
     const nonPersistedAttachmentIds = current.attachments
       .map((attachment) => attachment.id)
@@ -2632,7 +2764,51 @@ function verifyPersistedAttachments(
   });
 }
 
-function hydratePersistedComposerAttachment(attachment: PersistedComposerAttachment): File | null {
+/**
+ * Wraps a `File` in a live `ComposerAttachment`, minting an object URL for
+ * images unless the caller already has a preview URL (e.g. a legacy data URL).
+ */
+export function composerAttachmentFromFile(input: {
+  readonly id: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly file: File;
+  readonly previewUrl?: string;
+}): ComposerAttachment {
+  if (input.mimeType.startsWith("image/")) {
+    return {
+      type: "image",
+      id: input.id,
+      name: input.name,
+      mimeType: input.mimeType,
+      sizeBytes: input.sizeBytes,
+      previewUrl: input.previewUrl ?? URL.createObjectURL(input.file),
+      file: input.file,
+    } satisfies ComposerImageAttachment;
+  }
+
+  const fileType = resolveFileAttachmentType({
+    mimeType: input.mimeType,
+    fileName: input.name,
+  });
+  return {
+    type: "file",
+    kind: fileType.kind,
+    id: input.id,
+    name: input.name,
+    mimeType: input.mimeType,
+    sizeBytes: input.sizeBytes,
+    file: input.file,
+  } satisfies ComposerFileAttachment;
+}
+
+export function hydratePersistedComposerAttachment(
+  attachment: PersistedComposerAttachment,
+): File | null {
+  if (typeof attachment.dataUrl !== "string") {
+    return null;
+  }
   const commaIndex = attachment.dataUrl.indexOf(",");
   const header = commaIndex === -1 ? attachment.dataUrl : attachment.dataUrl.slice(0, commaIndex);
   const payload = commaIndex === -1 ? "" : attachment.dataUrl.slice(commaIndex + 1);
@@ -2667,9 +2843,9 @@ function hydratePersistedComposerAttachment(attachment: PersistedComposerAttachm
 }
 
 /**
- * Rebuilds live composer attachments from their persisted data URLs.
- * Exported so the prompt stash restores attachments through exactly the same
- * path a reloaded draft does, rather than reinventing the image/file split.
+ * Rebuilds live composer attachments from legacy inline data URLs.
+ * IndexedDB-backed entries (which omit `dataUrl`) hydrate asynchronously via
+ * `ensureDraftAttachmentsHydrated` / stash blob loading.
  */
 export function hydrateAttachmentsFromPersisted(
   attachments: ReadonlyArray<PersistedComposerAttachment>,
@@ -2677,35 +2853,15 @@ export function hydrateAttachmentsFromPersisted(
   return attachments.flatMap((attachment): ComposerAttachment[] => {
     const file = hydratePersistedComposerAttachment(attachment);
     if (!file) return [];
-
-    if (attachment.mimeType.startsWith("image/")) {
-      return [
-        {
-          type: "image" as const,
-          id: attachment.id,
-          name: attachment.name,
-          mimeType: attachment.mimeType,
-          sizeBytes: attachment.sizeBytes,
-          previewUrl: attachment.dataUrl,
-          file,
-        } satisfies ComposerImageAttachment,
-      ];
-    }
-
-    const fileType = resolveFileAttachmentType({
-      mimeType: attachment.mimeType,
-      fileName: attachment.name,
-    });
     return [
-      {
-        type: "file" as const,
-        kind: fileType.kind,
+      composerAttachmentFromFile({
         id: attachment.id,
         name: attachment.name,
         mimeType: attachment.mimeType,
         sizeBytes: attachment.sizeBytes,
         file,
-      } satisfies ComposerFileAttachment,
+        ...(typeof attachment.dataUrl === "string" ? { previewUrl: attachment.dataUrl } : {}),
+      }),
     ];
   });
 }
@@ -2717,15 +2873,23 @@ function toHydratedThreadDraft(
   const modelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>> =
     persistedDraft.modelSelectionByProvider ?? {};
   const activeProvider = normalizeProviderInstanceId(persistedDraft.activeProvider) ?? null;
+  const legacyAttachments = persistedDraft.attachments.filter(
+    (attachment) => typeof attachment.dataUrl === "string",
+  );
+  const blobBackedIds = persistedDraft.attachments
+    .filter((attachment) => typeof attachment.dataUrl !== "string")
+    .map((attachment) => attachment.id);
 
   return {
     prompt: persistedDraft.prompt,
-    attachments: hydrateAttachmentsFromPersisted(persistedDraft.attachments),
+    attachments: hydrateAttachmentsFromPersisted(legacyAttachments),
     // Never restored, because never stored: a drawing is mostly its image, and
     // one without a picture would be a chip that shows nothing.
     drawingContexts: [],
     nonPersistedAttachmentIds: [],
     persistedAttachments: [...persistedDraft.attachments],
+    hydratingAttachmentIds: blobBackedIds,
+    failedHydrationAttachmentIds: [],
     terminalContexts:
       persistedDraft.terminalContexts?.map((context) => ({
         ...context,
@@ -2788,6 +2952,11 @@ function toHydratedDraftThreadState(
   };
 }
 
+// Declared before `composerDraftStore` because Zustand invokes
+// `onRehydrateStorage` synchronously inside `create(...)` for localStorage.
+const hydrationInFlightByThreadKey = new Map<string, Promise<void>>();
+let postRehydratePromise: Promise<void> = Promise.resolve();
+
 const composerDraftStore = create<ComposerDraftStoreState>()(
   persist(
     (setBase, get) => {
@@ -2795,33 +2964,72 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
 
       /**
        * Empties the composer's content for a target. Sending clears
-       * everything; stashing keeps drawings, because a drawing is mostly its
-       * image and the stash does not carry one — clearing it here would
-       * destroy work the user can never get back.
+       * everything; stashing keeps drawings, and when given a `snapshot`,
+       * removes only the captured prompt, attachments, and chips so edits made
+       * while saving blobs stay intact.
        */
       const clearDraftContent = (
         threadRef: ComposerThreadTarget,
-        options: { includeDrawingContexts: boolean },
+        options: {
+          includeDrawingContexts: boolean;
+          snapshot?: StashableComposerSnapshot;
+        },
       ): void => {
         const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
-        if (threadKey.length === 0) {
-          return;
-        }
+        if (threadKey.length === 0) return;
+        const { snapshot } = options;
+        let removedBlobKeys: string[] = [];
         set((state) => {
           const current = state.draftsByThreadKey[threadKey];
-          if (!current) {
-            return state;
+          if (!current) return state;
+          const removedAttIds = snapshot ? new Set(snapshot.attachmentIds) : null;
+          if (removedAttIds) {
+            for (const att of current.attachments) {
+              if (removedAttIds.has(att.id)) revokeObjectPreviewUrl(att.previewUrl);
+            }
+            removedBlobKeys = Array.from(removedAttIds, draftAttachmentBlobKey);
+          } else {
+            removedBlobKeys = collectDraftAttachmentBlobKeys(current);
           }
+          const keepById = <T extends { id: string }>(
+            items: ReadonlyArray<T>,
+            dropIds?: ReadonlyArray<string>,
+          ): T[] => {
+            if (!dropIds) return [];
+            const drop = new Set(dropIds);
+            return items.filter((item) => !drop.has(item.id));
+          };
           const nextDraft: ComposerThreadDraftState = {
             ...current,
-            prompt: "",
-            attachments: [],
-            nonPersistedAttachmentIds: [],
-            persistedAttachments: [],
-            terminalContexts: [],
-            transcriptHighlightContexts: [],
-            fileSelectionContexts: [],
-            pickedElementContexts: [],
+            prompt: snapshot && current.prompt !== snapshot.prompt ? current.prompt : "",
+            attachments: removedAttIds
+              ? current.attachments.filter((a) => !removedAttIds.has(a.id))
+              : [],
+            nonPersistedAttachmentIds: removedAttIds
+              ? current.nonPersistedAttachmentIds.filter((id) => !removedAttIds.has(id))
+              : [],
+            persistedAttachments: removedAttIds
+              ? current.persistedAttachments.filter((a) => !removedAttIds.has(a.id))
+              : [],
+            hydratingAttachmentIds: removedAttIds
+              ? current.hydratingAttachmentIds.filter((id) => !removedAttIds.has(id))
+              : [],
+            failedHydrationAttachmentIds: removedAttIds
+              ? current.failedHydrationAttachmentIds.filter((id) => !removedAttIds.has(id))
+              : [],
+            terminalContexts: keepById(current.terminalContexts, snapshot?.terminalContextIds),
+            transcriptHighlightContexts: keepById(
+              current.transcriptHighlightContexts,
+              snapshot?.transcriptHighlightContextIds,
+            ),
+            fileSelectionContexts: keepById(
+              current.fileSelectionContexts,
+              snapshot?.fileSelectionContextIds,
+            ),
+            pickedElementContexts: keepById(
+              current.pickedElementContexts,
+              snapshot?.pickedElementContextIds,
+            ),
             ...(options.includeDrawingContexts ? { drawingContexts: [] } : {}),
           };
           const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
@@ -2832,6 +3040,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           }
           return { draftsByThreadKey: nextDraftsByThreadKey };
         });
+        if (removedBlobKeys.length > 0) {
+          deleteAttachmentBlobs(removedBlobKeys);
+        }
       };
 
       return {
@@ -3832,6 +4043,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (removedAttachment) {
             revokeObjectPreviewUrl(removedAttachment.previewUrl);
           }
+          void deleteAttachmentBlobs([draftAttachmentBlobKey(attachmentId)]);
           set((state) => {
             const current = state.draftsByThreadKey[threadKey];
             if (!current) {
@@ -3847,6 +4059,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ),
               persistedAttachments: current.persistedAttachments.filter(
                 (attachment) => attachment.id !== attachmentId,
+              ),
+              hydratingAttachmentIds: current.hydratingAttachmentIds.filter(
+                (id) => id !== attachmentId,
+              ),
+              failedHydrationAttachmentIds: current.failedHydrationAttachmentIds.filter(
+                (id) => id !== attachmentId,
               ),
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
@@ -4233,14 +4451,33 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (threadKey.length === 0) {
             return;
           }
+          const deletedBlobKeys: string[] = [];
           set((state) => {
             const current = state.draftsByThreadKey[threadKey];
             if (!current) {
               return state;
             }
+            const preservedIdSet = new Set<string>([
+              ...current.hydratingAttachmentIds,
+              ...current.failedHydrationAttachmentIds,
+            ]);
+            const keptPersisted = current.persistedAttachments.filter((attachment) =>
+              preservedIdSet.has(attachment.id),
+            );
+            for (const attachment of current.persistedAttachments) {
+              if (!preservedIdSet.has(attachment.id)) {
+                deletedBlobKeys.push(draftAttachmentBlobKey(attachment.id));
+              }
+            }
+            if (
+              keptPersisted.length === current.persistedAttachments.length &&
+              current.nonPersistedAttachmentIds.length === 0
+            ) {
+              return state;
+            }
             const nextDraft: ComposerThreadDraftState = {
               ...current,
-              persistedAttachments: [],
+              persistedAttachments: keptPersisted,
               nonPersistedAttachmentIds: [],
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
@@ -4251,6 +4488,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             return { draftsByThreadKey: nextDraftsByThreadKey };
           });
+          if (deletedBlobKeys.length > 0) {
+            void deleteAttachmentBlobs(deletedBlobKeys);
+          }
         },
         syncPersistedAttachments: (threadRef, attachments) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef);
@@ -4286,8 +4526,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
         clearComposerContent: (threadRef) => {
           clearDraftContent(threadRef, { includeDrawingContexts: true });
         },
-        clearStashableComposerContent: (threadRef) => {
-          clearDraftContent(threadRef, { includeDrawingContexts: false });
+        clearStashableComposerContent: (threadRef, snapshot) => {
+          clearDraftContent(threadRef, {
+            includeDrawingContexts: false,
+            ...(snapshot ? { snapshot } : {}),
+          });
         },
       };
     },
@@ -4295,8 +4538,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
       name: COMPOSER_DRAFT_STORAGE_KEY,
       version: COMPOSER_DRAFT_STORAGE_VERSION,
       storage: composerDebouncedStorage,
-      // Loading from storage is not a change of this tab's.
-      onRehydrateStorage: () => () => resetChangedSinceWrite(),
+      // Loading from storage is not a change of this tab's; hydrate IndexedDB
+      // blobs and migrate any legacy inline dataUrls in the background.
+      onRehydrateStorage: () => () => {
+        resetChangedSinceWrite();
+        void scheduleComposerDraftPostRehydrate();
+      },
       migrate: migratePersistedComposerDraftStoreState,
       partialize: partializeComposerDraftStoreState,
       merge: (persistedState, currentState) => {
@@ -4329,7 +4576,116 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
 
 export const useComposerDraftStore = composerDraftStore;
 
+function createDraftHydrationContext() {
+  return {
+    storageKey: COMPOSER_DRAFT_STORAGE_KEY,
+    storageVersion: COMPOSER_DRAFT_STORAGE_VERSION,
+    getRawStorageItem: (key: string) => composerRawStorage.getItem(key),
+    setRawStorageItem: (key: string, value: string) => composerRawStorage.setItem(key, value),
+    retireLegacyKeys: retireLegacyComposerDraftKeys,
+    getDrafts: () => composerDraftStore.getState().draftsByThreadKey,
+    partializeCurrentState: () => partializeComposerDraftStoreState(composerDraftStore.getState()),
+    normalizePersistedAttachment,
+    composerAttachmentFromFile,
+    hydratePersistedComposerAttachment,
+    revokePreviewUrl: revokeObjectPreviewUrl,
+    shouldRemoveDraft,
+    updateDraftsInternally: (
+      updater: (
+        draftsByThreadKey: Record<string, ComposerThreadDraftState>,
+      ) => Record<string, ComposerThreadDraftState> | null,
+    ) => {
+      runInternalHydrationUpdate(() => {
+        composerDraftStore.setState((state) => {
+          const next = updater(state.draftsByThreadKey);
+          return next ? { draftsByThreadKey: next } : state;
+        });
+      });
+    },
+  };
+}
+
+async function hydrateDraftAttachmentsByKey(
+  threadKey: string,
+  options?: { readonly retryFailed?: boolean },
+): Promise<void> {
+  if (threadKey.length === 0) return;
+  const existing = hydrationInFlightByThreadKey.get(threadKey);
+  if (existing) {
+    await existing;
+    if (!options?.retryFailed) return;
+  }
+
+  const initialDraft = composerDraftStore.getState().draftsByThreadKey[threadKey];
+  if (!initialDraft) return;
+  const hasWork =
+    initialDraft.hydratingAttachmentIds.length > 0 ||
+    (options?.retryFailed === true && initialDraft.failedHydrationAttachmentIds.length > 0);
+  if (!hasWork) return;
+
+  const promise = import("./lib/attachmentBlobMaintenance")
+    .then(({ runHydrateDraftAttachments }) =>
+      runHydrateDraftAttachments(createDraftHydrationContext(), threadKey, options),
+    )
+    .finally(() => {
+      if (hydrationInFlightByThreadKey.get(threadKey) === promise) {
+        hydrationInFlightByThreadKey.delete(threadKey);
+      }
+    });
+  hydrationInFlightByThreadKey.set(threadKey, promise);
+  await promise;
+}
+
+/**
+ * Ensures any IndexedDB-backed attachments for `target` have finished loading
+ * (instant no-op when nothing is pending). Pass `retryFailed: true` before
+ * sending or stashing so a transient IndexedDB error gets a second chance.
+ */
+export async function ensureDraftAttachmentsHydrated(
+  target: ComposerThreadTarget,
+  options?: { readonly retryFailed?: boolean },
+): Promise<void> {
+  const threadKey = resolveComposerDraftKey(composerDraftStore.getState(), target);
+  if (!threadKey) return;
+  await hydrateDraftAttachmentsByKey(threadKey, options);
+}
+
+function scheduleComposerDraftPostRehydrate(): Promise<void> {
+  const run = async () => {
+    const drafts = composerDraftStore.getState().draftsByThreadKey;
+    const threadKeys = Object.entries(drafts)
+      .filter(([, draft]) => draft.hydratingAttachmentIds.length > 0)
+      .map(([threadKey]) => threadKey);
+    const hasLegacy = Object.values(drafts).some((draft) =>
+      draft.persistedAttachments.some((attachment) => typeof attachment.dataUrl === "string"),
+    );
+    if (threadKeys.length === 0 && !hasLegacy) return;
+    await Promise.all(threadKeys.map((threadKey) => hydrateDraftAttachmentsByKey(threadKey)));
+    if (hasLegacy) {
+      const { runMigrateLegacyDraftAttachments } = await import("./lib/attachmentBlobMaintenance");
+      await runMigrateLegacyDraftAttachments(createDraftHydrationContext());
+    }
+  };
+  postRehydratePromise = postRehydratePromise.then(run, run);
+  return postRehydratePromise;
+}
+
+/** Waits for startup IndexedDB hydration and legacy draft migration to finish. */
+export function waitForComposerDraftHydration(): Promise<void> {
+  return postRehydratePromise;
+}
+
+/** Reads a raw composer draft storage key for background maintenance. */
+export function readComposerDraftRawStorageItem(
+  key: string,
+): string | null | Promise<string | null> {
+  return composerRawStorage.getItem(key);
+}
+
 composerDraftStore.subscribe((state, previous) => {
+  if (internalHydrationDepth > 0) {
+    return;
+  }
   if (state.draftsByThreadKey !== previous.draftsByThreadKey) {
     for (const key of Object.keys(previous.draftsByThreadKey)) {
       if (

@@ -8,6 +8,12 @@ import {
   type ComposerAttachment,
   useComposerDraftStore,
 } from "~/composerDraftStore";
+import {
+  clearAttachmentBlobsForTest,
+  draftAttachmentBlobKey,
+  readAttachmentBlob,
+  setAttachmentBlobBackendForTest,
+} from "~/lib/attachmentBlobStore";
 import { publishComposerImageSupport } from "../chat/composerImageSupport";
 import type { DeviceRecorderResult } from "./deviceRecorder";
 import { handOffDeviceRecording, useKeptDeviceRecordings } from "./deviceRecordingHandoff";
@@ -87,9 +93,11 @@ describe("handOffDeviceRecording", () => {
     publishComposerImageSupport(threadKey, true);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    setAttachmentBlobBackendForTest(null);
     useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
     localStorage.removeItem(COMPOSER_DRAFT_STORAGE_KEY);
+    await clearAttachmentBlobsForTest();
   });
 
   it("appends the step log, video and screenshots to the draft, keeping what was there", async () => {
@@ -206,12 +214,40 @@ describe("handOffDeviceRecording", () => {
     expect(draft()!.prompt.startsWith(`${prompt}\n\nRecorded on iPhone 17e`)).toBe(true);
   });
 
-  it("never costs a saved attachment when the recording does not fit in storage", async () => {
-    // About 2.7 million characters saved, then a video of 3.3 million: together
-    // past the 5.2 million local storage holds.
+  it("saves a large recording alongside an existing large attachment via IndexedDB", async () => {
     useComposerDraftStore.getState().addAttachments(threadRef, [existingFile("saved", 2_000_000)]);
     await saveComposerDraftAttachments(threadRef);
     expect(await savedIds()).toEqual(["saved"]);
+
+    const big = result(0);
+    const handoff = await handOffDeviceRecording({
+      threadKey,
+      threadRef,
+      result: {
+        ...big,
+        video: {
+          ...big.video!,
+          blob: new Blob([new Uint8Array(2_500_000)], { type: "video/webm" }),
+        },
+      },
+      context: "iPhone 17e (iOS 27.2)",
+    });
+    expect(handoff.unsaved).toBe(0);
+    expect(await savedIds()).toHaveLength(2);
+    expect(useKeptDeviceRecordings.getState()[threadKey]).toBeUndefined();
+  });
+
+  it("never costs a saved attachment when IndexedDB rejects the recording", async () => {
+    useComposerDraftStore.getState().addAttachments(threadRef, [existingFile("saved", 2_000_000)]);
+    await saveComposerDraftAttachments(threadRef);
+    expect(await savedIds()).toEqual(["saved"]);
+
+    setAttachmentBlobBackendForTest({
+      put: async () => false,
+      get: async () => ({ status: "error" }),
+      deleteMany: async () => {},
+      listMeta: async () => null,
+    });
 
     const big = result(0);
     await handOffDeviceRecording({
@@ -233,29 +269,19 @@ describe("handOffDeviceRecording", () => {
     ]);
   });
 
-  it("keeps unsaved screenshots for download when a recording without video does not fit", async () => {
-    // Screenshots worth saving: noise does not compress.
-    const noisy = document.createElement("canvas");
-    noisy.width = 600;
-    noisy.height = 1200;
-    const context = noisy.getContext("2d")!;
-    const pixels = context.createImageData(noisy.width, noisy.height);
-    for (let index = 0; index < pixels.data.length; index++) {
-      pixels.data[index] = index % 4 === 3 ? 255 : Math.floor(Math.random() * 256);
-    }
-    context.putImageData(pixels, 0, 0);
-    const frame = await new Promise<Blob>((resolve) =>
-      noisy.toBlob((blob) => resolve(blob!), "image/png"),
-    );
+  it("keeps unsaved screenshots for download when localStorage rejects metadata persistence", async () => {
+    useComposerDraftStore.getState().addAttachments(threadRef, [existingFile("saved", 128)]);
+    await saveComposerDraftAttachments(threadRef);
+    expect(await savedIds()).toEqual(["saved"]);
+
     const base = result(2);
     const recorded = {
       ...base,
-      captures: base.captures.map((capture) => ({ ...capture, frame })),
       video: null,
       videoMissing: "this browser cannot record video",
     };
 
-    // Leave room for the step log, not for the screenshots.
+    // Fill localStorage completely so even the compact metadata write is rejected.
     let room = 0;
     for (let size = 6_000_000; size > 0; size -= 20_000) {
       try {
@@ -267,7 +293,19 @@ describe("handOffDeviceRecording", () => {
       }
     }
     localStorage.removeItem("handoff-test-probe");
-    localStorage.setItem("handoff-test-filler", "x".repeat(Math.max(0, room - 40_000)));
+    // Top up to within a few bytes of the quota ceiling.
+    let filler = "x".repeat(room);
+    for (let step = 10_000; step >= 100; step = Math.floor(step / 10)) {
+      for (;;) {
+        try {
+          localStorage.setItem("handoff-test-filler", filler + "x".repeat(step));
+          filler += "x".repeat(step);
+        } catch {
+          break;
+        }
+      }
+    }
+    localStorage.setItem("handoff-test-filler", filler);
     try {
       const handoff = await handOffDeviceRecording({
         threadKey,
@@ -277,12 +315,18 @@ describe("handOffDeviceRecording", () => {
       });
       expect(handoff.frames).toBe(2);
       expect(handoff.unsaved).toBe(2);
+      // Previously saved file stays intact in localStorage and IndexedDB.
+      expect(draft()!.persistedAttachments.map((attachment) => attachment.id)).toEqual(["saved"]);
+      expect((await readAttachmentBlob(draftAttachmentBlobKey("saved"))).status).toBe("ok");
+      const unsavedAttachments = draft()!.attachments.filter(
+        (attachment) => attachment.id !== "saved",
+      );
       const kept = useKeptDeviceRecordings.getState()[threadKey] ?? [];
       expect(kept.map((entry) => entry.message)).toEqual([
         "The draft cannot keep 2 screenshots through a reload.",
       ]);
       expect(kept[0]?.files.map((entry) => entry.fileName)).toEqual(
-        draft()!.attachments.map((attachment) => attachment.name),
+        unsavedAttachments.map((attachment) => attachment.name),
       );
     } finally {
       localStorage.removeItem("handoff-test-filler");

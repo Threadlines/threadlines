@@ -1,6 +1,8 @@
 import { BookmarkIcon, XIcon } from "lucide-react";
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 
+import type { PersistedComposerAttachment } from "../../composerDraftStore";
+import { readAttachmentBlob, stashAttachmentBlobKey } from "../../lib/attachmentBlobStore";
 import { stripInlineTerminalContextPlaceholders } from "../../lib/terminalContext";
 import { stashEntryChipCount, type PromptStashEntry } from "../../promptStashStore";
 import {
@@ -77,6 +79,47 @@ export function stashEntrySnippet(entry: PromptStashEntry): string {
   return chipCount > 0 ? `${chipCount} chip${chipCount === 1 ? "" : "s"}` : "Empty prompt";
 }
 
+function StashAttachmentThumbnail(props: {
+  readonly entryId: string;
+  readonly attachment: PersistedComposerAttachment;
+}) {
+  const { entryId, attachment } = props;
+  const inlineDataUrl = attachment.dataUrl;
+  const lookupKey =
+    inlineDataUrl === undefined ? stashAttachmentBlobKey(entryId, attachment.id) : null;
+  const [loaded, setLoaded] = useState<{ readonly key: string; readonly url: string } | null>(null);
+
+  useEffect(() => {
+    if (lookupKey === null) return;
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    void readAttachmentBlob(lookupKey).then((result) => {
+      if (cancelled || result.status !== "ok") return;
+      objectUrl = URL.createObjectURL(result.blob);
+      setLoaded({ key: lookupKey, url: objectUrl });
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl !== null) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [lookupKey]);
+
+  const src = inlineDataUrl ?? (loaded?.key === lookupKey ? loaded.url : null);
+  if (src === null) {
+    return <span aria-hidden="true" className="size-5 rounded-xs border border-border bg-muted" />;
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      aria-hidden="true"
+      className="size-5 rounded-xs border border-border object-cover"
+    />
+  );
+}
+
 const StashEntryRow = memo(function StashEntryRow(props: {
   entry: PromptStashEntry;
   onRestore: (entry: PromptStashEntry) => void;
@@ -99,12 +142,10 @@ const StashEntryRow = memo(function StashEntryRow(props: {
       {thumbnails.length > 0 ? (
         <span className="-space-x-1.5 flex shrink-0 items-center">
           {thumbnails.map((attachment) => (
-            <img
+            <StashAttachmentThumbnail
               key={attachment.id}
-              src={attachment.dataUrl}
-              alt=""
-              aria-hidden="true"
-              className="size-5 rounded-xs border border-border object-cover"
+              entryId={entry.id}
+              attachment={attachment}
             />
           ))}
         </span>

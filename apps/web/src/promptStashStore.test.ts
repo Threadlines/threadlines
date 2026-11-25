@@ -2,34 +2,41 @@ import { ThreadId } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  collectLivePromptStashBlobKeys,
+  deleteStashEntryBlobs,
   MAX_STASH_ENTRIES,
-  MAX_STASH_ENTRY_ATTACHMENT_CHARS,
-  partitionStashAttachments,
   setPromptStashStorageForTest,
   stashEntryChipCount,
   usePromptStashStore,
   writePromptStashStorageForTest,
   type PromptStashEntry,
 } from "./promptStashStore";
+import {
+  clearAttachmentBlobsForTest,
+  createMemoryAttachmentBlobBackend,
+  putAttachmentBlob,
+  readAttachmentBlob,
+  setAttachmentBlobBackendForTest,
+  stashAttachmentBlobKey,
+} from "./lib/attachmentBlobStore";
 
 function makeEntry(input: {
   id: string;
   prompt?: string;
-  attachmentChars?: number;
+  attachmentBytes?: number;
 }): PromptStashEntry {
   return {
     id: input.id,
     createdAt: "2026-07-24T12:00:00.000Z",
     prompt: input.prompt ?? `prompt ${input.id}`,
     attachments:
-      input.attachmentChars !== undefined
+      input.attachmentBytes !== undefined
         ? [
             {
               id: `${input.id}-file`,
               name: "shot.png",
               mimeType: "image/png",
-              sizeBytes: input.attachmentChars,
-              dataUrl: "x".repeat(input.attachmentChars),
+              sizeBytes: input.attachmentBytes,
             },
           ]
         : [],
@@ -41,48 +48,6 @@ function resetPromptStashStore() {
   usePromptStashStore.setState({ entries: [] });
   writePromptStashStorageForTest("");
 }
-
-describe("partitionStashAttachments", () => {
-  it("keeps attachments within the budget and reports dropped names in order", () => {
-    const small = {
-      id: "a",
-      name: "small.png",
-      mimeType: "image/png",
-      sizeBytes: 10,
-      dataUrl: "x".repeat(10),
-    };
-    const huge = {
-      id: "b",
-      name: "huge.pdf",
-      mimeType: "application/pdf",
-      sizeBytes: MAX_STASH_ENTRY_ATTACHMENT_CHARS,
-      dataUrl: "x".repeat(MAX_STASH_ENTRY_ATTACHMENT_CHARS),
-    };
-    const alsoSmall = {
-      id: "c",
-      name: "also-small.png",
-      mimeType: "image/png",
-      sizeBytes: 10,
-      dataUrl: "x".repeat(10),
-    };
-    const { kept, droppedNames } = partitionStashAttachments([small, huge, alsoSmall]);
-    expect(kept.map((attachment) => attachment.id)).toEqual(["a", "c"]);
-    expect(droppedNames).toEqual(["huge.pdf"]);
-  });
-
-  it("admits a single attachment that exactly fits the budget", () => {
-    const exact = {
-      id: "a",
-      name: "exact.png",
-      mimeType: "image/png",
-      sizeBytes: MAX_STASH_ENTRY_ATTACHMENT_CHARS,
-      dataUrl: "x".repeat(MAX_STASH_ENTRY_ATTACHMENT_CHARS),
-    };
-    const { kept, droppedNames } = partitionStashAttachments([exact]);
-    expect(kept).toHaveLength(1);
-    expect(droppedNames).toEqual([]);
-  });
-});
 
 describe("promptStashStore", () => {
   beforeEach(() => {
@@ -264,5 +229,83 @@ describe("promptStashStore", () => {
       JSON.stringify({ version: 1, state: { entries: [{ id: "broken" }] } }),
     );
     expect(usePromptStashStore.getState().entries).toEqual([]);
+  });
+
+  it("round-trips metadata-only attachments (no dataUrl) and deletes their blobs", async () => {
+    setAttachmentBlobBackendForTest(createMemoryAttachmentBlobBackend());
+    try {
+      const entry = makeEntry({ id: "blob-backed", attachmentBytes: 6_000_000 });
+      const blobKey = stashAttachmentBlobKey(entry.id, entry.attachments[0]!.id);
+      expect(await putAttachmentBlob(blobKey, new Blob(["image-bytes"]))).toBe(true);
+
+      const raw = JSON.stringify({ version: 1, state: { entries: [entry] } });
+      writePromptStashStorageForTest(raw);
+
+      const hydrated = usePromptStashStore.getState().entries[0];
+      expect(hydrated?.attachments).toEqual([
+        { id: "blob-backed-file", name: "shot.png", mimeType: "image/png", sizeBytes: 6_000_000 },
+      ]);
+      expect(collectLivePromptStashBlobKeys()?.has(blobKey)).toBe(true);
+
+      await deleteStashEntryBlobs(entry);
+      expect((await readAttachmentBlob(blobKey)).status).toBe("not-found");
+    } finally {
+      await clearAttachmentBlobsForTest();
+      setAttachmentBlobBackendForTest(null);
+    }
+  });
+
+  it("merges against latest storage across tabs so stashing or taking never overwrites or resurrects another tab's change", () => {
+    let backingRaw: string | null = null;
+    setPromptStashStorageForTest(
+      {
+        getItem: () => backingRaw,
+        setItem: (_key, value) => {
+          backingRaw = value;
+        },
+        removeItem: () => {
+          backingRaw = null;
+        },
+      },
+      { durable: true },
+    );
+    try {
+      const store = usePromptStashStore.getState();
+      store.stashEntry(makeEntry({ id: "from-tab-a" }));
+
+      // Simulate another tab adding "from-tab-b" directly into localStorage
+      // without this tab's in-memory state knowing yet.
+      const parsed = JSON.parse(backingRaw!) as {
+        version: number;
+        state: { entries: PromptStashEntry[] };
+      };
+      parsed.state.entries.unshift(makeEntry({ id: "from-tab-b" }));
+      backingRaw = JSON.stringify(parsed);
+
+      // This tab stashes "from-tab-c": must keep "from-tab-b" too.
+      store.stashEntry(makeEntry({ id: "from-tab-c" }));
+      expect(usePromptStashStore.getState().entries.map((e) => e.id)).toEqual([
+        "from-tab-c",
+        "from-tab-b",
+        "from-tab-a",
+      ]);
+
+      // Simulate another tab deleting "from-tab-a" directly in localStorage.
+      const afterDelete = JSON.parse(backingRaw!) as {
+        version: number;
+        state: { entries: PromptStashEntry[] };
+      };
+      afterDelete.state.entries = afterDelete.state.entries.filter((e) => e.id !== "from-tab-a");
+      backingRaw = JSON.stringify(afterDelete);
+
+      // Taking "from-tab-a" here must see it is already gone and not return it.
+      expect(store.takeEntry("from-tab-a").entry).toBeNull();
+      expect(usePromptStashStore.getState().entries.map((e) => e.id)).toEqual([
+        "from-tab-c",
+        "from-tab-b",
+      ]);
+    } finally {
+      setPromptStashStorageForTest(null);
+    }
   });
 });
