@@ -722,12 +722,16 @@ export function projectEvent(
           if (thread === undefined) {
             return nextBase;
           }
-          const { participants, agentRole } = applyRoomAgentUpdate(thread, payload);
-          const { agentRole: _previous, ...rest } = thread;
+          const { participants, agentRole, mainParticipantId } = applyRoomAgentUpdate(
+            thread,
+            payload,
+          );
+          const { agentRole: _previous, mainParticipantId: _previousMain, ...rest } = thread;
           const next: OrchestrationThread = {
             ...rest,
             participants,
             ...(agentRole !== undefined ? { agentRole } : {}),
+            ...(mainParticipantId !== undefined ? { mainParticipantId } : {}),
             updatedAt: payload.updatedAt,
           };
           return {
@@ -1277,16 +1281,20 @@ export function projectEvent(
           if (thread === undefined) {
             return nextBase;
           }
+          const { mainParticipantId: _clearedMain, ...withoutMain } = thread;
+          const clearedMain = thread.mainParticipantId === payload.participantId;
+          const nextThread: OrchestrationThread = {
+            ...(clearedMain ? withoutMain : thread),
+            participants: thread.participants.map((entry) =>
+              entry.id === payload.participantId && entry.leftAt === null
+                ? { ...entry, leftAt: payload.updatedAt }
+                : entry,
+            ),
+            updatedAt: payload.updatedAt,
+          };
           return {
             ...nextBase,
-            threads: updateThread(nextBase.threads, payload.threadId, {
-              participants: thread.participants.map((entry) =>
-                entry.id === payload.participantId && entry.leftAt === null
-                  ? { ...entry, leftAt: payload.updatedAt }
-                  : entry,
-              ),
-              updatedAt: payload.updatedAt,
-            }),
+            threads: nextBase.threads.map((entry) => (entry.id === thread.id ? nextThread : entry)),
           };
         }),
       );

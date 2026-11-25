@@ -250,6 +250,8 @@ export interface Thread {
   sideTurns?: ReadonlyArray<OrchestrationSideTurn>;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
+  /** See OrchestrationThreadShell.mainParticipantId: added agent promoted to main. */
+  mainParticipantId?: ThreadParticipantId | undefined;
   /**
    * See OrchestrationThread.agentRequests: requests agents made of each other.
    * Carried by the thread's detail stream only.
@@ -396,6 +398,8 @@ export interface ThreadShell {
   sideTurns?: ReadonlyArray<OrchestrationSideTurn>;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
+  /** See OrchestrationThreadShell.mainParticipantId: added agent promoted to main. */
+  mainParticipantId?: ThreadParticipantId | undefined;
   /**
    * Child threads (docs/design/child-threads.md): the thread whose agent
    * started this one, kept after it is separated. Absent or null: none.
@@ -538,6 +542,8 @@ export interface SidebarThreadSummary {
   sideTurns?: ReadonlyArray<OrchestrationSideTurn>;
   /** See OrchestrationThreadShell.agentRole: the user's name for the thread's own agent. */
   agentRole?: string | undefined;
+  /** See OrchestrationThreadShell.mainParticipantId: added agent promoted to main. */
+  mainParticipantId?: ThreadParticipantId | undefined;
   /** In a room, the model of the agent working or last at work; null otherwise. */
   roomSlotModelSelection?: ModelSelection | null;
   /** The user's name for that agent, if any. */

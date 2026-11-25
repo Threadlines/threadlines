@@ -158,6 +158,24 @@ export function activeParticipants(
 }
 
 /**
+ * The room's current main agent: the promoted participant while it is still
+ * active in the thread, otherwise the thread's own agent (`null`).
+ */
+export function resolveMainParticipantId(
+  thread: ParticipantListHolder & {
+    readonly mainParticipantId?: ThreadParticipantId | null | undefined;
+  },
+): ThreadParticipantId | null {
+  const candidate = thread.mainParticipantId ?? null;
+  if (candidate === null) {
+    return null;
+  }
+  return activeParticipants(thread).some((participant) => participant.id === candidate)
+    ? candidate
+    : null;
+}
+
+/**
  * The name for an agent joining a room: its model's name, numbered when an
  * agent with that name is already here ("GPT-6 Astra 2"). The web's room
  * labels apply the same rule, so the stored name and the shown one agree.
@@ -243,13 +261,15 @@ const joinedGuest = (entry: OrchestrationThreadParticipant): OrchestrationThread
 
 /**
  * Apply a `thread.participant-updated` event to a room's agents: a name for
- * any of them (null clears it), new model options for an added one. The
- * in-memory projector and the SQL projection both use this, so they agree.
+ * any of them (null clears it), new model options for an added one, or a new
+ * main agent. The in-memory projector and the SQL projection both use this, so
+ * they agree.
  */
 export function applyRoomAgentUpdate(
   room: {
     readonly participants: ReadonlyArray<OrchestrationThreadParticipant>;
     readonly agentRole?: string | undefined;
+    readonly mainParticipantId?: ThreadParticipantId | undefined;
   },
   update: {
     readonly participantId: ThreadParticipantId | null;
@@ -261,11 +281,18 @@ export function applyRoomAgentUpdate(
     readonly joined?: true | undefined;
     /** A moved-in agent's carried session proved itself or fell back. */
     readonly nativeSession?: OrchestrationThreadParticipant["nativeSession"] | undefined;
+    /** New main agent for the room (null returns main to the thread's own agent). */
+    readonly mainParticipantId?: ThreadParticipantId | null | undefined;
   },
 ): {
   readonly participants: OrchestrationThreadParticipant[];
   readonly agentRole: string | undefined;
+  readonly mainParticipantId: ThreadParticipantId | undefined;
 } {
+  const nextMainParticipantId =
+    update.mainParticipantId === undefined
+      ? room.mainParticipantId
+      : (update.mainParticipantId ?? undefined);
   const withRole = <T extends { readonly role?: string | undefined }>(entry: T): T => {
     if (update.role === undefined) return entry;
     const { role: _previous, ...rest } = entry;
@@ -275,6 +302,7 @@ export function applyRoomAgentUpdate(
     return {
       participants: [...room.participants],
       agentRole: update.role === undefined ? room.agentRole : (update.role ?? undefined),
+      mainParticipantId: nextMainParticipantId,
     };
   }
   return {
@@ -291,5 +319,6 @@ export function applyRoomAgentUpdate(
           },
     ),
     agentRole: room.agentRole,
+    mainParticipantId: nextMainParticipantId,
   };
 }

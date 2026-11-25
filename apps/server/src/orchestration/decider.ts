@@ -34,6 +34,7 @@ import {
   findActiveParticipantByHandle,
   isRoomThread,
   isValidParticipantId,
+  resolveMainParticipantId,
   sessionSlotParticipantId,
 } from "@threadlines/shared/threadParticipants";
 import {
@@ -3482,7 +3483,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const refuse = (detail: string) =>
         new OrchestrationCommandInvariantError({ commandType: command.type, detail });
       if (!isRoomThread(thread)) {
-        return yield* refuse("Only agents in a room can be renamed.");
+        return yield* refuse("Only agents in a room can be updated.");
       }
       const participant =
         command.participantId === null
@@ -3493,6 +3494,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* refuse(
           `Agent '${command.participantId}' is not in thread '${command.threadId}'.`,
         );
+      }
+      if (command.makeMain === true && activeParticipants(thread).length === 0) {
+        return yield* refuse("Add another agent before switching who is main.");
       }
       // The thread's own agent keeps its model options with the thread.
       if (
@@ -3561,6 +3565,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   },
                 }
               : {}),
+          ...(command.makeMain === true ? { mainParticipantId: command.participantId } : {}),
           updatedAt: command.createdAt,
         },
       };
@@ -3579,6 +3584,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Agent '${command.participantId}' is not in thread '${command.threadId}'.`,
+        });
+      }
+      if (resolveMainParticipantId(thread) === participant.id) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Switch another agent to main before removing ${participant.handle}.`,
         });
       }
       const session = thread.session;

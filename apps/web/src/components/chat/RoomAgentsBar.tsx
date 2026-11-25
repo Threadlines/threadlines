@@ -6,10 +6,11 @@
  * "+" adds an agent: the next model picked joins as a new one.
  *
  * A pill holds only its icon, name and "main" tag. Pointing at one swaps the
- * icon for a ⋯ button in the same box, which opens Rename and Remove; so do a
- * right-click and, on touch, a long press. Nothing appears beside the name, so
- * a pill never changes size under the pointer: one that grew could wrap to
- * the next line, out from under it, and flicker between the two.
+ * icon for a ⋯ button in the same box, which opens Rename, Make main agent and
+ * Remove; so do a right-click and, on touch, a long press. Nothing appears
+ * beside the name, so a pill never changes size under the pointer: one that
+ * grew could wrap to the next line, out from under it, and flicker between the
+ * two.
  */
 import { ROOM_AGENT_ROLE_MAX_LENGTH } from "@threadlines/contracts";
 import { EllipsisIcon, UserRoundPlusIcon, XIcon } from "lucide-react";
@@ -66,6 +67,9 @@ export const RoomAgentsBar = memo(function RoomAgentsBar(props: {
   };
   const remove = (row: RoomAgentRow) => {
     void agents.remove(row).catch(failed(`Couldn't remove ${row.name}`));
+  };
+  const makeMain = (row: RoomAgentRow) => {
+    void agents.makeMain(row).catch(failed(`Couldn't make ${row.name} main`));
   };
   // Picking an agent while adding one means "not a new one after all".
   const choose = (row: RoomAgentRow) => {
@@ -136,6 +140,7 @@ export const RoomAgentsBar = memo(function RoomAgentsBar(props: {
               }}
               onStartRename={() => setRenaming(roomAgentKey(row.id))}
               onRename={(typed) => rename(row, typed)}
+              onMakeMain={() => makeMain(row)}
               onRemove={() => remove(row)}
             />
           );
@@ -180,21 +185,23 @@ export const RoomAgentsBar = memo(function RoomAgentsBar(props: {
 });
 
 /**
- * One agent's pill. Its menu (Rename, Remove) opens from the ⋯ that takes the
- * icon's place under the pointer or keyboard focus, from a right-click, or
- * from a long press on touch, and always drops from the pill's left edge.
+ * One agent's pill. Its menu (Rename, Make main agent, Remove) opens from the
+ * ⋯ that takes the icon's place under the pointer or keyboard focus, from a
+ * right-click, or from a long press on touch, and always drops from the pill's
+ * left edge.
  */
 function AgentPill(props: {
   row: RoomAgentRow;
   selected: boolean;
   tabStop: boolean;
   isRenaming: boolean;
-  /** The user may rename and remove agents here (not while adding one). */
+  /** The user may rename, promote and remove agents here (not while adding one). */
   hasMenu: boolean;
   onChoose: () => void;
   onStep: (step: PillStep, pill: HTMLElement) => void;
   onStartRename: () => void;
   onRename: (typed: string) => void;
+  onMakeMain: () => void;
   onRemove: () => void;
 }) {
   const { row, selected, isRenaming, hasMenu } = props;
@@ -264,7 +271,7 @@ function AgentPill(props: {
       tabIndex={props.tabStop ? 0 : -1}
       data-room-agent-row={row.id ?? "primary"}
       data-menu-open={menuOpen || undefined}
-      title={row.id === null ? `${row.name}, the thread's main agent` : row.name}
+      title={row.isMain ? `${row.name}, the thread's main agent` : row.name}
       className={cn(
         PILL_CLASS,
         selected
@@ -293,7 +300,7 @@ function AgentPill(props: {
           event.preventDefault();
           props.onStartRename();
         } else if ((event.key === "Delete" || event.key === "Backspace") && canEdit) {
-          if (row.id !== null && !busy) {
+          if (row.id !== null && !row.isMain && !busy) {
             event.preventDefault();
             props.onRemove();
           }
@@ -384,7 +391,10 @@ function AgentPill(props: {
                 >
                   Rename…
                 </MenuItem>
-                {row.id !== null ? (
+                {!row.isMain ? (
+                  <MenuItem onClick={props.onMakeMain}>Make main agent</MenuItem>
+                ) : null}
+                {row.id !== null && !row.isMain ? (
                   // A working agent can't leave yet: the server refuses it.
                   <MenuItem disabled={busy} onClick={props.onRemove}>
                     Remove from thread
@@ -432,7 +442,7 @@ function AgentPill(props: {
       ) : (
         <span className="min-w-0 truncate font-medium">{row.role ?? row.modelName}</span>
       )}
-      {row.id === null && !isRenaming ? (
+      {row.isMain && !isRenaming ? (
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">main</span>
       ) : null}
     </div>

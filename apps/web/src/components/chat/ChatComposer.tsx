@@ -218,7 +218,7 @@ import {
 } from "./composerAgentCommands";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
 import { shownSettingsChange } from "@threadlines/shared/settingsChangeState";
-import { activeParticipants, hasAgentRecords } from "@threadlines/shared/threadParticipants";
+import { hasAgentRecords } from "@threadlines/shared/threadParticipants";
 import { modelPickerTriggerSummary, shouldRenderTraitsControls } from "./traitControls";
 import {
   canRequestProviderRateLimitResetCredit,
@@ -1260,27 +1260,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (roomAgentLabels === null || activeThread === undefined || !isRoom(activeThread)) {
       return [];
     }
-    const answering = activeThread.sideTurns ?? [];
-    return [
-      null,
-      ...activeParticipants({ participants: activeThread.participants ?? [] }).map((p) => p.id),
-    ].map((participantId) => {
-      const label = roomAgentLabels.get(roomAgentKey(participantId));
-      return {
-        participantId,
-        name: label?.name ?? "Agent",
-        entry: label?.entry,
-        status:
-          roomWorkingId !== undefined && roomWorkingId === participantId
-            ? "working"
-            : answering.some((sideTurn) => sideTurn.participantId === participantId)
-              ? "answering"
-              : participantId === null
-                ? "main"
-                : "",
-      };
-    });
-  }, [activeThread, roomAgentLabels, roomWorkingId]);
+    return roomAgents.rows.map((row) => ({
+      participantId: row.id,
+      name: row.name,
+      entry: row.entry,
+      status: row.status ?? (row.isMain ? "main" : ""),
+    }));
+  }, [activeThread, roomAgentLabels, roomAgents.rows]);
   const activeFallbackModelDisplayName = useMemo(() => {
     if (!activeModelFallback) {
       return null;

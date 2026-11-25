@@ -25,6 +25,8 @@ import {
   roomActivityAgent,
   roomAgentKey,
   roomAgentNames,
+  roomSlotModelSelection,
+  roomSlotRole,
   roomTurnOwners,
   useRoomRecipientStore,
 } from "./rooms";
@@ -76,12 +78,39 @@ describe("rooms", () => {
     const thread = { participants: [astra], session: { participantId: astraId } };
     expect(resolveRoomRecipient(thread, undefined)).toBe(astraId);
     expect(resolveRoomRecipient(thread, null)).toBeNull();
+    // With a promoted main agent, defaults and left-agent fallbacks go to it.
+    const astraMain = { participants: [astra], mainParticipantId: astraId, session: null };
+    expect(resolveRoomRecipient(astraMain, undefined)).toBe(astraId);
+    expect(resolveRoomRecipient(astraMain, ThreadParticipantId.make("agent-gone"))).toBe(astraId);
     // A choice of an agent that has since left falls back to the thread's own agent.
     const left = {
       participants: [{ ...astra, leftAt: "2026-01-02T00:00:00.000Z" }],
+      mainParticipantId: astraId,
       session: null,
     };
     expect(resolveRoomRecipient(left, astraId)).toBeNull();
+
+    // When the agent that last held the session left, sidebar slot helpers fall back to main.
+    const leftHolderId = ThreadParticipantId.make("agent-left-holder");
+    const removedHolder = {
+      modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus-9" },
+      agentRole: "Builder",
+      mainParticipantId: astraId,
+      participants: [
+        { ...astra, role: "Reviewer" },
+        {
+          id: leftHolderId,
+          handle: "sol",
+          role: "Former",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-sol" },
+          joinedAt: "2026-01-01T00:00:00.000Z",
+          leftAt: "2026-01-02T00:00:00.000Z",
+        },
+      ],
+      session: { participantId: leftHolderId },
+    };
+    expect(roomSlotModelSelection(removedHolder)).toEqual(astra.modelSelection);
+    expect(roomSlotRole(removedHolder)).toBe("Reviewer");
   });
 
   it("keeps a thread plain when an agent was only brought in for one review", () => {

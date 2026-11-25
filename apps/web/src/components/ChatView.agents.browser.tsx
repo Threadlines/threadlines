@@ -33,6 +33,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { updateSettings } from "../hooks/useSettings";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { useRoomRecipientStore } from "../rooms";
 import {
   makeBrowserTab,
@@ -65,8 +66,10 @@ import {
   markThreadDoneInTest,
   isoAt,
   createMockEnvironmentApi,
+  createDraftOnlySnapshot,
   createSnapshotForTargetUser,
   addThreadToSnapshot,
+  setDraftThreadWithoutWorktree,
   withCodexModels,
   waitForElement,
   findVisibleComposerFooter,
@@ -656,6 +659,273 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       );
       expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
       expect(pill("primary")?.getAttribute("aria-checked")).toBe("true");
+    } finally {
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
+      await mounted.cleanup();
+    }
+  });
+
+  it("switches an agent with main in a saved room and allows switching back", async () => {
+    const astraId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    const solId = "8b1c2d3e-4f5a-4b6c-9d7e-8f9a0b1c2d3e" as ThreadParticipantId;
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-room-main" as MessageId,
+      targetText: "room main target",
+    });
+    let liveSequence = 0;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      configureFixture: withCodexModels,
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? {
+                ...thread,
+                participants: [
+                  {
+                    id: solId,
+                    handle: "gpt-6-sol",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-sol",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                  {
+                    id: astraId,
+                    handle: "gpt-6-astra",
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex"),
+                      model: "gpt-6-astra",
+                    },
+                    joinedAt: NOW_ISO,
+                    leftAt: null,
+                  },
+                ],
+              }
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      const pills = () =>
+        [...document.querySelectorAll<HTMLElement>("[data-room-agent-row]")].map(
+          (node) => node.dataset.roomAgentRow,
+        );
+      const pill = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-room-agent-row="${id}"]`);
+      const menuItem = (text: string) =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === text,
+        ) ?? null;
+      const openMenu = (id: string) => {
+        pill(id)!.dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }),
+        );
+      };
+      const sendMainUpdated = (participantId: ThreadParticipantId | null) => {
+        liveSequence += 1;
+        rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+          kind: "event",
+          event: {
+            sequence: fixture.snapshot.snapshotSequence + liveSequence,
+            eventId: EventId.make(`evt-room-main-${liveSequence}`),
+            aggregateKind: "thread",
+            aggregateId: THREAD_ID,
+            occurredAt: NOW_ISO,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.participant-updated",
+            payload: {
+              threadId: THREAD_ID,
+              participantId,
+              mainParticipantId: participantId,
+              updatedAt: NOW_ISO,
+            },
+          },
+        });
+      };
+
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      picker.click();
+      await waitForElement(() => pill(astraId), "Unable to find astra's pill.");
+      expect(pills()).toEqual(["primary", solId, astraId]);
+
+      openMenu(astraId);
+      (
+        await waitForElement(
+          () => menuItem("Make main agent"),
+          "Non-main pill menu should offer Make main agent.",
+        )
+      ).click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (request as { type?: string }).type === "thread.participant.update",
+          ),
+        ).toMatchObject({ participantId: astraId, makeMain: true }),
+      );
+
+      sendMainUpdated(astraId);
+      await vi.waitFor(() => expect(pills()).toEqual([astraId, solId, "primary"]));
+      expect(pill(astraId)?.textContent).toContain("main");
+      expect(pill("primary")?.textContent).not.toContain("main");
+      expect(pill(astraId)?.getAttribute("aria-checked")).toBe("true");
+      expect(document.querySelector("[data-model-picker-variant]")).not.toBeNull();
+
+      // The promoted main agent can't be removed or made main again.
+      openMenu(astraId);
+      await waitForElement(() => menuItem("Rename…"), "Promoted main menu should open.");
+      // Wait for the menu popup to take focus before pressing Escape, or the
+      // outer model-picker popover catches Escape and closes the picker.
+      await vi.waitFor(() =>
+        expect(document.activeElement?.closest('[data-slot="menu-popup"]')).not.toBeNull(),
+      );
+      expect(menuItem("Make main agent")).toBeNull();
+      expect(menuItem("Remove from thread")).toBeNull();
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(menuItem("Rename…")).toBeNull());
+
+      // The original thread agent can be switched back to main (no one-way door).
+      openMenu("primary");
+      const switchBack = await waitForElement(
+        () => menuItem("Make main agent"),
+        "Original agent menu should offer Make main agent.",
+      );
+      expect(menuItem("Remove from thread")).toBeNull();
+      switchBack.click();
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (request as { type?: string; participantId?: unknown }).type ===
+                "thread.participant.update" &&
+              (request as { participantId?: unknown }).participantId === null,
+          ),
+        ).toMatchObject({ participantId: null, makeMain: true }),
+      );
+    } finally {
+      useRoomRecipientStore.getState().choose(THREAD_REF, null);
+      await mounted.cleanup();
+    }
+  });
+
+  it("swaps an added agent with main in a new draft thread", async () => {
+    const astraId = "7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d" as ThreadParticipantId;
+    setDraftThreadWithoutWorktree();
+    const draftStore = useComposerDraftStore.getState();
+    draftStore.setModelSelection(THREAD_REF, {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.6-sol",
+    });
+    draftStore.setDraftRoom(THREAD_REF, {
+      agentRole: "Builder",
+      agents: [
+        {
+          id: astraId,
+          handle: "gpt-6-astra",
+          role: "Reviewer",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-6-astra",
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+        },
+      ],
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      configureFixture: withCodexModels,
+      snapshot: createDraftOnlySnapshot(),
+    });
+
+    try {
+      const pill = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-room-agent-row="${id}"]`);
+      const menuItem = (text: string) =>
+        [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === text,
+        ) ?? null;
+
+      const picker = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-chat-provider-model-picker="true"]'),
+        "Unable to find the composer's model picker.",
+      );
+      picker.click();
+      await waitForElement(() => pill(astraId), "Unable to find draft astra's pill.");
+
+      // Select the added agent first, then swap it with main.
+      pill(astraId)!.click();
+      await vi.waitFor(() => expect(pill(astraId)?.getAttribute("aria-checked")).toBe("true"));
+
+      pill(astraId)!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }),
+      );
+      (
+        await waitForElement(
+          () => menuItem("Make main agent"),
+          "Draft non-main pill should offer Make main agent.",
+        )
+      ).click();
+
+      await vi.waitFor(() => {
+        expect(pill("primary")?.textContent).toContain("Reviewer");
+        expect(pill("primary")?.textContent).toContain("main");
+        expect(pill("primary")?.getAttribute("aria-checked")).toBe("true");
+        expect(pill(astraId)?.textContent).toContain("Builder");
+      });
+      // Draft swaps stay local until the first message creates the thread.
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            (request as { type?: string }).type === "thread.participant.update",
+        ),
+      ).toBe(false);
+
+      const updatedDraft = useComposerDraftStore.getState();
+      expect(
+        updatedDraft.getComposerDraft(THREAD_REF)?.modelSelectionByProvider[
+          ProviderInstanceId.make("codex")
+        ],
+      ).toEqual({
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6-astra",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      });
+      expect(updatedDraft.getDraftThread(THREAD_REF)?.room).toMatchObject({
+        agentRole: "Reviewer",
+        agents: [
+          {
+            id: astraId,
+            role: "Builder",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5.6-sol",
+            },
+          },
+        ],
+      });
+
+      // The swapped-out old main is now a regular removable draft agent.
+      pill(astraId)!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }),
+      );
+      await waitForElement(
+        () => menuItem("Remove from thread"),
+        "Swapped-out old main in a draft should be removable.",
+      );
     } finally {
       useRoomRecipientStore.getState().choose(THREAD_REF, null);
       await mounted.cleanup();

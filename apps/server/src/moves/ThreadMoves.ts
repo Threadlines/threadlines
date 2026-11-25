@@ -1823,8 +1823,14 @@ const make = Effect.gen(function* () {
           ),
       );
       const ownSeen = seenThroughOf(thread, null, movedIds);
+      const mainParticipantId =
+        thread.mainParticipantId !== undefined &&
+        participants.some((entry) => entry.id === thread.mainParticipantId && entry.leftAt === null)
+          ? thread.mainParticipantId
+          : undefined;
       return {
         ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+        ...(mainParticipantId !== undefined ? { mainParticipantId } : {}),
         ...(ownSeen !== undefined ? { ownAgentSeenThroughMessageId: ownSeen } : {}),
         participants,
         sessions: sessions.flat(),

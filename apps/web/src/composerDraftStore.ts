@@ -791,6 +791,15 @@ interface ComposerDraftStoreState {
    * the draft is being sent: the server thread owns them from then on.
    */
   setDraftRoom: (threadRef: ComposerThreadTarget, room: DraftRoom | null) => void;
+  /**
+   * Atomically replaces a draft's main model selection (including its options)
+   * and its room setup, used when swapping an added room agent with main.
+   */
+  setDraftMainModelAndRoom: (
+    threadRef: ComposerThreadTarget,
+    modelSelection: ModelSelection,
+    room: DraftRoom | null,
+  ) => void;
   /** Marks a draft session as being promoted to a real server thread. */
   markDraftThreadPromoting: (threadRef: ComposerThreadTarget, promotedTo?: ScopedThreadRef) => void;
   /** Removes draft-session metadata after promotion is complete. */
@@ -3415,6 +3424,44 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 : { ...rest, room };
             return {
               draftThreadsByThreadKey: { ...state.draftThreadsByThreadKey, [threadKey]: next },
+            };
+          });
+        },
+        setDraftMainModelAndRoom: (threadRef, modelSelection, room) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          if (!threadKey) {
+            return;
+          }
+          const normalized = normalizeModelSelection(modelSelection);
+          if (!normalized) {
+            return;
+          }
+          set((state) => {
+            const existingThread = state.draftThreadsByThreadKey[threadKey];
+            if (!existingThread || isDraftThreadPromoting(existingThread)) {
+              return state;
+            }
+            const baseDraft = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const nextDraft: ComposerThreadDraftState = {
+              ...baseDraft,
+              modelSelectionByProvider: {
+                ...baseDraft.modelSelectionByProvider,
+                [normalized.instanceId]: normalized as ModelSelection,
+              },
+              activeProvider: normalized.instanceId,
+              modelPicked: true,
+            };
+            const { room: _previous, ...restThread } = existingThread;
+            const nextThread: DraftThreadState =
+              room === null || (room.agents.length === 0 && room.agentRole === undefined)
+                ? restThread
+                : { ...restThread, room };
+            return {
+              draftsByThreadKey: withComposerDraft(state, threadKey, nextDraft),
+              draftThreadsByThreadKey: {
+                ...state.draftThreadsByThreadKey,
+                [threadKey]: nextThread,
+              },
             };
           });
         },

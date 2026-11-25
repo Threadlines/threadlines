@@ -495,6 +495,82 @@ describe("decider rooms", () => {
     ).toBe(true);
   });
 
+  it("switches the main agent in a room and keeps the current main from being removed", async () => {
+    const applyAll = async (
+      start: OrchestrationReadModel,
+      events: ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
+    ) => {
+      let current = start;
+      for (const event of events) {
+        current = await Effect.runPromise(
+          projectEvent(current, {
+            ...event,
+            sequence: current.snapshotSequence + 1,
+          } as OrchestrationEvent),
+        );
+      }
+      return current;
+    };
+    const makeMain = (
+      participantId: ThreadParticipantId | null,
+      commandId: string,
+    ): OrchestrationCommand => ({
+      type: "thread.participant.update",
+      commandId: CommandId.make(commandId),
+      threadId,
+      participantId,
+      makeMain: true,
+      createdAt: now,
+    });
+    const promoted = await decideEvents(makeMain(astraId, "cmd-make-main-astra"), readModel());
+    expect(promoted).toMatchObject([
+      {
+        type: "thread.participant-updated",
+        payload: { participantId: astraId, mainParticipantId: astraId },
+      },
+    ]);
+    const withAstraMain = await applyAll(readModel(), promoted);
+    expect(withAstraMain.threads[0]?.mainParticipantId).toBe(astraId);
+
+    // Removing the current main agent is refused until another agent is made main.
+    const removeMain = await decide(
+      {
+        type: "thread.participant.remove",
+        commandId: CommandId.make("cmd-remove-main"),
+        threadId,
+        participantId: astraId,
+        createdAt: now,
+      },
+      withAstraMain,
+    );
+    expect(Exit.isFailure(removeMain)).toBe(true);
+
+    // Returning main to the thread's own agent clears mainParticipantId and allows removal again.
+    const restored = await decideEvents(makeMain(null, "cmd-make-main-own"), withAstraMain);
+    expect(restored).toMatchObject([
+      {
+        type: "thread.participant-updated",
+        payload: { participantId: null, mainParticipantId: null },
+      },
+    ]);
+    const backToOwn = await applyAll(withAstraMain, restored);
+    expect(backToOwn.threads[0]?.mainParticipantId).toBeUndefined();
+    expect(
+      Exit.isSuccess(
+        await decide(
+          {
+            type: "thread.participant.remove",
+            commandId: CommandId.make("cmd-remove-astra"),
+            threadId,
+            participantId: astraId,
+            createdAt: now,
+          },
+          backToOwn,
+        ),
+      ),
+    ).toBe(true);
+  });
+
   describe("side answers", () => {
     const sideTurnId = SideTurnId.make("0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70");
     const working = session({ status: "running", activeTurnId: TurnId.make("turn-1") });
