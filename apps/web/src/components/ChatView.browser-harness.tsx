@@ -62,6 +62,7 @@ import { page } from "vite-plus/test/browser";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
+import { useChatFindStore } from "../chatFindStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useAddProjectStore } from "./addProject/addProjectStore";
 import { useCodexImportStore } from "./codexImport/codexImportStore";
@@ -3506,6 +3507,9 @@ export function registerChatViewSuiteHooks(): void {
       open: false,
       openIntent: null,
     });
+    // The find query outlives its chat, so one spec's search would open in
+    // the next spec's find bar.
+    useChatFindStore.setState({ available: false, open: false, query: "" });
     useAddProjectStore.setState({ session: null });
     useCodexImportStore.setState({ session: null });
     useStore.setState({
