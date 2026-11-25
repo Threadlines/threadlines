@@ -6,7 +6,14 @@ import {
   scopeThreadRef,
 } from "@threadlines/client-runtime";
 import type { ScopedProjectRef } from "@threadlines/contracts";
-import { useCallback, useMemo } from "react";
+import {
+  createContext,
+  createElement,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useMemo,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import {
@@ -107,16 +114,14 @@ export interface InboxThreads {
   readonly generalChatEntries: InboxGeneralChatEntry[];
 }
 
+const InboxThreadsContext = createContext<InboxThreads | null>(null);
+
 /**
- * The inbox: every open thread with the status its row shows and whether it
- * sits under Active or Wrapped, plus the general chats beside it.
- *
- * The sidebar draws it, and the desktop app counts its unread finished work on
- * the Dock and taskbar. Both read it from here so the badge can never name a
- * thread the sidebar has filed away. Each caller runs its own copy; the pull
- * request listings are shared queries, so a second caller costs no requests.
+ * Derives the shared inbox once at the app shell so the sidebar, alert sounds,
+ * taskbar status sync, family tabs, title menu, command palette, and boards
+ * read the same snapshot instead of repeating the O(threads) derivation.
  */
-export function useInboxThreads(): InboxThreads {
+function useDerivedInboxThreads(): InboxThreads {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   // One listing for the whole sidebar: the Pull Requests row's count and every
@@ -395,21 +400,62 @@ export function useInboxThreads(): InboxThreads {
     [generalChatThreads, seenThreadOverlays, threadSeedVisitedAtById],
   );
 
-  return {
-    projects,
-    sidebarThreads,
-    sidebarProjects,
-    sidebarProjectByKey,
-    resolveProjectKeyForRef,
-    resolveThreadProjectKey,
-    generalChatProjectKeys,
-    inboxThreads,
-    openPullRequests,
-    pullRequestByThreadKey,
-    linkedPullRequestsByThreadKey,
-    nowIso,
-    leadThreadKeys,
-    entries,
-    generalChatEntries,
-  };
+  return useMemo(
+    () => ({
+      projects,
+      sidebarThreads,
+      sidebarProjects,
+      sidebarProjectByKey,
+      resolveProjectKeyForRef,
+      resolveThreadProjectKey,
+      generalChatProjectKeys,
+      inboxThreads,
+      openPullRequests,
+      pullRequestByThreadKey,
+      linkedPullRequestsByThreadKey,
+      nowIso,
+      leadThreadKeys,
+      entries,
+      generalChatEntries,
+    }),
+    [
+      entries,
+      generalChatEntries,
+      generalChatProjectKeys,
+      inboxThreads,
+      leadThreadKeys,
+      linkedPullRequestsByThreadKey,
+      nowIso,
+      openPullRequests,
+      projects,
+      pullRequestByThreadKey,
+      resolveProjectKeyForRef,
+      resolveThreadProjectKey,
+      sidebarProjectByKey,
+      sidebarProjects,
+      sidebarThreads,
+    ],
+  );
+}
+
+/** Provides one shared {@link InboxThreads} derivation to all inbox consumers. */
+export function InboxThreadsProvider({ children }: { readonly children: ReactNode }) {
+  const value = useDerivedInboxThreads();
+  return createElement(InboxThreadsContext.Provider, { value }, children);
+}
+
+/**
+ * The inbox: every open thread with the status its row shows and whether it
+ * sits under Active or Wrapped, plus the general chats beside it.
+ *
+ * The sidebar draws it, and the desktop app counts its unread finished work on
+ * the Dock and taskbar. Both read the shared value from {@link InboxThreadsProvider}
+ * so the badge can never name a thread the sidebar has filed away.
+ */
+export function useInboxThreads(): InboxThreads {
+  const value = useContext(InboxThreadsContext);
+  if (value === null) {
+    throw new Error("useInboxThreads must be used within an InboxThreadsProvider.");
+  }
+  return value;
 }

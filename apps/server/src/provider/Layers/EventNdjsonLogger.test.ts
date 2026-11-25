@@ -40,6 +40,27 @@ function parseLogLine(line: string) {
   };
 }
 
+function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Effect.Effect<void> {
+  return Effect.promise(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const deadline = Date.now() + timeoutMs;
+        const check = () => {
+          if (predicate()) {
+            resolve();
+            return;
+          }
+          if (Date.now() >= deadline) {
+            reject(new Error("Timed out waiting for async provider log flush"));
+            return;
+          }
+          setTimeout(check, 5);
+        };
+        check();
+      }),
+  );
+}
+
 describe("EventNdjsonLogger", () => {
   it.effect("removes old provider log files without touching unrelated files", () =>
     Effect.gen(function* () {
@@ -268,13 +289,14 @@ describe("EventNdjsonLogger", () => {
         yield* Effect.yieldNow;
         assert.equal(fs.existsSync(globalPath), false);
         yield* TestClock.adjust("1 millis");
+        yield* waitUntil(() => fs.existsSync(globalPath));
         yield* Effect.yieldNow;
         assert.equal(fs.existsSync(globalPath), true);
 
         yield* logger.write({ id: "evt-second" }, null);
         assert.equal(fs.readFileSync(globalPath, "utf8").includes("evt-second"), false);
         yield* TestClock.adjust("1 second");
-        yield* Effect.yieldNow;
+        yield* waitUntil(() => fs.readFileSync(globalPath, "utf8").includes("evt-second"));
 
         const lines = fs
           .readFileSync(globalPath, "utf8")
@@ -376,16 +398,16 @@ describe("EventNdjsonLogger", () => {
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
       const basePath = path.join(tempDir, "provider-canonical.ndjson");
-      const realAppendFileSync = fs.appendFileSync.bind(fs);
+      const realAppendFile = fs.promises.appendFile.bind(fs.promises);
       let appendAttempts = 0;
       let failWritesAfterFirst = true;
       let logger: EventNdjsonLogger | undefined;
-      const appendSpy = vi.spyOn(fs, "appendFileSync").mockImplementation((...args) => {
+      const appendSpy = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
         appendAttempts += 1;
         if (failWritesAfterFirst && appendAttempts > 1) {
           throw new Error("simulated provider log write failure");
         }
-        Reflect.apply(realAppendFileSync, fs, args);
+        await Reflect.apply(realAppendFile, fs.promises, args);
       });
 
       try {
@@ -406,6 +428,7 @@ describe("EventNdjsonLogger", () => {
         yield* logger.write({ id: "evt-2", payload: "x".repeat(60) }, null);
         yield* logger.write({ id: "evt-3", payload: "x".repeat(60) }, null);
         yield* TestClock.adjust("1 second");
+        yield* waitUntil(() => appendAttempts === 2);
         yield* Effect.yieldNow;
         assert.equal(appendAttempts, 2);
 
@@ -417,9 +440,16 @@ describe("EventNdjsonLogger", () => {
 
         failWritesAfterFirst = false;
         yield* TestClock.adjust("1 millis");
-        yield* Effect.yieldNow;
+        yield* waitUntil(() => appendAttempts >= 4);
         yield* TestClock.adjust("1 second");
-        yield* Effect.yieldNow;
+        yield* waitUntil(() => {
+          const entries = fs
+            .readdirSync(tempDir)
+            .filter((entry) => entry === "_global.log" || entry.startsWith("_global.log."));
+          return entries.some((entry) =>
+            fs.readFileSync(path.join(tempDir, entry), "utf8").includes("evt-4"),
+          );
+        });
         const payloadIds = fs
           .readdirSync(tempDir)
           .filter((entry) => entry === "_global.log" || entry.startsWith("_global.log."))
@@ -446,14 +476,16 @@ describe("EventNdjsonLogger", () => {
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
       const basePath = path.join(tempDir, "provider-canonical.ndjson");
-      const realAppendFileSync = fs.appendFileSync.bind(fs);
+      const realAppendFile = fs.promises.appendFile.bind(fs.promises);
       let failWrites = true;
       let logger: EventNdjsonLogger | undefined;
-      const appendSpy = vi.spyOn(fs, "appendFileSync").mockImplementation((...args) => {
+      let failedAttemptCount = 0;
+      const appendSpy = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
         if (failWrites) {
+          failedAttemptCount += 1;
           throw new Error("simulated provider log write failure");
         }
-        Reflect.apply(realAppendFileSync, fs, args);
+        await Reflect.apply(realAppendFile, fs.promises, args);
       });
 
       try {
@@ -475,11 +507,13 @@ describe("EventNdjsonLogger", () => {
           );
         }
         yield* TestClock.adjust("1 second");
-        yield* Effect.yieldNow;
+        yield* waitUntil(() => failedAttemptCount > 0);
 
         failWrites = false;
         yield* TestClock.adjust("1 second");
-        yield* Effect.yieldNow;
+        yield* waitUntil(
+          () => fs.readdirSync(tempDir).filter((entry) => entry.endsWith(".log")).length > 0,
+        );
         const logFiles = fs.readdirSync(tempDir).filter((entry) => entry.endsWith(".log"));
         const persistedBytes = logFiles.reduce(
           (total, entry) => total + fs.statSync(path.join(tempDir, entry)).size,

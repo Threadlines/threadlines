@@ -44,12 +44,16 @@ export class DesktopStatusIndicator extends Context.Service<
 
 type DesktopStatusIndicatorRuntimeServices = DesktopWindow.DesktopWindow | ElectronApp.ElectronApp;
 
+interface MacTrayMenuIcons {
+  readonly running: Electron.NativeImage;
+  readonly completed: Electron.NativeImage;
+}
+
 interface MacTrayImages {
   readonly idle: Electron.NativeImage;
-  readonly workingFrames: readonly Electron.NativeImage[];
-  readonly completedFrames: readonly Electron.NativeImage[];
-  readonly menuRunning: Electron.NativeImage;
-  readonly menuCompleted: Electron.NativeImage;
+  workingFrames: readonly Electron.NativeImage[] | null;
+  completedFrames: readonly Electron.NativeImage[] | null;
+  menuIcons: MacTrayMenuIcons | null;
 }
 
 const { logWarning: logStatusWarning, logError: logStatusError } =
@@ -245,31 +249,54 @@ const make = Effect.gen(function* () {
     });
 
   const createMacTrayImages = Effect.gen(function* () {
-    const glyphs = DesktopStatusGlyphs.makeMacTrayGlyphSet();
-    const menuGlyphs = DesktopStatusGlyphs.makeMacMenuStateGlyphs();
-    const idle = yield* createTrayImageFrames([glyphs.idle]);
-    const workingFrames = yield* createTrayImageFrames(glyphs.workingFrames);
-    const completedFrames = yield* createTrayImageFrames(glyphs.completedFrames);
-    const menuIcons = yield* createTrayImageFrames([menuGlyphs.running, menuGlyphs.completed]);
-    if (
-      Option.isNone(idle) ||
-      Option.isNone(workingFrames) ||
-      Option.isNone(completedFrames) ||
-      Option.isNone(menuIcons) ||
-      idle.value[0] === undefined ||
-      menuIcons.value[0] === undefined ||
-      menuIcons.value[1] === undefined
-    ) {
+    const idle = yield* createTrayImageFrames([DesktopStatusGlyphs.makeMacIdleTrayGlyph()]);
+    if (Option.isNone(idle) || idle.value[0] === undefined) {
       return Option.none<MacTrayImages>();
     }
 
-    return Option.some({
+    return Option.some<MacTrayImages>({
       idle: idle.value[0],
-      workingFrames: workingFrames.value,
-      completedFrames: completedFrames.value,
-      menuRunning: menuIcons.value[0],
-      menuCompleted: menuIcons.value[1],
+      workingFrames: null,
+      completedFrames: null,
+      menuIcons: null,
     });
+  });
+
+  const ensureMacWorkingFrames = Effect.gen(function* () {
+    const images = macTrayImages;
+    if (images === null || images.workingFrames !== null) {
+      return;
+    }
+    const frames = yield* createTrayImageFrames(DesktopStatusGlyphs.makeMacWorkingTrayGlyphs());
+    if (Option.isSome(frames)) {
+      images.workingFrames = frames.value;
+    }
+  });
+
+  const ensureMacCompletedFrames = Effect.gen(function* () {
+    const images = macTrayImages;
+    if (images === null || images.completedFrames !== null) {
+      return;
+    }
+    const frames = yield* createTrayImageFrames(DesktopStatusGlyphs.makeMacCompletedTrayGlyphs());
+    if (Option.isSome(frames)) {
+      images.completedFrames = frames.value;
+    }
+  });
+
+  const ensureMacMenuIcons = Effect.gen(function* () {
+    const images = macTrayImages;
+    if (images === null || images.menuIcons !== null) {
+      return;
+    }
+    const menuGlyphs = DesktopStatusGlyphs.makeMacMenuStateGlyphs();
+    const icons = yield* createTrayImageFrames([menuGlyphs.running, menuGlyphs.completed]);
+    if (Option.isSome(icons) && icons.value[0] !== undefined && icons.value[1] !== undefined) {
+      images.menuIcons = {
+        running: icons.value[0],
+        completed: icons.value[1],
+      };
+    }
   });
 
   const setMacTrayImage = (image: Electron.NativeImage) => {
@@ -339,16 +366,29 @@ const make = Effect.gen(function* () {
       return;
     }
     const previousStatus = macTrayRenderedStatus;
-    macTrayRenderedStatus = currentStatus.status;
 
     switch (currentStatus.status) {
       case "working":
+        if (images.workingFrames === null) {
+          macTrayRenderedStatus = null;
+          clearMacTrayAnimation();
+          setMacTrayImage(images.idle);
+          return;
+        }
+        macTrayRenderedStatus = currentStatus.status;
         playMacTrayFrames(images.workingFrames, {
           loop: true,
           frameMs: DesktopStatusGlyphs.TRAY_WORKING_FRAME_INTERVAL_MS,
         });
         return;
       case "completed":
+        if (images.completedFrames === null) {
+          macTrayRenderedStatus = null;
+          clearMacTrayAnimation();
+          setMacTrayImage(images.idle);
+          return;
+        }
+        macTrayRenderedStatus = currentStatus.status;
         // The check pops as work finishes. Unread work already waiting (at
         // launch, or after marking a thread unread) shows it at rest.
         playMacTrayFrames(
@@ -357,6 +397,7 @@ const make = Effect.gen(function* () {
         );
         return;
       case "idle":
+        macTrayRenderedStatus = currentStatus.status;
         clearMacTrayAnimation();
         setMacTrayImage(images.idle);
         return;
@@ -372,11 +413,14 @@ const make = Effect.gen(function* () {
       return [];
     }
 
+    const menuIcons = images.menuIcons;
     const items: Electron.MenuItemConstructorOptions[] = threads
       .slice(0, MACOS_TRAY_MENU_THREAD_LIMIT)
       .map((thread) => ({
         label: truncateThreadMenuLabel(thread.title),
-        icon: thread.state === "completed" ? images.menuCompleted : images.menuRunning,
+        ...(menuIcons !== null
+          ? { icon: thread.state === "completed" ? menuIcons.completed : menuIcons.running }
+          : {}),
         toolTip: `${thread.title.trim()} — ${describeThreadMenuState(thread)}`,
         click: () =>
           runTrayEffect(
@@ -462,6 +506,19 @@ const make = Effect.gen(function* () {
   const updateTray = Effect.fn("desktop.status.updateTray")(function* () {
     if (tray === null) {
       return;
+    }
+
+    if (environment.platform === "darwin" && macTrayImages !== null) {
+      if ((currentStatus.threads?.length ?? 0) > 0) {
+        yield* ensureMacMenuIcons;
+      }
+      if (currentStatus.status !== macTrayRenderedStatus) {
+        if (currentStatus.status === "working") {
+          yield* ensureMacWorkingFrames;
+        } else if (currentStatus.status === "completed") {
+          yield* ensureMacCompletedFrames;
+        }
+      }
     }
 
     const menu = yield* electronTray.buildMenu(buildTrayMenuTemplate(currentStatus));

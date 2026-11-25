@@ -6,7 +6,11 @@ import {
   type OrchestrationThreadActivity,
 } from "@threadlines/contracts";
 
-import { keepKnownSubagentProviders, projectSubagentActivity } from "./subagentProjection.ts";
+import {
+  activityMayAffectSubagents,
+  keepKnownSubagentProviders,
+  projectSubagentActivity,
+} from "./subagentProjection.ts";
 
 const TURN_ID = TurnId.make("11111111-1111-4111-8111-111111111111");
 const RESUME_TURN_ID = TurnId.make("22222222-2222-4222-8222-222222222222");
@@ -947,4 +951,24 @@ it("keeps result and live event positions through metadata updates", () => {
     role: "Reviewer",
     isBackgrounded: true,
   });
+});
+
+it("matches every activity kind or payload that can change the subagent roster", () => {
+  expect(activityMayAffectSubagents({ kind: "task.started", payload: {} })).toBe(true);
+  expect(activityMayAffectSubagents({ kind: "task.progress", payload: {} })).toBe(true);
+  expect(activityMayAffectSubagents({ kind: "task.completed", payload: {} })).toBe(true);
+  expect(activityMayAffectSubagents({ kind: "subagent.metadata", payload: {} })).toBe(true);
+  expect(
+    activityMayAffectSubagents({
+      kind: "tool.updated",
+      payload: { itemType: "collab_agent_tool_call" },
+    }),
+  ).toBe(true);
+  expect(
+    activityMayAffectSubagents({
+      kind: "tool.updated",
+      payload: { itemType: "command_execution" },
+    }),
+  ).toBe(false);
+  expect(activityMayAffectSubagents({ kind: "reasoning.delta", payload: null })).toBe(false);
 });

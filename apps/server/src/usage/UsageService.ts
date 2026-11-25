@@ -38,11 +38,14 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { writeFileStringAtomically } from "../atomicWrite.ts";
@@ -67,7 +70,12 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { hourStartOf, UsageAggregator } from "./usageAggregation.ts";
 import { USAGE_LEDGER_PROVIDERS, usageLedgerDir } from "./usageLedger.ts";
 import { readOpenCodeUsage } from "./usageOpenCode.ts";
-import { parseRateTable, type RateTable } from "./usagePricing.ts";
+import {
+  type ModelRate,
+  parseCompactRateTable,
+  parseRateTable,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   decodeScanCache,
   dedupeWithinFile,
@@ -89,6 +97,7 @@ const LITELLM_RATES_URL =
 const RATES_TTL_MS = 24 * 60 * 60 * 1000;
 
 const RATES_FETCH_TIMEOUT_MS = 10_000;
+const SCAN_CACHE_PERSIST_DEBOUNCE_MS = 5_000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -124,10 +133,22 @@ type UsageScanSource =
       readonly read: (sinceMs: number) => readonly UsageRecord[] | null;
     };
 
-interface RatesCacheFile {
+interface CompactRatesCacheFile {
   readonly fetchedAtMs: number;
-  readonly document: unknown;
+  readonly rates: Readonly<Record<string, ModelRate>>;
 }
+
+type RatesCacheFile =
+  | {
+      readonly kind: "compact";
+      readonly fetchedAtMs: number;
+      readonly rates: unknown;
+    }
+  | {
+      readonly kind: "legacy";
+      readonly fetchedAtMs: number;
+      readonly document: unknown;
+    };
 
 /** A cache file that is not JSON. */
 class CacheFileParseError extends Data.TaggedError("CacheFileParseError")<{
@@ -147,9 +168,16 @@ const parseJsonFile = (raw: string): Effect.Effect<unknown, CacheFileParseError>
 
 function readRatesCacheFile(document: unknown): RatesCacheFile | null {
   if (typeof document !== "object" || document === null) return null;
-  const record = document as Partial<RatesCacheFile>;
+  const record = document as {
+    readonly fetchedAtMs?: unknown;
+    readonly rates?: unknown;
+    readonly document?: unknown;
+  };
   if (typeof record.fetchedAtMs !== "number" || !Number.isFinite(record.fetchedAtMs)) return null;
-  return { fetchedAtMs: record.fetchedAtMs, document: record.document };
+  if (record.rates !== undefined) {
+    return { kind: "compact", fetchedAtMs: record.fetchedAtMs, rates: record.rates };
+  }
+  return { kind: "legacy", fetchedAtMs: record.fetchedAtMs, document: record.document };
 }
 
 export interface UsageServiceShape {
@@ -191,9 +219,20 @@ export const make = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const settingsService = yield* ServerSettingsService;
   const httpClient = yield* HttpClient.HttpClient;
+  const serviceScope = yield* Scope.Scope;
 
   const fileCache: ScanCache = new Map();
+  const persistLock = yield* Semaphore.make(1);
   let cacheDirty = false;
+  let cacheDirtyGeneration = 0;
+  let lastAttemptedPersistGeneration = 0;
+  let pendingPersistFiber: Fiber.Fiber<void, never> | null = null;
+  let closed = false;
+
+  const markCacheDirty = () => {
+    cacheDirty = true;
+    cacheDirtyGeneration += 1;
+  };
 
   /**
    * Both caches are rebuildable, so a failed write costs one cold scan and must
@@ -230,7 +269,10 @@ export const make = Effect.gen(function* () {
         Effect.catchCause(() => Effect.succeed(null)),
       );
       if (fromDisk !== null) {
-        const parsed = parseRateTable(fromDisk.document);
+        const parsed =
+          fromDisk.kind === "compact"
+            ? parseCompactRateTable(fromDisk.rates)
+            : parseRateTable(fromDisk.document);
         if (parsed.size > 0) {
           rates = parsed;
           ratesFetchedAtMs = fromDisk.fetchedAtMs;
@@ -260,9 +302,14 @@ export const make = Effect.gen(function* () {
     ratesFetchedAtMs = now;
     ratesStatus = "fresh";
 
+    // Persist only the parsed 5-field rate table rather than the full 3.7 MB
+    // upstream LiteLLM catalog so cold starts read and parse ~25x less JSON.
     yield* writeCacheFile(
       ratesCachePath,
-      JSON.stringify({ fetchedAtMs: now, document: fetched } satisfies RatesCacheFile),
+      JSON.stringify({
+        fetchedAtMs: now,
+        rates: Object.fromEntries(parsed),
+      } satisfies CompactRatesCacheFile),
     );
   });
 
@@ -424,16 +471,53 @@ export const make = Effect.gen(function* () {
     }),
   );
 
-  const persistScanCache = Effect.fn("UsageService.persistScanCache")(function* () {
-    if (!cacheDirty) return;
-    // Cleared only after the write lands, so a failed persist is retried on the
-    // next scan instead of leaving disk permanently stale.
-    const written = yield* writeCacheFile(
-      scanCachePath,
-      JSON.stringify(encodeScanCache(fileCache)),
+  const flushScanCacheNow = persistLock.withPermits(1)(
+    Effect.gen(function* () {
+      if (!cacheDirty) return;
+      const generation = cacheDirtyGeneration;
+      lastAttemptedPersistGeneration = generation;
+      // Cleared only after the write lands and no newer scan dirtied the map,
+      // so a failed or superseded persist is retried instead of leaving disk stale.
+      const written = yield* writeCacheFile(
+        scanCachePath,
+        JSON.stringify(encodeScanCache(fileCache)),
+      );
+      if (written && cacheDirtyGeneration === generation) {
+        cacheDirty = false;
+      }
+    }).pipe(Effect.uninterruptible),
+  );
+
+  const schedulePersistScanCache: Effect.Effect<void> = Effect.gen(function* () {
+    if (!cacheDirty || closed || pendingPersistFiber !== null) return;
+    pendingPersistFiber = yield* Effect.sleep(`${SCAN_CACHE_PERSIST_DEBOUNCE_MS} millis`).pipe(
+      Effect.andThen(
+        Effect.gen(function* () {
+          pendingPersistFiber = null;
+          yield* flushScanCacheNow;
+          // Only re-arm automatically if a newer scan arrived while the write
+          // was in flight; a failed write on an idle server waits for the next
+          // scan instead of spinning every 5 seconds.
+          if (cacheDirty && !closed && cacheDirtyGeneration !== lastAttemptedPersistGeneration) {
+            yield* schedulePersistScanCache;
+          }
+        }),
+      ),
+      Effect.forkIn(serviceScope),
     );
-    if (written) cacheDirty = false;
   });
+
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      closed = true;
+      const pending = pendingPersistFiber;
+      pendingPersistFiber = null;
+      if (pending !== null) {
+        yield* Fiber.interrupt(pending).pipe(Effect.ignore);
+      }
+      yield* flushScanCacheNow;
+    }).pipe(Effect.ignore),
+  );
 
   /** Parses one transcript, reusing the cached result when it is unchanged. */
   const readFileRecords = (
@@ -466,7 +550,7 @@ export const make = Effect.gen(function* () {
       const records = dedupeWithinFile(parsed);
 
       fileCache.set(filePath, { size, mtimeMs, provider, records });
-      cacheDirty = true;
+      markCacheDirty();
       return records;
     });
 
@@ -619,8 +703,8 @@ export const make = Effect.gen(function* () {
       windowStartMs,
       retentionCutoffMs: startedAtMs - CACHE_RETENTION_DAYS * DAY_MS,
     });
-    if (pruned > 0) cacheDirty = true;
-    yield* persistScanCache();
+    if (pruned > 0) markCacheDirty();
+    yield* schedulePersistScanCache;
 
     const aggregated = aggregator.finish();
     const readAt = yield* DateTime.now;

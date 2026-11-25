@@ -1858,6 +1858,102 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect(
+    "reads narrow ingestion context, moving threads, and workspace path usage directly",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+
+        yield* sql`DELETE FROM projection_threads`;
+        yield* sql`DELETE FROM projection_thread_sessions`;
+
+        const sideTurnsJson = JSON.stringify([
+          {
+            sideTurnId: "side-1",
+            participantId: "participant-1",
+            messageId: "msg-side-1",
+            status: "running",
+            requestId: "req-1",
+            kind: "ask",
+            startedAt: "2026-04-02T00:00:00.000Z",
+          },
+        ]);
+        const moveJson = JSON.stringify({
+          transferId: "move-1",
+          target: { environmentId: "env-remote", label: "Mini" },
+          agent: { provider: "codex", model: "gpt-5-codex" },
+          phase: "exporting",
+          cancelRequested: false,
+          startedAt: "2026-04-02T00:00:00.000Z",
+        });
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+            branch, worktree_path, effective_cwd, latest_turn_id, created_at, updated_at,
+            archived_at, deleted_at, side_turn, move_json
+          ) VALUES
+            (
+              'thread-active-ctx', 'project-1', 'Active', '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access', 'default', 'main', '/tmp/wt-active', NULL, NULL,
+              '2026-04-02T00:00:00.000Z', '2026-04-02T00:00:00.000Z', NULL, NULL, ${sideTurnsJson}, ${moveJson}
+            ),
+            (
+              'thread-archived-ctx', 'project-1', 'Archived', '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access', 'default', 'main', NULL, '/tmp/cwd-archived', NULL,
+              '2026-04-02T00:00:01.000Z', '2026-04-02T00:00:01.000Z', '2026-04-02T00:01:00.000Z', NULL, NULL, NULL
+            ),
+            (
+              'thread-deleted-ctx', 'project-1', 'Deleted', '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access', 'default', 'main', '/tmp/wt-deleted', NULL, NULL,
+              '2026-04-02T00:00:02.000Z', '2026-04-02T00:00:02.000Z', NULL, '2026-04-02T00:02:00.000Z', NULL, NULL
+            )
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_sessions (
+            thread_id, status, provider_name, provider_instance_id, provider_session_id,
+            provider_thread_id, runtime_mode, active_turn_id, last_error, updated_at
+          ) VALUES (
+            'thread-active-ctx', 'running', 'codex', 'codex-main', 'sess-1',
+            'prov-thread-1', 'full-access', 'turn-1', NULL, '2026-04-02T00:00:00.000Z'
+          )
+        `;
+
+        const active = yield* snapshotQuery.getThreadIngestionContext(
+          ThreadId.make("thread-active-ctx"),
+        );
+        assert.equal(active._tag, "Some");
+        if (active._tag === "Some") {
+          assert.equal(active.value.id, "thread-active-ctx");
+          assert.equal(active.value.session?.providerThreadId, "prov-thread-1");
+          assert.equal(active.value.sideTurn?.sideTurnId, "side-1");
+          assert.equal(active.value.sideTurns.length, 1);
+        }
+        assert.equal(
+          (yield* snapshotQuery.getThreadIngestionContext(ThreadId.make("thread-archived-ctx")))
+            ._tag,
+          "None",
+        );
+        assert.equal(
+          (yield* snapshotQuery.getThreadIngestionContext(ThreadId.make("thread-deleted-ctx")))
+            ._tag,
+          "None",
+        );
+
+        const moving = yield* snapshotQuery.listThreadsWithMove();
+        assert.deepEqual(
+          moving.map((entry) => [entry.threadId, entry.move.transferId]),
+          [["thread-active-ctx", "move-1"]],
+        );
+
+        assert.equal(yield* snapshotQuery.isThreadWorkspacePathInUse("/tmp/wt-active"), true);
+        assert.equal(yield* snapshotQuery.isThreadWorkspacePathInUse("/tmp/cwd-archived"), true);
+        assert.equal(yield* snapshotQuery.isThreadWorkspacePathInUse("/tmp/wt-deleted"), false);
+        assert.equal(yield* snapshotQuery.isThreadWorkspacePathInUse("/tmp/unused"), false);
+      }),
+  );
+
   it.effect("hydrates thread messages into the command read model", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

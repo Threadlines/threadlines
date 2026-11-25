@@ -8,12 +8,63 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 import type { EventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import type { AcpSessionRequestLogEvent, AcpSessionRuntimeOptions } from "./AcpSessionRuntime.ts";
 
+const ACP_STREAM_FRAGMENT_SESSION_UPDATES = new Set<string>([
+  "agent_message_chunk",
+  "agent_thought_chunk",
+]);
+
+function isAcpStreamFragmentRecord(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as {
+    readonly method?: unknown;
+    readonly params?: { readonly update?: { readonly sessionUpdate?: unknown } };
+  };
+  if (record.method !== "session/update") return false;
+  const sessionUpdate = record.params?.update?.sessionUpdate;
+  return (
+    typeof sessionUpdate === "string" && ACP_STREAM_FRAGMENT_SESSION_UPDATES.has(sessionUpdate)
+  );
+}
+
+function isAcpProtocolStreamFragment(event: EffectAcpProtocol.AcpProtocolLogEvent): boolean {
+  if (event.direction !== "incoming") return false;
+  const payload = event.payload;
+  if (event.stage === "raw" && typeof payload === "string") {
+    if (!payload.includes('"agent_message_chunk"') && !payload.includes('"agent_thought_chunk"')) {
+      return false;
+    }
+    const lines = payload.split("\n");
+    let sawLine = false;
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (line.length === 0) continue;
+      sawLine = true;
+      try {
+        if (!isAcpStreamFragmentRecord(JSON.parse(line) as unknown)) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
+    return sawLine;
+  }
+  if (event.stage === "decoded") {
+    if (Array.isArray(payload)) {
+      return payload.length > 0 && payload.every(isAcpStreamFragmentRecord);
+    }
+    return isAcpStreamFragmentRecord(payload);
+  }
+  return false;
+}
+
 function writeNativeAcpLog(input: {
   readonly nativeEventLogger: EventNdjsonLogger | undefined;
   readonly provider: ProviderDriverKind;
   readonly threadId: ThreadId;
   readonly kind: "request" | "protocol";
   readonly payload: unknown;
+  readonly streamFragment?: boolean;
 }): Effect.Effect<void, never> {
   return Effect.gen(function* () {
     if (!input.nativeEventLogger) return;
@@ -31,6 +82,7 @@ function writeNativeAcpLog(input: {
         },
       },
       input.threadId,
+      input.streamFragment === true ? { streamFragment: true } : undefined,
     );
   });
 }
@@ -108,6 +160,7 @@ export function makeAcpNativeLoggers(input: {
                   event.direction === "outgoing"
                     ? { ...event, payload: redactAcpLogCredentials(event.payload) }
                     : event,
+                streamFragment: isAcpProtocolStreamFragment(event),
               }),
           } satisfies NonNullable<AcpSessionRuntimeOptions["protocolLogging"]>,
         }

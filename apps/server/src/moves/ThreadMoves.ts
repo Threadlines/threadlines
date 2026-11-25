@@ -1590,7 +1590,7 @@ const make = Effect.gen(function* () {
    * differ), and the move is dropped there instead.
    */
   const exportFor = (
-    thread: OrchestrationThread,
+    threadId: ThreadId,
     agent: ModelSelection,
     transferId: ThreadMoveId,
     offered: boolean,
@@ -1611,22 +1611,24 @@ const make = Effect.gen(function* () {
           reason: "This computer lost the packed thread. Start the move again.",
         });
       }
-      const model = yield* readModel.pipe(
-        Effect.mapError(() => new ThreadMoveFailure({ reason: "This thread couldn't be read." })),
-      );
-      const project = model.projects.find((entry) => entry.id === thread.projectId);
-      if (project === undefined) {
-        return yield* new ThreadMoveFailure({ reason: "This thread's project is gone." });
-      }
       const detail = yield* snapshots
-        .getThreadDetailById(thread.id, { includeArchived: true })
+        .getThreadDetailById(threadId, { includeArchived: true })
         .pipe(
           Effect.mapError(() => new ThreadMoveFailure({ reason: "This thread couldn't be read." })),
         );
       if (Option.isNone(detail)) {
         return yield* new ThreadMoveFailure({ reason: "This thread couldn't be read." });
       }
-      const nativeSession = yield* sessionToCarry(thread.id, targetEnvironmentId, agent);
+      const catalog = yield* snapshots
+        .getProjectCatalog()
+        .pipe(
+          Effect.mapError(() => new ThreadMoveFailure({ reason: "This thread couldn't be read." })),
+        );
+      const project = catalog.projects.find((entry) => entry.id === detail.value.projectId);
+      if (project === undefined) {
+        return yield* new ThreadMoveFailure({ reason: "This thread's project is gone." });
+      }
+      const nativeSession = yield* sessionToCarry(threadId, targetEnvironmentId, agent);
       // What it had going, for a computer that takes it (docs/design/fleet.md,
       // Part 3e); one that doesn't never gets it, and couldn't have been
       // offered a thread that needs it.
@@ -1635,7 +1637,7 @@ const make = Effect.gen(function* () {
       const state =
         takes?.threadState === true
           ? moveThreadStateOf(
-              threadMoveCarry({ projects: model.projects }, detail.value),
+              threadMoveCarry({ projects: catalog.projects }, detail.value),
               withRoom ? sessionSlotParticipantId(detail.value.session) : null,
             )
           : undefined;
@@ -1648,26 +1650,45 @@ const make = Effect.gen(function* () {
       const outsideWork = takes?.outsideWork === true ? (detail.value.outsideWork ?? []) : [];
       // Its family (Part 3f, (g)), only for a computer that takes families.
       const moveFamily = takes?.families === true ? detail.value.move?.family : undefined;
-      const threads = model.threads.map((entry) =>
-        entry.id === detail.value.id ? detail.value : entry,
-      );
-      const family =
-        moveFamily === undefined
-          ? undefined
-          : familyManifestOf(
-              { projects: model.projects, threads },
-              detail.value,
-              moveFamily,
-              targetEnvironmentId,
-            );
-      const familyThreadIds =
-        moveFamily === undefined ? undefined : familyThreadIdsOf(threads, moveFamily);
+      let family: ReturnType<typeof familyManifestOf> | undefined = undefined;
+      let familyThreadIds: ReturnType<typeof familyThreadIdsOf> | undefined = undefined;
+      if (moveFamily !== undefined) {
+        const model = yield* readModel.pipe(
+          Effect.mapError(() => new ThreadMoveFailure({ reason: "This thread couldn't be read." })),
+        );
+        const threads = model.threads.map((entry) =>
+          entry.id === detail.value.id ? detail.value : entry,
+        );
+        family = familyManifestOf(
+          { projects: model.projects, threads },
+          detail.value,
+          moveFamily,
+          targetEnvironmentId,
+        );
+        familyThreadIds = familyThreadIdsOf(threads, moveFamily);
+      }
       // Across the link its work came over (Part 3f, (h)), only for a
       // computer that takes it back that way.
-      const linkLineage =
-        takes?.linkLineage === true && moveFamily === undefined
-          ? linkLineageOf(threads, detail.value, targetEnvironmentId)
-          : undefined;
+      let linkLineage: ReturnType<typeof linkLineageOf> = undefined;
+      if (takes?.linkLineage === true && moveFamily === undefined) {
+        const parentDetail =
+          (detail.value.remoteOrigin ?? null) === null &&
+          detail.value.parentThreadId !== null &&
+          detail.value.attachedToParent
+            ? yield* snapshots
+                .getThreadDetailById(detail.value.parentThreadId, { includeArchived: true })
+                .pipe(
+                  Effect.mapError(
+                    () => new ThreadMoveFailure({ reason: "This thread couldn't be read." }),
+                  ),
+                )
+            : Option.none<OrchestrationThread>();
+        linkLineage = linkLineageOf(
+          [detail.value, ...Option.toArray(parentDetail)],
+          detail.value,
+          targetEnvironmentId,
+        );
+      }
       // The threads it started there, for a computer that takes them back
       // as its children (Part 3f, (g)).
       const startedThere =
@@ -1683,12 +1704,12 @@ const make = Effect.gen(function* () {
       const source = {
         environmentId: descriptor.environmentId,
         environmentLabel: environment.currentLabel(),
-        threadId: thread.id,
+        threadId,
       };
       if (project.kind === "general-chat") {
         return yield* writeScratchExport({
           dir,
-          folder: generalChatThreadScratchCwd(project.workspaceRoot, thread.id, NodePath),
+          folder: generalChatThreadScratchCwd(project.workspaceRoot, threadId, NodePath),
           attachmentsDir: config.attachmentsDir,
           thread: detail.value,
           source,
@@ -1940,8 +1961,10 @@ const make = Effect.gen(function* () {
           });
           return;
         }
-        const thread = (yield* readModel).threads.find((entry) => entry.id === threadId);
-        if (thread === undefined) return;
+        const threadRow = yield* threadRows
+          .getById({ threadId })
+          .pipe(Effect.mapError(() => moveError("This computer's threads couldn't be read.")));
+        if (Option.isNone(threadRow)) return;
         // Nothing of the thread may still run while it's packed: its agent's
         // processes must be proven gone (docs/design/fleet.md, Part 3b). Not
         // proven, this attempt stops and the worker tries again; the thread
@@ -1953,7 +1976,7 @@ const make = Effect.gen(function* () {
           });
         }
         const manifest = yield* exportFor(
-          thread,
+          threadId,
           move.agent,
           transferId,
           false,
@@ -2035,10 +2058,12 @@ const make = Effect.gen(function* () {
             break;
           }
           case "receiving": {
-            const thread = (yield* readModel).threads.find((entry) => entry.id === threadId);
-            if (thread === undefined) return;
+            const threadRow = yield* threadRows
+              .getById({ threadId })
+              .pipe(Effect.mapError(() => moveError("This computer's threads couldn't be read.")));
+            if (Option.isNone(threadRow)) return;
             const manifest = yield* exportFor(
-              thread,
+              threadId,
               move.agent,
               transferId,
               true,
@@ -2100,27 +2125,28 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const events = yield* engine.subscribeDomainEvents;
       // Every move the previous process left unfinished.
-      const model = yield* readModel.pipe(Effect.option);
-      if (Option.isSome(model)) {
-        for (const thread of model.value.threads) {
-          const move = thread.move ?? null;
-          if (thread.deletedAt === null && move !== null && move.movedAway === undefined) {
-            yield* runMove(thread.id, move.transferId).pipe(Effect.forkScoped);
+      const movingThreads = yield* snapshots.listThreadsWithMove().pipe(Effect.option);
+      if (Option.isSome(movingThreads)) {
+        for (const entry of movingThreads.value) {
+          if (entry.deletedAt === null && entry.move.movedAway === undefined) {
+            yield* runMove(entry.threadId, entry.move.transferId).pipe(Effect.forkScoped);
           }
         }
         // A packed copy left by a move that landed while no worker was there
         // to tidy it (the thread came back first, then this computer stopped).
-        const packed = new Set(
-          yield* Effect.tryPromise(() =>
-            NodeFs.readdir(NodePath.join(config.stateDir, "moves")),
-          ).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
-        );
-        for (const thread of model.value.threads) {
-          const move = thread.move ?? null;
-          if (move !== null && move.movedAway !== undefined && packed.has(move.transferId)) {
+        const movedAway = movingThreads.value.filter((entry) => entry.move.movedAway !== undefined);
+        if (movedAway.length > 0) {
+          const packed = new Set(
             yield* Effect.tryPromise(() =>
-              NodeFs.rm(moveDir(move.transferId), { recursive: true, force: true }),
-            ).pipe(Effect.ignore);
+              NodeFs.readdir(NodePath.join(config.stateDir, "moves")),
+            ).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
+          );
+          for (const entry of movedAway) {
+            if (packed.has(entry.move.transferId)) {
+              yield* Effect.tryPromise(() =>
+                NodeFs.rm(moveDir(entry.move.transferId), { recursive: true, force: true }),
+              ).pipe(Effect.ignore);
+            }
           }
         }
       }

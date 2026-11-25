@@ -30,8 +30,10 @@ export interface SearchTextMatchAnalysis {
 }
 
 const MAX_SEARCH_OCCURRENCES_PER_CLAUSE = 64;
+const MAX_SEARCH_PATTERN_CACHE_ENTRIES = 256;
 const ORDERED_SEARCH_SCORE_BASE = 100_000_000;
 const UNORDERED_SEARCH_SCORE_BASE = 200_000_000;
+const searchClauseRegexCache = new Map<string, RegExp>();
 
 function normalizeSearchClause(value: string): string {
   return value.normalize("NFKC").trim().toLowerCase().replace(/\s+/gu, " ");
@@ -116,21 +118,45 @@ function searchClausePattern(value: string): string {
   return value.split(" ").map(escapeSearchRegularExpression).join("\\s+");
 }
 
+function getSearchClauseRegex(value: string): RegExp {
+  let cached = searchClauseRegexCache.get(value);
+  if (cached !== undefined) {
+    return cached;
+  }
+  cached = new RegExp(searchClausePattern(value), "giu");
+  if (searchClauseRegexCache.size >= MAX_SEARCH_PATTERN_CACHE_ENTRIES) {
+    const oldestKey = searchClauseRegexCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      searchClauseRegexCache.delete(oldestKey);
+    }
+  }
+  searchClauseRegexCache.set(value, cached);
+  return cached;
+}
+
 function findSearchTextOccurrences(
   text: string,
   value: string,
   clauseIndex: number,
+  maxOccurrences = MAX_SEARCH_OCCURRENCES_PER_CLAUSE,
 ): SearchTextMatchRange[] {
-  const pattern = new RegExp(searchClausePattern(value), "giu");
+  if (!value) {
+    return [];
+  }
+  const pattern = getSearchClauseRegex(value);
+  pattern.lastIndex = 0;
   const ranges: SearchTextMatchRange[] = [];
-  for (const match of text.matchAll(pattern)) {
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
     const start = match.index;
     const matchedText = match[0];
-    if (start === undefined || matchedText.length === 0) {
+    if (matchedText.length === 0) {
+      const codePoint = text.codePointAt(pattern.lastIndex);
+      pattern.lastIndex += codePoint !== undefined && codePoint > 0xffff ? 2 : 1;
       continue;
     }
     ranges.push({ clauseIndex, start, end: start + matchedText.length });
-    if (ranges.length >= MAX_SEARCH_OCCURRENCES_PER_CLAUSE) {
+    if (ranges.length >= maxOccurrences) {
       break;
     }
   }
@@ -264,14 +290,32 @@ export function analyzeSearchText(
     return null;
   }
 
-  const occurrencesByClause = parsed.clauses.map((clause, clauseIndex) =>
-    findSearchTextOccurrences(text, clause.value, clauseIndex),
-  );
-  if (occurrencesByClause.some((occurrences) => occurrences.length === 0)) {
-    return null;
+  if (parsed.clauses.length === 1) {
+    const firstMatch = findSearchTextOccurrences(text, parsed.clauses[0]!.value, -1, 1)[0];
+    if (!firstMatch) {
+      return null;
+    }
+    return {
+      score: Math.min(99_999_999, firstMatch.start),
+      kind: "exact-phrase",
+      ranges: [firstMatch],
+    };
   }
 
-  const phraseRange = findSearchTextOccurrences(text, parsed.phrase, -1)[0];
+  const occurrencesByClause: SearchTextMatchRange[][] = [];
+  for (let clauseIndex = 0; clauseIndex < parsed.clauses.length; clauseIndex += 1) {
+    const occurrences = findSearchTextOccurrences(
+      text,
+      parsed.clauses[clauseIndex]!.value,
+      clauseIndex,
+    );
+    if (occurrences.length === 0) {
+      return null;
+    }
+    occurrencesByClause.push(occurrences);
+  }
+
+  const phraseRange = findSearchTextOccurrences(text, parsed.phrase, -1, 1)[0];
   if (phraseRange) {
     return {
       score: Math.min(99_999_999, phraseRange.start),

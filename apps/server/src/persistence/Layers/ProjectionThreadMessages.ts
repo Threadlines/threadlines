@@ -164,22 +164,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.turnId},
           ${row.role},
           ${row.text},
-          COALESCE(
-            ${nextAttachmentsJson},
-            (
-              SELECT attachments_json
-              FROM projection_thread_messages
-              WHERE message_id = ${row.messageId}
-            )
-          ),
-          COALESCE(
-            ${nextSkillsJson},
-            (
-              SELECT skills_json
-              FROM projection_thread_messages
-              WHERE message_id = ${row.messageId}
-            )
-          ),
+          ${nextAttachmentsJson},
+          ${nextSkillsJson},
           ${row.participantId ?? null},
           ${row.sideTurnId ?? null},
           ${row.fromAgent !== undefined ? JSON.stringify(row.fromAgent) : null},

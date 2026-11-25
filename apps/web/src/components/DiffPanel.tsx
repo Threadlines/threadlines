@@ -40,7 +40,10 @@ import { buildFileDiffRenderKey, getRenderablePatch } from "../lib/diffRendering
 import { useCodeThemeName } from "../theme/codeTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useStore } from "../store";
-import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
+import {
+  createProjectSelectorByRef,
+  createThreadDiffContextSelectorByRef,
+} from "../storeSelectors";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { formatShortTimestamp } from "../timestampFormat";
@@ -272,7 +275,7 @@ export default function DiffPanel({ mode = "inline", onClose, embedded = false }
   const diffOpen = diffSearch.diff === "1";
   const activeThreadId = routeThreadRef?.threadId ?? null;
   const activeThread = useStore(
-    useMemo(() => createThreadSelectorByRef(routeThreadRef), [routeThreadRef]),
+    useMemo(() => createThreadDiffContextSelectorByRef(routeThreadRef), [routeThreadRef]),
   );
   const draftThread = useComposerDraftStore((store) =>
     routeThreadRef ? store.getDraftThreadByRef(routeThreadRef) : null,

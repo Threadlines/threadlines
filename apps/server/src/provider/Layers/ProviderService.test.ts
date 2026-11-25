@@ -2572,6 +2572,58 @@ routing.layer("ProviderServiceLive routing", (it) => {
       }),
   );
 
+  it.effect(
+    "listSessions only reads bindings for active sessions and skips directory when idle",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const directory = yield* ProviderSessionDirectory;
+
+        const staleThreadId = asThreadId("thread-list-sessions-inactive-historical");
+        const activeThreadId = asThreadId("thread-list-sessions-active");
+        yield* directory.upsert({
+          threadId: staleThreadId,
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          runtimeMode: "full-access",
+        });
+
+        yield* routing.codex.stopAll();
+        yield* routing.claude.stopAll();
+
+        const listThreadIdsSpy = vi.spyOn(directory, "listThreadIds");
+        const getBindingSpy = vi.spyOn(directory, "getBinding");
+        try {
+          const emptySessions = yield* provider.listSessions();
+          assert.deepEqual(emptySessions, []);
+          assert.equal(listThreadIdsSpy.mock.calls.length, 0);
+          assert.equal(getBindingSpy.mock.calls.length, 0);
+
+          yield* provider.startSession(activeThreadId, {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: codexInstanceId,
+            threadId: activeThreadId,
+            cwd: "/tmp/project-list-sessions-active",
+            runtimeMode: "full-access",
+          });
+
+          listThreadIdsSpy.mockClear();
+          getBindingSpy.mockClear();
+
+          const activeSessions = yield* provider.listSessions();
+          assert.deepEqual(
+            activeSessions.map((session) => session.threadId),
+            [activeThreadId],
+          );
+          assert.equal(listThreadIdsSpy.mock.calls.length, 0);
+          assert.deepEqual(getBindingSpy.mock.calls, [[activeThreadId]]);
+        } finally {
+          listThreadIdsSpy.mockRestore();
+          getBindingSpy.mockRestore();
+        }
+      }),
+  );
+
   it.effect("recovers stale sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

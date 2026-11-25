@@ -1081,6 +1081,14 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
+  const resolveThreadIngestionContext = Effect.fn("resolveThreadIngestionContext")(function* (
+    threadId: ThreadId,
+  ) {
+    return yield* projectionSnapshotQuery
+      .getThreadIngestionContext(threadId)
+      .pipe(Effect.map(Option.getOrUndefined));
+  });
+
   // Per-turn accumulation of provider-reported file-change stats for adapters
   // that emit per-tool-call evidence (Claude) instead of cumulative turn diffs
   // (Codex). Keyed by thread:turn, then by provider item id so a re-delivered
@@ -3105,6 +3113,131 @@ const make = Effect.gen(function* () {
         ),
       );
 
+  const processContentDeltaEvent = Effect.fnUntraced(function* (
+    event: Extract<ProviderRuntimeEvent, { readonly type: "content.delta" }>,
+  ) {
+    const thread = yield* resolveThreadIngestionContext(event.threadId);
+    if (!thread) return;
+    if (event.sideTurnId !== undefined) {
+      yield* processSideTurnEvent({ ...event, sideTurnId: event.sideTurnId }, thread);
+      return;
+    }
+    if ((event.participantId ?? null) !== sessionSlotParticipantId(thread.session)) {
+      yield* Effect.logDebug("provider runtime ingestion ignored an idle room agent's event", {
+        eventId: event.eventId,
+        eventType: event.type,
+        threadId: thread.id,
+        participantId: event.participantId ?? null,
+      });
+      return;
+    }
+    if (
+      STRICT_PROVIDER_LIFECYCLE_GUARD &&
+      !runtimeEventMatchesThreadSession(event, thread.session)
+    ) {
+      yield* Effect.logDebug("provider runtime ingestion ignored stale provider event", {
+        eventId: event.eventId,
+        eventType: event.type,
+        eventProvider: event.provider,
+        eventProviderInstanceId: event.providerInstanceId,
+        threadId: thread.id,
+        sessionProvider: thread.session?.providerName,
+        sessionProviderInstanceId: thread.session?.providerInstanceId,
+      });
+      return;
+    }
+
+    const attributionThread =
+      providerThreadIdFromEvent(event) !== undefined && !thread.session?.providerThreadId?.trim()
+        ? ((yield* resolveThreadDetail(thread.id)) ?? thread)
+        : thread;
+    const now = event.createdAt;
+
+    if (event.payload.streamKind === "assistant_text" && event.payload.delta.length > 0) {
+      const assistantDelta = event.payload.delta;
+      const childProviderThreadId = childProviderThreadIdForEvent(event, attributionThread);
+      if (childProviderThreadId) {
+        const bufferKey = subagentResultTextKey({ event, childProviderThreadId });
+        const settled = yield* Cache.getOption(settledSubagentResultActivityKeys, bufferKey);
+        if (Option.isNone(settled)) {
+          const body = yield* appendBufferedSubagentResultText(bufferKey, assistantDelta);
+          yield* queueSubagentResultActivity(bufferKey, {
+            event,
+            threadId: thread.id,
+            parentProviderThreadId: thread.session?.providerThreadId ?? undefined,
+            childProviderThreadId,
+            body,
+            createdAt: now,
+          });
+        }
+      } else {
+        const turnId = toTurnId(event.turnId);
+        const assistantMessageId =
+          event.raw?.method === "thread/realtime/transcript/delta"
+            ? yield* Ref.modify(realtimeAssistantMessageIds, (current) => {
+                const existing = current.get(thread.id);
+                if (existing) {
+                  return [existing, current] as const;
+                }
+                const created = MessageId.make(`assistant:realtime:${thread.id}:${event.eventId}`);
+                const next = new Map(current);
+                next.set(thread.id, created);
+                return [created, next] as const;
+              })
+            : yield* getOrCreateAssistantMessageId({
+                threadId: thread.id,
+                event,
+                ...(turnId ? { turnId } : {}),
+              });
+        if (turnId) {
+          yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
+        }
+
+        const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
+          serverSettingsService.getSettings,
+          (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
+        );
+        if (assistantDeliveryMode === "buffered") {
+          const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
+          if (spillChunk.length > 0) {
+            yield* dispatchAssistantDelta({
+              event,
+              threadId: thread.id,
+              messageId: assistantMessageId,
+              delta: spillChunk,
+              ...(turnId ? { turnId } : {}),
+              createdAt: now,
+              commandTag: "assistant-delta-buffer-spill",
+            });
+          }
+        } else {
+          yield* queueStreamingAssistantDelta({
+            event,
+            threadId: thread.id,
+            messageId: assistantMessageId,
+            delta: assistantDelta,
+            ...(turnId ? { turnId } : {}),
+            createdAt: now,
+          });
+        }
+      }
+    }
+
+    const activities = yield* projectRuntimeActivities(event, attributionThread, thread.id);
+    yield* Effect.forEach(activities, (activity) =>
+      orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: providerCommandId(event, "thread-activity-append"),
+        threadId: thread.id,
+        activity:
+          event.participantId != null && activity.participantId === undefined
+            ? { ...activity, participantId: event.participantId }
+            : activity,
+        createdAt: activity.createdAt,
+      }),
+    ).pipe(Effect.asVoid);
+  });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       // Realtime audio/item traffic is intentionally in-memory only. Keep this
@@ -3114,6 +3247,13 @@ const make = Effect.gen(function* () {
         event.type === "thread.realtime.audio.delta" ||
         event.type === "thread.realtime.item-added"
       ) {
+        return;
+      }
+      // High-frequency streaming deltas only need the active thread's session
+      // guards and live side-turns, avoiding full shell hydration and diff-stat
+      // rollups on every chunk.
+      if (event.type === "content.delta") {
+        yield* processContentDeltaEvent(event);
         return;
       }
       const thread = yield* resolveThreadShell(event.threadId);
@@ -3924,86 +4064,8 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const assistantDelta =
-        event.type === "content.delta" && event.payload.streamKind === "assistant_text"
-          ? event.payload.delta
-          : undefined;
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
-
-      if (assistantDelta && assistantDelta.length > 0) {
-        const childProviderThreadId = childProviderThreadIdForEvent(event, attributionThread);
-        if (childProviderThreadId) {
-          const bufferKey = subagentResultTextKey({ event, childProviderThreadId });
-          const settled = yield* Cache.getOption(settledSubagentResultActivityKeys, bufferKey);
-          if (Option.isNone(settled)) {
-            const body = yield* appendBufferedSubagentResultText(bufferKey, assistantDelta);
-            yield* queueSubagentResultActivity(bufferKey, {
-              event,
-              threadId: thread.id,
-              parentProviderThreadId: thread.session?.providerThreadId ?? undefined,
-              childProviderThreadId,
-              body,
-              createdAt: now,
-            });
-          }
-        } else {
-          const turnId = toTurnId(event.turnId);
-          const assistantMessageId =
-            event.raw?.method === "thread/realtime/transcript/delta"
-              ? yield* Ref.modify(realtimeAssistantMessageIds, (current) => {
-                  const existing = current.get(thread.id);
-                  if (existing) {
-                    return [existing, current] as const;
-                  }
-                  const created = MessageId.make(
-                    `assistant:realtime:${thread.id}:${event.eventId}`,
-                  );
-                  const next = new Map(current);
-                  next.set(thread.id, created);
-                  return [created, next] as const;
-                })
-              : yield* getOrCreateAssistantMessageId({
-                  threadId: thread.id,
-                  event,
-                  ...(turnId ? { turnId } : {}),
-                });
-          if (turnId) {
-            yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
-          }
-
-          const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
-            serverSettingsService.getSettings,
-            (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
-          );
-          if (assistantDeliveryMode === "buffered") {
-            const spillChunk = yield* appendBufferedAssistantText(
-              assistantMessageId,
-              assistantDelta,
-            );
-            if (spillChunk.length > 0) {
-              yield* dispatchAssistantDelta({
-                event,
-                threadId: thread.id,
-                messageId: assistantMessageId,
-                delta: spillChunk,
-                ...(turnId ? { turnId } : {}),
-                createdAt: now,
-                commandTag: "assistant-delta-buffer-spill",
-              });
-            }
-          } else {
-            yield* queueStreamingAssistantDelta({
-              event,
-              threadId: thread.id,
-              messageId: assistantMessageId,
-              delta: assistantDelta,
-              ...(turnId ? { turnId } : {}),
-              createdAt: now,
-            });
-          }
-        }
-      }
 
       // A non-blocking question does not pause the agent, so its streaming
       // text must not be cut into a settled message here.

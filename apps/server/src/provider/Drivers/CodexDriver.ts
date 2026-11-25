@@ -281,6 +281,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
           ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
+        shouldScheduleRefresh: (settings) => settings.enabled,
         shouldRetrySnapshot: (provider) => provider.statusReason === "provider_probe_timeout",
         retryDelay: Duration.minutes(1),
       }).pipe(

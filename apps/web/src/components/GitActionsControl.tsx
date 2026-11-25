@@ -83,7 +83,7 @@ import { useThreadCheckoutSelection } from "~/hooks/useThreadCheckoutSelection";
 import { readLocalApi } from "~/localApi";
 import { getSourceControlPresentation } from "~/sourceControlPresentation";
 import { useStore } from "~/store";
-import { createThreadSelectorByRef } from "~/storeSelectors";
+import { createThreadCheckoutSelectorByRef } from "~/storeSelectors";
 import {
   applyGitActionProgressEvent,
   createGitActionProgress,
@@ -1121,7 +1121,7 @@ export default function GitActionsControl({
     [activeThreadRef],
   );
   const activeServerThreadSelector = useMemo(
-    () => createThreadSelectorByRef(activeThreadRef),
+    () => createThreadCheckoutSelectorByRef(activeThreadRef),
     [activeThreadRef],
   );
   const activeServerThread = useStore(activeServerThreadSelector);

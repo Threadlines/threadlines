@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 
 export interface RotatingFileSinkOptions {
@@ -9,8 +10,35 @@ export interface RotatingFileSinkOptions {
   readonly throwOnError?: boolean;
 }
 
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { readonly code?: unknown }).code === "ENOENT"
+  );
+}
+
+interface SharedPathState {
+  pendingWrite: Promise<void>;
+  activeOps: number;
+  currentSize: number | null;
+}
+
+const sharedPathStates = new Map<string, SharedPathState>();
+
+function getOrCreateSharedPathState(resolvedPath: string): SharedPathState {
+  let state = sharedPathStates.get(resolvedPath);
+  if (state === undefined) {
+    state = { pendingWrite: Promise.resolve(), activeOps: 0, currentSize: null };
+    sharedPathStates.set(resolvedPath, state);
+  }
+  return state;
+}
+
 export class RotatingFileSink {
   private readonly filePath: string;
+  private readonly resolvedPath: string;
   private readonly maxBytes: number;
   private readonly maxFiles: number;
   private readonly throwOnError: boolean;
@@ -25,6 +53,7 @@ export class RotatingFileSink {
     }
 
     this.filePath = options.filePath;
+    this.resolvedPath = path.resolve(options.filePath);
     this.maxBytes = options.maxBytes;
     this.maxFiles = options.maxFiles;
     this.throwOnError = options.throwOnError ?? false;
@@ -38,6 +67,11 @@ export class RotatingFileSink {
     const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
     if (buffer.length === 0) return;
 
+    const shared = sharedPathStates.get(this.resolvedPath);
+    if (shared !== undefined && shared.currentSize !== null) {
+      this.currentSize = shared.currentSize;
+    }
+
     try {
       if (this.currentSize > 0 && this.currentSize + buffer.length > this.maxBytes) {
         this.rotate();
@@ -49,11 +83,114 @@ export class RotatingFileSink {
       if (this.currentSize > this.maxBytes) {
         this.rotate();
       }
+      if (shared !== undefined) {
+        shared.currentSize = this.currentSize;
+      }
     } catch {
       this.currentSize = this.readCurrentSize();
+      if (shared !== undefined) {
+        shared.currentSize = this.currentSize;
+      }
       if (this.throwOnError) {
         throw new Error(`Failed to write log chunk to ${this.filePath}`);
       }
+    }
+  }
+
+  /**
+   * Appends a chunk without blocking the event loop, serialized per resolved
+   * destination path so multiple sinks writing to the same log file (such as
+   * native and canonical provider logs) never interleave appends or rotations.
+   */
+  writeAsync(chunk: string | Buffer): Promise<void> {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    const shared = getOrCreateSharedPathState(this.resolvedPath);
+    if (buffer.length === 0) return shared.pendingWrite;
+
+    shared.activeOps += 1;
+    const next = shared.pendingWrite.then(() => this.writeAsyncUnserialized(shared, buffer));
+    shared.pendingWrite = next
+      .catch(() => undefined)
+      .finally(() => {
+        shared.activeOps -= 1;
+        if (shared.activeOps === 0 && sharedPathStates.get(this.resolvedPath) === shared) {
+          sharedPathStates.delete(this.resolvedPath);
+        }
+      });
+    return next;
+  }
+
+  /** Waits for any in-flight async writes to settle for this path. */
+  drain(): Promise<void> {
+    return sharedPathStates.get(this.resolvedPath)?.pendingWrite ?? Promise.resolve();
+  }
+
+  private async writeAsyncUnserialized(shared: SharedPathState, buffer: Buffer): Promise<void> {
+    if (shared.currentSize === null) {
+      this.currentSize = await this.readCurrentSizeAsync();
+      shared.currentSize = this.currentSize;
+    } else {
+      this.currentSize = shared.currentSize;
+    }
+    try {
+      if (this.currentSize > 0 && this.currentSize + buffer.length > this.maxBytes) {
+        await this.rotateAsync();
+      }
+
+      await fsp.appendFile(this.filePath, buffer);
+      this.currentSize += buffer.length;
+
+      if (this.currentSize > this.maxBytes) {
+        await this.rotateAsync();
+      }
+      shared.currentSize = this.currentSize;
+    } catch {
+      this.currentSize = await this.readCurrentSizeAsync();
+      shared.currentSize = this.currentSize;
+      if (this.throwOnError) {
+        throw new Error(`Failed to write log chunk to ${this.filePath}`);
+      }
+    }
+  }
+
+  private async rotateAsync(): Promise<void> {
+    try {
+      await fsp.rm(this.withSuffix(this.maxFiles), { force: true });
+
+      for (let index = this.maxFiles - 1; index >= 1; index -= 1) {
+        const source = this.withSuffix(index);
+        const target = this.withSuffix(index + 1);
+        try {
+          await fsp.rename(source, target);
+        } catch (error) {
+          if (!isFileNotFoundError(error)) {
+            throw error;
+          }
+        }
+      }
+
+      try {
+        await fsp.rename(this.filePath, this.withSuffix(1));
+      } catch (error) {
+        if (!isFileNotFoundError(error)) {
+          throw error;
+        }
+      }
+
+      this.currentSize = 0;
+    } catch {
+      this.currentSize = await this.readCurrentSizeAsync();
+      if (this.throwOnError) {
+        throw new Error(`Failed to rotate log file ${this.filePath}`);
+      }
+    }
+  }
+
+  private async readCurrentSizeAsync(): Promise<number> {
+    try {
+      return (await fsp.stat(this.filePath)).size;
+    } catch {
+      return 0;
     }
   }
 

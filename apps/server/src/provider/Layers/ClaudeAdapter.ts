@@ -3890,7 +3890,11 @@ function exitPlanCaptureKey(input: {
 }
 
 function tryParseJsonRecord(value: string): Record<string, unknown> | undefined {
-  const result = decodeUnknownJsonStringExit(value);
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return undefined;
+  }
+  const result = decodeUnknownJsonStringExit(trimmed);
   if (!Exit.isSuccess(result)) {
     return undefined;
   }
@@ -5198,20 +5202,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     tool: ToolInFlight,
     message: SDKMessage,
   ) {
+    const previousEmit = tool.partialStatsEmit;
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    if (previousEmit && nowMs - previousEmit.atMs < PARTIAL_FILE_CHANGE_EMIT_INTERVAL_MS) {
+      return;
+    }
     const estimate = estimatePartialFileChangeStat(tool.toolName, tool.partialInputJson);
     if (!estimate) {
       return;
     }
-    const previousEmit = tool.partialStatsEmit;
     if (
       previousEmit &&
       previousEmit.additions === estimate.stat.additions &&
       previousEmit.deletions === estimate.stat.deletions
     ) {
-      return;
-    }
-    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-    if (previousEmit && nowMs - previousEmit.atMs < PARTIAL_FILE_CHANGE_EMIT_INTERVAL_MS) {
       return;
     }
 
@@ -6359,10 +6363,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    if (context.turnState) {
-      context.turnState.items.push(message.message);
-    }
-
     const toolResults = toolResultBlocksFromUserMessage(message);
     // SDKUserMessage.tool_use_result describes the matching Agent/Task output
     // but does not carry its tool_use_id. Current SDK messages contain one
@@ -7076,7 +7076,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (context.turnState) {
-      context.turnState.items.push(message.message);
       if (isApiError) {
         // Kept out of the transcript: it would read as Claude's answer. If the
         // turn ends here, the result reports it as the turn's error.

@@ -107,6 +107,7 @@ import {
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
 import {
+  activityMayAffectSubagents,
   keepKnownSubagentProviders,
   projectSubagentActivity,
 } from "@threadlines/shared/subagentProjection";
@@ -1437,6 +1438,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.proposed-plan-upserted":
         case "thread.approval-response-requested":
         case "thread.user-input-response-requested": {
+          // An agent's reply never changes stopsWithParent, outsideWork, or the
+          // shell summary counts (user message, plans, prompts, approvals), and
+          // arrives many times a second while streaming.
+          if (event.type === "thread.message-sent" && event.payload.role === "assistant") {
+            yield* projectionThreadRepository.touchUpdatedAt({
+              threadId: event.payload.threadId,
+              updatedAt: event.occurredAt,
+            });
+            return;
+          }
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
@@ -1467,27 +1478,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 }
               : {}),
           });
-          // An agent's reply changes nothing the summary counts (the user's
-          // last message, plans, prompts, approvals), and while it streams it
-          // arrives many times a second.
-          if (event.type === "thread.message-sent" && event.payload.role === "assistant") {
-            return;
-          }
           yield* refreshThreadShellSummary(event.payload.threadId);
           return;
         }
 
         case "thread.activity-appended": {
-          const existingRow = yield* projectionThreadRepository.getById({
+          const touched = yield* projectionThreadRepository.touchUpdatedAt({
             threadId: event.payload.threadId,
-          });
-          if (Option.isNone(existingRow)) {
-            return;
-          }
-          yield* projectionThreadRepository.upsert({
-            ...existingRow.value,
             updatedAt: event.occurredAt,
           });
+          if (!touched) {
+            return;
+          }
           if (activityMayAffectThreadShellSummary(event.payload.activity)) {
             yield* refreshThreadShellSummary(event.payload.threadId);
           }
@@ -2174,18 +2176,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             createdAt: event.payload.activity.createdAt,
           });
-          const existingSubagents = yield* projectionThreadSubagentRepository.listByThreadId({
-            threadId: event.payload.threadId,
-          });
-          const nextSubagents = projectSubagentActivity(existingSubagents, {
-            ...event.payload.activity,
-            eventSequence: event.sequence,
-          });
-          if (nextSubagents !== existingSubagents) {
-            yield* projectionThreadSubagentRepository.replaceByThreadId(
-              event.payload.threadId,
-              nextSubagents,
-            );
+          if (activityMayAffectSubagents(event.payload.activity)) {
+            const existingSubagents = yield* projectionThreadSubagentRepository.listByThreadId({
+              threadId: event.payload.threadId,
+            });
+            const nextSubagents = projectSubagentActivity(existingSubagents, {
+              ...event.payload.activity,
+              eventSequence: event.sequence,
+            });
+            if (nextSubagents !== existingSubagents) {
+              yield* projectionThreadSubagentRepository.replaceByThreadId(
+                event.payload.threadId,
+                nextSubagents,
+              );
+            }
           }
           return;
         }
@@ -2502,37 +2506,53 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (event.payload.turnId === null || event.payload.role !== "assistant") {
             return;
           }
-          const existingSession = yield* projectionThreadSessionRepository.getByThreadId({
-            threadId: event.payload.threadId,
-          });
-          const completesTurn = assistantMessageEventCompletesTurn({
-            streaming: event.payload.streaming,
-            explicitCompletesTurn: event.payload.completesTurn,
-            activeTurnId: Option.isSome(existingSession)
-              ? existingSession.value.activeTurnId
-              : null,
-            eventTurnId: event.payload.turnId,
-          });
+          let completesTurn = false;
+          if (!event.payload.streaming) {
+            const existingSession = yield* projectionThreadSessionRepository.getByThreadId({
+              threadId: event.payload.threadId,
+            });
+            completesTurn = assistantMessageEventCompletesTurn({
+              streaming: event.payload.streaming,
+              explicitCompletesTurn: event.payload.completesTurn,
+              activeTurnId: Option.isSome(existingSession)
+                ? existingSession.value.activeTurnId
+                : null,
+              eventTurnId: event.payload.turnId,
+            });
+          }
           const existingTurn = yield* projectionTurnRepository.getByTurnId({
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
           });
           if (Option.isSome(existingTurn)) {
+            const nextState = !completesTurn
+              ? existingTurn.value.state
+              : existingTurn.value.state === "interrupted"
+                ? "interrupted"
+                : existingTurn.value.state === "error"
+                  ? "error"
+                  : "completed";
+            const nextCompletedAt = !completesTurn
+              ? existingTurn.value.completedAt
+              : (existingTurn.value.completedAt ?? event.payload.updatedAt);
+            const nextStartedAt = existingTurn.value.startedAt ?? event.payload.createdAt;
+            const nextRequestedAt = existingTurn.value.requestedAt ?? event.payload.createdAt;
+            if (
+              existingTurn.value.assistantMessageId === event.payload.messageId &&
+              existingTurn.value.state === nextState &&
+              existingTurn.value.completedAt === nextCompletedAt &&
+              existingTurn.value.startedAt === nextStartedAt &&
+              existingTurn.value.requestedAt === nextRequestedAt
+            ) {
+              return;
+            }
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
               assistantMessageId: event.payload.messageId,
-              state: !completesTurn
-                ? existingTurn.value.state
-                : existingTurn.value.state === "interrupted"
-                  ? "interrupted"
-                  : existingTurn.value.state === "error"
-                    ? "error"
-                    : "completed",
-              completedAt: !completesTurn
-                ? existingTurn.value.completedAt
-                : (existingTurn.value.completedAt ?? event.payload.updatedAt),
-              startedAt: existingTurn.value.startedAt ?? event.payload.createdAt,
-              requestedAt: existingTurn.value.requestedAt ?? event.payload.createdAt,
+              state: nextState,
+              completedAt: nextCompletedAt,
+              startedAt: nextStartedAt,
+              requestedAt: nextRequestedAt,
             });
             return;
           }

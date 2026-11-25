@@ -149,7 +149,15 @@ export function setThreadDoneOverride(
     settled: false,
   });
   void dispatchDoneOverride(threadRef, state, at).then(
-    () => useUiStateStore.getState().resolveDoneOverlay(threadKey, at, "confirmed"),
+    () =>
+      useUiStateStore
+        .getState()
+        .resolveDoneOverlay(
+          threadKey,
+          at,
+          "confirmed",
+          readServerLifecycle(threadRef).doneOverride?.at ?? null,
+        ),
     () => useUiStateStore.getState().resolveDoneOverlay(threadKey, at, "failed"),
   );
 }

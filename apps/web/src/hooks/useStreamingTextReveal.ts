@@ -1,5 +1,5 @@
 import { ASSISTANT_STREAM_FLUSH_INTERVAL_MS } from "@threadlines/shared/threadLimits";
-import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * Reveals streamed assistant text at a steady per-frame pace instead of in the
@@ -20,20 +20,56 @@ export function useStreamingTextReveal(
   const maskRef = useRef<RevealMask | null>(null);
   streamingRef.current = streaming;
 
+  const disposeMask = () => {
+    const current = maskRef.current;
+    if (!current) return;
+    maskRef.current = null;
+    current.dispose();
+  };
+
+  // Create the DOM observer only when a message actually streams, and tear it
+  // down once streaming ends and any trailing drain finishes so settled
+  // history rows carry zero MutationObservers or DOM walks.
   useLayoutEffect(() => {
     const container = containerRef.current;
-    if (!container || prefersReducedMotion()) return;
-    const mask = new RevealMask(container, () => streamingRef.current, setRevealing);
-    maskRef.current = mask;
-    return () => {
-      mask.dispose();
-      maskRef.current = null;
-    };
-  }, [containerRef]);
+    if (!container || prefersReducedMotion()) {
+      disposeMask();
+      setRevealing(false);
+      return;
+    }
 
-  useEffect(() => {
-    maskRef.current?.sync();
-  }, [streaming]);
+    const existing = maskRef.current;
+    if (existing && existing.container !== container) {
+      disposeMask();
+    }
+
+    if (streaming && maskRef.current === null) {
+      const mask = new RevealMask(
+        container,
+        () => streamingRef.current,
+        setRevealing,
+        () => {
+          if (maskRef.current === mask) {
+            maskRef.current = null;
+            mask.dispose();
+          }
+        },
+      );
+      maskRef.current = mask;
+      return;
+    }
+
+    if (!streaming && maskRef.current !== null) {
+      maskRef.current.sync();
+    }
+  }, [containerRef, streaming]);
+
+  useLayoutEffect(
+    () => () => {
+      disposeMask();
+    },
+    [],
+  );
 
   // Mask each commit of a live message, and the final one that starts its
   // drain, before anything above it measures the new text. The chat's virtual
@@ -139,12 +175,20 @@ class RevealMask {
   private drain: { startAt: number; from: number } | null = null;
   private frame: number | null = null;
   private active = false;
+  private disposed = false;
+  private wasStreaming = false;
+  private awaitingDeferredSettle = false;
+  private appliedEntryIndex = 0;
+  private appliedBlockIndex = 0;
+  private entriesMasked = false;
+  private blocksMasked = false;
   private readonly observer: MutationObserver;
 
   constructor(
-    private readonly container: HTMLElement,
+    readonly container: HTMLElement,
     private readonly isStreaming: () => boolean,
     private readonly onActiveChange: (active: boolean) => void,
+    private readonly onSettled: () => void,
   ) {
     this.observer = new MutationObserver(() => this.sync());
     this.observer.observe(container, { childList: true, characterData: true, subtree: true });
@@ -152,6 +196,8 @@ class RevealMask {
   }
 
   dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
     this.observer.disconnect();
     if (this.frame !== null) cancelAnimationFrame(this.frame);
     this.frame = null;
@@ -160,6 +206,7 @@ class RevealMask {
 
   /** Re-reads the DOM after React (or a deferred render) committed new text. */
   sync() {
+    if (this.disposed) return;
     const now = performance.now();
     const previousTotal = this.total;
     this.collect();
@@ -172,6 +219,10 @@ class RevealMask {
     } else if (this.total < this.shown) {
       // Not an append (retry, edit, thread swap): never animate backwards.
       this.shown = this.total;
+      this.appliedEntryIndex = 0;
+      this.appliedBlockIndex = 0;
+      this.entriesMasked = false;
+      this.blocksMasked = false;
     } else if (streaming && this.total > previousTotal) {
       const grown = this.total - previousTotal;
       this.rate =
@@ -181,10 +232,23 @@ class RevealMask {
       this.lastGrowthAt = now;
     }
 
-    if (!streaming && this.drain === null && this.shown < this.total) {
-      this.drain = { startAt: now, from: this.shown };
+    if (streaming) {
+      this.wasStreaming = true;
+      this.awaitingDeferredSettle = false;
+      this.drain = null;
+    } else if (this.shown < this.total) {
+      this.wasStreaming = false;
+      this.awaitingDeferredSettle = false;
+      if (this.drain === null) {
+        this.drain = { startAt: now, from: this.shown };
+      }
+    } else if (this.wasStreaming) {
+      // Markdown blocks defer their text via useDeferredValue, so the commit
+      // that clears `streaming` can land one frame before the final suffix
+      // appears in the DOM. Keep the observer alive for one frame to catch it.
+      this.wasStreaming = false;
+      this.awaitingDeferredSettle = true;
     }
-    if (streaming) this.drain = null;
 
     this.apply();
     this.observer.takeRecords();
@@ -228,22 +292,51 @@ class RevealMask {
     // Blocks React dropped or re-created come back visible.
     for (const element of hiddenBefore) element.style.display = "";
     this.blocks = blocks;
+    this.appliedEntryIndex = 0;
+    this.appliedBlockIndex = 0;
+    this.entriesMasked = false;
+    this.blocksMasked = false;
   }
 
   private schedule() {
-    const pending = this.shown !== null && (this.isStreaming() || this.shown < this.total);
-    if (pending && this.frame === null) {
-      this.frame = requestAnimationFrame(this.step);
+    const streaming = this.isStreaming();
+    const needsFrame =
+      this.shown !== null &&
+      (this.shown < this.total || (!streaming && this.awaitingDeferredSettle));
+    const active = this.shown !== null && (streaming || needsFrame);
+    if (needsFrame) {
+      if (this.frame === null) {
+        this.frame = requestAnimationFrame(this.step);
+      }
+    } else {
+      // Caught up to the latest flush: stop burning animation frames until more
+      // text arrives, and restart the frame clock fresh when it does.
+      if (this.frame !== null) {
+        cancelAnimationFrame(this.frame);
+        this.frame = null;
+      }
+      this.lastFrameAt = null;
     }
-    // Idle again: the next loop starts its clock fresh instead of counting the
-    // pause as elapsed time.
-    if (!pending) this.lastFrameAt = null;
-    this.setActive(pending);
+    this.setActive(active);
+    if (!active && !streaming) {
+      this.onSettled();
+    }
   }
 
   private readonly step = (now: number) => {
     this.frame = null;
-    if (this.shown === null) return;
+    if (this.disposed || this.shown === null) return;
+    if (!this.isStreaming() && this.awaitingDeferredSettle) {
+      this.awaitingDeferredSettle = false;
+      this.collect();
+      if (this.shown < this.total && this.drain === null) {
+        this.drain = { startAt: now, from: this.shown };
+      }
+      this.apply();
+      this.observer.takeRecords();
+      this.schedule();
+      return;
+    }
     const dtSeconds = this.lastFrameAt === null ? 0 : (now - this.lastFrameAt) / 1_000;
     this.lastFrameAt = now;
 
@@ -269,26 +362,60 @@ class RevealMask {
 
   private apply() {
     const shown = this.shown ?? this.total;
-    for (const entry of this.entries) {
+    const entries = this.entries;
+    for (let index = this.appliedEntryIndex; index < entries.length; index += 1) {
+      const entry = entries[index]!;
       const end = entry.start + entry.full.length;
-      const next =
-        end <= shown
-          ? entry.full
-          : entry.start >= shown
-            ? ""
-            : entry.full.slice(0, safePrefixLength(entry.full, shown - entry.start));
+      if (end <= shown) {
+        if (entry.written !== entry.full) {
+          entry.node.data = entry.full;
+          entry.written = entry.full;
+        }
+        if (index === this.appliedEntryIndex) {
+          this.appliedEntryIndex = index + 1;
+        }
+        continue;
+      }
+      if (entry.start >= shown) {
+        if (this.entriesMasked) {
+          break;
+        }
+        if (entry.written !== "") {
+          entry.node.data = "";
+          entry.written = "";
+        }
+        continue;
+      }
+      const next = entry.full.slice(0, safePrefixLength(entry.full, shown - entry.start));
       if (next !== entry.written) {
         entry.node.data = next;
         entry.written = next;
       }
     }
-    for (const block of this.blocks) {
-      const hidden = block.start >= shown;
-      if (hidden !== block.hidden) {
-        block.element.style.display = hidden ? "none" : "";
-        block.hidden = hidden;
+    this.entriesMasked = true;
+
+    const blocks = this.blocks;
+    for (let index = this.appliedBlockIndex; index < blocks.length; index += 1) {
+      const block = blocks[index]!;
+      if (block.start < shown) {
+        if (block.hidden) {
+          block.element.style.display = "";
+          block.hidden = false;
+        }
+        if (index === this.appliedBlockIndex) {
+          this.appliedBlockIndex = index + 1;
+        }
+        continue;
+      }
+      if (this.blocksMasked) {
+        break;
+      }
+      if (!block.hidden) {
+        block.element.style.display = "none";
+        block.hidden = true;
       }
     }
+    this.blocksMasked = true;
   }
 
   private restoreAll() {

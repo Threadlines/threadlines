@@ -123,6 +123,9 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           getTurnActivities: () => Effect.succeed([]),
           getThreadMessage: () => Effect.succeed(Option.none()),
           hasAssistantMessageForTurn: () => Effect.succeed(false),
+          getThreadIngestionContext: () => Effect.succeed(Option.none()),
+          listThreadsWithMove: () => Effect.succeed([]),
+          isThreadWorkspacePathInUse: () => Effect.succeed(false),
           getThreadDetailById: () => Effect.succeed(Option.none()),
         }),
         Effect.provideService(AnalyticsService, {
@@ -176,6 +179,9 @@ it.effect("recordStartupHeartbeat includes feature adoption counts and flags", (
         getTurnActivities: () => Effect.succeed([]),
         getThreadMessage: () => Effect.succeed(Option.none()),
         hasAssistantMessageForTurn: () => Effect.succeed(false),
+        getThreadIngestionContext: () => Effect.succeed(Option.none()),
+        listThreadsWithMove: () => Effect.succeed([]),
+        isThreadWorkspacePathInUse: () => Effect.succeed(false),
         getThreadDetailById: () => Effect.succeed(Option.none()),
       }),
       Effect.provideService(AnalyticsService, {
@@ -283,6 +289,9 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getTurnActivities: () => Effect.succeed([]),
         getThreadMessage: () => Effect.succeed(Option.none()),
         hasAssistantMessageForTurn: () => Effect.succeed(false),
+        getThreadIngestionContext: () => Effect.succeed(Option.none()),
+        listThreadsWithMove: () => Effect.succeed([]),
+        isThreadWorkspacePathInUse: () => Effect.succeed(false),
         getThreadDetailById: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
@@ -341,6 +350,9 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
         getTurnActivities: () => Effect.succeed([]),
         getThreadMessage: () => Effect.succeed(Option.none()),
         hasAssistantMessageForTurn: () => Effect.succeed(false),
+        getThreadIngestionContext: () => Effect.succeed(Option.none()),
+        listThreadsWithMove: () => Effect.succeed([]),
+        isThreadWorkspacePathInUse: () => Effect.succeed(false),
         getThreadDetailById: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {

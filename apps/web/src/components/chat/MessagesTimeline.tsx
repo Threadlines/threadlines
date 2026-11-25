@@ -1250,8 +1250,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   });
   // The remembered row, found once the rows are here; only the list's first
   // mount opens there (a later remount is the end following itself).
+  // Wait for detail to finish loading before looking up the anchor: shell-only
+  // rows (such as a scheduled check-back) can render before history arrives and
+  // would otherwise miss the remembered message and erase its saved scroll spot.
   const [rememberedScroll, setRememberedScroll] = useState<InitialScroll | null>(null);
-  if (opensAtRememberedPlace && rememberedScroll === null && rows.length > 0) {
+  if (!detailPending && opensAtRememberedPlace && rememberedScroll === null && rows.length > 0) {
     setRememberedScroll(
       initialScrollForThread({
         threadKey: scrollMemory!.threadKey,
@@ -1328,9 +1331,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // Where the chat was when it is left, read once from the list then: the
   // anchor, or nothing at the end. Nothing is written while scrolling.
   const scrollMemoryKey = scrollMemory?.threadKey ?? null;
+  const detailPendingRef = useRef(detailPending);
+  detailPendingRef.current = detailPending;
   useLayoutEffect(() => {
     if (scrollMemoryKey === null) return;
     return () => {
+      // Leaving before an evicted thread's detail finishes loading has either
+      // no list yet or only shell-derived rows; keep the saved scroll anchor
+      // intact for the next visit.
+      if (detailPendingRef.current) {
+        return;
+      }
       // Runs once, when the timeline is left. The list is read then, not
       // when this ran: a pinned list is rebuilt when a turn settles, and an
       // emptied chat has none. Layout cleanups run before the list leaves

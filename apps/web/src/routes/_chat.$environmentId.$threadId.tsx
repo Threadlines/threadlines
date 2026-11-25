@@ -13,8 +13,6 @@ import {
   HostedStaticLinkNotPairedState,
   HostedStaticLoadingState,
 } from "../components/ConnectionStatusStates";
-import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
-import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
   DiffPanelLoadingState,
   DiffPanelShell,
@@ -118,7 +116,7 @@ import {
   selectThreadExistsByRef,
   useStore,
 } from "../store";
-import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
+import { createProjectSelectorByRef, createThreadRouteSelectorByRef } from "../storeSelectors";
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
 import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
 import { RightPanelSheet } from "../components/RightPanelSheet";
@@ -154,7 +152,21 @@ interface ThreadPullRequestTarget {
   readonly own: boolean;
 }
 
-const DiffPanel = lazy(() => import("../components/DiffPanel"));
+const DiffPanelWithWorkers = lazy(async () => {
+  const [{ DiffWorkerPoolProvider }, { default: DiffPanelComponent }] = await Promise.all([
+    import("../components/DiffWorkerPoolProvider"),
+    import("../components/DiffPanel"),
+  ]);
+  return {
+    default: function LazyDiffPanelWithWorkers(props: { mode: DiffPanelMode }) {
+      return (
+        <DiffWorkerPoolProvider>
+          <DiffPanelComponent mode={props.mode} embedded />
+        </DiffWorkerPoolProvider>
+      );
+    },
+  };
+});
 const MediaPanel = lazy(() =>
   import("../components/media/MediaPanel").then((module) => ({ default: module.MediaPanel })),
 );
@@ -194,11 +206,9 @@ const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
 
 const LazyDiffPanel = (props: { mode: DiffPanelMode }) => {
   return (
-    <DiffWorkerPoolProvider>
-      <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <DiffPanel mode={props.mode} embedded />
-      </Suspense>
-    </DiffWorkerPoolProvider>
+    <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
+      <DiffPanelWithWorkers mode={props.mode} />
+    </Suspense>
   );
 };
 
@@ -224,7 +234,9 @@ function ChatThreadRouteView() {
   const bootstrapComplete = useStore(
     (store) => selectEnvironmentState(store, threadRef?.environmentId ?? null).bootstrapComplete,
   );
-  const serverThread = useStore(useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]));
+  const serverThread = useStore(
+    useMemo(() => createThreadRouteSelectorByRef(threadRef), [threadRef]),
+  );
   const threadExists = useStore((store) => selectThreadExistsByRef(store, threadRef));
   const environmentHasServerThreads = useStore(
     (store) => selectEnvironmentState(store, threadRef?.environmentId ?? null).threadIds.length > 0,
@@ -242,7 +254,7 @@ function ChatThreadRouteView() {
     return store.hasDraftThreadsInEnvironment(threadRef.environmentId);
   });
   const routeThreadExists = threadExists || draftThreadExists;
-  const serverThreadHasPromotableActivity = threadHasPromotableServerActivity(serverThread);
+  const serverThreadHasPromotableActivity = serverThread?.hasPromotableActivity ?? false;
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
   const agentsPanelSource = useAgentsPanelSource();
@@ -380,15 +392,16 @@ function ChatThreadRouteView() {
   );
 
   const devicesSupported = useDevicesSupported(threadRef?.environmentId ?? null);
+  const hasServerThread = serverThread !== undefined;
   const availableTabs = useMemo(
     () =>
       availableRightPanelTabs({
         isGeneralChat: isGeneralChatThread,
         // A thread the server has not accepted yet has no turn, so no agents.
-        isDraft: !serverThread,
+        isDraft: !hasServerThread,
         devicesSupported,
       }),
-    [devicesSupported, isGeneralChatThread, serverThread],
+    [devicesSupported, hasServerThread, isGeneralChatThread],
   );
 
   // The thread's pull request, for the Pull request tab and the launcher row
@@ -721,7 +734,7 @@ function ChatThreadRouteView() {
   // Media tab opens on, so the row and the tab agree. Read only while the
   // launcher is on screen; a turn landing changes the revision and so the key.
   // A message (a reply, your attachment) can share a picture between turns.
-  const mediaTurnsRevision = `${turnSummariesRevision(serverThread?.turnDiffSummaries ?? null)}:${serverThread?.messages.length ?? 0}`;
+  const mediaTurnsRevision = `${turnSummariesRevision(serverThread?.turnDiffSummaries ?? null)}:${serverThread?.messageCount ?? 0}`;
   const launcherMediaListing = useQuery(
     projectMediaQueryOptions({
       environmentId: threadRef?.environmentId ?? null,

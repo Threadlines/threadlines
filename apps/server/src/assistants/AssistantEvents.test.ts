@@ -77,6 +77,7 @@ const makeHarness = Effect.gen(function* () {
     thread: makeThread(),
     assistants: 1,
     readDelayMs: 0,
+    readEventsCalls: 0,
     /** What the project lookup says; "fails": it can't be read. */
     project: { title: "app", kind: "project" } as
       | { readonly title: string; readonly kind: string }
@@ -95,10 +96,12 @@ const makeHarness = Effect.gen(function* () {
           countLive: () => Effect.sync(() => state.assistants),
         }),
         Layer.mock(OrchestrationEngineService)({
-          readEvents: (after) =>
-            Stream.fromEffect(Effect.sleep(Duration.millis(state.readDelayMs))).pipe(
+          readEvents: (after) => {
+            state.readEventsCalls += 1;
+            return Stream.fromEffect(Effect.sleep(Duration.millis(state.readDelayMs))).pipe(
               Stream.flatMap(() => Stream.fromIterable(events.filter((e) => e.sequence > after))),
-            ),
+            );
+          },
           streamDomainEvents: Stream.fromPubSub(published),
         }),
         Layer.mock(ProjectionSnapshotQuery)({
@@ -468,8 +471,7 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
 
         // The last assistant goes; the user answers the card while the record is off.
         harness.state.assistants = 0;
-        yield* PubSub.publish(harness.published, harness.events.at(-1) ?? ({} as never));
-        yield* settle(1_000);
+        yield* settle(31_000);
         yield* PubSub.publish(harness.schedules, snapshot([]));
         yield* settle(1_000);
         assert.strictEqual((yield* recorded(record))[0]?.resolvedAt, null);
@@ -722,6 +724,56 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
         assert.strictEqual((yield* record.current(1))?.generalChat, true);
         harness.state.project = "fails";
         assert.strictEqual((yield* record.current(1))?.stands, "unknown");
+      }),
+    ),
+  );
+
+  it.effect("ignores non-actionable domain events until a stale settlement nudges discovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* TestClock.adjust("1 hour");
+        const { record } = yield* harness.boot;
+        yield* settle();
+
+        const callsBeforeStreaming = harness.state.readEventsCalls;
+        yield* appended(harness, "thread.message-sent", {
+          threadId: THREAD,
+          messageId: "assistant-stream-1",
+          role: "assistant",
+          text: "hello",
+          turnId: "turn-1",
+          streaming: true,
+          createdAt: "2026-10-23T12:00:00.000Z",
+          updatedAt: "2026-10-23T12:00:00.000Z",
+        });
+        yield* settle();
+        assert.strictEqual(harness.state.readEventsCalls, callsBeforeStreaming);
+
+        // A turn finishes and begins its hold; then a non-actionable message
+        // lands afterward so the record cursor lags behind the thread's latest
+        // sequence. Settlement hits `stale`, wakes discovery, and still settles
+        // promptly instead of waiting 30s for the idle timer.
+        harness.state.thread = makeThread({
+          latestTurn: { turnId: "turn-1", state: "completed" } as never,
+        });
+        yield* appended(harness, "thread.turn-completed", turnCompleted("turn-1"));
+        yield* settle();
+        yield* appended(harness, "thread.message-sent", {
+          threadId: THREAD,
+          messageId: "assistant-stream-1",
+          role: "assistant",
+          text: " final",
+          turnId: "turn-1",
+          streaming: false,
+          createdAt: "2026-10-23T12:00:00.000Z",
+          updatedAt: "2026-10-23T12:00:01.000Z",
+        });
+
+        yield* settle(FINISHED_HOLD_MS + 1_000);
+        const events = yield* recorded(record);
+        assert.strictEqual(events.length, 1);
+        assert.strictEqual(events[0]?.name, "thread.finished");
       }),
     ),
   );

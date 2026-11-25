@@ -108,13 +108,15 @@ import {
   CHAT_MARKDOWN_REMARK_PLUGINS,
   chatMarkdownUrlTransform,
   GITHUB_HTML_REHYPE_PLUGINS,
+  indexWrittenFilePathsByBasename,
+  isFileNameMention,
   normalizeMarkdownLinkHrefKey,
   pullRequestLinkLabel,
-  collectWrittenFilePaths,
-  isFileNameMention,
-  resolveMarkdownDocumentFileLinks,
-  splitMarkdownBlocks,
   repairStreamingMarkdownTail,
+  resolveMarkdownDocumentFileLinks,
+  scanMarkdownBlockFileLinks,
+  selectWrittenFilePathsKeyForBareNames,
+  splitMarkdownBlocks,
 } from "../lib/chatMarkdownDocument";
 import { normalizeChatMath } from "../lib/chatMarkdownMath";
 import { fencedBlockIsClosed } from "../lib/markdownFences";
@@ -167,21 +169,20 @@ interface ChatMarkdownProps {
   className?: string | undefined;
 }
 
-/** One block of a message, with what the whole message tells every block. */
-interface ChatMarkdownBlockProps extends ChatMarkdownProps {
+/** One rendered markdown document with the written file paths relevant to it. */
+interface ChatMarkdownDocumentProps extends ChatMarkdownProps {
   /** Files the whole message names by full path, see {@link collectWrittenFilePaths}. */
   writtenFilePaths: readonly string[];
 }
 
-/**
- * {@link collectWrittenFilePaths} for a whole message, as an array that keeps
- * its identity while the paths stay the same: a streaming message rescans on
- * every delta, but its settled blocks re-render only when a new path appears.
- */
-function useWrittenFilePaths(text: string, cwd: string | undefined): readonly string[] {
-  // A path never holds a line break: every source of one stops at the line.
-  const key = useMemo(() => collectWrittenFilePaths(text, cwd).join("\n"), [cwd, text]);
-  return useMemo(() => (key === "" ? NO_WRITTEN_FILE_PATHS : key.split("\n")), [key]);
+/** One block of a message, keyed on a newline-joined written-path string for stable memoization. */
+interface ChatMarkdownBlockProps extends ChatMarkdownProps {
+  writtenFilePathsKey: string;
+}
+
+interface ChatMarkdownBodyProps extends Omit<ChatMarkdownProps, "text"> {
+  blocks: readonly string[];
+  blockWrittenFilePathsKeys: readonly string[];
 }
 
 const NO_WRITTEN_FILE_PATHS: readonly string[] = [];
@@ -1626,7 +1627,7 @@ function ChatMarkdownDocument({
   searchHighlightQuery,
   html,
   writtenFilePaths,
-}: ChatMarkdownBlockProps) {
+}: ChatMarkdownDocumentProps) {
   const { resolvedTheme } = useTheme();
   // Null unless both halves of the identity are here: a transcript rendered
   // outside a thread (a plan preview, a subagent excerpt without context) has
@@ -1737,7 +1738,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
   html,
-  writtenFilePaths,
+  writtenFilePathsKey,
 }: ChatMarkdownBlockProps) {
   // Lets React drop intermediate parses when deltas outpace rendering
   // (older CPUs) instead of parsing every 50ms server flush. A settled block's
@@ -1749,6 +1750,11 @@ const MarkdownBlock = memo(function MarkdownBlock({
     const withMath = normalizeChatMath(deferredText, { streaming: isStreaming });
     return isStreaming ? repairStreamingMarkdownTail(withMath) : withMath;
   }, [deferredText, isStreaming]);
+  // A path never holds a line break: every source of one stops at the line.
+  const writtenFilePaths = useMemo(
+    () => (writtenFilePathsKey === "" ? NO_WRITTEN_FILE_PATHS : writtenFilePathsKey.split("\n")),
+    [writtenFilePathsKey],
+  );
   return (
     <MemoChatMarkdownDocument
       text={renderedText}
@@ -1765,7 +1771,8 @@ const MarkdownBlock = memo(function MarkdownBlock({
 });
 
 function ChatMarkdownBody({
-  text,
+  blocks,
+  blockWrittenFilePathsKeys,
   cwd,
   environmentId,
   threadId,
@@ -1773,16 +1780,12 @@ function ChatMarkdownBody({
   skills = EMPTY_MARKDOWN_SKILLS,
   searchHighlightQuery,
   html,
-  writtenFilePaths,
-}: ChatMarkdownBlockProps) {
+}: ChatMarkdownBodyProps) {
   // Blocks are the unit of rendering whether or not the message is streaming:
   // a streaming message re-parses only its growing tail, and when it stops
   // streaming nothing changes but the tail's `isStreaming` prop. Index keys are
   // the correct identity here: streaming only appends blocks, and keying by
   // content would remount the tail on every delta.
-  // Raw HTML can span what the splitter takes for several blocks (a
-  // `<details>` around paragraphs), so an HTML-bearing document parses whole.
-  const blocks = html === "github" ? [text] : splitMarkdownBlocks(text);
   const tailIndex = blocks.length - 1;
   /* oxlint-disable react/no-array-index-key -- streaming only appends blocks; index is the stable identity */
   return (
@@ -1798,7 +1801,7 @@ function ChatMarkdownBody({
           skills={skills}
           searchHighlightQuery={searchHighlightQuery}
           html={html}
-          writtenFilePaths={writtenFilePaths}
+          writtenFilePathsKey={blockWrittenFilePathsKeys[index] ?? ""}
         />
       ))}
     </>
@@ -1825,10 +1828,67 @@ function ChatMarkdown({
     warmCodeHighlighter(codeThemeName);
   }, [codeThemeName]);
   const canRenderVisualizations = environmentId !== undefined && threadId !== undefined;
-  const segments = canRenderVisualizations
-    ? parseCodexInlineVisualizations(text, { isStreaming })
-    : [{ type: "markdown" as const, key: "markdown:0", text }];
-  const writtenFilePaths = useWrittenFilePaths(text, cwd);
+  const parsedSegments = useMemo(() => {
+    const rawSegments = canRenderVisualizations
+      ? parseCodexInlineVisualizations(text, { isStreaming })
+      : [{ type: "markdown" as const, key: "markdown:0", text }];
+
+    const allWrittenPaths = new Set<string>();
+    const scannedSegments = rawSegments.map((segment, segmentIndex) => {
+      if (segment.type === "visualization") {
+        return segment;
+      }
+      // Raw HTML can span what the splitter takes for several blocks (a
+      // `<details>` around paragraphs), so an HTML-bearing document parses whole.
+      const blocks = html === "github" ? [segment.text] : splitMarkdownBlocks(segment.text);
+      const segmentIsStreaming = isStreaming && segmentIndex === rawSegments.length - 1;
+      const tailIndex = blocks.length - 1;
+      const scans = blocks.map((block, blockIndex) => {
+        const scan = scanMarkdownBlockFileLinks(block, cwd, {
+          cache: !(segmentIsStreaming && blockIndex === tailIndex),
+        });
+        for (const writtenPath of scan.writtenPaths) {
+          allWrittenPaths.add(writtenPath);
+        }
+        return scan;
+      });
+      return {
+        type: "markdown" as const,
+        key: segment.key,
+        blocks,
+        scans,
+        isStreaming: segmentIsStreaming,
+      };
+    });
+
+    const allWrittenFilePathsKey =
+      allWrittenPaths.size === 0 ? "" : [...allWrittenPaths].toSorted().join("\n");
+    const writtenPathsByBasename =
+      allWrittenPaths.size === 0 ? null : indexWrittenFilePathsByBasename(allWrittenPaths);
+
+    return scannedSegments.map((segment) => {
+      if (segment.type === "visualization") {
+        return segment;
+      }
+      const tailIndex = segment.blocks.length - 1;
+      const blockWrittenFilePathsKeys = segment.scans.map((scan, blockIndex) => {
+        if (writtenPathsByBasename === null) return "";
+        // Tail repair can close an inline-code span that wasn't complete yet;
+        // the streaming tail already re-renders on every delta, so pass all paths.
+        if (segment.isStreaming && blockIndex === tailIndex) {
+          return allWrittenFilePathsKey;
+        }
+        return selectWrittenFilePathsKeyForBareNames(scan.bareFileNames, writtenPathsByBasename);
+      });
+      return {
+        type: "markdown" as const,
+        key: segment.key,
+        blocks: segment.blocks,
+        blockWrittenFilePathsKeys,
+        isStreaming: segment.isStreaming,
+      };
+    });
+  }, [canRenderVisualizations, cwd, html, isStreaming, text]);
 
   return (
     <div
@@ -1840,7 +1900,7 @@ function ChatMarkdown({
         className,
       )}
     >
-      {segments.map((segment, index) => {
+      {parsedSegments.map((segment) => {
         if (segment.type === "visualization") {
           return environmentId && threadId ? (
             <CodexInlineVisualization
@@ -1855,15 +1915,15 @@ function ChatMarkdown({
         return (
           <ChatMarkdownBody
             key={segment.key}
-            text={segment.text}
+            blocks={segment.blocks}
+            blockWrittenFilePathsKeys={segment.blockWrittenFilePathsKeys}
             cwd={cwd}
             environmentId={environmentId}
             threadId={threadId}
-            isStreaming={isStreaming && index === segments.length - 1}
+            isStreaming={segment.isStreaming}
             skills={skills}
             searchHighlightQuery={searchHighlightQuery}
             html={html}
-            writtenFilePaths={writtenFilePaths}
           />
         );
       })}

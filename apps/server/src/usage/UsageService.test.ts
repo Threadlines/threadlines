@@ -307,6 +307,21 @@ describe("UsageService.readSummary", () => {
       expect(summary.pricing.status).toBe("fresh");
       expect(summary.sources.map((source) => source.status)).toEqual(["ok", "ok"]);
       expect(summary.sources.every((source) => source.lastScannedAt.length > 0)).toBe(true);
+
+      // The persisted rates cache stores only the compact parsed table, and the
+      // debounced scan cache flushes when the service scope closes.
+      const ratesCache = JSON.parse(
+        yield* Effect.promise(() =>
+          NodeFSP.readFile(
+            NodePath.join(fixture.config.stateDir, "usage-model-rates.json"),
+            "utf8",
+          ),
+        ),
+      ) as { fetchedAtMs: number; rates?: Record<string, unknown>; document?: unknown };
+      expect(ratesCache.document).toBeUndefined();
+      expect(ratesCache.rates?.[CLAUDE_MODEL]).toBeDefined();
+      expect(ratesCache.rates?.[CODEX_MODEL]).toBeDefined();
+
       yield* Effect.promise(() => NodeFSP.rm(fixture.root, { recursive: true, force: true }));
     }),
   );

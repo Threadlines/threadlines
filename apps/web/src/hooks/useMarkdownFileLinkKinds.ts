@@ -35,6 +35,30 @@ function directoryListingCacheKey(environmentId: EnvironmentId, parentPath: stri
   return `${environmentId}\u0000${normalizeFilesystemPathForComparison(parentPath)}`;
 }
 
+const EMPTY_KIND_MAP: ReadonlyMap<string, MarkdownFileLinkKind> = new Map();
+
+function kindMapsEqual(
+  left: ReadonlyMap<string, MarkdownFileLinkKind>,
+  right: ReadonlyMap<string, MarkdownFileLinkKind>,
+): boolean {
+  if (left === right) return true;
+  if (left.size !== right.size) return false;
+  for (const [key, value] of left) {
+    if (right.get(key) !== value) return false;
+  }
+  return true;
+}
+
+function peekCachedDirectoryListing(
+  environmentId: EnvironmentId,
+  parentPath: string,
+): ReadonlySet<string> | null {
+  const key = directoryListingCacheKey(environmentId, parentPath);
+  const cached = directoryListingCache.get(key);
+  if (!cached || cached.expiresAt <= Date.now()) return null;
+  return cached.directoryPaths;
+}
+
 function readCachedDirectoryListing(
   environmentId: EnvironmentId,
   parentPath: string,
@@ -47,6 +71,38 @@ function readCachedDirectoryListing(
     return null;
   }
   return cached.directoryPaths;
+}
+
+function computeInitialKindByPath(
+  fileLinkMetaByHref: ReadonlyMap<string, MarkdownFileLinkMeta>,
+  environmentId: EnvironmentId | undefined,
+): ReadonlyMap<string, MarkdownFileLinkKind> {
+  if (fileLinkMetaByHref.size === 0) return EMPTY_KIND_MAP;
+  let initial: Map<string, MarkdownFileLinkKind> | null = null;
+  for (const meta of fileLinkMetaByHref.values()) {
+    if (meta.line !== undefined || !environmentId) {
+      initial ??= new Map();
+      initial.set(meta.filePath, "file");
+      continue;
+    }
+    const parentPath = browseParentPath(meta.filePath);
+    if (!parentPath) {
+      initial ??= new Map();
+      initial.set(meta.filePath, "file");
+      continue;
+    }
+    const cachedListing = peekCachedDirectoryListing(environmentId, parentPath);
+    if (cachedListing) {
+      initial ??= new Map();
+      initial.set(
+        meta.filePath,
+        cachedListing.has(normalizeFilesystemPathForComparison(meta.filePath))
+          ? "directory"
+          : "file",
+      );
+    }
+  }
+  return initial ?? EMPTY_KIND_MAP;
 }
 
 function resolveDirectoryListing(
@@ -92,11 +148,16 @@ export function useMarkdownFileLinkKinds(
   environmentId: EnvironmentId | undefined,
   cwd: string | undefined,
 ): ReadonlyMap<string, MarkdownFileLinkKind> {
-  const [kindByPath, setKindByPath] = useState<ReadonlyMap<string, MarkdownFileLinkKind>>(
-    () => new Map(),
+  const [kindByPath, setKindByPath] = useState<ReadonlyMap<string, MarkdownFileLinkKind>>(() =>
+    computeInitialKindByPath(fileLinkMetaByHref, environmentId),
   );
 
   useEffect(() => {
+    if (fileLinkMetaByHref.size === 0) {
+      setKindByPath((previous) => (previous.size === 0 ? previous : EMPTY_KIND_MAP));
+      return;
+    }
+
     let cancelled = false;
     const nextKindByPath = new Map<string, MarkdownFileLinkKind>();
     const unresolvedPathsByParent = new Map<string, string[]>();
@@ -129,7 +190,10 @@ export function useMarkdownFileLinkKinds(
       unresolvedPathsByParent.set(parentPath, unresolvedPaths);
     }
 
-    setKindByPath(nextKindByPath);
+    const immediateKindByPath = nextKindByPath.size === 0 ? EMPTY_KIND_MAP : nextKindByPath;
+    setKindByPath((previous) =>
+      kindMapsEqual(previous, immediateKindByPath) ? previous : immediateKindByPath,
+    );
     if (!environmentId || unresolvedPathsByParent.size === 0) {
       return () => {
         cancelled = true;
@@ -155,7 +219,10 @@ export function useMarkdownFileLinkKinds(
           );
         }
       }
-      setKindByPath(resolvedKindByPath);
+      const finalKindByPath = resolvedKindByPath.size === 0 ? EMPTY_KIND_MAP : resolvedKindByPath;
+      setKindByPath((previous) =>
+        kindMapsEqual(previous, finalKindByPath) ? previous : finalKindByPath,
+      );
     });
 
     return () => {

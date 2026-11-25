@@ -81,4 +81,56 @@ describe("checkpointHandover", () => {
     await run(checkpointHandover.handOver(thread, "turn-before-restart", Duration.seconds(10)));
     expect(Date.now() - started).toBeLessThan(1_000);
   });
+
+  it("serializes pre-turn capture coordination per thread and clears it on reset", async () => {
+    const thread = "thread-preturn-1";
+    const events: string[] = [];
+    await run(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const first = yield* checkpointHandover
+          .withPreTurnLock(thread, (gate) =>
+            Effect.gen(function* () {
+              events.push("first-enter");
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+              gate.setLatest({
+                cwd: "/repo",
+                turnCount: 1,
+                requestKey: "cmd-1:msg-1:t1",
+                checkpointRef: "refs/t3/checkpoints/thread-preturn-1/pre/turn/1",
+                sentToProvider: false,
+                consumedByTurnId: null,
+              });
+              events.push("first-exit");
+            }),
+          )
+          .pipe(Effect.forkChild);
+
+        yield* Deferred.await(entered);
+        const second = yield* checkpointHandover
+          .withPreTurnLock(thread, (gate) =>
+            Effect.sync(() => {
+              events.push(`second-saw:${gate.getLatest()?.requestKey ?? "none"}`);
+            }),
+          )
+          .pipe(Effect.forkChild);
+
+        yield* Effect.sleep(Duration.millis(15));
+        expect(events).toEqual(["first-enter"]);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(second);
+      }),
+    );
+
+    expect(events).toEqual(["first-enter", "first-exit", "second-saw:cmd-1:msg-1:t1"]);
+
+    await run(checkpointHandover.clearPreTurn(thread));
+    const afterClear = await run(
+      checkpointHandover.withPreTurnLock(thread, (gate) => Effect.succeed(gate.getLatest())),
+    );
+    expect(afterClear).toBeNull();
+  });
 });

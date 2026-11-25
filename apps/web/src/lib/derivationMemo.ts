@@ -84,9 +84,25 @@ export function threadMemoOfInput<I extends object, R>(
   };
 }
 
+const registeredThreadCaches = new Set<RecentThreads<unknown>>();
+
+/**
+ * Releases cached per-thread derivations for an evicted or removed thread so
+ * memo inputs (messages, activities) are not pinned in memory after unload.
+ */
+export function clearThreadDerivationMemos(threadKey: string): void {
+  for (const cache of registeredThreadCaches) {
+    cache.delete(threadKey);
+  }
+}
+
 /** Values by thread key, dropping the least recently used past the limit. */
 class RecentThreads<V> {
   private readonly values = new Map<string, V>();
+
+  constructor() {
+    registeredThreadCaches.add(this as RecentThreads<unknown>);
+  }
 
   get(threadKey: string): V | undefined {
     const value = this.values.get(threadKey);
@@ -106,6 +122,10 @@ class RecentThreads<V> {
         this.values.delete(oldest.value);
       }
     }
+  }
+
+  delete(threadKey: string): void {
+    this.values.delete(threadKey);
   }
 }
 

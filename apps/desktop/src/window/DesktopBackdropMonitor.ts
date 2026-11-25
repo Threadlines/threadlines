@@ -66,7 +66,7 @@ const frameKey = (frame: Electron.WebFrameMain) => frame.frameToken;
  * when there is no backdrop frame or another frame shares its process.
  */
 function sampleBackdropCpu(window: Electron.BrowserWindow): number | null {
-  if (window.isDestroyed()) return null;
+  if (window.isDestroyed() || window.isMinimized() || !window.isVisible()) return null;
   const frames = window.webContents.mainFrame.framesInSubtree;
   const backdrop = frames.find((frame) => frame.name === BACKDROP_FRAME_NAME);
   if (!backdrop) return null;
@@ -120,7 +120,10 @@ export const layer = Layer.effect(
     const runFork = Effect.runForkWith(context);
     let speedLimited = false;
     let listening = false;
+    let active = false;
     let watchdog: ReturnType<typeof setInterval> | null = null;
+    let watchedWindow: Electron.BrowserWindow | null = null;
+    let cleanupWindowListeners: (() => void) | null = null;
     let watchdogState: WatchdogState = { overSince: null };
 
     const broadcastPower = () => {
@@ -145,7 +148,31 @@ export const layer = Layer.effect(
       });
     };
 
+    const pauseWatchdogTimer = () => {
+      if (watchdog !== null) {
+        clearInterval(watchdog);
+        watchdog = null;
+      }
+      watchdogState = { overSince: null };
+    };
+
+    const stopWatchdog = () => {
+      active = false;
+      pauseWatchdogTimer();
+      cleanupWindowListeners?.();
+      cleanupWindowListeners = null;
+      watchedWindow = null;
+    };
+
     const sample = (window: Electron.BrowserWindow) => {
+      if (window.isDestroyed()) {
+        stopWatchdog();
+        return;
+      }
+      if (window.isMinimized() || !window.isVisible()) {
+        pauseWatchdogTimer();
+        return;
+      }
       let cpuPercent: number | null = null;
       try {
         cpuPercent = sampleBackdropCpu(window);
@@ -162,10 +189,37 @@ export const layer = Layer.effect(
       }
     };
 
-    const stopWatchdog = () => {
-      if (watchdog !== null) clearInterval(watchdog);
-      watchdog = null;
-      watchdogState = { overSince: null };
+    const ensureWatchdogTimer = (window: Electron.BrowserWindow) => {
+      if (!active || watchdog !== null) return;
+      if (window.isDestroyed() || window.isMinimized() || !window.isVisible()) return;
+      watchdog = setInterval(() => sample(window), WATCHDOG_SAMPLE_MS);
+    };
+
+    const watchWindow = (window: Electron.BrowserWindow) => {
+      if (watchedWindow === window) {
+        ensureWatchdogTimer(window);
+        return;
+      }
+      cleanupWindowListeners?.();
+      watchedWindow = window;
+      const onPause = () => pauseWatchdogTimer();
+      const onResume = () => ensureWatchdogTimer(window);
+      const onClosed = () => stopWatchdog();
+      window.on("minimize", onPause);
+      window.on("hide", onPause);
+      window.on("restore", onResume);
+      window.on("show", onResume);
+      window.once("closed", onClosed);
+      cleanupWindowListeners = () => {
+        if (!window.isDestroyed()) {
+          window.removeListener("minimize", onPause);
+          window.removeListener("hide", onPause);
+          window.removeListener("restore", onResume);
+          window.removeListener("show", onResume);
+          window.removeListener("closed", onClosed);
+        }
+      };
+      ensureWatchdogTimer(window);
     };
 
     yield* Effect.addFinalizer(() => Effect.sync(stopWatchdog));
@@ -175,18 +229,17 @@ export const layer = Layer.effect(
         listen();
         return readPowerState(speedLimited);
       }),
-      setBackdropActive: (active) =>
+      setBackdropActive: (nextActive) =>
         Effect.gen(function* () {
           listen();
-          if (!active) {
+          if (!nextActive) {
             stopWatchdog();
             return;
           }
-          if (watchdog !== null) return;
+          active = true;
           const window = yield* electronWindow.main;
           if (window._tag === "None") return;
-          const main = window.value;
-          watchdog = setInterval(() => sample(main), WATCHDOG_SAMPLE_MS);
+          watchWindow(window.value);
         }).pipe(Effect.withSpan("desktop.backdropMonitor.setBackdropActive")),
     });
   }),

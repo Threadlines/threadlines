@@ -12,10 +12,13 @@
  *
  * @module provider/Drivers/ClaudeDriver
  */
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import * as fsPromises from "node:fs/promises";
 import {
   ClaudeSettings,
   ProviderDriverKind,
   type ServerProvider,
+  type ServerProviderAccountTokenUsage,
   type ServerProviderSignInEnds,
 } from "@threadlines/contracts";
 import * as Cache from "effect/Cache";
@@ -293,6 +296,49 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         : yield* makeClaudeTokenUsageHistoryReader(effectiveConfig, processEnv, {
             stateDir: serverConfig.stateDir,
           });
+      // Scheduled 5-minute health ticks reuse a recent 30-day transcript walk
+      // for 15 minutes within the same UTC calendar day; startup and explicit
+      // refreshes always scan fresh.
+      const TOKEN_USAGE_SCHEDULED_TTL_MS = 15 * 60 * 1000;
+      const lastTokenUsageRef = yield* Ref.make<
+        | {
+            readonly checkedAtMs: number;
+            readonly utcDay: string;
+            readonly value: ServerProviderAccountTokenUsage;
+          }
+        | undefined
+      >(undefined);
+      const readFreshTokenUsage = readTokenUsage
+        ? Effect.gen(function* () {
+            const value = yield* readTokenUsage;
+            if (value !== undefined) {
+              const now = yield* DateTime.now;
+              yield* Ref.set(lastTokenUsageRef, {
+                checkedAtMs: DateTime.toEpochMillis(now),
+                utcDay: DateTime.formatIso(now).slice(0, 10),
+                value,
+              });
+            }
+            return value;
+          })
+        : undefined;
+      const readScheduledTokenUsage = readFreshTokenUsage
+        ? Effect.gen(function* () {
+            const cached = yield* Ref.get(lastTokenUsageRef);
+            if (cached !== undefined) {
+              const now = yield* DateTime.now;
+              const nowMs = DateTime.toEpochMillis(now);
+              const utcDay = DateTime.formatIso(now).slice(0, 10);
+              if (
+                cached.utcDay === utcDay &&
+                nowMs - cached.checkedAtMs < TOKEN_USAGE_SCHEDULED_TTL_MS
+              ) {
+                return cached.value;
+              }
+            }
+            return yield* readFreshTokenUsage;
+          })
+        : undefined;
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
@@ -406,50 +452,57 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const lastReportedModelsRef = yield* Ref.make<ClaudeReportedModels | undefined>(
         claudeReportedModelsFromCache(cachedSnapshot, { instanceId, driver: DRIVER_KIND }),
       );
-      const checkProvider = Effect.gen(function* () {
-        const provider = yield* checkClaudeProviderStatus(
-          effectiveConfig,
-          () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
-          processEnv,
-          () =>
-            (hasClaudeChatOnlyToken(processEnv)
-              ? Cache.get(normalSignInUsageCache, "usage")
-              : Cache.get(capabilitiesProbeCache, capabilitiesCacheKey).pipe(
-                  Effect.map((probe) => probe?.usage ?? claudeUsageUnavailable("unreachable")),
-                )
-            ).pipe(Effect.flatMap(settleScopedWindows)),
-          (settings) =>
-            readClaudeNormalAuthEmail(settings, processEnv).pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.provideService(Path.Path, path),
-            ),
-          readTokenUsage ? () => readTokenUsage : undefined,
-          () => isSignInRenewalDue,
-          {
-            get: Ref.get(lastReportedModelsRef),
-            set: (reported) => Ref.set(lastReportedModelsRef, reported),
-          },
+      const makeCheckProvider = (
+        tokenUsageReader: Effect.Effect<ServerProviderAccountTokenUsage | undefined> | undefined,
+      ) =>
+        Effect.gen(function* () {
+          const provider = yield* checkClaudeProviderStatus(
+            effectiveConfig,
+            () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
+            processEnv,
+            () =>
+              (hasClaudeChatOnlyToken(processEnv)
+                ? Cache.get(normalSignInUsageCache, "usage")
+                : Cache.get(capabilitiesProbeCache, capabilitiesCacheKey).pipe(
+                    Effect.map((probe) => probe?.usage ?? claudeUsageUnavailable("unreachable")),
+                  )
+              ).pipe(Effect.flatMap(settleScopedWindows)),
+            (settings) =>
+              readClaudeNormalAuthEmail(settings, processEnv).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, path),
+              ),
+            tokenUsageReader ? () => tokenUsageReader : undefined,
+            () => isSignInRenewalDue,
+            {
+              get: Ref.get(lastReportedModelsRef),
+              set: (reported) => Ref.set(lastReportedModelsRef, reported),
+            },
+          );
+          // Only the sign-in chat runs on has an end worth a warning; its date
+          // is read from the stored sign-in, as Claude Code itself reads it.
+          if (!claudeChatUsesStoredSignIn(provider)) {
+            yield* Ref.set(lastSignInEndsRef, undefined);
+            return withClaudeSignInEnds(provider, undefined);
+          }
+          const window = claudeSignInEndsWindow(
+            yield* readStoredSignIn,
+            DateTime.toEpochMillis(yield* DateTime.now),
+          );
+          if (window !== "unknown") yield* Ref.set(lastSignInEndsRef, window);
+          return withClaudeSignInEnds(
+            provider,
+            window === "unknown" ? yield* Ref.get(lastSignInEndsRef) : window,
+          );
+        }).pipe(
+          Effect.map(stampIdentity),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(Path.Path, path),
         );
-        // Only the sign-in chat runs on has an end worth a warning; its date
-        // is read from the stored sign-in, as Claude Code itself reads it.
-        if (!claudeChatUsesStoredSignIn(provider)) {
-          yield* Ref.set(lastSignInEndsRef, undefined);
-          return withClaudeSignInEnds(provider, undefined);
-        }
-        const window = claudeSignInEndsWindow(
-          yield* readStoredSignIn,
-          DateTime.toEpochMillis(yield* DateTime.now),
-        );
-        if (window !== "unknown") yield* Ref.set(lastSignInEndsRef, window);
-        return withClaudeSignInEnds(
-          provider,
-          window === "unknown" ? yield* Ref.get(lastSignInEndsRef) : window,
-        );
-      }).pipe(
-        Effect.map(stampIdentity),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(Path.Path, path),
-      );
+      const checkProvider = makeCheckProvider(readFreshTokenUsage);
+      const scheduledCheckProvider = readScheduledTokenUsage
+        ? makeCheckProvider(readScheduledTokenUsage)
+        : checkProvider;
 
       const snapshot = yield* makeManagedServerProvider<ClaudeSettings>({
         get maintenanceCapabilities() {
@@ -478,6 +531,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             ),
           ),
         checkProvider,
+        scheduledCheckProvider,
         reconcileSnapshot: (previous, next) =>
           carryClaudeUsageAcrossChecks(previous, next, {
             keepsTokenCalendar: readTokenUsage !== undefined,
@@ -492,6 +546,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             ),
           ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
+        shouldScheduleRefresh: (settings) => settings.enabled,
         shouldRetrySnapshot: (provider) => provider.statusReason === "provider_probe_timeout",
         retryDelay: Duration.minutes(1),
       }).pipe(
@@ -528,6 +583,54 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           resolveModelMetadata(model).pipe(Effect.map((listed) => listed?.capabilities)),
       });
 
+      // Cache `claude --version` keyed by the resolved executable's inode/mtime/size
+      // so consecutive session starts reuse the probed version while any in-place
+      // upgrade, downgrade, or symlink retarget invalidates immediately.
+      const resolveExecutableStatKey = async (
+        launch: Parameters<typeof readClaudeLaunchVersion>[0],
+      ): Promise<string | null> => {
+        const candidates: string[] = [];
+        const hasSeparator = launch.executable.includes("/") || launch.executable.includes("\\");
+        if (hasSeparator) {
+          candidates.push(
+            launch.cwd ? path.resolve(launch.cwd, launch.executable) : launch.executable,
+          );
+        } else {
+          const pathEnv = launch.environment.PATH ?? launch.environment.Path ?? "";
+          for (const dir of pathEnv.split(path.sep === "\\" ? ";" : ":")) {
+            if (dir.length > 0) {
+              candidates.push(path.join(dir, launch.executable));
+            }
+          }
+        }
+        for (const candidate of candidates) {
+          try {
+            const stat = await fsPromises.stat(candidate);
+            if (stat.isFile()) {
+              return `${candidate}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}`;
+            }
+          } catch {
+            // Try next PATH entry.
+          }
+        }
+        return null;
+      };
+      const launchTargetsByKey = new Map<string, Parameters<typeof readClaudeLaunchVersion>[0]>();
+      const launchVersionCache = yield* Cache.makeWith(
+        (key: string) => {
+          const launch = launchTargetsByKey.get(key);
+          if (!launch) return Effect.succeed<string | undefined>(undefined);
+          return readClaudeLaunchVersion(launch).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          );
+        },
+        {
+          capacity: 16,
+          timeToLive: (exit) =>
+            Exit.isSuccess(exit) && exit.value !== undefined ? Duration.minutes(5) : Duration.zero,
+        },
+      );
+
       // The adapter is built after the snapshot so mid-turn `rate_limit_event`
       // messages can be folded straight into the live provider snapshot —
       // account usage then updates in real time instead of waiting for the
@@ -553,9 +656,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           Effect.map((provider) => provider.version ?? undefined),
         ),
         readLaunchVersion: (launch) =>
-          readClaudeLaunchVersion(launch).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          ),
+          Effect.gen(function* () {
+            const statKey = yield* Effect.promise(() => resolveExecutableStatKey(launch));
+            if (statKey === null) {
+              return yield* readClaudeLaunchVersion(launch).pipe(
+                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              );
+            }
+            launchTargetsByKey.set(statKey, launch);
+            if (launchTargetsByKey.size > 32) {
+              const oldest = launchTargetsByKey.keys().next().value;
+              if (oldest !== undefined && oldest !== statKey) {
+                launchTargetsByKey.delete(oldest);
+              }
+            }
+            return yield* Cache.get(launchVersionCache, statKey);
+          }),
         // Read live as well. Unreadable settings leave Claude's own rule.
         suggestionsWhenUsageRunsFast: serverSettings.getSettings.pipe(
           Effect.map((settings) => settings.claudeSuggestionsWhenUsageRunsFast),

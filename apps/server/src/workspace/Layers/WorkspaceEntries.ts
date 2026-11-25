@@ -490,21 +490,39 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
         return null;
       }
 
-      const listedFiles = yield* vcs.driver
-        .listWorkspaceFiles(cwd)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
+      const [listedFiles, ignoredTracked] = yield* Effect.all(
+        [
+          vcs.driver.listWorkspaceFiles(cwd).pipe(Effect.catch(() => Effect.succeed(null))),
+          vcs.driver.listIgnoredTrackedPaths
+            ? vcs.driver
+                .listIgnoredTrackedPaths(cwd)
+                .pipe(Effect.catch(() => Effect.succeed<ReadonlyArray<string> | null>(null)))
+            : Effect.succeed<ReadonlyArray<string> | null>(null),
+        ],
+        { concurrency: 2 },
+      );
 
       if (!listedFiles) {
         return null;
       }
 
-      const listedPaths = [...listedFiles.paths]
+      const rawPaths =
+        ignoredTracked !== null && ignoredTracked.length > 0
+          ? (() => {
+              const ignoredSet = new Set(ignoredTracked);
+              return listedFiles.paths.filter((entry) => !ignoredSet.has(entry));
+            })()
+          : listedFiles.paths;
+      const listedPaths = [...rawPaths]
         .map((entry) => toPosixPath(entry))
         .filter((entry) => entry.length > 0 && !isPathInIgnoredDirectory(entry));
-      const filePaths = yield* vcs.driver.filterIgnoredPaths(cwd, listedPaths).pipe(
-        Effect.map((paths) => [...paths]),
-        Effect.catch(() => filterVcsIgnoredPaths(cwd, listedPaths)),
-      );
+      const filePaths =
+        ignoredTracked !== null
+          ? listedPaths
+          : yield* vcs.driver.filterIgnoredPaths(cwd, listedPaths).pipe(
+              Effect.map((paths) => [...paths]),
+              Effect.catch(() => filterVcsIgnoredPaths(cwd, listedPaths)),
+            );
 
       const directorySet = new Set<string>();
       for (const filePath of filePaths) {

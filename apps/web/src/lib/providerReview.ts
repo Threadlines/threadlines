@@ -35,8 +35,19 @@ export interface ProviderReviewContext {
   readonly providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry>;
 }
 
+export type ProviderReviewThread = Pick<
+  Thread,
+  | "projectId"
+  | "modelSelection"
+  | "runtimeMode"
+  | "interactionMode"
+  | "branch"
+  | "worktreePath"
+  | "session"
+>;
+
 export function resolveProviderReviewContext(input: {
-  readonly thread: Thread | null | undefined;
+  readonly thread: ProviderReviewThread | null | undefined;
   readonly draftSession: DraftSessionState | null | undefined;
   readonly composerDraft:
     | Pick<

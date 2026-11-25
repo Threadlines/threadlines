@@ -89,6 +89,31 @@ layer("NodeSqliteClient", (it) => {
       assert.deepStrictEqual(rows, [{ kind: "plain" }]);
     }),
   );
+
+  it.effect("commits and rolls back nested savepoints cleanly", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE nested(name TEXT NOT NULL)`;
+
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO nested(name) VALUES ('outer')`;
+          yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`INSERT INTO nested(name) VALUES ('rolled-back')`;
+                return yield* Effect.fail("inner-fail");
+              }),
+            )
+            .pipe(Effect.ignore);
+          yield* sql.withTransaction(sql`INSERT INTO nested(name) VALUES ('inner-ok')`);
+        }),
+      );
+
+      const rows = yield* sql<{ readonly name: string }>`SELECT name FROM nested ORDER BY rowid`;
+      assert.deepStrictEqual(rows, [{ name: "outer" }, { name: "inner-ok" }]);
+    }),
+  );
 });
 
 it.live("an interrupted query never keeps the connection", () =>

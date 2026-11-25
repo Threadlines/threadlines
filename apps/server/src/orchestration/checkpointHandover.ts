@@ -35,8 +35,25 @@ export const HandoverCaptureWait = Context.Reference<Duration.Duration>(
   { defaultValue: () => Duration.seconds(10) },
 );
 
+export interface LatestPreTurnCapture {
+  readonly cwd: string;
+  readonly turnCount: number;
+  readonly requestKey: string;
+  readonly checkpointRef: string;
+  sentToProvider: boolean;
+  consumedByTurnId: string | null;
+}
+
+export interface PreTurnCaptureGate {
+  readonly getLatest: () => LatestPreTurnCapture | null;
+  readonly setLatest: (capture: LatestPreTurnCapture) => void;
+  readonly clearLatest: () => void;
+}
+
 interface ThreadGate {
   readonly lock: Semaphore.Semaphore;
+  readonly preTurnLock: Semaphore.Semaphore;
+  latestPreTurn: LatestPreTurnCapture | null;
   /** Turns owing their final capture, each with what finishing it resolves. */
   readonly pending: Map<string, Deferred.Deferred<void>>;
   /** Turns whose final capture is done, so a late registration owes nothing. */
@@ -55,6 +72,8 @@ const gateFor = (threadId: string) =>
     }
     const created: ThreadGate = {
       lock: yield* Semaphore.make(1),
+      preTurnLock: yield* Semaphore.make(1),
+      latestPreTurn: null,
       pending: new Map(),
       finished: new Set(),
       closed: new Set(),
@@ -143,6 +162,59 @@ export const checkpointHandover = {
           if (stillOwed !== undefined) {
             yield* Deferred.succeed(stillOwed, undefined);
           }
+        }),
+      );
+    }),
+
+  /**
+   * Serializes pre-turn baseline captures for one thread across
+   * ProviderCommandReactor and CheckpointReactor so the same turn start is
+   * captured once instead of three times.
+   */
+  withPreTurnLock: <A, E, R>(
+    threadId: string,
+    run: (gate: PreTurnCaptureGate) => Effect.Effect<A, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      const gate = yield* gateFor(threadId);
+      const preTurnGate: PreTurnCaptureGate = {
+        getLatest: () => gate.latestPreTurn,
+        setLatest: (capture) => {
+          gate.latestPreTurn = capture;
+        },
+        clearLatest: () => {
+          gate.latestPreTurn = null;
+        },
+      };
+      return yield* gate.preTurnLock.withPermits(1)(run(preTurnGate));
+    }),
+
+  /** Marks the latest pre-turn capture as actively dispatched to a provider. */
+  markPreTurnSent: (threadId: string, requestKey: string) =>
+    Effect.gen(function* () {
+      const gate = gates.get(threadId);
+      if (gate === undefined) {
+        return;
+      }
+      yield* gate.preTurnLock.withPermits(1)(
+        Effect.sync(() => {
+          if (gate.latestPreTurn !== null && gate.latestPreTurn.requestKey === requestKey) {
+            gate.latestPreTurn.sentToProvider = true;
+          }
+        }),
+      );
+    }),
+
+  /** Clears remembered pre-turn capture state after a revert, abort, or failed start. */
+  clearPreTurn: (threadId: string) =>
+    Effect.gen(function* () {
+      const gate = gates.get(threadId);
+      if (gate === undefined) {
+        return;
+      }
+      yield* gate.preTurnLock.withPermits(1)(
+        Effect.sync(() => {
+          gate.latestPreTurn = null;
         }),
       );
     }),

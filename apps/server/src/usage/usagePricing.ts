@@ -89,6 +89,41 @@ export function parseRateTable(document: unknown): RateTable {
   return table;
 }
 
+/**
+ * Decodes a compacted on-disk rate table produced from `parseRateTable`.
+ */
+export function parseCompactRateTable(document: unknown): RateTable {
+  const table = new Map<string, ModelRate>();
+  if (typeof document !== "object" || document === null) return table;
+
+  for (const [name, raw] of Object.entries(document as Record<string, unknown>)) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const entry = raw as Partial<ModelRate>;
+    const inputCostPerToken = finiteNumber(entry.inputCostPerToken);
+    const outputCostPerToken = finiteNumber(entry.outputCostPerToken);
+    const cacheReadCostPerToken = finiteNumber(entry.cacheReadCostPerToken);
+    const cacheCreationCostPerToken = finiteNumber(entry.cacheCreationCostPerToken);
+    const cacheCreation1hCostPerToken = finiteNumber(entry.cacheCreation1hCostPerToken);
+    if (
+      inputCostPerToken === null ||
+      outputCostPerToken === null ||
+      cacheReadCostPerToken === null ||
+      cacheCreationCostPerToken === null ||
+      cacheCreation1hCostPerToken === null
+    ) {
+      continue;
+    }
+    table.set(name, {
+      inputCostPerToken,
+      outputCostPerToken,
+      cacheReadCostPerToken,
+      cacheCreationCostPerToken,
+      cacheCreation1hCostPerToken,
+    });
+  }
+  return table;
+}
+
 /** Anthropic publishes USD per million tokens; the table stores USD per token. */
 const perMillion = (usd: number): number => usd / 1_000_000;
 

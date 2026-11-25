@@ -1,4 +1,3 @@
-import * as Equal from "effect/Equal";
 import { estimateWorkflowRunCardHeight } from "./workflowRunView";
 import { MCP_APP_CARD_ESTIMATED_PX } from "./mcpAppClient";
 import { nextCheckBack } from "./checkBacks";
@@ -2416,8 +2415,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.folded === bw.folded &&
         sameIds(a.trackerTurnIds, bw.trackerTurnIds) &&
         sameIds(a.trackerAgentSpawnIds, bw.trackerAgentSpawnIds) &&
-        Equal.equals(a.groupedEntries, bw.groupedEntries) &&
-        Equal.equals(a.agentAnchorEntries, bw.agentAnchorEntries)
+        sameWorkLogEntries(a.groupedEntries, bw.groupedEntries) &&
+        sameWorkLogEntries(a.agentAnchorEntries, bw.agentAnchorEntries)
       );
     }
 
@@ -2455,7 +2454,68 @@ function isTurnSummaryUnchanged(a: TurnSummary | null, b: TurnSummary | null): b
 }
 
 function sameIds(a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean {
-  return a.length === b.length && a.every((id, index) => id === b[index]);
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
+
+function samePlainValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") {
+    return false;
+  }
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let index = 0; index < a.length; index += 1) {
+      if (!samePlainValue(a[index], b[index])) return false;
+    }
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRecord);
+  const bKeys = Object.keys(bRecord);
+  if (aKeys.length !== bKeys.length) return false;
+  for (let index = 0; index < aKeys.length; index += 1) {
+    const key = aKeys[index]!;
+    if (!Object.prototype.hasOwnProperty.call(bRecord, key)) return false;
+    if (!samePlainValue(aRecord[key], bRecord[key])) return false;
+  }
+  return true;
+}
+
+function sameWorkLogEntries(
+  a: ReadonlyArray<WorkLogEntry>,
+  b: ReadonlyArray<WorkLogEntry>,
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    const left = a[index];
+    const right = b[index];
+    if (left === right) continue;
+    if (
+      !left ||
+      !right ||
+      left.id !== right.id ||
+      left.createdAt !== right.createdAt ||
+      left.completedAt !== right.completedAt ||
+      left.label !== right.label ||
+      left.detail !== right.detail ||
+      left.tone !== right.tone ||
+      left.executionState !== right.executionState ||
+      left.outputPreview !== right.outputPreview ||
+      left.eventSequence !== right.eventSequence ||
+      !samePlainValue(left, right)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;

@@ -102,6 +102,7 @@ export interface GitLocalStatusDetails {
   upstreamRef: string | null;
   hasWorkingTreeChanges: boolean;
   workingTree: VcsStatusResult["workingTree"];
+  configSnapshot?: GitConfigSnapshot;
 }
 
 export interface GitStatusDetails extends GitLocalStatusDetails {
@@ -122,6 +123,7 @@ export interface GitRemoteStatusDetails {
   aheadCount: number;
   behindCount: number;
   aheadOfDefaultCount: number;
+  configSnapshot?: GitConfigSnapshot;
 }
 
 /** Start point for a new worktree: a local branch or a remote-tracking ref. */
@@ -803,6 +805,45 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                 cwd,
                 exitCode: result.exitCode,
                 detail: result.stderr.trim() || "git ls-files failed",
+              }),
+            ),
+      ),
+    );
+
+  const listIgnoredTrackedPaths: NonNullable<
+    VcsDriver.VcsDriverShape["listIgnoredTrackedPaths"]
+  > = (cwd) =>
+    gitCommand(
+      vcsProcess,
+      "GitVcsDriver.listIgnoredTrackedPaths",
+      cwd,
+      [
+        ...WORKSPACE_GIT_HARDENED_CONFIG_ARGS,
+        "ls-files",
+        "--cached",
+        "--ignored",
+        "--exclude-standard",
+        "-z",
+      ],
+      {
+        allowNonZeroExit: true,
+        timeoutMs: 20_000,
+        maxOutputBytes: WORKSPACE_FILES_MAX_OUTPUT_BYTES,
+        appendTruncationMarker: true,
+      },
+    ).pipe(
+      Effect.flatMap((result) =>
+        result.exitCode === 0 && !result.stdoutTruncated
+          ? Effect.succeed(splitNullSeparatedPaths(result.stdout, false))
+          : Effect.fail(
+              new VcsProcessExitError({
+                operation: "GitVcsDriver.listIgnoredTrackedPaths",
+                command: "git ls-files --cached --ignored",
+                cwd,
+                exitCode: result.exitCode,
+                detail: result.stdoutTruncated
+                  ? "git ls-files --cached --ignored output truncated"
+                  : result.stderr.trim() || "git ls-files --cached --ignored failed",
               }),
             ),
       ),
@@ -1926,6 +1967,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     detectRepository,
     isInsideWorkTree,
     listWorkspaceFiles,
+    listIgnoredTrackedPaths,
     listRemotes,
     filterIgnoredPaths,
     initRepository,

@@ -708,17 +708,35 @@ export function makeMacMenuStateGlyphs(): MacMenuStateGlyphs {
   return cachedMenuStateGlyphs;
 }
 
+let cachedIdleGlyph: TrayGlyph | null = null;
+let cachedWorkingGlyphs: readonly TrayGlyph[] | null = null;
+let cachedCompletedGlyphs: readonly TrayGlyph[] | null = null;
 let cachedGlyphSet: MacTrayGlyphSet | null = null;
+
+export function makeMacIdleTrayGlyph(): TrayGlyph {
+  cachedIdleGlyph ??= buildGlyph(idleShapes(), TRAY_RENDER_OPTIONS);
+  return cachedIdleGlyph;
+}
+
+export function makeMacWorkingTrayGlyphs(): readonly TrayGlyph[] {
+  cachedWorkingGlyphs ??= Array.from({ length: TRAY_WORKING_FRAME_COUNT }, (_, frameIndex) =>
+    buildGlyph(workingShapes(frameIndex), TRAY_RENDER_OPTIONS),
+  );
+  return cachedWorkingGlyphs;
+}
+
+export function makeMacCompletedTrayGlyphs(): readonly TrayGlyph[] {
+  cachedCompletedGlyphs ??= COMPLETED_POP_FRAMES.map((frame) =>
+    buildGlyph(completedShapes(frame), TRAY_RENDER_OPTIONS),
+  );
+  return cachedCompletedGlyphs;
+}
 
 export function makeMacTrayGlyphSet(): MacTrayGlyphSet {
   cachedGlyphSet ??= {
-    idle: buildGlyph(idleShapes(), TRAY_RENDER_OPTIONS),
-    workingFrames: Array.from({ length: TRAY_WORKING_FRAME_COUNT }, (_, frameIndex) =>
-      buildGlyph(workingShapes(frameIndex), TRAY_RENDER_OPTIONS),
-    ),
-    completedFrames: COMPLETED_POP_FRAMES.map((frame) =>
-      buildGlyph(completedShapes(frame), TRAY_RENDER_OPTIONS),
-    ),
+    idle: makeMacIdleTrayGlyph(),
+    workingFrames: makeMacWorkingTrayGlyphs(),
+    completedFrames: makeMacCompletedTrayGlyphs(),
   };
   return cachedGlyphSet;
 }

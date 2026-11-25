@@ -83,9 +83,10 @@ import {
   type ThreadTurnState,
   type TurnDiffSummary,
 } from "./types";
+import { scopedThreadKey } from "@threadlines/client-runtime";
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
 import { attachmentPreviewRoutePath } from "./lib/attachmentPreviewQuery";
-import { keyedMemo } from "./lib/derivationMemo";
+import { clearThreadDerivationMemos, keyedMemo } from "./lib/derivationMemo";
 import { createBatchedNotifications } from "./lib/batchedNotifications";
 import { sanitizeThreadErrorMessage } from "./rpc/transportError";
 import {
@@ -97,7 +98,7 @@ import {
   isBlockingUserInput,
   sumTurnDiffStats,
 } from "./session-logic";
-import { getThreadFromEnvironmentState } from "./threadDerivation";
+import { getThreadFromEnvironmentState, invalidateThreadDerivationCache } from "./threadDerivation";
 import { threadMoveStatus } from "./threadMove";
 import {
   movedFromAfter,
@@ -304,9 +305,13 @@ function normalizeModelSelection<T extends { instanceId: string; model: string }
   if (!isProviderDriverKind(selection.instanceId)) {
     return selection;
   }
+  const resolvedModel = resolveModelSlugForProvider(selection.instanceId, selection.model);
+  if (resolvedModel === selection.model) {
+    return selection;
+  }
   return {
     ...selection,
-    model: resolveModelSlugForProvider(selection.instanceId, selection.model),
+    model: resolvedModel,
   };
 }
 
@@ -1543,19 +1548,69 @@ function sideTurnsEqual(
   );
 }
 
+function modelSelectionsEqual(
+  left: ThreadShell["modelSelection"],
+  right: ThreadShell["modelSelection"],
+): boolean {
+  if (left === right) return true;
+  if (left.instanceId !== right.instanceId || left.model !== right.model) return false;
+  const leftOptions = left.options;
+  const rightOptions = right.options;
+  if (leftOptions === rightOptions) return true;
+  const a = leftOptions ?? [];
+  const b = rightOptions ?? [];
+  if (a.length !== b.length) return false;
+  return a.every((option, index) => {
+    const other = b[index];
+    return other !== undefined && option.id === other.id && option.value === other.value;
+  });
+}
+
 /**
- * A changed shell, keeping the participants it had while they are the same.
- * The server pushes a whole shell again on every update a streaming turn
- * makes, and what the chat builds from the participants (agent names and
- * labels) should keep its identity across them.
+ * A changed shell, keeping references to nested structures (`participants`,
+ * `modelSelection`, `linkedPullRequests`, `dismissedPullRequests`) while their
+ * contents are unchanged. The server pushes a whole shell again on every update
+ * a streaming turn makes, and consumers keyed on those fields should keep
+ * reference identity across them.
  */
-function withKeptParticipants(previous: ThreadShell | undefined, next: ThreadShell): ThreadShell {
-  const kept = previous?.participants;
-  return kept !== undefined &&
-    kept !== next.participants &&
-    participantsEqual(kept, next.participants)
-    ? { ...next, participants: kept }
-    : next;
+function withKeptShellReferences(
+  previous: ThreadShell | undefined,
+  next: ThreadShell,
+): ThreadShell {
+  if (!previous) return next;
+  const keepParticipants =
+    previous.participants !== undefined &&
+    previous.participants !== next.participants &&
+    participantsEqual(previous.participants, next.participants);
+  const keepModelSelection =
+    previous.modelSelection !== next.modelSelection &&
+    modelSelectionsEqual(previous.modelSelection, next.modelSelection);
+  const keepLinkedPullRequests =
+    previous.linkedPullRequests !== next.linkedPullRequests &&
+    linkedPullRequestsEqual(previous.linkedPullRequests, next.linkedPullRequests);
+  const keepDismissedPullRequests =
+    previous.dismissedPullRequests !== next.dismissedPullRequests &&
+    dismissedPullRequestsEqual(previous.dismissedPullRequests, next.dismissedPullRequests);
+  const keepWorktreeOrigin =
+    previous.worktreeOrigin !== next.worktreeOrigin &&
+    worktreeOriginsEqual(previous.worktreeOrigin, next.worktreeOrigin);
+  if (
+    !keepParticipants &&
+    !keepModelSelection &&
+    !keepLinkedPullRequests &&
+    !keepDismissedPullRequests &&
+    !keepWorktreeOrigin
+  ) {
+    return next;
+  }
+  return {
+    ...next,
+    ...(keepParticipants ? { participants: previous.participants } : {}),
+    ...(keepModelSelection ? { modelSelection: previous.modelSelection } : {}),
+    ...(keepLinkedPullRequests ? { linkedPullRequests: previous.linkedPullRequests } : {}),
+    ...(keepDismissedPullRequests ? { dismissedPullRequests: previous.dismissedPullRequests } : {}),
+    ...(keepWorktreeOrigin ? { worktreeOrigin: previous.worktreeOrigin } : {}),
+  };
 }
 
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
@@ -1566,7 +1621,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.codexThreadId === right.codexThreadId &&
     left.projectId === right.projectId &&
     left.title === right.title &&
-    left.modelSelection === right.modelSelection &&
+    modelSelectionsEqual(left.modelSelection, right.modelSelection) &&
     left.runtimeMode === right.runtimeMode &&
     left.interactionMode === right.interactionMode &&
     left.error === right.error &&
@@ -1802,7 +1857,7 @@ function writeThreadState(
       ...nextState,
       threadShellById: {
         ...nextState.threadShellById,
-        [nextThread.id]: withKeptParticipants(previousShell, nextShell),
+        [nextThread.id]: withKeptShellReferences(previousShell, nextShell),
       },
     };
   }
@@ -2035,7 +2090,7 @@ function writeThreadShellState(
       ...nextState,
       threadShellById: {
         ...nextState.threadShellById,
-        [nextThread.shell.id]: withKeptParticipants(previousShell, nextThread.shell),
+        [nextThread.shell.id]: withKeptShellReferences(previousShell, nextThread.shell),
       },
     };
   }
@@ -2311,14 +2366,22 @@ function upsertThreadActivity(
     return retainThreadActivities([...activities, nextActivity], MAX_THREAD_ACTIVITIES);
   }
 
-  const nextActivities =
-    existingIndex === -1
-      ? [...activities, nextActivity]
-      : [
-          ...activities.slice(0, existingIndex),
-          nextActivity,
-          ...activities.slice(existingIndex + 1),
-        ];
+  if (existingIndex !== -1) {
+    const previous = existingIndex > 0 ? activities[existingIndex - 1] : undefined;
+    const following =
+      existingIndex + 1 < activities.length ? activities[existingIndex + 1] : undefined;
+    const inOrder =
+      (previous === undefined || compareActivities(previous, nextActivity) <= 0) &&
+      (following === undefined || compareActivities(nextActivity, following) <= 0);
+    const nextActivities = activities.slice();
+    nextActivities[existingIndex] = nextActivity;
+    return retainThreadActivities(
+      inOrder ? nextActivities : nextActivities.toSorted(compareActivities),
+      MAX_THREAD_ACTIVITIES,
+    );
+  }
+
+  const nextActivities = [...activities, nextActivity];
   return retainThreadActivities(nextActivities.toSorted(compareActivities), MAX_THREAD_ACTIVITIES);
 }
 
@@ -2670,21 +2733,109 @@ export function syncServerThreadDetail(
   );
 }
 
+function omitThreadKey<TValue>(
+  record: Record<ThreadId, TValue> | undefined,
+  threadId: ThreadId,
+): Record<ThreadId, TValue> | undefined {
+  if (record === undefined || !(threadId in record)) {
+    return record;
+  }
+  const { [threadId]: _omitted, ...rest } = record;
+  return rest as Record<ThreadId, TValue>;
+}
+
 /**
  * The thread's detail feed ended (its subscription was released and
- * disposed): what the store holds may fall behind, so the chat waits for the
- * next snapshot before it calls an empty thread empty.
+ * disposed): release its detail slices and derived cache while keeping its
+ * shell, session, turn state, and sidebar summary intact so reopening fetches
+ * a fresh snapshot instead of pinning evicted histories in memory.
  */
 export function markThreadDetailUnloaded(state: AppState, threadRef: ScopedThreadRef): AppState {
   const environmentState = state.environmentStateById[threadRef.environmentId];
-  if (!environmentState?.threadDetailLoadedById?.[threadRef.threadId]) {
+  if (!environmentState) {
     return state;
   }
-  const { [threadRef.threadId]: _unloaded, ...threadDetailLoadedById } =
-    environmentState.threadDetailLoadedById;
+  const threadId = threadRef.threadId;
+  const threadDetailLoadedById = omitThreadKey(environmentState.threadDetailLoadedById, threadId);
+  const messagesByThreadId = omitThreadKey(environmentState.messagesByThreadId, threadId)!;
+  const activitiesByThreadId = omitThreadKey(environmentState.activitiesByThreadId, threadId)!;
+  const proposedPlanIdsByThreadId = omitThreadKey(
+    environmentState.proposedPlanIdsByThreadId,
+    threadId,
+  )!;
+  const proposedPlanByThreadId = omitThreadKey(environmentState.proposedPlanByThreadId, threadId)!;
+  const turnDiffIdsByThreadId = omitThreadKey(environmentState.turnDiffIdsByThreadId, threadId)!;
+  const turnDiffSummaryByThreadId = omitThreadKey(
+    environmentState.turnDiffSummaryByThreadId,
+    threadId,
+  )!;
+  const agentRequestsByThreadId = omitThreadKey(
+    environmentState.agentRequestsByThreadId,
+    threadId,
+  )!;
+  const pagesByThreadId = omitThreadKey(environmentState.pagesByThreadId, threadId);
+  const workflowRunsByThreadId = omitThreadKey(environmentState.workflowRunsByThreadId, threadId);
+  const subagentsByThreadId = omitThreadKey(environmentState.subagentsByThreadId, threadId);
+  const commandRequestsByThreadId = omitThreadKey(
+    environmentState.commandRequestsByThreadId,
+    threadId,
+  );
+  const commandRunsByThreadId = omitThreadKey(environmentState.commandRunsByThreadId, threadId);
+  const childRequestsByThreadId = omitThreadKey(
+    environmentState.childRequestsByThreadId,
+    threadId,
+  )!;
+  const settingsRequestsByThreadId = omitThreadKey(
+    environmentState.settingsRequestsByThreadId,
+    threadId,
+  );
+  const secretRequestsByThreadId = omitThreadKey(
+    environmentState.secretRequestsByThreadId,
+    threadId,
+  );
+
+  invalidateThreadDerivationCache(environmentState.threadShellById[threadId]);
+  clearThreadDerivationMemos(scopedThreadKey(threadRef));
+
+  if (
+    threadDetailLoadedById === environmentState.threadDetailLoadedById &&
+    messagesByThreadId === environmentState.messagesByThreadId &&
+    activitiesByThreadId === environmentState.activitiesByThreadId &&
+    proposedPlanIdsByThreadId === environmentState.proposedPlanIdsByThreadId &&
+    proposedPlanByThreadId === environmentState.proposedPlanByThreadId &&
+    turnDiffIdsByThreadId === environmentState.turnDiffIdsByThreadId &&
+    turnDiffSummaryByThreadId === environmentState.turnDiffSummaryByThreadId &&
+    agentRequestsByThreadId === environmentState.agentRequestsByThreadId &&
+    pagesByThreadId === environmentState.pagesByThreadId &&
+    workflowRunsByThreadId === environmentState.workflowRunsByThreadId &&
+    subagentsByThreadId === environmentState.subagentsByThreadId &&
+    commandRequestsByThreadId === environmentState.commandRequestsByThreadId &&
+    commandRunsByThreadId === environmentState.commandRunsByThreadId &&
+    childRequestsByThreadId === environmentState.childRequestsByThreadId &&
+    settingsRequestsByThreadId === environmentState.settingsRequestsByThreadId &&
+    secretRequestsByThreadId === environmentState.secretRequestsByThreadId
+  ) {
+    return state;
+  }
+
   return commitEnvironmentState(state, threadRef.environmentId, {
     ...environmentState,
-    threadDetailLoadedById,
+    messagesByThreadId,
+    activitiesByThreadId,
+    proposedPlanIdsByThreadId,
+    proposedPlanByThreadId,
+    turnDiffIdsByThreadId,
+    turnDiffSummaryByThreadId,
+    agentRequestsByThreadId,
+    childRequestsByThreadId,
+    ...(threadDetailLoadedById !== undefined ? { threadDetailLoadedById } : {}),
+    ...(pagesByThreadId !== undefined ? { pagesByThreadId } : {}),
+    ...(workflowRunsByThreadId !== undefined ? { workflowRunsByThreadId } : {}),
+    ...(subagentsByThreadId !== undefined ? { subagentsByThreadId } : {}),
+    ...(commandRequestsByThreadId !== undefined ? { commandRequestsByThreadId } : {}),
+    ...(commandRunsByThreadId !== undefined ? { commandRunsByThreadId } : {}),
+    ...(settingsRequestsByThreadId !== undefined ? { settingsRequestsByThreadId } : {}),
+    ...(secretRequestsByThreadId !== undefined ? { secretRequestsByThreadId } : {}),
   });
 }
 
@@ -4234,6 +4385,15 @@ export function selectProjectByRef(
 ): Project | undefined {
   return ref
     ? selectEnvironmentState(state, ref.environmentId).projectById[ref.projectId]
+    : undefined;
+}
+
+export function selectThreadShellByRef(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+): ThreadShell | undefined {
+  return ref
+    ? selectEnvironmentState(state, ref.environmentId).threadShellById[ref.threadId]
     : undefined;
 }
 

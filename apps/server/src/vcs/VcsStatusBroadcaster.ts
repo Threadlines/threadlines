@@ -11,6 +11,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import type {
@@ -28,6 +29,7 @@ import { checkoutPresence } from "./CheckoutPresence.ts";
 import { isScratchIndexFileName } from "./scratchIndex.ts";
 
 const DEFAULT_VCS_STATUS_REFRESH_INTERVAL = Duration.minutes(2);
+const REMOTE_REFRESH_CONCURRENCY = 4;
 const VCS_STATUS_REFRESH_FAILURE_BASE_DELAY = Duration.minutes(2);
 const VCS_STATUS_REFRESH_FAILURE_MAX_DELAY = Duration.minutes(15);
 const VCS_STATUS_REFRESH_UNCHANGED_MAX_DELAY = Duration.minutes(10);
@@ -605,6 +607,7 @@ export const layer = Layer.effect(
         }
       });
 
+    const remoteRefreshSemaphore = yield* Semaphore.make(REMOTE_REFRESH_CONCURRENCY);
     const makeRemoteRefreshLoop = (
       cwd: string,
       automaticRemoteRefreshInterval: Effect.Effect<Duration.Duration, never>,
@@ -632,20 +635,52 @@ export const layer = Layer.effect(
             }
           }
 
-          const exit = yield* refreshRemoteStatus(cwd).pipe(Effect.exit);
+          const outcome = yield* remoteRefreshSemaphore.withPermits(1)(
+            Effect.gen(function* () {
+              // Re-check setting and cache freshness after acquiring the permit so
+              // disabling auto-fetch or a manual refresh cancels the queued poll.
+              const recheckedInterval = yield* automaticRemoteRefreshInterval;
+              if (Duration.isZero(recheckedInterval)) {
+                return {
+                  _tag: "skip" as const,
+                  delay: DEFAULT_VCS_STATUS_REFRESH_INTERVAL,
+                };
+              }
+              const latestCached = yield* getCachedStatus(cwd);
+              const latestUpdatedAtMs = latestCached?.remote?.updatedAtMs ?? null;
+              if (latestUpdatedAtMs !== null) {
+                const nowMs = yield* Clock.currentTimeMillis;
+                const recheckedMs = Duration.toMillis(recheckedInterval);
+                const ageMs = Math.max(0, nowMs - latestUpdatedAtMs);
+                if (ageMs < recheckedMs) {
+                  return {
+                    _tag: "skip" as const,
+                    delay: Duration.millis(Math.max(1, recheckedMs - ageMs)),
+                  };
+                }
+              }
+              const refreshExit = yield* refreshRemoteStatus(cwd).pipe(Effect.exit);
+              return { _tag: "ran" as const, exit: refreshExit, interval: recheckedInterval };
+            }),
+          );
+          if (outcome._tag === "skip") {
+            return outcome.delay;
+          }
+          const exit = outcome.exit;
+          const runInterval = outcome.interval;
           if (Exit.isSuccess(exit)) {
             yield* Ref.set(consecutiveFailuresRef, 0);
             const consecutiveUnchangedRefreshes = exit.value.changed
               ? yield* Ref.set(consecutiveUnchangedRefreshesRef, 0).pipe(Effect.as(0))
               : yield* Ref.updateAndGet(consecutiveUnchangedRefreshesRef, (count) => count + 1);
-            return remoteRefreshSuccessDelay(consecutiveUnchangedRefreshes, activeInterval);
+            return remoteRefreshSuccessDelay(consecutiveUnchangedRefreshes, runInterval);
           }
 
           const consecutiveFailures = yield* Ref.updateAndGet(
             consecutiveFailuresRef,
             (count) => count + 1,
           );
-          const nextDelay = remoteRefreshFailureDelay(consecutiveFailures, activeInterval);
+          const nextDelay = remoteRefreshFailureDelay(consecutiveFailures, runInterval);
           yield* Effect.logWarning("VCS remote status refresh failed", {
             cwd,
             detail: exit.cause.toString(),

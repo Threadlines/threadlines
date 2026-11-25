@@ -243,11 +243,17 @@ describe("DesktopStatusIndicator", () => {
         yield* Effect.gen(function* () {
           const indicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
           yield* indicator.configure;
+          // Startup only rasterizes the idle icon; animation frames and menu icons wait for first use.
+          assert.lengthOf(trayCalls.createTemplateImages, 1);
           yield* indicator.setStatus({
             status: "working",
             description: "One chat is working",
             runningThreadCount: 1,
           });
+          assert.lengthOf(
+            trayCalls.createTemplateImages,
+            1 + DesktopStatusGlyphs.makeMacWorkingTrayGlyphs().length,
+          );
           vi.advanceTimersByTime(DesktopStatusGlyphs.TRAY_WORKING_FRAME_INTERVAL_MS * 4.5);
           yield* indicator.setStatus({
             status: "completed",
@@ -268,9 +274,8 @@ describe("DesktopStatusIndicator", () => {
         }).pipe(Effect.provide(makeTestLayer({ appCalls, trayCalls, window })));
 
         const glyphs = DesktopStatusGlyphs.makeMacTrayGlyphSet();
-        // idle + animation frames + the two menu thread-state icons.
-        const expectedGlyphCount =
-          1 + glyphs.workingFrames.length + glyphs.completedFrames.length + 2;
+        // idle + working + completed frames; menu thread-state icons stay lazy until threads are shown.
+        const expectedGlyphCount = 1 + glyphs.workingFrames.length + glyphs.completedFrames.length;
         assert.lengthOf(trayCalls.createTemplateImages, expectedGlyphCount);
         assert.isTrue(
           trayCalls.createTemplateImages.every(

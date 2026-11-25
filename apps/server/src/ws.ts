@@ -6,12 +6,14 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
@@ -915,6 +917,90 @@ const makeDeviceRpcLayer = (viewerId: string) =>
     }),
   );
 
+const SHELL_SUBSCRIBER_QUEUE_CAPACITY = 256;
+const THREAD_SUBSCRIBER_QUEUE_CAPACITY = 512;
+
+type SharedShellSubscribe = () => Stream.Stream<
+  | {
+      readonly kind: "snapshot";
+      readonly snapshot: Effect.Success<
+        ReturnType<(typeof ProjectionSnapshotQuery.Service)["getShellSnapshot"]>
+      >;
+    }
+  | OrchestrationShellStreamEvent,
+  OrchestrationGetSnapshotError
+>;
+
+const makeToShellStreamEvent =
+  (projectionSnapshotQuery: {
+    readonly getProjectShellById: (
+      projectId: Parameters<(typeof ProjectionSnapshotQuery.Service)["getProjectShellById"]>[0],
+    ) => ReturnType<(typeof ProjectionSnapshotQuery.Service)["getProjectShellById"]>;
+    readonly getThreadShellById: (
+      threadId: ThreadId,
+    ) => ReturnType<(typeof ProjectionSnapshotQuery.Service)["getThreadShellById"]>;
+  }) =>
+  (
+    event: OrchestrationEvent,
+  ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> => {
+    switch (event.type) {
+      case "project.created":
+      case "project.meta-updated":
+        return projectionSnapshotQuery.getProjectShellById(event.payload.projectId).pipe(
+          Effect.map((project) =>
+            Option.map(project, (nextProject) => ({
+              kind: "project-upserted" as const,
+              sequence: event.sequence,
+              project: nextProject,
+            })),
+          ),
+          Effect.catch(() => Effect.succeed(Option.none())),
+        );
+      case "project.deleted":
+        return Effect.succeed(
+          Option.some({
+            kind: "project-removed" as const,
+            sequence: event.sequence,
+            projectId: event.payload.projectId,
+          }),
+        );
+      case "thread.deleted":
+      case "thread.archived":
+        return Effect.succeed(
+          Option.some({
+            kind: "thread-removed" as const,
+            sequence: event.sequence,
+            threadId: event.payload.threadId,
+          }),
+        );
+      case "thread.unarchived":
+        return projectionSnapshotQuery.getThreadShellById(event.payload.threadId).pipe(
+          Effect.map((thread) =>
+            Option.map(thread, (nextThread) => ({
+              kind: "thread-upserted" as const,
+              sequence: event.sequence,
+              thread: nextThread,
+            })),
+          ),
+          Effect.catch(() => Effect.succeed(Option.none())),
+        );
+      default:
+        if (event.aggregateKind !== "thread") {
+          return Effect.succeed(Option.none());
+        }
+        return projectionSnapshotQuery.getThreadShellById(ThreadId.make(event.aggregateId)).pipe(
+          Effect.map((thread) =>
+            Option.map(thread, (nextThread) => ({
+              kind: "thread-upserted" as const,
+              sequence: event.sequence,
+              thread: nextThread,
+            })),
+          ),
+          Effect.catch(() => Effect.succeed(Option.none())),
+        );
+    }
+  };
+
 /** Every RPC the WebSocket serves, for one connection. */
 const makeWsRpcLayer = (
   currentSession: {
@@ -926,9 +1012,10 @@ const makeWsRpcLayer = (
   viewerId: string,
   sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
   devicePlace: MessageSentFrom["place"],
+  subscribeShell: SharedShellSubscribe,
 ) =>
   Layer.mergeAll(
-    makeCoreRpcLayer(currentSession, viewerId, sentFromRef, devicePlace),
+    makeCoreRpcLayer(currentSession, viewerId, sentFromRef, devicePlace, subscribeShell),
     makeOutsideAgentsRpcLayer(currentSession.role),
     ThemesRpcLayer,
     ThemeShowcaseRpcLayer,
@@ -951,6 +1038,8 @@ const makeCoreRpcLayer = (
   sentFromRef: Ref.Ref<MessageSentFrom | undefined>,
   /** Where that device is (sessionDevicePlace), worked out once per connection. */
   devicePlace: MessageSentFrom["place"],
+  /** Server-shared coalesced shell stream fanout. */
+  subscribeShell: SharedShellSubscribe,
 ) =>
   WsCoreRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -1146,69 +1235,6 @@ const makeCoreRpcLayer = (
 
       const enrichOrchestrationEvents = (events: ReadonlyArray<OrchestrationEvent>) =>
         Effect.forEach(events, enrichProjectEvent, { concurrency: 4 });
-
-      const toShellStreamEvent = (
-        event: OrchestrationEvent,
-      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> => {
-        switch (event.type) {
-          case "project.created":
-          case "project.meta-updated":
-            return projectionSnapshotQuery.getProjectShellById(event.payload.projectId).pipe(
-              Effect.map((project) =>
-                Option.map(project, (nextProject) => ({
-                  kind: "project-upserted" as const,
-                  sequence: event.sequence,
-                  project: nextProject,
-                })),
-              ),
-              Effect.catch(() => Effect.succeed(Option.none())),
-            );
-          case "project.deleted":
-            return Effect.succeed(
-              Option.some({
-                kind: "project-removed" as const,
-                sequence: event.sequence,
-                projectId: event.payload.projectId,
-              }),
-            );
-          case "thread.deleted":
-          case "thread.archived":
-            return Effect.succeed(
-              Option.some({
-                kind: "thread-removed" as const,
-                sequence: event.sequence,
-                threadId: event.payload.threadId,
-              }),
-            );
-          case "thread.unarchived":
-            return projectionSnapshotQuery.getThreadShellById(event.payload.threadId).pipe(
-              Effect.map((thread) =>
-                Option.map(thread, (nextThread) => ({
-                  kind: "thread-upserted" as const,
-                  sequence: event.sequence,
-                  thread: nextThread,
-                })),
-              ),
-              Effect.catch(() => Effect.succeed(Option.none())),
-            );
-          default:
-            if (event.aggregateKind !== "thread") {
-              return Effect.succeed(Option.none());
-            }
-            return projectionSnapshotQuery
-              .getThreadShellById(ThreadId.make(event.aggregateId))
-              .pipe(
-                Effect.map((thread) =>
-                  Option.map(thread, (nextThread) => ({
-                    kind: "thread-upserted" as const,
-                    sequence: event.sequence,
-                    thread: nextThread,
-                  })),
-                ),
-                Effect.catch(() => Effect.succeed(Option.none())),
-              );
-        }
-      };
 
       // A first send, or a goal set on a draft, that also creates the thread,
       // cuts its worktree and launches its setup script (see ThreadBootstrap).
@@ -1693,58 +1719,9 @@ const makeCoreRpcLayer = (
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (_input) =>
-          observeRpcStreamEffect(
-            ORCHESTRATION_WS_METHODS.subscribeShell,
-            Effect.succeed(
-              Stream.unwrap(
-                Effect.gen(function* () {
-                  // Subscribe to the event feed before reading the snapshot:
-                  // events committed between the two are buffered by the
-                  // subscription instead of lost, which would leave this
-                  // subscriber stale until the next event for that aggregate.
-                  const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
-
-                  const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
-                    Effect.tapError((cause) =>
-                      Effect.logError("orchestration shell snapshot load failed", { cause }),
-                    ),
-                    Effect.mapError(
-                      (cause) =>
-                        new OrchestrationGetSnapshotError({
-                          message: "Failed to load orchestration shell snapshot",
-                          cause,
-                        }),
-                    ),
-                  );
-
-                  // Coalesce the domain-event firehose before resolving shells:
-                  // during streaming turns events arrive ~every 50ms per thread,
-                  // and each resolved event costs projection queries plus a full
-                  // thread-shell push per subscriber.
-                  const liveStream = coalesceLatestAggregateEvents(
-                    Stream.filter(
-                      domainEvents,
-                      (event) => event.sequence > snapshot.snapshotSequence,
-                    ),
-                  ).pipe(
-                    Stream.mapEffect(toShellStreamEvent),
-                    Stream.flatMap((event) =>
-                      Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
-                    ),
-                  );
-
-                  return Stream.concat(
-                    Stream.make({
-                      kind: "snapshot" as const,
-                      snapshot,
-                    }),
-                    liveStream,
-                  );
-                }),
-              ),
-            ),
-            { "rpc.aggregate": "orchestration" },
-          ),
+          observeRpcStream(ORCHESTRATION_WS_METHODS.subscribeShell, subscribeShell(), {
+            "rpc.aggregate": "orchestration",
+          }),
         [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
@@ -1774,7 +1751,51 @@ const makeCoreRpcLayer = (
                   // between the two reads may be both in the snapshot and
                   // re-delivered, which the client's id-keyed upsert reducers
                   // absorb — losing it instead would leave the thread stale.
-                  const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
+                  const upstreamScope = yield* Scope.make();
+                  yield* Effect.addFinalizer(() => Scope.close(upstreamScope, Exit.void));
+                  const domainEvents = yield* Scope.provide(
+                    orchestrationEngine.subscribeDomainEvents,
+                    upstreamScope,
+                  );
+                  const isThreadEvent = (event: OrchestrationEvent) =>
+                    event.aggregateKind === "thread" &&
+                    event.aggregateId === input.threadId &&
+                    isThreadDetailEvent(event);
+                  // Drain this subscriber's domain-event feed into a bounded
+                  // per-thread queue so unrelated threads' events are dropped
+                  // right away and a stalled client disconnects to resync
+                  // instead of accumulating unbounded events in memory. Closing
+                  // `upstreamScope` on overflow immediately releases the PubSub
+                  // subscription even if the client stops reading.
+                  const liveQueue = yield* Queue.bounded<
+                    OrchestrationEvent,
+                    OrchestrationGetSnapshotError | Cause.Done
+                  >(THREAD_SUBSCRIBER_QUEUE_CAPACITY);
+                  yield* Stream.runForEach(domainEvents, (event) => {
+                    if (!isThreadEvent(event)) {
+                      return Effect.void;
+                    }
+                    if (!Queue.offerUnsafe(liveQueue, event)) {
+                      Queue.failCauseUnsafe(
+                        liveQueue,
+                        Cause.fail(
+                          new OrchestrationGetSnapshotError({
+                            message:
+                              "Thread subscription fell behind; reconnecting for a fresh snapshot.",
+                          }),
+                        ),
+                      );
+                      return Effect.interrupt;
+                    }
+                    return Effect.void;
+                  }).pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        Queue.endUnsafe(liveQueue);
+                      }).pipe(Effect.andThen(Scope.close(upstreamScope, Exit.void))),
+                    ),
+                    Effect.forkScoped,
+                  );
 
                   const snapshotSequence = yield* projectionSnapshotQuery
                     .getSnapshotSequence()
@@ -1788,14 +1809,8 @@ const makeCoreRpcLayer = (
                           }),
                       ),
                     );
-                  const isThreadEvent = (event: OrchestrationEvent) =>
-                    event.aggregateKind === "thread" &&
-                    event.aggregateId === input.threadId &&
-                    isThreadDetailEvent(event);
-                  const liveStream = domainEvents.pipe(
-                    Stream.filter(
-                      (event) => event.sequence > snapshotSequence && isThreadEvent(event),
-                    ),
+                  const liveStream = Stream.fromQueue(liveQueue).pipe(
+                    Stream.filter((event) => event.sequence > snapshotSequence),
                     Stream.map((event) => ({
                       kind: "event" as const,
                       event,
@@ -3784,6 +3799,136 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const terminalManager = yield* TerminalManager;
     const pushAlerts = yield* PushAlerts;
     const deviceChannels = yield* DeviceChannels;
+    const orchestrationEngine = yield* OrchestrationEngineService;
+    const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+
+    // One server-wide coalesced shell producer feeds every connected client's
+    // bounded queue: shell projection queries run once per coalesced window
+    // (and zero times when nobody is subscribed) instead of once per client.
+    const toShellStreamEvent = makeToShellStreamEvent(projectionSnapshotQuery);
+    const shellSubscribers = new Set<
+      Queue.Queue<OrchestrationShellStreamEvent, OrchestrationGetSnapshotError | Cause.Done>
+    >();
+    let shellFanoutClosed = false;
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        shellFanoutClosed = true;
+        for (const queue of shellSubscribers) {
+          Queue.endUnsafe(queue);
+        }
+        shellSubscribers.clear();
+      }),
+    );
+    const runShellFanoutOnce = Stream.runForEach(
+      coalesceLatestAggregateEvents(orchestrationEngine.streamDomainEvents),
+      (event) =>
+        Effect.gen(function* () {
+          if (shellSubscribers.size === 0) {
+            return;
+          }
+          const shellEvent = yield* toShellStreamEvent(event);
+          if (Option.isNone(shellEvent)) {
+            return;
+          }
+          for (const queue of shellSubscribers) {
+            if (!Queue.offerUnsafe(queue, shellEvent.value)) {
+              shellSubscribers.delete(queue);
+              Queue.failCauseUnsafe(
+                queue,
+                Cause.fail(
+                  new OrchestrationGetSnapshotError({
+                    message: "Shell subscription fell behind; reconnecting for a fresh snapshot.",
+                  }),
+                ),
+              );
+            }
+          }
+        }),
+    );
+    yield* Effect.gen(function* () {
+      while (true) {
+        if (shellFanoutClosed) {
+          return;
+        }
+        const exit = yield* Effect.exit(runShellFanoutOnce);
+        if (shellFanoutClosed) {
+          return;
+        }
+        if (exit._tag === "Failure" && Cause.hasInterruptsOnly(exit.cause)) {
+          return;
+        }
+        if (exit._tag === "Failure") {
+          yield* Effect.logError("shared orchestration shell fanout failed; restarting", {
+            cause: exit.cause,
+          });
+        }
+        // Fail every live subscriber so clients reconnect for a fresh snapshot
+        // instead of sitting on a silently stale stream after a producer restart.
+        for (const queue of shellSubscribers) {
+          shellSubscribers.delete(queue);
+          Queue.failCauseUnsafe(
+            queue,
+            Cause.fail(
+              new OrchestrationGetSnapshotError({
+                message: "Shell stream restarted; reconnecting for a fresh snapshot.",
+              }),
+            ),
+          );
+        }
+        yield* Effect.sleep(Duration.millis(500));
+      }
+    }).pipe(Effect.forkScoped);
+
+    const subscribeShell: SharedShellSubscribe = () =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          // Register before loading the snapshot so events committed while the
+          // snapshot loads buffer in this queue instead of being missed.
+          const queue = yield* Effect.acquireRelease(
+            Queue.bounded<
+              OrchestrationShellStreamEvent,
+              OrchestrationGetSnapshotError | Cause.Done
+            >(SHELL_SUBSCRIBER_QUEUE_CAPACITY).pipe(
+              Effect.tap((nextQueue) =>
+                Effect.sync(() => {
+                  shellSubscribers.add(nextQueue);
+                }),
+              ),
+            ),
+            (nextQueue) =>
+              Effect.sync(() => {
+                shellSubscribers.delete(nextQueue);
+                Queue.endUnsafe(nextQueue);
+              }),
+          );
+
+          const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+            Effect.tapError((cause) =>
+              Effect.logError("orchestration shell snapshot load failed", { cause }),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationGetSnapshotError({
+                  message: "Failed to load orchestration shell snapshot",
+                  cause,
+                }),
+            ),
+          );
+
+          const liveStream = Stream.fromQueue(queue).pipe(
+            Stream.filter((event) => event.sequence > snapshot.snapshotSequence),
+          );
+
+          return Stream.concat(
+            Stream.make({
+              kind: "snapshot" as const,
+              snapshot,
+            }),
+            liveStream,
+          );
+        }),
+      );
+
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3799,7 +3944,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           disableTracing: true,
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session, viewerId, sentFromRef, devicePlace).pipe(
+            makeWsRpcLayer(session, viewerId, sentFromRef, devicePlace, subscribeShell).pipe(
               Layer.provide(
                 Layer.succeed(
                   SourceControlToolMaintenance.SourceControlToolMaintenance,

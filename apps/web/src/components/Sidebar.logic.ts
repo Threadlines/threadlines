@@ -298,14 +298,68 @@ export function isContextMenuPointerDown(input: {
   return input.isMac && input.button === 0 && input.ctrlKey;
 }
 
-function awaitingInputPill(): ThreadStatusPill {
-  return {
-    label: "Awaiting Input",
-    colorClass: "text-amber-600 dark:text-amber-300/90",
-    dotClass: THREAD_STATUS_DOT_CLASSES.amber,
-    pulse: false,
-  };
-}
+const PENDING_APPROVAL_PILL: ThreadStatusPill = Object.freeze({
+  label: "Pending Approval",
+  colorClass: "text-amber-600 dark:text-amber-300/90",
+  dotClass: THREAD_STATUS_DOT_CLASSES.amber,
+  pulse: false,
+});
+
+const AWAITING_INPUT_PILL: ThreadStatusPill = Object.freeze({
+  label: "Awaiting Input",
+  colorClass: "text-amber-600 dark:text-amber-300/90",
+  dotClass: THREAD_STATUS_DOT_CLASSES.amber,
+  pulse: false,
+});
+
+const WORKING_PILL: ThreadStatusPill = Object.freeze({
+  label: "Working",
+  colorClass: "text-primary-readable",
+  dotClass: THREAD_STATUS_DOT_CLASSES.blue,
+  pulse: true,
+});
+
+const STARTING_PILL: ThreadStatusPill = Object.freeze({
+  label: "Starting",
+  colorClass: "text-primary-readable",
+  dotClass: THREAD_STATUS_DOT_CLASSES.blue,
+  pulse: true,
+});
+
+const ANSWERING_PILL: ThreadStatusPill = Object.freeze({
+  label: "Answering",
+  colorClass: "text-primary-readable",
+  dotClass: THREAD_STATUS_DOT_CLASSES.blue,
+  pulse: true,
+});
+
+const FAILED_PILL: ThreadStatusPill = Object.freeze({
+  label: "Failed",
+  colorClass: "text-red-600 dark:text-red-400/90",
+  dotClass: THREAD_STATUS_DOT_CLASSES.red,
+  pulse: false,
+});
+
+const PLAN_READY_PILL: ThreadStatusPill = Object.freeze({
+  label: "Plan Ready",
+  colorClass: "text-violet-600 dark:text-violet-300/90",
+  dotClass: THREAD_STATUS_DOT_CLASSES.violet,
+  pulse: false,
+});
+
+const WAITING_PILL: ThreadStatusPill = Object.freeze({
+  label: "Waiting",
+  colorClass: WAITING_STATUS_TONE,
+  dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
+  pulse: true,
+});
+
+const COMPLETED_PILL: ThreadStatusPill = Object.freeze({
+  label: "Completed",
+  colorClass: "text-emerald-600 dark:text-emerald-300/90",
+  dotClass: THREAD_STATUS_DOT_CLASSES.emerald,
+  pulse: false,
+});
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
@@ -322,54 +376,34 @@ export function resolveThreadStatusPill(input: {
     thread.pendingSettingsChange === true ||
     thread.pendingSecretRequest === true
   ) {
-    return {
-      label: "Pending Approval",
-      colorClass: "text-amber-600 dark:text-amber-300/90",
-      dotClass: THREAD_STATUS_DOT_CLASSES.amber,
-      pulse: false,
-    };
+    return PENDING_APPROVAL_PILL;
   }
 
   // A question that pauses the agent needs the user right away. One it asked
   // in passing (it keeps working) needs them once the work below stops.
   if (thread.hasBlockingUserInput ?? thread.hasPendingUserInput) {
-    return awaitingInputPill();
+    return AWAITING_INPUT_PILL;
   }
 
   const inFlightStatus = getThreadInFlightStatus(thread);
 
   if (inFlightStatus === "working") {
-    return {
-      label: "Working",
-      colorClass: "text-primary-readable",
-      dotClass: THREAD_STATUS_DOT_CLASSES.blue,
-      pulse: true,
-    };
+    return WORKING_PILL;
   }
 
   if (inFlightStatus === "starting") {
-    return {
-      label: "Starting",
-      colorClass: "text-primary-readable",
-      dotClass: THREAD_STATUS_DOT_CLASSES.blue,
-      pulse: true,
-    };
+    return STARTING_PILL;
   }
 
   // In a room, an agent answering on the side while the others are idle.
   if (hasLiveSideTurn(thread)) {
-    return {
-      label: "Answering",
-      colorClass: "text-primary-readable",
-      dotClass: THREAD_STATUS_DOT_CLASSES.blue,
-      pulse: true,
-    };
+    return ANSWERING_PILL;
   }
 
   // The work stopped with a question still open: it waits on the user's
   // answer (or their next message, which closes it) like a blocking one.
   if (thread.hasPendingUserInput) {
-    return awaitingInputPill();
+    return AWAITING_INPUT_PILL;
   }
 
   // A usage limit stopped it and it continues once the limit resets: the row
@@ -388,12 +422,7 @@ export function resolveThreadStatusPill(input: {
   if (thread.session?.status === "error") {
     // Failed threads previously showed nothing -- indistinguishable from
     // healthy idle ones, which is the worst place for a failure to hide.
-    return {
-      label: "Failed",
-      colorClass: "text-red-600 dark:text-red-400/90",
-      dotClass: THREAD_STATUS_DOT_CLASSES.red,
-      pulse: false,
-    };
+    return FAILED_PILL;
   }
 
   const hasPlanReadyPrompt =
@@ -402,23 +431,13 @@ export function resolveThreadStatusPill(input: {
     isLatestTurnSettled(thread.latestTurn, thread.session) &&
     thread.hasActionableProposedPlan;
   if (hasPlanReadyPrompt) {
-    return {
-      label: "Plan Ready",
-      colorClass: "text-violet-600 dark:text-violet-300/90",
-      dotClass: THREAD_STATUS_DOT_CLASSES.violet,
-      pulse: false,
-    };
+    return PLAN_READY_PILL;
   }
 
   // Settled turn with provider tasks still running: the provider will start
   // the thread back up on its own when they finish.
   if (isWaitingOnBackgroundTasks(thread.latestTurn, thread.session)) {
-    return {
-      label: "Waiting",
-      colorClass: WAITING_STATUS_TONE,
-      dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
-      pulse: true,
-    };
+    return WAITING_PILL;
   }
 
   // Its own turn is over and the threads its agent started still owe it
@@ -435,12 +454,7 @@ export function resolveThreadStatusPill(input: {
   }
 
   if (hasUnseenCompletion(thread)) {
-    return {
-      label: "Completed",
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
-      dotClass: THREAD_STATUS_DOT_CLASSES.emerald,
-      pulse: false,
-    };
+    return COMPLETED_PILL;
   }
 
   // Settled, and an agent set itself to come back: the row says when, not

@@ -3365,9 +3365,14 @@ export default function ChatView(props: ChatViewProps) {
     rightPanelStateKey,
   ]);
 
+  // Whether the thread's messages are its history yet, or only what events and
+  // this client wrote before its detail snapshot landed (threadDetailLoadedById).
+  const threadDetailLoaded = useStore((state) => selectThreadDetailLoaded(state, activeThreadRef));
+
   const envLocked = Boolean(
     activeThread &&
     (activeThread.messages.length > 0 ||
+      (isServerThread && !threadDetailLoaded) ||
       (activeThread.session !== null && activeThread.session.status !== "closed")),
   );
 
@@ -4179,9 +4184,6 @@ export default function ChatView(props: ChatViewProps) {
         ] !== undefined
       : false,
   );
-  // Whether the thread's messages are its history yet, or only what events and
-  // this client wrote before its detail snapshot landed (threadDetailLoadedById).
-  const threadDetailLoaded = useStore((state) => selectThreadDetailLoaded(state, activeThreadRef));
   // The agents panel mounts in the route's right-panel slot, beside the chat
   // column, so the live turn state it renders has to be published out of here.
   useEffect(() => {
@@ -5867,7 +5869,8 @@ export default function ChatView(props: ChatViewProps) {
       }
     }
     const threadIdForSend = activeThread.id;
-    const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
+    const isFirstMessage =
+      !isServerThread || (threadDetailLoaded && activeThread.messages.length === 0);
     const steeringThreadKey = activeThreadKey;
     const isSteeringFollowUp =
       !askOnTheSide &&

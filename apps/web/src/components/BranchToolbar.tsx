@@ -19,7 +19,7 @@ import { lendingThreadId } from "../worktreeOrigin";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
-import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
+import { createProjectSelectorByRef, createThreadCheckoutSelectorByRef } from "../storeSelectors";
 import { worktreePathLabel } from "../worktreePickup";
 import {
   type EnvMode,
@@ -282,7 +282,10 @@ export const BranchToolbar = memo(function BranchToolbar({
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
   );
-  const serverThreadSelector = useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]);
+  const serverThreadSelector = useMemo(
+    () => createThreadCheckoutSelectorByRef(threadRef),
+    [threadRef],
+  );
   const serverThread = useStore(serverThreadSelector);
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),

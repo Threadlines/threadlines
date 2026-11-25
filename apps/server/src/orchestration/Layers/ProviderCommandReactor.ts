@@ -3209,7 +3209,12 @@ const make = Effect.gen(function* () {
     );
 
   const capturePreTurnCheckpointForTurnStart = Effect.fn("capturePreTurnCheckpointForTurnStart")(
-    function* (input: { readonly threadId: ThreadId }) {
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly commandId: CommandId | null;
+      readonly messageId: MessageId;
+      readonly createdAt: string;
+    }) {
       const thread = yield* resolveThread(input.threadId);
       if (!thread) {
         return;
@@ -3244,28 +3249,56 @@ const make = Effect.gen(function* () {
         (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
         0,
       );
+      const nextTurnCount = currentTurnCount + 1;
       const baselineCheckpointRef = checkpointRefForThreadTurn(input.threadId, currentTurnCount);
-      const baselineExists = yield* checkpointStore.hasCheckpointRef({
-        cwd,
-        checkpointRef: baselineCheckpointRef,
-      });
       const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
         input.threadId,
-        currentTurnCount + 1,
+        nextTurnCount,
       );
-      const preTurnCountCheckpointExists = yield* checkpointStore.hasCheckpointRef({
-        cwd,
-        checkpointRef: preTurnCountCheckpointRef,
-      });
-      // Both missing (a thread's first message): nothing happens between them,
-      // so they are one snapshot, and the message waits for one capture.
-      const [checkpointRef, ...alsoCheckpointRefs] = [
-        ...(baselineExists ? [] : [baselineCheckpointRef]),
-        ...(preTurnCountCheckpointExists ? [] : [preTurnCountCheckpointRef]),
-      ];
-      if (checkpointRef !== undefined) {
-        yield* checkpointStore.captureCheckpoint({ cwd, checkpointRef, alsoCheckpointRefs });
-      }
+      const requestKey = `${input.commandId ?? ""}:${input.messageId}:${input.createdAt}`;
+      const turnInFlight = thread.latestTurn?.state === "running";
+
+      yield* checkpointHandover.withPreTurnLock(input.threadId, (preTurn) =>
+        Effect.gen(function* () {
+          const baselineExists = yield* checkpointStore.hasCheckpointRef({
+            cwd,
+            checkpointRef: baselineCheckpointRef,
+          });
+          const preTurnCountCheckpointExists = yield* checkpointStore.hasCheckpointRef({
+            cwd,
+            checkpointRef: preTurnCountCheckpointRef,
+          });
+          const latest = preTurn.getLatest();
+          const alreadyCapturedForRequest =
+            latest !== null &&
+            latest.consumedByTurnId === null &&
+            latest.cwd === cwd &&
+            latest.turnCount === nextTurnCount &&
+            latest.requestKey === requestKey &&
+            preTurnCountCheckpointExists;
+          const shouldCapturePreTurn =
+            !alreadyCapturedForRequest && (!preTurnCountCheckpointExists || !turnInFlight);
+          // Both missing (a thread's first message): nothing happens between them,
+          // so they are one snapshot, and the message waits for one capture.
+          const [checkpointRef, ...alsoCheckpointRefs] = [
+            ...(baselineExists ? [] : [baselineCheckpointRef]),
+            ...(shouldCapturePreTurn ? [preTurnCountCheckpointRef] : []),
+          ];
+          if (checkpointRef !== undefined) {
+            yield* checkpointStore.captureCheckpoint({ cwd, checkpointRef, alsoCheckpointRefs });
+            if (shouldCapturePreTurn) {
+              preTurn.setLatest({
+                cwd,
+                turnCount: nextTurnCount,
+                requestKey,
+                checkpointRef: preTurnCountCheckpointRef,
+                sentToProvider: false,
+                consumedByTurnId: null,
+              });
+            }
+          }
+        }),
+      );
     },
   );
 
@@ -3903,9 +3936,13 @@ const make = Effect.gen(function* () {
         return;
       }
 
+      const preTurnRequestKey = `${event.commandId ?? ""}:${event.payload.messageId}:${event.payload.createdAt}`;
       const checkpointStartedAtMs = yield* Clock.currentTimeMillis;
       const checkpointFailed = yield* capturePreTurnCheckpointForTurnStart({
         threadId: event.payload.threadId,
+        commandId: event.commandId,
+        messageId: event.payload.messageId,
+        createdAt: event.payload.createdAt,
       }).pipe(
         Effect.as(false),
         Effect.catchCause((cause) =>
@@ -3936,6 +3973,7 @@ const make = Effect.gen(function* () {
       // computer may have taken the request back meanwhile too, or the user
       // may have written over a continue.
       if ((yield* stoppedSinceRequested) || (yield* remoteTurnHeld) || (yield* continueOvertaken)) {
+        yield* checkpointHandover.clearPreTurn(event.payload.threadId);
         return;
       }
       // The turn request already recorded the model it expected to go out.
@@ -3970,6 +4008,7 @@ const make = Effect.gen(function* () {
       let contextDeferred = false;
       const suggestionThread =
         origin === "person" ? thread : ((yield* resolveThread(event.payload.threadId)) ?? thread);
+      yield* checkpointHandover.markPreTurnSent(event.payload.threadId, preTurnRequestKey);
       yield* providerService
         .sendTurn({
           ...turnRequest,
@@ -4046,7 +4085,12 @@ const make = Effect.gen(function* () {
               ),
             }),
           ),
-          Effect.catchCause((cause) => recoverTurnStartFailure(cause, !providerTookTurn)),
+          Effect.catchCause((cause) =>
+            (providerTookTurn
+              ? Effect.void
+              : checkpointHandover.clearPreTurn(event.payload.threadId)
+            ).pipe(Effect.andThen(recoverTurnStartFailure(cause, !providerTookTurn))),
+          ),
           Effect.forkScoped,
         );
     });
