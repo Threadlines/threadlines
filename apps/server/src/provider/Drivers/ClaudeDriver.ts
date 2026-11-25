@@ -27,6 +27,7 @@ import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -64,9 +65,11 @@ import {
   checkClaudeSignInRenewalDue,
   claudeScopedWindowsOf,
   claudeSignInEndsWindow,
+  type ClaudeStoredSignIn,
   type ClaudeUsageCheck,
   claudeUsageUnavailable,
   hasClaudeChatOnlyToken,
+  isClaudeSignInRenewalDue,
   keepEarlierScopedWindows,
   readClaudeStoredSignIn,
 } from "../Layers/ClaudeUsage.ts";
@@ -347,13 +350,36 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       });
 
       // The normal sign-in this instance's CLI would act on. A status check
-      // reads it to avoid starting, or stopping, a CLI mid-renewal.
-      const readStoredSignIn = readClaudeStoredSignIn(effectiveConfig, {
+      // reads it to avoid starting, or stopping, a CLI mid-renewal. Memoized
+      // within a single checkProvider pass so capabilities, usage, renewal,
+      // and sign-in-end reads do not invoke macOS Keychain multiple times.
+      const rawReadStoredSignIn = readClaudeStoredSignIn(effectiveConfig, {
         environment: processEnv,
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
+      );
+      const storedSignInLock = yield* Semaphore.make(1);
+      let checkPassActiveCount = 0;
+      let checkPassStoredSignIn: ClaudeStoredSignIn | undefined;
+      const readStoredSignIn: Effect.Effect<ClaudeStoredSignIn> = storedSignInLock.withPermit(
+        Effect.gen(function* () {
+          if (checkPassActiveCount > 0 && checkPassStoredSignIn !== undefined) {
+            return checkPassStoredSignIn;
+          }
+          const loaded = yield* rawReadStoredSignIn;
+          if (checkPassActiveCount > 0 && loaded._tag !== "Unreadable") {
+            const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+            // Never cache a renewal-due sign-in: `stopClaudeCliAfterSignInRenewal`
+            // polls live storage waiting for the CLI to write the renewed token,
+            // and the end-of-check sign-in expiry read must see the new token.
+            if (!isClaudeSignInRenewalDue({ stored: loaded, environment: processEnv, nowMs })) {
+              checkPassStoredSignIn = loaded;
+            }
+          }
+          return loaded;
+        }),
       );
       const isSignInRenewalDue = checkClaudeSignInRenewalDue({
         readStoredSignIn,
@@ -389,11 +415,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         },
       );
       // One reading at a time: a Usage page opened twice shares the read.
+      // Always reads live stored sign-in rather than the check-pass memo so an
+      // on-demand Usage page refresh never observes a stale account credential.
       const usageBreakdownCache = yield* Cache.makeWith(
         () =>
-          readClaudeUsageBreakdown(effectiveConfig, processEnv, { readStoredSignIn }).pipe(
-            Effect.provideService(Path.Path, path),
-          ),
+          readClaudeUsageBreakdown(effectiveConfig, processEnv, {
+            readStoredSignIn: rawReadStoredSignIn,
+          }).pipe(Effect.provideService(Path.Path, path)),
         {
           capacity: 1,
           timeToLive: (exit) =>
@@ -452,49 +480,140 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const lastReportedModelsRef = yield* Ref.make<ClaudeReportedModels | undefined>(
         claudeReportedModelsFromCache(cachedSnapshot, { instanceId, driver: DRIVER_KIND }),
       );
+      // Cache `claude --version` keyed by the resolved executable's inode/mtime/size
+      // so consecutive session starts reuse the probed version while any in-place
+      // upgrade, downgrade, or symlink retarget invalidates immediately. Small
+      // wrapper scripts / version-manager shims (<64 KiB) include `cwd` in their
+      // cache key and are never cross-seeded from server-cwd checks.
+      const MIN_SHARED_BINARY_BYTES = 65_536;
+      const SEEDED_LAUNCH_VERSION_TTL_MS = 60 * 60 * 1_000;
+      const resolveExecutableStatKey = async (
+        launch: Parameters<typeof readClaudeLaunchVersion>[0],
+      ): Promise<{ readonly key: string; readonly shareAcrossCwds: boolean } | null> => {
+        const candidates: string[] = [];
+        const hasSeparator = launch.executable.includes("/") || launch.executable.includes("\\");
+        if (hasSeparator) {
+          candidates.push(
+            launch.cwd ? path.resolve(launch.cwd, launch.executable) : launch.executable,
+          );
+        } else {
+          const pathEnv = launch.environment.PATH ?? launch.environment.Path ?? "";
+          for (const dir of pathEnv.split(path.sep === "\\" ? ";" : ":")) {
+            if (dir.length > 0) {
+              candidates.push(path.join(dir, launch.executable));
+            }
+          }
+        }
+        for (const candidate of candidates) {
+          try {
+            const stat = await fsPromises.stat(candidate);
+            if (stat.isFile()) {
+              const shareAcrossCwds = stat.size >= MIN_SHARED_BINARY_BYTES;
+              const baseKey = `${candidate}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}`;
+              return {
+                key: shareAcrossCwds ? baseKey : `${baseKey}\0cwd:${launch.cwd ?? ""}`,
+                shareAcrossCwds,
+              };
+            }
+          } catch {
+            // Try next PATH entry.
+          }
+        }
+        return null;
+      };
+      const seededLaunchVersions = new Map<
+        string,
+        { readonly version: string; readonly expiresAtMs: number }
+      >();
+      const resolveCheckExecutableStatKey = () =>
+        Effect.promise(() =>
+          resolveExecutableStatKey({
+            executable: effectiveConfig.binaryPath,
+            cwd: undefined,
+            environment: processEnv,
+          }),
+        );
+      const seedLaunchVersion = (
+        version: string | null,
+        beforeStat: { readonly key: string; readonly shareAcrossCwds: boolean } | null,
+      ) =>
+        version && beforeStat?.shareAcrossCwds
+          ? Effect.gen(function* () {
+              const afterStat = yield* resolveCheckExecutableStatKey();
+              if (!afterStat || afterStat.key !== beforeStat.key) return;
+              const expiresAtMs = (yield* Clock.currentTimeMillis) + SEEDED_LAUNCH_VERSION_TTL_MS;
+              seededLaunchVersions.set(beforeStat.key, { version, expiresAtMs });
+              if (seededLaunchVersions.size > 32) {
+                const oldest = seededLaunchVersions.keys().next().value;
+                if (oldest !== undefined && oldest !== beforeStat.key) {
+                  seededLaunchVersions.delete(oldest);
+                }
+              }
+            })
+          : Effect.void;
+
       const makeCheckProvider = (
         tokenUsageReader: Effect.Effect<ServerProviderAccountTokenUsage | undefined> | undefined,
       ) =>
-        Effect.gen(function* () {
-          const provider = yield* checkClaudeProviderStatus(
-            effectiveConfig,
-            () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
-            processEnv,
-            () =>
-              (hasClaudeChatOnlyToken(processEnv)
-                ? Cache.get(normalSignInUsageCache, "usage")
-                : Cache.get(capabilitiesProbeCache, capabilitiesCacheKey).pipe(
-                    Effect.map((probe) => probe?.usage ?? claudeUsageUnavailable("unreachable")),
-                  )
-              ).pipe(Effect.flatMap(settleScopedWindows)),
-            (settings) =>
-              readClaudeNormalAuthEmail(settings, processEnv).pipe(
-                Effect.provideService(FileSystem.FileSystem, fileSystem),
-                Effect.provideService(Path.Path, path),
-              ),
-            tokenUsageReader ? () => tokenUsageReader : undefined,
-            () => isSignInRenewalDue,
-            {
-              get: Ref.get(lastReportedModelsRef),
-              set: (reported) => Ref.set(lastReportedModelsRef, reported),
-            },
-          );
-          // Only the sign-in chat runs on has an end worth a warning; its date
-          // is read from the stored sign-in, as Claude Code itself reads it.
-          if (!claudeChatUsesStoredSignIn(provider)) {
-            yield* Ref.set(lastSignInEndsRef, undefined);
-            return withClaudeSignInEnds(provider, undefined);
-          }
-          const window = claudeSignInEndsWindow(
-            yield* readStoredSignIn,
-            DateTime.toEpochMillis(yield* DateTime.now),
-          );
-          if (window !== "unknown") yield* Ref.set(lastSignInEndsRef, window);
-          return withClaudeSignInEnds(
-            provider,
-            window === "unknown" ? yield* Ref.get(lastSignInEndsRef) : window,
-          );
-        }).pipe(
+        Effect.acquireUseRelease(
+          Effect.sync(() => {
+            checkPassActiveCount += 1;
+          }),
+          () =>
+            Effect.gen(function* () {
+              const beforeExecutableStat = yield* resolveCheckExecutableStatKey();
+              const provider = yield* checkClaudeProviderStatus(
+                effectiveConfig,
+                () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
+                processEnv,
+                () =>
+                  (hasClaudeChatOnlyToken(processEnv)
+                    ? Cache.get(normalSignInUsageCache, "usage")
+                    : Cache.get(capabilitiesProbeCache, capabilitiesCacheKey).pipe(
+                        Effect.map(
+                          (probe) => probe?.usage ?? claudeUsageUnavailable("unreachable"),
+                        ),
+                      )
+                  ).pipe(Effect.flatMap(settleScopedWindows)),
+                (settings) =>
+                  readClaudeNormalAuthEmail(settings, processEnv).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(Path.Path, path),
+                  ),
+                tokenUsageReader ? () => tokenUsageReader : undefined,
+                () => isSignInRenewalDue,
+                {
+                  get: Ref.get(lastReportedModelsRef),
+                  set: (reported) => Ref.set(lastReportedModelsRef, reported),
+                },
+              );
+              if (provider.runnable !== false && provider.status !== "error") {
+                yield* seedLaunchVersion(provider.version, beforeExecutableStat);
+              }
+              // Only the sign-in chat runs on has an end worth a warning; its date
+              // is read from the stored sign-in, as Claude Code itself reads it.
+              if (!claudeChatUsesStoredSignIn(provider)) {
+                yield* Ref.set(lastSignInEndsRef, undefined);
+                return withClaudeSignInEnds(provider, undefined);
+              }
+              const window = claudeSignInEndsWindow(
+                yield* readStoredSignIn,
+                DateTime.toEpochMillis(yield* DateTime.now),
+              );
+              if (window !== "unknown") yield* Ref.set(lastSignInEndsRef, window);
+              return withClaudeSignInEnds(
+                provider,
+                window === "unknown" ? yield* Ref.get(lastSignInEndsRef) : window,
+              );
+            }),
+          () =>
+            Effect.sync(() => {
+              checkPassActiveCount = Math.max(0, checkPassActiveCount - 1);
+              if (checkPassActiveCount === 0) {
+                checkPassStoredSignIn = undefined;
+              }
+            }),
+        ).pipe(
           Effect.map(stampIdentity),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(Path.Path, path),
@@ -583,38 +702,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           resolveModelMetadata(model).pipe(Effect.map((listed) => listed?.capabilities)),
       });
 
-      // Cache `claude --version` keyed by the resolved executable's inode/mtime/size
-      // so consecutive session starts reuse the probed version while any in-place
-      // upgrade, downgrade, or symlink retarget invalidates immediately.
-      const resolveExecutableStatKey = async (
-        launch: Parameters<typeof readClaudeLaunchVersion>[0],
-      ): Promise<string | null> => {
-        const candidates: string[] = [];
-        const hasSeparator = launch.executable.includes("/") || launch.executable.includes("\\");
-        if (hasSeparator) {
-          candidates.push(
-            launch.cwd ? path.resolve(launch.cwd, launch.executable) : launch.executable,
-          );
-        } else {
-          const pathEnv = launch.environment.PATH ?? launch.environment.Path ?? "";
-          for (const dir of pathEnv.split(path.sep === "\\" ? ";" : ":")) {
-            if (dir.length > 0) {
-              candidates.push(path.join(dir, launch.executable));
-            }
-          }
-        }
-        for (const candidate of candidates) {
-          try {
-            const stat = await fsPromises.stat(candidate);
-            if (stat.isFile()) {
-              return `${candidate}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}`;
-            }
-          } catch {
-            // Try next PATH entry.
-          }
-        }
-        return null;
-      };
       const launchTargetsByKey = new Map<string, Parameters<typeof readClaudeLaunchVersion>[0]>();
       const launchVersionCache = yield* Cache.makeWith(
         (key: string) => {
@@ -627,7 +714,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         {
           capacity: 16,
           timeToLive: (exit) =>
-            Exit.isSuccess(exit) && exit.value !== undefined ? Duration.minutes(5) : Duration.zero,
+            Exit.isSuccess(exit) && exit.value !== undefined ? Duration.hours(1) : Duration.zero,
         },
       );
 
@@ -657,20 +744,27 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         ),
         readLaunchVersion: (launch) =>
           Effect.gen(function* () {
-            const statKey = yield* Effect.promise(() => resolveExecutableStatKey(launch));
-            if (statKey === null) {
+            const stat = yield* Effect.promise(() => resolveExecutableStatKey(launch));
+            if (stat === null) {
               return yield* readClaudeLaunchVersion(launch).pipe(
                 Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
               );
             }
-            launchTargetsByKey.set(statKey, launch);
+            const seeded = seededLaunchVersions.get(stat.key);
+            if (seeded !== undefined) {
+              if ((yield* Clock.currentTimeMillis) < seeded.expiresAtMs) {
+                return seeded.version;
+              }
+              seededLaunchVersions.delete(stat.key);
+            }
+            launchTargetsByKey.set(stat.key, launch);
             if (launchTargetsByKey.size > 32) {
               const oldest = launchTargetsByKey.keys().next().value;
-              if (oldest !== undefined && oldest !== statKey) {
+              if (oldest !== undefined && oldest !== stat.key) {
                 launchTargetsByKey.delete(oldest);
               }
             }
-            return yield* Cache.get(launchVersionCache, statKey);
+            return yield* Cache.get(launchVersionCache, stat.key);
           }),
         // Read live as well. Unreadable settings leave Claude's own rule.
         promptSuggestions: serverSettings.readStored.pipe(

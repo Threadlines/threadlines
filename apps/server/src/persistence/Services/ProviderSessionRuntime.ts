@@ -55,6 +55,12 @@ export interface PatchProviderSessionRuntimeIfSessionInput {
   readonly clearResumeCursor?: boolean;
   readonly lastSeenAt: string;
 }
+export interface MarkAllProviderSessionRuntimesStoppedInput {
+  readonly lastSeenAt: string;
+  readonly lastRuntimeEvent: string;
+  readonly lastRuntimeEventAt: string;
+}
+
 export type DeleteProviderSessionRuntimeInput = typeof DeleteProviderSessionRuntimeInput.Type;
 
 /**
@@ -86,6 +92,22 @@ export interface ProviderSessionRuntimeRepositoryShape {
     ReadonlyArray<ProviderSessionRuntime>,
     ProviderSessionRuntimeRepositoryError
   >;
+
+  /**
+   * List non-stopped provider runtime rows in ascending last-seen order.
+   */
+  readonly listActive?: () => Effect.Effect<
+    ReadonlyArray<ProviderSessionRuntime>,
+    ProviderSessionRuntimeRepositoryError
+  >;
+
+  /**
+   * Mark every non-stopped provider runtime row as stopped in a single SQL
+   * statement, clearing `activeTurnId` and stamping the stop event metadata.
+   */
+  readonly markAllStopped?: (
+    input: MarkAllProviderSessionRuntimesStoppedInput,
+  ) => Effect.Effect<void, ProviderSessionRuntimeRepositoryError>;
 
   /**
    * List all persisted canonical thread ids without reading JSON payload blobs.

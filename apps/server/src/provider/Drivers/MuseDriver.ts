@@ -8,16 +8,21 @@
  *
  * @module provider/Drivers/MuseDriver
  */
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
+
 import {
   MuseSettings,
   ProviderDriverKind,
   type ServerProvider,
   type ServerProviderModel,
 } from "@threadlines/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -42,7 +47,12 @@ import {
   resolveMuseBinary,
 } from "../muse/MuseBinary.ts";
 import { museHostEnvironment, refreshMuseHostEnvironment } from "../muse/MuseLaunch.ts";
-import { readMuseDataSharing, writeMuseDataSharing } from "../muse/MuseSettingsFile.ts";
+import {
+  museSessionsDir,
+  museSettingsPath,
+  readMuseDataSharing,
+  writeMuseDataSharing,
+} from "../muse/MuseSettingsFile.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -60,6 +70,8 @@ const decodeMuseSettings = Schema.decodeSync(MuseSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("muse");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+/** How often a signed-in idle Muse instance refreshes subscription usage. */
+const MUSE_SCHEDULED_USAGE_REFRESH_MS = 30 * 60 * 1000;
 /** Meta's launcher script is small; anything bigger is the binary itself. */
 const LAUNCHER_MAX_BYTES = 128 * 1024;
 
@@ -168,8 +180,18 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
       let snapshotShape: ServerProviderShape | undefined;
       const patchUsage = (usage: MuseSubscriptionUsage) =>
         Effect.gen(function* () {
-          const accountUsage = museAccountUsage(usage, DateTime.formatIso(yield* DateTime.now));
+          const checkedAt = DateTime.formatIso(yield* DateTime.now);
+          const accountUsage = museAccountUsage(usage, checkedAt);
           if (!accountUsage || !snapshotShape) return;
+          if (cachedProbe) {
+            cachedProbe = {
+              ...cachedProbe,
+              snapshot: { ...cachedProbe.snapshot, accountUsage },
+              checkedAtMs: yield* Clock.currentTimeMillis,
+              mayHaveSubscriptionUsage: true,
+              earliestResetMs: earliestUsageResetMs(accountUsage),
+            };
+          }
           yield* snapshotShape.patchSnapshot((current) => ({ ...current, accountUsage }));
         });
 
@@ -196,6 +218,126 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         readContributorMode,
       });
 
+      const statSig = (targetPath: string) =>
+        fileSystem.stat(targetPath).pipe(
+          Effect.map((info) => {
+            const mtimeMs = Option.match(info.mtime, {
+              onNone: () => "",
+              onSome: (date) => String(date.getTime()),
+            });
+            return `${targetPath}\u0000${Number(info.size)}\u0000${mtimeMs}`;
+          }),
+          Effect.orElseSucceed(() => `missing:${targetPath}`),
+        );
+
+      const probeSignature = Effect.gen(function* () {
+        const binaryPath = currentBinary();
+        const settingsFile = museSettingsPath(processEnv);
+        const configDir = NodePath.dirname(settingsFile);
+        const dataDir = NodePath.dirname(museSessionsDir(processEnv));
+        const [binarySig, settingsSig, configDirSig, dataDirSig] = yield* Effect.all(
+          [
+            /[\\/]/u.test(binaryPath)
+              ? statSig(binaryPath)
+              : Effect.succeed(`missing:${binaryPath}`),
+            statSig(settingsFile),
+            statSig(configDir),
+            statSig(dataDir),
+          ],
+          { concurrency: "unbounded" },
+        );
+        return [binarySig, settingsSig, configDirSig, dataDirSig].join("\u0001");
+      });
+
+      const earliestUsageResetMs = (
+        accountUsage: ServerProvider["accountUsage"],
+      ): number | undefined => {
+        let earliest: number | undefined;
+        for (const limit of accountUsage?.limits ?? []) {
+          for (const window of [limit.primary, limit.secondary]) {
+            if (window?.resetsAt !== undefined) {
+              const resetMs = window.resetsAt * 1000;
+              if (earliest === undefined || resetMs < earliest) {
+                earliest = resetMs;
+              }
+            }
+          }
+        }
+        return earliest;
+      };
+
+      let cachedProbe:
+        | {
+            readonly signature: string;
+            readonly snapshot: ServerProvider;
+            readonly checkedAtMs: number;
+            readonly mayHaveSubscriptionUsage: boolean;
+            readonly earliestResetMs: number | undefined;
+          }
+        | undefined;
+
+      const runFullCheck = Effect.gen(function* () {
+        const signature = yield* probeSignature;
+        const nowMs = yield* Clock.currentTimeMillis;
+        const draft = yield* checkMuseProviderStatus({
+          settings,
+          binaryPath: currentBinary(),
+          cwd: serverConfig.cwd,
+          environment: processEnv,
+          instanceEnvironment: environment,
+          onFacts: (facts) =>
+            Effect.sync(() => {
+              sandboxAvailable = facts.sandboxAvailable;
+              liveModels = facts.models;
+            }),
+        });
+        const dataSharing = yield* dataSharingSnapshot;
+        const checked = stampIdentity({ ...draft, ...(settings.enabled ? { dataSharing } : {}) });
+        // Cache stable missing, ready, and API-key billing-refusal snapshots.
+        // Leave `unauthenticated` uncached so an external macOS Keychain login
+        // (which leaves local config/data dirs unchanged) is detected on the
+        // next scheduled tick.
+        const isStableApiKeyRefusal =
+          checked.status === "error" &&
+          checked.auth.status === "authenticated" &&
+          checked.auth.type === "apiKey";
+        cachedProbe =
+          !checked.installed || checked.status === "ready" || isStableApiKeyRefusal
+            ? {
+                signature,
+                snapshot: checked,
+                checkedAtMs: nowMs,
+                mayHaveSubscriptionUsage:
+                  checked.accountUsage !== undefined ||
+                  (checked.auth.status === "authenticated" && checked.auth.type !== "apiKey"),
+                earliestResetMs: earliestUsageResetMs(checked.accountUsage),
+              }
+            : undefined;
+        return checked;
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
+      const scheduledCheck = Effect.gen(function* () {
+        if (!settings.enabled) {
+          return stampIdentity(yield* makePendingMuseProvider(settings, processEnv));
+        }
+        const [signature, nowMs] = yield* Effect.all([probeSignature, Clock.currentTimeMillis], {
+          concurrency: "unbounded",
+        });
+        if (
+          cachedProbe &&
+          cachedProbe.signature === signature &&
+          (!cachedProbe.mayHaveSubscriptionUsage ||
+            (nowMs - cachedProbe.checkedAtMs < MUSE_SCHEDULED_USAGE_REFRESH_MS &&
+              (cachedProbe.earliestResetMs === undefined || nowMs < cachedProbe.earliestResetMs)))
+        ) {
+          return {
+            ...cachedProbe.snapshot,
+            checkedAt: DateTime.formatIso(yield* DateTime.now),
+          };
+        }
+        return yield* runFullCheck;
+      });
+
       const snapshot = yield* makeManagedServerProvider<MuseSettings>({
         get maintenanceCapabilities() {
           return maintenance;
@@ -209,22 +351,8 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         haveSettingsChanged: () => false,
         initialSnapshot: (current) =>
           makePendingMuseProvider(current, processEnv).pipe(Effect.map(stampIdentity)),
-        checkProvider: Effect.gen(function* () {
-          const draft = yield* checkMuseProviderStatus({
-            settings,
-            binaryPath: currentBinary(),
-            cwd: serverConfig.cwd,
-            environment: processEnv,
-            instanceEnvironment: environment,
-            onFacts: (facts) =>
-              Effect.sync(() => {
-                sandboxAvailable = facts.sandboxAvailable;
-                liveModels = facts.models;
-              }),
-          });
-          const dataSharing = yield* dataSharingSnapshot;
-          return stampIdentity({ ...draft, ...(settings.enabled ? { dataSharing } : {}) });
-        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+        checkProvider: runFullCheck,
+        scheduledCheckProvider: scheduledCheck,
         // Muse is not on npm: its newest release comes from Meta's channel manifest.
         enrichSnapshot: ({ snapshot: current, updateSnapshot }) =>
           Effect.gen(function* () {
@@ -236,7 +364,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
               driver: DRIVER_KIND,
               currentVersion: current.version,
               latestVersion,
-              checkedAt: DateTime.formatIso(yield* DateTime.now),
+              checkedAt: current.checkedAt,
               maintenanceCapabilities: maintenance,
             });
             yield* updateSnapshot((now) => ({ ...now, versionAdvisory }));

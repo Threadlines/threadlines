@@ -23,7 +23,12 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 
-import { type ClaudeGoalRecord, parseClaudeGoalTranscript } from "./ClaudeGoals.ts";
+import {
+  CLAUDE_GOAL_TRANSCRIPT_MARKER,
+  type ClaudeGoalRecord,
+  parseClaudeGoalTranscript,
+  parseClaudeGoalTranscriptLine,
+} from "./ClaudeGoals.ts";
 
 /**
  * Directory Claude Code keeps its state in: `$CLAUDE_CONFIG_DIR` when set,
@@ -119,16 +124,19 @@ const findClaudeSessionTranscript = Effect.fn("findClaudeSessionTranscript")(fun
   const projectDirectories = yield* fileSystem
     .readDirectory(projectsDir)
     .pipe(Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])));
-  for (const entry of projectDirectories) {
-    const candidate = path.join(projectsDir, entry, transcriptFileName);
-    const found = yield* fileSystem
-      .exists(candidate)
-      .pipe(Effect.catch(() => Effect.succeed(false)));
-    if (found) {
-      return { transcriptPath: candidate, expectedPath };
-    }
-  }
-  return undefined;
+  const matches = yield* Effect.forEach(
+    projectDirectories,
+    (entry) => {
+      const candidate = path.join(projectsDir, entry, transcriptFileName);
+      return fileSystem.exists(candidate).pipe(
+        Effect.map((exists) => (exists ? candidate : undefined)),
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+    },
+    { concurrency: 16 },
+  );
+  const foundPath = matches.find((candidate): candidate is string => candidate !== undefined);
+  return foundPath !== undefined ? { transcriptPath: foundPath, expectedPath } : undefined;
 });
 
 /** The transcript a running session writes to, without moving anything.
@@ -223,7 +231,20 @@ export const readClaudeTranscriptGoalRecords = Effect.fn("readClaudeTranscriptGo
   },
 );
 
-const WORKTREE_STATE_MARKER = '"type":"worktree-state"';
+const WORKTREE_STATE_MARKER_BYTES = Buffer.from('"type":"worktree-state"', "utf8");
+const GOAL_TRANSCRIPT_MARKER_BYTES = Buffer.from(CLAUDE_GOAL_TRANSCRIPT_MARKER, "utf8");
+const VERSION_MARKER_BYTES = Buffer.from('"version":"', "utf8");
+const NEWLINE_BYTE = 0x0a;
+const QUOTE_BYTE = 0x22;
+
+function hasUtf8Bom(buffer: Buffer): boolean {
+  return buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf;
+}
+
+function decodeLineSlice(buffer: Buffer, lineStart: number, lineEnd: number): string {
+  const effectiveStart = lineStart === 0 && hasUtf8Bom(buffer) ? 3 : lineStart;
+  return buffer.toString("utf8", effectiveStart, lineEnd);
+}
 
 /**
  * The worktree a Claude session was last inside, as its transcript records it.
@@ -234,14 +255,14 @@ const WORKTREE_STATE_MARKER = '"type":"worktree-state"';
  * forked resume skips that restore. Returns the worktree path, `null` when the
  * session is not in one, or `undefined` when the record cannot be read.
  */
-function transcriptWorktreePath(contents: string): string | null | undefined {
-  const markerIndex = contents.lastIndexOf(WORKTREE_STATE_MARKER);
+function transcriptWorktreePathFromBytes(buffer: Buffer): string | null | undefined {
+  const markerIndex = buffer.lastIndexOf(WORKTREE_STATE_MARKER_BYTES);
   if (markerIndex < 0) return null;
-  const lineStart = contents.lastIndexOf("\n", markerIndex) + 1;
-  const lineEnd = contents.indexOf("\n", markerIndex);
+  const lineStart = buffer.lastIndexOf(NEWLINE_BYTE, markerIndex) + 1;
+  const lineEnd = buffer.indexOf(NEWLINE_BYTE, markerIndex);
   try {
     const record = JSON.parse(
-      contents.slice(lineStart, lineEnd < 0 ? contents.length : lineEnd),
+      decodeLineSlice(buffer, lineStart, lineEnd < 0 ? buffer.length : lineEnd),
     ) as { readonly worktreeSession?: { readonly worktreePath?: unknown } | null };
     const worktreePath = record.worktreeSession?.worktreePath;
     return typeof worktreePath === "string" && worktreePath.length > 0 ? worktreePath : null;
@@ -250,11 +271,39 @@ function transcriptWorktreePath(contents: string): string | null | undefined {
   }
 }
 
+function parseClaudeGoalRecordsFromBytes(completeBuffer: Buffer): ReadonlyArray<ClaudeGoalRecord> {
+  const records: Array<ClaudeGoalRecord> = [];
+  let searchFrom = 0;
+  while (searchFrom < completeBuffer.length) {
+    const markerIndex = completeBuffer.indexOf(GOAL_TRANSCRIPT_MARKER_BYTES, searchFrom);
+    if (markerIndex < 0) break;
+    const lineStart = completeBuffer.lastIndexOf(NEWLINE_BYTE, markerIndex) + 1;
+    const lineEnd = completeBuffer.indexOf(NEWLINE_BYTE, markerIndex);
+    const sliceEnd = lineEnd < 0 ? completeBuffer.length : lineEnd;
+    const record = parseClaudeGoalTranscriptLine(
+      decodeLineSlice(completeBuffer, lineStart, sliceEnd),
+    );
+    if (record !== undefined) records.push(record);
+    if (lineEnd < 0) break;
+    searchFrom = lineEnd + 1;
+  }
+  return records;
+}
+
+function transcriptCliVersionFromBytes(buffer: Buffer): string | undefined {
+  const markerIndex = buffer.lastIndexOf(VERSION_MARKER_BYTES);
+  if (markerIndex < 0) return undefined;
+  const valueStart = markerIndex + VERSION_MARKER_BYTES.length;
+  const quoteEnd = buffer.indexOf(QUOTE_BYTE, valueStart);
+  if (quoteEnd <= valueStart) return undefined;
+  return buffer.toString("utf8", valueStart, quoteEnd);
+}
+
 /**
  * What a session being resumed needs from its transcript, in one read: the
- * worktree it was last in (see `transcriptWorktreePath`), every goal record
- * (see ClaudeGoals.ts), where its complete lines end (where reading for new
- * goal records picks up), and the Claude Code version that wrote it last.
+ * worktree it was last in (see `transcriptWorktreePathFromBytes`), every goal
+ * record (see ClaudeGoals.ts), where its complete lines end (where reading for
+ * new goal records picks up), and the Claude Code version that wrote it last.
  * Undefined when the transcript cannot be read.
  */
 export const readClaudeTranscriptResumeFacts = Effect.fn("readClaudeTranscriptResumeFacts")(
@@ -277,18 +326,17 @@ export const readClaudeTranscriptResumeFacts = Effect.fn("readClaudeTranscriptRe
       .readFile(transcriptPath)
       .pipe(Effect.orElseSucceed(() => undefined));
     if (bytes === undefined) return undefined;
+    // Scan raw UTF-8 bytes for ASCII markers so multi-megabyte transcripts do
+    // not allocate full-file JS strings on resume.
+    const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     // A line Claude is still writing is read later, from its start.
-    const completeLength = bytes.lastIndexOf(0x0a) + 1;
-    const decoder = new TextDecoder();
-    const contents = decoder.decode(bytes);
+    const completeLength = buffer.lastIndexOf(NEWLINE_BYTE) + 1;
     return {
-      worktreePath: transcriptWorktreePath(contents),
-      goalRecords: parseClaudeGoalTranscript(decoder.decode(bytes.subarray(0, completeLength))),
+      worktreePath: transcriptWorktreePathFromBytes(buffer),
+      goalRecords: parseClaudeGoalRecordsFromBytes(buffer.subarray(0, completeLength)),
       size: BigInt(completeLength),
-      endsMidLine: completeLength < bytes.length,
-      cliVersion: /"version":"([^"]+)"/.exec(
-        contents.slice(Math.max(0, contents.lastIndexOf('"version":"'))),
-      )?.[1],
+      endsMidLine: completeLength < buffer.length,
+      cliVersion: transcriptCliVersionFromBytes(buffer),
     };
   },
 );

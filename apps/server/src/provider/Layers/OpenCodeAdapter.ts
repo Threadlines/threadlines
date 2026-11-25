@@ -493,9 +493,14 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       string,
       { readonly generation: number; readonly value: ReadonlyArray<ModelInfo> }
     >();
+    const MCP_SERVER_CACHE_TTL_MS = 30_000;
     const mcpServerCache = new Map<
       string,
-      { readonly generation: number; readonly value: ReadonlyArray<string> }
+      {
+        readonly generation: number;
+        readonly loadedAtMs: number;
+        readonly value: ReadonlyArray<string>;
+      }
     >();
     const commandCache = new Map<
       string,
@@ -632,7 +637,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         Effect.tap((names) =>
           Effect.sync(() => {
             if ((mcpServerCache.get(directory)?.generation ?? -1) <= generation) {
-              mcpServerCache.set(directory, { generation, value: names });
+              mcpServerCache.set(directory, { generation, loadedAtMs: Date.now(), value: names });
             }
           }),
         ),
@@ -2503,36 +2508,73 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               ]
             : []),
         ];
-        for (const server of servers) {
-          yield* runOpenCode("mcp.add", (signal) =>
-            ctx.client.experimental.mcp.add(
-              {
-                server: server.name,
-                location: { directory: ctx.directory },
-                config: { type: "remote", url: server.url, headers, oauth: false, codemode: false },
-              },
-              { signal },
-            ),
-          );
-          toolServerOwners.set(server.name, ctx);
-          yield* Scope.addFinalizer(
-            ctx.scope,
-            Effect.suspend(() =>
-              toolServerOwners.get(server.name) === ctx
-                ? runOpenCode("mcp.remove", (signal) =>
-                    ctx.client.experimental.mcp.remove(
-                      { server: server.name, location: { directory: ctx.directory } },
-                      { signal },
-                    ),
-                  ).pipe(
-                    Effect.ignore,
-                    Effect.ensuring(Effect.sync(() => toolServerOwners.delete(server.name))),
-                  )
-                : Effect.void,
-            ),
-          );
+        yield* Effect.forEach(
+          servers,
+          (server) =>
+            Effect.gen(function* () {
+              // Claim ownership and install the removal finalizer before the
+              // RPC starts so a sibling failure or interruption never leaves an
+              // accepted registration stranded on OpenCode.
+              toolServerOwners.set(server.name, ctx);
+              yield* Scope.addFinalizer(
+                ctx.scope,
+                Effect.suspend(() =>
+                  toolServerOwners.get(server.name) === ctx
+                    ? runOpenCode("mcp.remove", (signal) =>
+                        ctx.client.experimental.mcp.remove(
+                          { server: server.name, location: { directory: ctx.directory } },
+                          { signal },
+                        ),
+                      ).pipe(
+                        Effect.ignore,
+                        Effect.ensuring(
+                          Effect.sync(() => {
+                            toolServerOwners.delete(server.name);
+                            const cached = mcpServerCache.get(ctx.directory);
+                            if (cached && cached.generation === ctx.generation) {
+                              mcpServerCache.set(ctx.directory, {
+                                ...cached,
+                                value: cached.value.filter((name) => name !== server.name),
+                              });
+                            }
+                          }),
+                        ),
+                      )
+                    : Effect.void,
+                ),
+              );
+              yield* runOpenCode("mcp.add", (signal) =>
+                ctx.client.experimental.mcp.add(
+                  {
+                    server: server.name,
+                    location: { directory: ctx.directory },
+                    config: {
+                      type: "remote",
+                      url: server.url,
+                      headers,
+                      oauth: false,
+                      codemode: false,
+                    },
+                  },
+                  { signal },
+                ),
+              );
+            }),
+          { concurrency: "unbounded", discard: true },
+        );
+        const existingMcp = mcpServerCache.get(ctx.directory);
+        if (
+          existingMcp &&
+          existingMcp.generation === ctx.generation &&
+          Date.now() - existingMcp.loadedAtMs < MCP_SERVER_CACHE_TTL_MS
+        ) {
+          mcpServerCache.set(ctx.directory, {
+            ...existingMcp,
+            value: [...new Set([...existingMcp.value, ...servers.map((server) => server.name)])],
+          });
+        } else {
+          yield* loadMcpServers(ctx.client, ctx.directory, ctx.generation);
         }
-        yield* loadMcpServers(ctx.client, ctx.directory, ctx.generation);
       });
 
     const instructionsFor = (ctx: SessionContext, managedWorktree: boolean) =>
@@ -2621,7 +2663,32 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         }
         if (!input.lastTurnId) return {};
         if (!input.lastTurnId.startsWith("msg_")) return { unsupported: true as const };
-        const messages = yield* listAllMessages(client, sourceSessionId);
+        // Scan newest-first so forks near the end of long sessions read one
+        // page instead of walking the whole history from message #1.
+        const newestFirst: Array<Record<string, unknown>> = [];
+        let cursor: string | undefined;
+        let foundStart = false;
+        for (let page = 0; page < 500; page += 1) {
+          const result = yield* runOpenCode("message.list", (signal) =>
+            client.message.list(
+              cursor
+                ? { sessionID: sourceSessionId, limit: 200, cursor }
+                : { sessionID: sourceSessionId, limit: 200, order: "desc" },
+              { signal },
+            ),
+          );
+          const batch = (result.data as ReadonlyArray<unknown>).filter(isRecord);
+          newestFirst.push(...batch);
+          if (batch.some((message) => message.id === input.lastTurnId)) {
+            foundStart = true;
+            break;
+          }
+          const next = result.cursor?.next;
+          if (!next || batch.length === 0) break;
+          cursor = next;
+        }
+        if (!foundStart) return { unsupported: true as const };
+        const messages = newestFirst.toReversed();
         const start = messages.findIndex((message) => message.id === input.lastTurnId);
         if (start < 0) return { unsupported: true as const };
         const idle = messages.findIndex(
@@ -2680,29 +2747,41 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         const scope = yield* Scope.make("sequential");
         return yield* Effect.gen(function* () {
           yield* manager.lease.pipe(Effect.provideService(Scope.Scope, scope));
-          const active: OpenCodeActiveServer = yield* manager.server.pipe(
-            Effect.mapError(
-              (error) =>
-                new ProviderAdapterProcessError({
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  detail: error.detail,
-                  cause: error,
-                }),
-            ),
-          );
-          yield* active.streamReady.pipe(Effect.timeout(Duration.seconds(15)), Effect.ignore);
-          const client = active.server.client;
           const roomTools = input.roomTools === true;
           const roomGrant = roomEndpointGrant(input, undefined);
-          // The page tools, with their image folder (OpenCode refuses side runtimes).
-          const agentPageAssetsDir =
-            input.agentPages === true
-              ? yield* ensurePageAssetsDir(parseSessionKey(input.threadId).threadId).pipe(
-                  Effect.map((dir): string | undefined => dir),
-                  Effect.orElseSucceed(() => undefined),
-                )
-              : undefined;
+          // Overlap local filesystem prep with starting/connecting to OpenCode
+          // and waiting for its event stream.
+          const { active, agentPageAssetsDir, managedWorktree } = yield* Effect.all(
+            {
+              active: manager.server.pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail: error.detail,
+                      cause: error,
+                    }),
+                ),
+                Effect.tap((server) =>
+                  server.streamReady.pipe(Effect.timeout(Duration.seconds(15)), Effect.ignore),
+                ),
+              ),
+              // The page tools, with their image folder (OpenCode refuses side runtimes).
+              agentPageAssetsDir:
+                input.agentPages === true
+                  ? ensurePageAssetsDir(parseSessionKey(input.threadId).threadId).pipe(
+                      Effect.map((dir): string | undefined => dir),
+                      Effect.orElseSucceed(() => undefined),
+                    )
+                  : Effect.succeed<string | undefined>(undefined),
+              managedWorktree: isLinkedWorktreeCheckout(directory).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+              ),
+            },
+            { concurrency: "unbounded" },
+          );
+          const client = active.server.client;
           const boundSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const model = resolveModel(boundSelection);
@@ -2710,12 +2789,25 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           const resumeId = parseOpenCodeResumeCursor(input.resumeCursor)?.sessionId;
           let rootSessionId: string | undefined;
           let resumed = false;
+          let initialSessionInfo:
+            | {
+                readonly agent?: string | undefined;
+                readonly model?:
+                  | {
+                      readonly providerID: string;
+                      readonly id: string;
+                      readonly variant?: string | undefined;
+                    }
+                  | undefined;
+              }
+            | undefined;
           if (resumeId) {
             const found = yield* runOpenCode("session.get", (signal) =>
               client.session.get({ sessionID: resumeId }, { signal }),
             ).pipe(Effect.option);
             if (found._tag === "Some") {
               rootSessionId = found.value.id;
+              initialSessionInfo = found.value;
               resumed = true;
               // A checkout switch resumes the same conversation somewhere
               // else; OpenCode keeps working wherever the session is.
@@ -2765,6 +2857,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               ),
             ).pipe(Effect.mapError(toRequestError("session.fork")));
             rootSessionId = forked.id;
+            initialSessionInfo = forked;
           }
           if (!rootSessionId) {
             const created = yield* runOpenCode("session.create", (signal) =>
@@ -2866,56 +2959,66 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             scope,
             mcpSessionRegistry.revoke(input.threadId, credential.generation),
           );
-          yield* registerToolServers(ctx, credential).pipe(
-            Effect.mapError(toRequestError("mcp.add")),
-          );
-          // The native session outlives the runtime: end anything it was
-          // still running for the one before (outside work's fresh start).
-          // A start that can't is no fresh start: it fails, and the agent
-          // stays marked.
-          if (ctx.quietUntilTurn && resumed) {
-            yield* runOpenCode("session.interrupt", (signal) =>
-              ctx.client.session.interrupt({ sessionID: ctx.rootSessionId }, { signal }),
-            ).pipe(Effect.mapError(toRequestError("session.interrupt")));
-          }
-
-          yield* applyRules(ctx, rootSessionId, yield* rulesFor(ctx, BUILD_AGENT)).pipe(
-            Effect.mapError(toRequestError("session.update")),
-          );
           if (resumed || input.forkFrom) {
-            const info = yield* runOpenCode("session.get", (signal) =>
-              client.session.get({ sessionID: rootSessionId! }, { signal }),
-            ).pipe(Effect.option);
-            if (info._tag === "Some") {
-              ctx.agent = info.value.agent ?? BUILD_AGENT;
-              if (!model && info.value.model) {
+            const info =
+              initialSessionInfo ??
+              Option.getOrUndefined(
+                yield* runOpenCode("session.get", (signal) =>
+                  client.session.get({ sessionID: rootSessionId! }, { signal }),
+                ).pipe(Effect.option),
+              );
+            if (info) {
+              ctx.agent = info.agent ?? BUILD_AGENT;
+              if (!model && info.model) {
                 ctx.model = {
-                  providerID: info.value.model.providerID,
-                  id: info.value.model.id,
-                  ...(info.value.model.variant ? { variant: info.value.model.variant } : {}),
+                  providerID: info.model.providerID,
+                  id: info.model.id,
+                  ...(info.model.variant ? { variant: info.model.variant } : {}),
                 };
               }
             }
-            if (model) {
+          }
+          // Run independent post-create setup in parallel while keeping
+          // session-mutating RPCs (`interrupt` -> `update` -> `switchModel`)
+          // serialized so OpenCode never races updates to the same session.
+          const sessionSetup = Effect.gen(function* () {
+            // The native session outlives the runtime: end anything it was
+            // still running for the one before (outside work's fresh start).
+            // A start that can't is no fresh start: it fails, and the agent
+            // stays marked.
+            if (ctx.quietUntilTurn && resumed) {
+              yield* runOpenCode("session.interrupt", (signal) =>
+                ctx.client.session.interrupt({ sessionID: ctx.rootSessionId }, { signal }),
+              ).pipe(Effect.mapError(toRequestError("session.interrupt")));
+            }
+            yield* applyRules(ctx, rootSessionId!, yield* rulesFor(ctx, BUILD_AGENT)).pipe(
+              Effect.mapError(toRequestError("session.update")),
+            );
+            if ((resumed || input.forkFrom) && model) {
               yield* runOpenCode("session.switchModel", (signal) =>
                 client.session.switchModel({ sessionID: rootSessionId!, model }, { signal }),
               ).pipe(Effect.mapError(toRequestError("session.switchModel")));
             }
-          }
-          ctx.contextLimit = yield* contextLimitFor(ctx, ctx.model);
-          const managedWorktree = yield* isLinkedWorktreeCheckout(directory).pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
+          });
+          const [, , contextLimit] = yield* Effect.all(
+            [
+              registerToolServers(ctx, credential).pipe(Effect.mapError(toRequestError("mcp.add"))),
+              sessionSetup,
+              contextLimitFor(ctx, ctx.model),
+              runOpenCode("instructions.put", (signal) =>
+                client.experimental.session.instructions.entry.put(
+                  {
+                    sessionID: rootSessionId!,
+                    key: "threadlines",
+                    value: instructionsFor(ctx, managedWorktree),
+                  },
+                  { signal },
+                ),
+              ).pipe(Effect.mapError(toRequestError("instructions.put"))),
+            ],
+            { concurrency: "unbounded" },
           );
-          yield* runOpenCode("instructions.put", (signal) =>
-            client.experimental.session.instructions.entry.put(
-              {
-                sessionID: rootSessionId!,
-                key: "threadlines",
-                value: instructionsFor(ctx, managedWorktree),
-              },
-              { signal },
-            ),
-          ).pipe(Effect.mapError(toRequestError("instructions.put")));
+          ctx.contextLimit = contextLimit;
           if (ctx.model && !ctx.session.model) {
             ctx.session = { ...ctx.session, model: openCodeModelSlug(ctx.model) };
           }
@@ -2987,46 +3090,57 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       },
     ) =>
       Effect.gen(function* () {
-        const files: Array<{ uri: string; name?: string }> = [];
-        const notes: Array<string> = [];
-        for (const attachment of input.attachments ?? []) {
-          const path = resolveAttachmentPath({
-            attachmentsDir: serverConfig.attachmentsDir,
-            attachment,
-          });
-          if (!path) {
-            return yield* new ProviderAdapterRequestError({
-              provider: PROVIDER,
-              method: "session.prompt",
-              detail: `Invalid attachment id '${attachment.id}'.`,
-            });
-          }
-          if (
-            (attachment.type === "file" && attachment.kind === "other") ||
-            isLargeTextAttachment(attachment)
-          ) {
-            notes.push(buildFileAttachmentNote(attachment, path));
-            continue;
-          }
-          const bytes = yield* fileSystem.readFile(path).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapterRequestError({
+        const resolvedAttachments = yield* Effect.forEach(
+          input.attachments ?? [],
+          (attachment) =>
+            Effect.gen(function* () {
+              const path = resolveAttachmentPath({
+                attachmentsDir: serverConfig.attachmentsDir,
+                attachment,
+              });
+              if (!path) {
+                return yield* new ProviderAdapterRequestError({
                   provider: PROVIDER,
                   method: "session.prompt",
-                  detail: cause.message,
-                  cause,
-                }),
-            ),
-          );
-          const mimeType =
-            attachment.type === "file" && attachment.kind === "text"
-              ? "text/plain"
-              : attachment.mimeType;
-          files.push({
-            uri: `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
-            name: attachment.name,
-          });
+                  detail: `Invalid attachment id '${attachment.id}'.`,
+                });
+              }
+              if (
+                (attachment.type === "file" && attachment.kind === "other") ||
+                isLargeTextAttachment(attachment)
+              ) {
+                return { kind: "note" as const, text: buildFileAttachmentNote(attachment, path) };
+              }
+              const bytes = yield* fileSystem.readFile(path).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "session.prompt",
+                      detail: cause.message,
+                      cause,
+                    }),
+                ),
+              );
+              const mimeType =
+                attachment.type === "file" && attachment.kind === "text"
+                  ? "text/plain"
+                  : attachment.mimeType;
+              return {
+                kind: "file" as const,
+                file: {
+                  uri: `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+                  name: attachment.name,
+                },
+              };
+            }),
+          { concurrency: 8 },
+        );
+        const files: Array<{ uri: string; name?: string }> = [];
+        const notes: Array<string> = [];
+        for (const entry of resolvedAttachments) {
+          if (entry.kind === "note") notes.push(entry.text);
+          else files.push(entry.file);
         }
         const text = [input.input?.trim() ?? "", ...notes].filter(Boolean).join("\n\n");
         if (!text && files.length === 0) {
@@ -3247,18 +3361,30 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                   { signal },
                 ),
               ).pipe(Effect.ignore),
-            { discard: true },
+            { concurrency: "unbounded", discard: true },
           ),
         );
         // Withdrawing the last queued steer can end a held turn, and a send
         // waiting on it then starts the next one: that one is not ours to stop.
         if (turn && ctx.activeTurn !== turn) return;
-        for (const child of ctx.children.values()) {
-          if (child.status !== "running") continue;
-          ctx.stoppedChildren.add(child.sessionId);
-          yield* runOpenCode("session.interrupt", (signal) =>
-            ctx.client.session.interrupt({ sessionID: child.sessionId }, { signal }),
-          ).pipe(Effect.ignore);
+        // Loop until no newly started running children remain so a child
+        // registered while earlier interrupts were in flight is also stopped.
+        for (;;) {
+          const runningChildren = [...ctx.children.values()].filter(
+            (child) => child.status === "running" && !ctx.stoppedChildren.has(child.sessionId),
+          );
+          if (runningChildren.length === 0) break;
+          for (const child of runningChildren) {
+            ctx.stoppedChildren.add(child.sessionId);
+          }
+          yield* Effect.forEach(
+            runningChildren,
+            (child) =>
+              runOpenCode("session.interrupt", (signal) =>
+                ctx.client.session.interrupt({ sessionID: child.sessionId }, { signal }),
+              ).pipe(Effect.ignore),
+            { concurrency: "unbounded", discard: true },
+          );
         }
         yield* dropPendingRequests(ctx, undefined);
         const result = yield* runOpenCode("session.interrupt", (signal) =>
@@ -3607,10 +3733,8 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         ).pipe(Effect.mapError(toRequestError("session.remove")));
       });
 
-    const stopSession: OpenCodeAdapterShape["stopSession"] = (threadId) =>
+    const stopSessionContext = (ctx: SessionContext) =>
       Effect.gen(function* () {
-        const ctx = sessions.get(threadId);
-        if (!ctx) return;
         // Release OpenCode's claim on running executions, so the user's own
         // OpenCode service never resumes them later, and stop background work
         // nobody would be listening to: it would wake an agent no one sees.
@@ -3621,9 +3745,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             .map((child) => child.sessionId),
         ];
         if (running.length > 0 || ctx.backgroundShells.size > 0) {
-          const prev = stoppedWork.get(threadId);
+          const prev = stoppedWork.get(ctx.threadId);
           const sameGen = prev !== undefined && prev.generation === ctx.generation;
-          stoppedWork.set(threadId, {
+          stoppedWork.set(ctx.threadId, {
             generation: ctx.generation,
             client: ctx.client,
             directory: ctx.directory,
@@ -3653,6 +3777,13 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           { discard: true, concurrency: "unbounded" },
         );
         yield* stopContext(ctx, undefined);
+      });
+
+    const stopSession: OpenCodeAdapterShape["stopSession"] = (threadId) =>
+      Effect.gen(function* () {
+        const ctx = sessions.get(threadId);
+        if (!ctx) return;
+        yield* stopSessionContext(ctx);
       });
 
     // One background task: a shell left running (its id is the shell's) or a
@@ -3731,7 +3862,17 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       });
 
     const stopAll: OpenCodeAdapterShape["stopAll"] = () =>
-      Effect.forEach([...sessions.keys()], stopSession, { discard: true });
+      Effect.gen(function* () {
+        const exits = yield* Effect.forEach(
+          Array.from(sessions.values()),
+          (ctx) => Effect.exit(stopSessionContext(ctx)),
+          { concurrency: "unbounded" },
+        );
+        const firstFailure = exits.find(Exit.isFailure);
+        if (firstFailure) {
+          return yield* Effect.failCause(firstFailure.cause);
+        }
+      });
 
     /** What OpenCode still runs of the work a stop interrupted: problems, in words. */
     const workLeft = (work: NonNullable<ReturnType<typeof stoppedWork.get>>) =>

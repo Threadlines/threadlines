@@ -377,19 +377,24 @@ export const checkMuseProviderStatus = (input: {
           experimentalApi: true,
           startupTimeout: Duration.seconds(12),
         });
-        const models = yield* host.request("model/list", {}).pipe(
-          Effect.map((raw) => Option.getOrUndefined(decodeModelList(raw))),
-          Effect.orElseSucceed(() => undefined),
-        );
-        const account = host.initialize.experimentalApi
-          ? yield* host.request("account/read", {}).pipe(
-              Effect.map((raw) => Option.getOrUndefined(decodeAccount(raw))),
+        const [models, account, usage] = yield* Effect.all(
+          [
+            host.request("model/list", {}).pipe(
+              Effect.map((raw) => Option.getOrUndefined(decodeModelList(raw))),
               Effect.orElseSucceed(() => undefined),
-            )
-          : undefined;
-        const usage = yield* host.request("usage/read", {}).pipe(
-          Effect.map((raw) => Option.getOrUndefined(decodeUsage(raw))?.usage),
-          Effect.orElseSucceed(() => undefined),
+            ),
+            host.initialize.experimentalApi
+              ? host.request("account/read", {}).pipe(
+                  Effect.map((raw) => Option.getOrUndefined(decodeAccount(raw))),
+                  Effect.orElseSucceed(() => undefined),
+                )
+              : Effect.succeed(undefined),
+            host.request("usage/read", {}).pipe(
+              Effect.map((raw) => Option.getOrUndefined(decodeUsage(raw))?.usage),
+              Effect.orElseSucceed(() => undefined),
+            ),
+          ],
+          { concurrency: "unbounded" },
         );
         return {
           sandboxAvailable:

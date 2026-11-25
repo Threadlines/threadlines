@@ -3055,10 +3055,8 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         return true;
       });
 
-    const stopSession: MuseAdapterShape["stopSession"] = (threadId) =>
+    const stopSessionContext = (ctx: SessionContext) =>
       Effect.gen(function* () {
-        const ctx = sessions.get(threadId);
-        if (!ctx) return;
         // Background work nobody would hear from is stopped with the host.
         if (ctx.host && !ctx.host.closing) {
           yield* sessionCommand(ctx, "task/stopAll", {}).pipe(
@@ -3069,8 +3067,25 @@ export function makeMuseAdapter(options: MuseAdapterOptions) {
         yield* ctx.lifecycle.withPermit(stopContext(ctx, undefined));
       });
 
+    const stopSession: MuseAdapterShape["stopSession"] = (threadId) =>
+      Effect.gen(function* () {
+        const ctx = sessions.get(threadId);
+        if (!ctx) return;
+        yield* stopSessionContext(ctx);
+      });
+
     const stopAll: MuseAdapterShape["stopAll"] = () =>
-      Effect.forEach([...sessions.keys()], stopSession, { discard: true });
+      Effect.gen(function* () {
+        const exits = yield* Effect.forEach(
+          Array.from(sessions.values()),
+          (ctx) => Effect.exit(stopSessionContext(ctx)),
+          { concurrency: "unbounded" },
+        );
+        const firstFailure = exits.find(Exit.isFailure);
+        if (firstFailure) {
+          return yield* Effect.failCause(firstFailure.cause);
+        }
+      });
 
     yield* Effect.addFinalizer(() =>
       stopAll().pipe(Effect.ignore, Effect.andThen(PubSub.shutdown(runtimeEvents))),

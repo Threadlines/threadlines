@@ -260,16 +260,16 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings, R = 
           maintenanceResolver,
           { binaryPath: config.binaryPath, env: processEnv },
         );
-        const refreshMaintenance = descriptor.resolveMaintenance
-          ? descriptor.resolveMaintenance(effectiveConfig).pipe(
-              Effect.tap((capabilities) =>
-                Effect.sync(() => {
-                  maintenanceCapabilities = capabilities;
-                }),
-              ),
-            )
-          : Effect.void;
-        yield* refreshMaintenance;
+        const refreshMaintenance = (options?: { readonly allowNetworkWait?: boolean }) =>
+          descriptor.resolveMaintenance
+            ? descriptor.resolveMaintenance(effectiveConfig, options).pipe(
+                Effect.tap((capabilities) =>
+                  Effect.sync(() => {
+                    maintenanceCapabilities = capabilities;
+                  }),
+                ),
+              )
+            : Effect.void;
 
         const serverConfig = yield* ServerConfig;
         const usageLedger = descriptor.usageLedger;
@@ -352,6 +352,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings, R = 
             cache: catalog,
             reuse: reuseCatalog,
           }).pipe(
+            Effect.tap(() => refreshMaintenance({ allowNetworkWait: true })),
             Effect.map(stampIdentity),
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -359,12 +360,17 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings, R = 
             Effect.provideService(Path.Path, path),
           );
         const checkProvider = check(false);
+        let initialSettingsLoaded = false;
 
         const snapshot = yield* makeManagedServerProvider<Settings>({
           get maintenanceCapabilities() {
             return maintenanceCapabilities;
           },
-          getSettings: refreshMaintenance.pipe(Effect.as(effectiveConfig)),
+          getSettings: Effect.suspend(() => {
+            const allowNetworkWait = initialSettingsLoaded;
+            initialSettingsLoaded = true;
+            return refreshMaintenance({ allowNetworkWait }).pipe(Effect.as(effectiveConfig));
+          }),
           streamSettings: Stream.never,
           haveSettingsChanged: () => false,
           initialSnapshot: (settings) =>

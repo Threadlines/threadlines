@@ -1109,11 +1109,13 @@ export function makeAntigravityDescriptor(
     settingsSchema: AntigravitySettings,
     defaultSettings: () => decodeAntigravitySettings({}),
     maintenance: MANUAL_ONLY,
-    resolveMaintenance: (settings) =>
+    resolveMaintenance: (settings, options) =>
       Effect.gen(function* () {
         if (settings.binaryPath.trim() || !runtime || !releases) return MANUAL_ONLY;
         const installed = yield* runtime.installed;
-        const offer = yield* releases.newest;
+        const offer = yield* options?.allowNetworkWait === false
+          ? releases.cachedOrBuiltIn
+          : releases.newest;
         if (!installed)
           return { ...MANUAL_ONLY, install: runtimeAction(runtime, "Install", offer) };
         // Never back: a newer copy stays when only an older release is offered.

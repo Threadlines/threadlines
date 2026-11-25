@@ -8,10 +8,15 @@
  *
  * @module provider/Drivers/OpenCodeDriver
  */
+import { homedir } from "node:os";
+import * as NodePath from "node:path";
+
 import { OpenCodeSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -36,6 +41,10 @@ import {
   openCodeOneMigrationCapabilities,
   resolveOpenCodeBinary,
 } from "../opencode/OpenCodeBinary.ts";
+import {
+  OPENCODE_DATABASE_FILE_NAME,
+  openCodeDatabaseLocation,
+} from "../opencode/OpenCodeDataPaths.ts";
 import { isOpenCodeOneVersion } from "../opencode/OpenCodeServer.ts";
 import { makeOpenCodeServerManager } from "../opencode/OpenCodeServerManager.ts";
 import {
@@ -205,6 +214,137 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       });
       const textGeneration = yield* makeOpenCodeTextGeneration(manager);
 
+      // Scheduled ticks reuse the last check for local instances while the
+      // binary, OpenCode database/auth files, and config files on disk are
+      // unchanged so we never wake an idle `opencode serve` or reset its
+      // 10-minute idle timer every 5 minutes. External servers are always
+      // probed directly since no local process is spawned.
+      let cachedProbe:
+        | {
+            readonly signature: string;
+            readonly snapshot: ServerProvider;
+          }
+        | undefined;
+      const statSig = (targetPath: string) =>
+        fileSystem.stat(targetPath).pipe(
+          Effect.map((info) => {
+            const mtimeMs = Option.match(info.mtime, {
+              onNone: () => "",
+              onSome: (date) => String(date.getTime()),
+            });
+            return `${targetPath}\u0000${Number(info.size)}\u0000${mtimeMs}`;
+          }),
+          Effect.orElseSucceed(() => `missing:${targetPath}`),
+        );
+      const probeSignature = Effect.gen(function* () {
+        if (serverUrl) return `external:${serverUrl}`;
+        const binaryPath = currentBinary();
+        const dbLocation = openCodeDatabaseLocation({
+          accountFolder,
+          environment: processEnv,
+        });
+        const home =
+          (process.platform === "win32" ? processEnv.USERPROFILE : processEnv.HOME)?.trim() ||
+          homedir();
+        const configDir =
+          processEnv.OPENCODE_CONFIG_DIR?.trim() ||
+          NodePath.join(
+            processEnv.XDG_CONFIG_HOME?.trim() || NodePath.join(home, ".config"),
+            "opencode",
+          );
+        const pathsToStat: string[] = [
+          configDir,
+          NodePath.join(configDir, "opencode.json"),
+          NodePath.join(configDir, "opencode.jsonc"),
+          NodePath.join(configDir, "config.json"),
+        ];
+        const explicitConfig = processEnv.OPENCODE_CONFIG?.trim();
+        if (explicitConfig) pathsToStat.push(explicitConfig);
+        if ("file" in dbLocation) {
+          const dir = NodePath.dirname(dbLocation.file);
+          pathsToStat.push(
+            dir,
+            dbLocation.file,
+            `${dbLocation.file}-wal`,
+            NodePath.join(dir, "auth.json"),
+          );
+        } else {
+          pathsToStat.push(
+            dbLocation.folder,
+            NodePath.join(dbLocation.folder, "auth.json"),
+            NodePath.join(dbLocation.folder, "opencode.db"),
+            NodePath.join(dbLocation.folder, "opencode.db-wal"),
+          );
+          const dataEntries = yield* fileSystem
+            .readDirectory(dbLocation.folder)
+            .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
+          for (const entry of dataEntries.toSorted()) {
+            if (OPENCODE_DATABASE_FILE_NAME.test(entry) && entry !== "opencode.db") {
+              const dbPath = NodePath.join(dbLocation.folder, entry);
+              pathsToStat.push(dbPath, `${dbPath}-wal`);
+            }
+          }
+        }
+        const binarySig = /[\\/]/u.test(binaryPath)
+          ? yield* statSig(binaryPath)
+          : `missing:${binaryPath}`;
+        const diskSigs = yield* Effect.forEach(pathsToStat, statSig, { concurrency: "unbounded" });
+        return [binarySig, ...diskSigs].join("\u0001");
+      });
+
+      const runFullCheck = Effect.gen(function* () {
+        const signature = yield* probeSignature;
+        const draft = yield* checkOpenCodeProviderStatus({
+          settings: { ...settings, binaryPath: currentBinary() },
+          manager,
+          cwd: serverConfig.cwd,
+          environment: processEnv,
+          canMoveToOpenCodeTwo: maintenance.oneMigration.update !== null,
+        });
+        const current = stampIdentity(draft);
+        installedVersion = current.version;
+        if (current.version) {
+          pendingMove = isOpenCodeOneVersion(current.version)
+            ? maintenance.oneMigration.update
+            : null;
+        }
+        const isStableUnauthenticated =
+          current.installed &&
+          current.status === "warning" &&
+          current.auth.status === "unauthenticated";
+        cachedProbe =
+          !serverUrl &&
+          (current.status === "ready" || !current.installed || isStableUnauthenticated)
+            ? { signature, snapshot: current }
+            : undefined;
+        return current;
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
+      const scheduledCheck = Effect.gen(function* () {
+        if (!settings.enabled) {
+          return stampIdentity(yield* makePendingOpenCodeProvider(settings, processEnv));
+        }
+        if (serverUrl) {
+          return yield* runFullCheck;
+        }
+        const signature = yield* probeSignature;
+        if (cachedProbe && cachedProbe.signature === signature) {
+          const running = yield* manager.running;
+          if (
+            running &&
+            cachedProbe.snapshot.version &&
+            cachedProbe.snapshot.version !== running.version
+          ) {
+            yield* manager.retire;
+          }
+          return {
+            ...cachedProbe.snapshot,
+            checkedAt: DateTime.formatIso(yield* DateTime.now),
+          };
+        }
+        return yield* runFullCheck;
+      });
+
       const snapshot = yield* makeManagedServerProvider<OpenCodeSettings>({
         get maintenanceCapabilities() {
           return capabilitiesFor(installedVersion);
@@ -219,28 +359,8 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         haveSettingsChanged: () => false,
         initialSnapshot: (current) =>
           makePendingOpenCodeProvider(current, processEnv).pipe(Effect.map(stampIdentity)),
-        checkProvider: Effect.suspend(() =>
-          checkOpenCodeProviderStatus({
-            settings: { ...settings, binaryPath: currentBinary() },
-            manager,
-            cwd: serverConfig.cwd,
-            environment: processEnv,
-            canMoveToOpenCodeTwo: maintenance.oneMigration.update !== null,
-          }),
-        ).pipe(
-          Effect.map(stampIdentity),
-          Effect.tap((current) =>
-            Effect.sync(() => {
-              installedVersion = current.version;
-              if (current.version) {
-                pendingMove = isOpenCodeOneVersion(current.version)
-                  ? maintenance.oneMigration.update
-                  : null;
-              }
-            }),
-          ),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        ),
+        checkProvider: runFullCheck,
+        scheduledCheckProvider: scheduledCheck,
         enrichSnapshot: ({ snapshot: current, publishSnapshot }) => {
           const capabilities = capabilitiesFor(current.version);
           // A 1.x install Threadlines cannot move gets no "update available";

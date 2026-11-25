@@ -30,6 +30,7 @@ import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import {
+  createProviderVersionAdvisory,
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
@@ -81,6 +82,7 @@ export interface AcpCatalogCache {
     identity: string,
     models: ReadonlyArray<ServerProviderModel>,
     nowMs: number,
+    options?: { readonly capabilitiesProbed?: boolean },
   ) => void;
   /**
    * Claims the option probe for the current read of `identity`: the read's
@@ -111,9 +113,15 @@ export function makeAcpCatalogCache(): AcpCatalogCache {
       entry?.identity === identity && nowMs - entry.readAtMs < ACP_CATALOG_REUSE_MS
         ? entry.models
         : undefined,
-    remember: (identity, models, nowMs) => {
+    remember: (identity, models, nowMs, options) => {
       reads += 1;
-      entry = { id: reads, identity, readAtMs: nowMs, models, probeClaimed: false };
+      entry = {
+        id: reads,
+        identity,
+        readAtMs: nowMs,
+        models,
+        probeClaimed: options?.capabilitiesProbed === true,
+      };
     },
     claimProbe: (identity) => {
       if (entry?.identity !== identity) return "none";
@@ -318,58 +326,149 @@ const startProbeSession = <Settings extends AcpProviderSettings>(
     return configOptions;
   });
 
+/** Model catalog from one fresh session's `configOptions`, plus whether per-model options were already read. */
+const discoverAcpModelsWithMeta = <Settings extends AcpProviderSettings>(
+  descriptor: AcpProviderDescriptor<Settings>,
+  settings: Settings,
+  environment: NodeJS.ProcessEnv = process.env,
+  budgetMs?: number,
+) =>
+  Effect.suspend(() => {
+    const startedAtMs = Date.now();
+    return withAcpProbeRuntime(
+      descriptor,
+      settings,
+      (acp, noteSessionId) =>
+        Effect.gen(function* () {
+          const configOptions = yield* startProbeSession(descriptor, acp, noteSessionId);
+          // An agent that probes every model's options in this single session
+          // (Antigravity) lists them here rather than spawning a second process.
+          if (descriptor.discoverModelOptions) {
+            const listed = yield* descriptor.discoverModelOptions(acp).pipe(
+              Effect.timeout(descriptor.modelDiscoveryTimeoutMs ?? ACP_MODEL_DISCOVERY_TIMEOUT_MS),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("ACP model option listing failed", {
+                  provider: descriptor.driverKind,
+                  cause: Cause.pretty(cause),
+                }).pipe(Effect.as(undefined)),
+              ),
+            );
+            if (listed && listed.length > 0) {
+              const mapping = mappingFor(descriptor);
+              const choices = flattenSessionConfigSelectOptions(
+                findModelConfigOption(configOptions),
+              );
+              const bySlug = new Map(listed.map((entry) => [entry.slug, entry.configOptions]));
+              return {
+                models: buildAcpDiscoveredModels(
+                  choices.map((choice) => ({
+                    slug: choice.value,
+                    name: choice.name,
+                    capabilities: bySlug.has(choice.value)
+                      ? mapping.capabilitiesFromConfigOptions(bySlug.get(choice.value)!)
+                      : EMPTY_ACP_MODEL_CAPABILITIES,
+                  })),
+                ),
+                capabilitiesProbed: true,
+              };
+            }
+          }
+          // An agent that lists every model's options via an extension RPC
+          // (Cursor) reads them on this same warm session so background
+          // enrichment does not need to spawn a second agent process. Bound the
+          // RPC to the remaining discovery budget so a slow options call never
+          // causes the outer discovery timeout to discard the model list.
+          if (descriptor.modelCapabilitiesVaryByModel === true && descriptor.listModelOptions) {
+            const modelOption = findModelConfigOption(configOptions);
+            const choices = flattenSessionConfigSelectOptions(modelOption);
+            if (choices.length > 0) {
+              const mapping = mappingFor(descriptor);
+              const capabilitiesBySlug = new Map<string, ModelCapabilities>();
+              const currentModelValue = selectConfigOptionCurrentValue(modelOption);
+              if (currentModelValue) {
+                capabilitiesBySlug.set(
+                  currentModelValue,
+                  mapping.capabilitiesFromConfigOptions(configOptions),
+                );
+              }
+              const defaultTimeoutMs =
+                descriptor.modelDiscoveryTimeoutMs ?? ACP_MODEL_DISCOVERY_TIMEOUT_MS;
+              const remainingBudgetMs =
+                budgetMs !== undefined
+                  ? budgetMs - (Date.now() - startedAtMs) - 2_000
+                  : defaultTimeoutMs;
+              const listTimeoutMs = Math.min(defaultTimeoutMs, remainingBudgetMs);
+              const listed =
+                listTimeoutMs >= 500
+                  ? yield* descriptor.listModelOptions(acp).pipe(
+                      Effect.timeout(listTimeoutMs),
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("ACP model option listing failed", {
+                          provider: descriptor.driverKind,
+                          cause: Cause.pretty(cause),
+                        }).pipe(Effect.as(undefined)),
+                      ),
+                    )
+                  : undefined;
+              const listedSlugs = new Set<string>();
+              for (const entry of listed ?? []) {
+                listedSlugs.add(entry.slug);
+                if (entry.configOptions.length === 0) continue;
+                capabilitiesBySlug.set(
+                  entry.slug,
+                  mapping.capabilitiesFromConfigOptions(entry.configOptions),
+                );
+              }
+              if (descriptor.onSessionConfigOptions) {
+                yield* descriptor
+                  .onSessionConfigOptions(settings, configOptions)
+                  .pipe(Effect.ignore);
+              }
+              const allChoicesCovered =
+                listed !== undefined &&
+                choices.every(
+                  (choice) => choice.value === currentModelValue || listedSlugs.has(choice.value),
+                );
+              return {
+                models: buildAcpDiscoveredModels(
+                  choices.map((choice) => ({
+                    slug: choice.value,
+                    name: choice.name,
+                    capabilities:
+                      capabilitiesBySlug.get(choice.value) ?? EMPTY_ACP_MODEL_CAPABILITIES,
+                  })),
+                ),
+                capabilitiesProbed: allChoicesCovered,
+              };
+            }
+          }
+          // Agents that cache their catalog (to skip discovery next time) see
+          // this session's options like any other's.
+          if (descriptor.onSessionConfigOptions) {
+            yield* descriptor.onSessionConfigOptions(settings, configOptions).pipe(Effect.ignore);
+          }
+          return {
+            models: buildAcpModelsFromConfigOptions({
+              configOptions,
+              mapping: mappingFor(descriptor),
+              sharedCapabilities: descriptor.modelCapabilitiesVaryByModel !== true,
+              defaultModelWhenNone: descriptor.sessionControls === "native",
+            }),
+            capabilitiesProbed: false,
+          };
+        }),
+      environment,
+    );
+  });
+
 /** Model catalog from one fresh session's `configOptions`. */
 export const discoverAcpModels = <Settings extends AcpProviderSettings>(
   descriptor: AcpProviderDescriptor<Settings>,
   settings: Settings,
   environment: NodeJS.ProcessEnv = process.env,
 ) =>
-  withAcpProbeRuntime(
-    descriptor,
-    settings,
-    (acp, noteSessionId) =>
-      Effect.gen(function* () {
-        const configOptions = yield* startProbeSession(descriptor, acp, noteSessionId);
-        // An agent that probes every model's options in this single session
-        // (Antigravity) lists them here rather than spawning a second process.
-        if (descriptor.discoverModelOptions) {
-          const listed = yield* descriptor.discoverModelOptions(acp).pipe(
-            Effect.timeout(descriptor.modelDiscoveryTimeoutMs ?? ACP_MODEL_DISCOVERY_TIMEOUT_MS),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("ACP model option listing failed", {
-                provider: descriptor.driverKind,
-                cause: Cause.pretty(cause),
-              }).pipe(Effect.as(undefined)),
-            ),
-          );
-          if (listed && listed.length > 0) {
-            const mapping = mappingFor(descriptor);
-            const choices = flattenSessionConfigSelectOptions(findModelConfigOption(configOptions));
-            const bySlug = new Map(listed.map((entry) => [entry.slug, entry.configOptions]));
-            return buildAcpDiscoveredModels(
-              choices.map((choice) => ({
-                slug: choice.value,
-                name: choice.name,
-                capabilities: bySlug.has(choice.value)
-                  ? mapping.capabilitiesFromConfigOptions(bySlug.get(choice.value)!)
-                  : EMPTY_ACP_MODEL_CAPABILITIES,
-              })),
-            );
-          }
-        }
-        // Agents that cache their catalog (to skip discovery next time) see
-        // this session's options like any other's.
-        if (descriptor.onSessionConfigOptions) {
-          yield* descriptor.onSessionConfigOptions(settings, configOptions).pipe(Effect.ignore);
-        }
-        return buildAcpModelsFromConfigOptions({
-          configOptions,
-          mapping: mappingFor(descriptor),
-          sharedCapabilities: descriptor.modelCapabilitiesVaryByModel !== true,
-          defaultModelWhenNone: descriptor.sessionControls === "native",
-        });
-      }),
-    environment,
+  discoverAcpModelsWithMeta(descriptor, settings, environment).pipe(
+    Effect.map((result) => result.models),
   );
 
 /**
@@ -613,8 +712,9 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
     if (readsCatalog && reusable !== undefined) {
       discoveredModels = reusable;
     } else if (readsCatalog) {
+      let capabilitiesProbed = false;
       const discoveryExit = yield* Effect.exit(
-        discoverAcpModels(descriptor, settings, environment).pipe(
+        discoverAcpModelsWithMeta(descriptor, settings, environment, discoveryTimeoutMs).pipe(
           Effect.timeoutOption(discoveryTimeoutMs),
         ),
       );
@@ -626,12 +726,15 @@ export const checkAcpProviderStatus = <Settings extends AcpProviderSettings>(
         discoveryWarning = `${displayName} ACP model discovery failed. Check server logs for details.`;
       } else if (Option.isNone(discoveryExit.value)) {
         discoveryWarning = `${displayName} ACP model discovery timed out after ${discoveryTimeoutMs}ms.`;
-      } else if (discoveryExit.value.value.length === 0) {
+      } else if (discoveryExit.value.value.models.length === 0) {
         discoveryWarning = `${displayName} ACP model discovery returned no built-in models.`;
       } else {
-        discoveredModels = discoveryExit.value.value;
+        discoveredModels = discoveryExit.value.value.models;
+        capabilitiesProbed = discoveryExit.value.value.capabilitiesProbed;
       }
-      if (discoveredModels.length > 0) catalog?.cache.remember(identity, discoveredModels, nowMs);
+      if (discoveredModels.length > 0) {
+        catalog?.cache.remember(identity, discoveredModels, nowMs, { capabilitiesProbed });
+      }
     }
     // Every check, reused catalog or not: it is network metadata, not a
     // session, and has its own freshness (fx's Gateway prices).
@@ -693,17 +796,49 @@ export const enrichAcpSnapshot = <Settings extends AcpProviderSettings>(input: {
       ? input.updateSnapshot((current) => stampIdentity(update(current)))
       : publishSnapshot(stampIdentity(update(fallbackBase)));
 
-  const enrichVersionAdvisory = enrichProviderSnapshotWithVersionAdvisory(
-    snapshot,
-    input.maintenanceCapabilities,
-  ).pipe(
-    Effect.provideService(HttpClient.HttpClient, input.httpClient),
-    Effect.flatMap((enriched) =>
-      applyUpdate(snapshot, (current) => ({
-        ...current,
-        ...(enriched.versionAdvisory ? { versionAdvisory: enriched.versionAdvisory } : {}),
-      })).pipe(Effect.as(enriched)),
-    ),
+  const enrichVersionAdvisory = Effect.gen(function* () {
+    const hasCustomResolver =
+      descriptor.resolveLatestVersion !== undefined &&
+      snapshot.enabled &&
+      snapshot.installed &&
+      snapshot.version !== null;
+    const resolvedLatestVersion = hasCustomResolver
+      ? yield* descriptor.resolveLatestVersion!().pipe(
+          Effect.provideService(HttpClient.HttpClient, input.httpClient),
+          Effect.catchCause(() => Effect.succeed(null)),
+        )
+      : null;
+    // When the descriptor owns its latest-version lookup (e.g. fx GitHub
+    // releases), clear any prior cached advisory on a failed fetch so
+    // `enrichProviderSnapshotWithVersionAdvisory` does not re-stamp a stale
+    // `latestVersion` as freshly verified.
+    const baseForAdvisory = (() => {
+      if (!hasCustomResolver) return snapshot;
+      if (resolvedLatestVersion !== null) {
+        return {
+          ...snapshot,
+          versionAdvisory: createProviderVersionAdvisory({
+            driver: snapshot.driver,
+            currentVersion: snapshot.version,
+            latestVersion: resolvedLatestVersion,
+            checkedAt: snapshot.checkedAt,
+            maintenanceCapabilities: input.maintenanceCapabilities,
+          }),
+        };
+      }
+      const { versionAdvisory: _staleAdvisory, ...withoutAdvisory } = snapshot;
+      return withoutAdvisory;
+    })();
+    const enriched = yield* enrichProviderSnapshotWithVersionAdvisory(
+      baseForAdvisory,
+      input.maintenanceCapabilities,
+    ).pipe(Effect.provideService(HttpClient.HttpClient, input.httpClient));
+    yield* applyUpdate(snapshot, (current) => ({
+      ...current,
+      ...(enriched.versionAdvisory ? { versionAdvisory: enriched.versionAdvisory } : {}),
+    }));
+    return enriched;
+  }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning(`${displayName} version advisory enrichment failed`, {
         cause: Cause.pretty(cause),

@@ -36,6 +36,27 @@ export interface TranscriptFile {
   readonly path: string;
   readonly size: number;
   readonly mtimeMs: number;
+  readonly ino?: number;
+}
+
+const STAT_CONCURRENCY = 16;
+
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let index = 0;
+  const count = Math.min(limit, items.length);
+  await Promise.all(
+    Array.from({ length: count }, async () => {
+      while (index < items.length) {
+        const current = items[index++]!;
+        await worker(current);
+      }
+    }),
+  );
 }
 
 /**
@@ -66,26 +87,33 @@ export async function listTranscriptFiles(
       }
       return;
     }
+    const subdirs: string[] = [];
+    const candidateFiles: string[] = [];
     for (const entry of entries) {
       const child = NodePath.join(dir, entry.name);
       if (entry.isDirectory()) {
-        await walk(child);
+        subdirs.push(child);
         continue;
       }
       if (!entry.name.endsWith(".jsonl")) continue;
       if (fileName !== undefined && entry.name !== fileName) continue;
+      candidateFiles.push(child);
+    }
+    await runWithConcurrency(candidateFiles, STAT_CONCURRENCY, async (child) => {
       try {
         const stats = await NodeFSP.stat(child);
         if (stats.mtimeMs >= sinceMs) {
-          found.push({ path: child, size: stats.size, mtimeMs: stats.mtimeMs });
+          found.push({ path: child, size: stats.size, mtimeMs: stats.mtimeMs, ino: stats.ino });
         }
       } catch {
         // Vanished between readdir and stat.
       }
-    }
+    });
+    await runWithConcurrency(subdirs, STAT_CONCURRENCY, walk);
   };
 
   await walk(root);
+  found.sort((left, right) => left.path.localeCompare(right.path));
   return found;
 }
 
@@ -178,4 +206,163 @@ export async function readTranscriptRecords(
   }
 
   return records;
+}
+
+const STREAM_CHUNK_BYTES = 64 * 1024;
+const TAIL_ANCHOR_BYTES = 64;
+
+export interface IncrementalClaudeTranscriptResult {
+  readonly records: readonly UsageRecord[];
+  readonly nextOffset: number;
+  /** Last up to 64 bytes immediately preceding `nextOffset`, to detect rewrites/rotations. */
+  readonly tailSignature: string;
+}
+
+/**
+ * Streams Claude transcript lines starting at `startOffset` in fixed 64 KiB
+ * chunks so cold scans never allocate full-file buffers.
+ *
+ * When `expectedTail` is provided (for `startOffset > 0`), verifies the bytes
+ * immediately preceding `startOffset` match before trusting the incremental
+ * read; a mismatch returns `null` so the caller falls back to a full read from
+ * offset 0. Handles valid EOF records without a trailing `\n` while leaving a
+ * half-written JSON line unread until the writer completes it.
+ */
+export async function readClaudeTranscriptRecordsFromOffset(
+  filePath: string,
+  startOffset: number,
+  expectedTail?: string,
+): Promise<IncrementalClaudeTranscriptResult | null> {
+  let handle: NodeFSP.FileHandle | undefined;
+  try {
+    handle = await NodeFSP.open(filePath, "r");
+    const stats = await handle.stat();
+    if (stats.size < startOffset) {
+      return null;
+    }
+
+    const tailStart = Math.max(0, startOffset - TAIL_ANCHOR_BYTES);
+    const tailLen = startOffset - tailStart;
+    let tailBuf: Buffer = Buffer.alloc(0);
+    if (tailLen > 0) {
+      tailBuf = Buffer.allocUnsafe(tailLen);
+      let readTail = 0;
+      while (readTail < tailLen) {
+        const { bytesRead } = await handle.read(
+          tailBuf,
+          readTail,
+          tailLen - readTail,
+          tailStart + readTail,
+        );
+        if (bytesRead === 0) break;
+        readTail += bytesRead;
+      }
+      if (readTail !== tailLen) return null;
+      if (expectedTail !== undefined && tailBuf.toString("hex") !== expectedTail) {
+        return null;
+      }
+    }
+
+    if (stats.size === startOffset) {
+      return {
+        records: [],
+        nextOffset: startOffset,
+        tailSignature: tailBuf.toString("hex"),
+      };
+    }
+
+    const records: UsageRecord[] = [];
+    const chunkBuf = Buffer.allocUnsafe(STREAM_CHUNK_BYTES);
+    let filePos = startOffset;
+    let nextOffset = startOffset;
+    let carry: Buffer = Buffer.alloc(0);
+
+    const updateTail = (consumed: Buffer) => {
+      if (consumed.length === 0) return;
+      if (consumed.length >= TAIL_ANCHOR_BYTES) {
+        tailBuf = Buffer.from(consumed.subarray(consumed.length - TAIL_ANCHOR_BYTES));
+      } else {
+        const combined = Buffer.concat([tailBuf, consumed]);
+        tailBuf =
+          combined.length > TAIL_ANCHOR_BYTES
+            ? combined.subarray(combined.length - TAIL_ANCHOR_BYTES)
+            : combined;
+      }
+    };
+
+    const processLineBytes = (lineBytes: Buffer) => {
+      let end = lineBytes.length;
+      if (end > 0 && lineBytes[end - 1] === 0x0d) {
+        end -= 1;
+      }
+      if (end === 0) return;
+      const line = lineBytes.toString("utf8", 0, end);
+      if (mightCarryUsage(line, "claude")) {
+        const record = parseClaudeLine(line);
+        if (record !== null) records.push(record);
+      }
+    };
+
+    while (filePos < stats.size) {
+      const toRead = Math.min(STREAM_CHUNK_BYTES, stats.size - filePos);
+      const { bytesRead } = await handle.read(chunkBuf, 0, toRead, filePos);
+      if (bytesRead === 0) break;
+      filePos += bytesRead;
+      const chunk =
+        carry.length > 0
+          ? Buffer.concat([carry, chunkBuf.subarray(0, bytesRead)])
+          : chunkBuf.subarray(0, bytesRead);
+
+      let lineStart = 0;
+      for (;;) {
+        const nl = chunk.indexOf(0x0a, lineStart);
+        if (nl < 0) break;
+        processLineBytes(chunk.subarray(lineStart, nl));
+        lineStart = nl + 1;
+      }
+      if (lineStart > 0) {
+        updateTail(chunk.subarray(0, lineStart));
+        nextOffset += lineStart;
+      }
+      carry = lineStart < chunk.length ? Buffer.from(chunk.subarray(lineStart)) : Buffer.alloc(0);
+    }
+
+    // Handle a trailing EOF line without `\n`: parse it only when it is already
+    // complete JSON so closed transcripts without a final newline are counted
+    // while mid-write partial lines stay pending until completed.
+    if (carry.length > 0) {
+      let end = carry.length;
+      if (end > 0 && carry[end - 1] === 0x0d) {
+        end -= 1;
+      }
+      if (end > 0) {
+        const line = carry.toString("utf8", 0, end);
+        let completeJson = false;
+        try {
+          JSON.parse(line);
+          completeJson = true;
+        } catch {
+          completeJson = false;
+        }
+        if (completeJson) {
+          if (mightCarryUsage(line, "claude")) {
+            const record = parseClaudeLine(line);
+            if (record !== null) records.push(record);
+          }
+          updateTail(carry);
+          nextOffset += carry.length;
+        }
+      }
+    }
+
+    return {
+      records,
+      nextOffset,
+      tailSignature: tailBuf.toString("hex"),
+    };
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }

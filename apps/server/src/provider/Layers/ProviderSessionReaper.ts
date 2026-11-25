@@ -285,8 +285,49 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         }
       }).pipe(Effect.ignoreCause({ log: true }));
 
+    const listStartupBindings = Effect.gen(function* () {
+      if (
+        !directory.listActiveBindings ||
+        !directory.listThreadIdsForThread ||
+        !directory.getBindingsByThreadIds ||
+        !projectionSnapshotQuery.listThreadIdsNeedingStartupReconciliation
+      ) {
+        return yield* directory.listBindings();
+      }
+      const [activeBindings, candidateBaseThreadIds] = yield* Effect.all(
+        [
+          directory.listActiveBindings(),
+          projectionSnapshotQuery.listThreadIdsNeedingStartupReconciliation(),
+        ],
+        { concurrency: "unbounded" },
+      );
+      if (candidateBaseThreadIds.length === 0) {
+        return activeBindings;
+      }
+      const seenKeys = new Set<ThreadId>(activeBindings.map((binding) => binding.threadId));
+      const candidateKeyLists = yield* Effect.forEach(
+        candidateBaseThreadIds,
+        (threadId) => directory.listThreadIdsForThread!(threadId),
+        { concurrency: 16 },
+      );
+      const missingKeys: ThreadId[] = [];
+      for (const keys of candidateKeyLists) {
+        for (const key of keys) {
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            missingKeys.push(key);
+          }
+        }
+      }
+      if (missingKeys.length === 0) {
+        return activeBindings;
+      }
+      const extraBindings = yield* directory.getBindingsByThreadIds(missingKeys);
+      return [...activeBindings, ...extraBindings];
+    });
+
     const reconcileStartup = Effect.gen(function* () {
-      const bindings = yield* directory.listBindings();
+      const bindings = yield* listStartupBindings;
       const activeProviderThreadIds = toLiveProviderThreadIds(yield* listProviderSessions);
       const nowIso = DateTime.formatIso(yield* DateTime.now);
       let reconciledCount = 0;
@@ -362,7 +403,9 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     });
 
     const sweep = Effect.gen(function* () {
-      const bindings = yield* directory.listBindings();
+      const bindings = yield* directory.listActiveBindings
+        ? directory.listActiveBindings()
+        : directory.listBindings();
       const providerSessions = yield* listProviderSessions;
       const busyProviderThreadIds = toBusyProviderThreadIds(providerSessions);
       // What each runtime says it hosts. A room agent that is not holding the

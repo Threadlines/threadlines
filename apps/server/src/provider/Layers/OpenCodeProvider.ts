@@ -108,7 +108,7 @@ const retryWhileEmpty = <A>(load: Effect.Effect<ReadonlyArray<A>, OpenCodeError>
     Effect.flatMap((items) =>
       items.length > 0 ? Effect.succeed(items) : Effect.fail("empty" as const),
     ),
-    Effect.retry({ schedule: Schedule.spaced(Duration.millis(250)), times: 20 }),
+    Effect.retry({ schedule: Schedule.exponential(Duration.millis(100), 1.55), times: 8 }),
     Effect.catch((error) => (error === "empty" ? Effect.succeed([]) : Effect.fail(error))),
   );
 

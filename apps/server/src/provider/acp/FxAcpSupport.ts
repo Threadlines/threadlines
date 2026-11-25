@@ -314,18 +314,19 @@ export const probeFx = Effect.fn("probeFx")(function* (
     message,
   });
 
+  const runsWsl = runsFxThroughWsl();
   const versionProbe = yield* runFxCommand(settings, ["--version"], environment);
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;
     if (isCommandMissingCause(error)) {
       return notInstalled(
-        runsFxThroughWsl()
+        runsWsl
           ? "WSL (`wsl.exe`) is not available, and fx has no Windows build. Install WSL to use fx on Windows."
           : fxNotInstalledMessage(),
       );
     }
     return {
-      installed: !runsFxThroughWsl(),
+      installed: !runsWsl,
       version: null,
       status: "error",
       auth: { status: "unknown" },
@@ -342,7 +343,7 @@ export const probeFx = Effect.fn("probeFx")(function* (
     };
   }
   const versionResult = versionProbe.success.value;
-  const wslFailure = runsFxThroughWsl()
+  const wslFailure = runsWsl
     ? describeWslLaunchFailure(`${versionResult.stdout}\n${versionResult.stderr}`)
     : undefined;
   if (wslFailure) {
@@ -354,7 +355,7 @@ export const probeFx = Effect.fn("probeFx")(function* (
     return notInstalled(fxNotInstalledMessage());
   }
   // On the host only: inside WSL a non-zero exit can be WSL's, not fx's.
-  const startFailure = runsFxThroughWsl() ? null : cliStartFailureFrom(versionResult);
+  const startFailure = runsWsl ? null : cliStartFailureFrom(versionResult);
   if (startFailure) {
     return {
       installed: true,
@@ -385,14 +386,12 @@ export const probeFx = Effect.fn("probeFx")(function* (
     };
   }
 
-  const latestVersion = yield* resolveFxLatestRelease();
   return {
     installed: true,
     version,
     status: parsedStatus.auth.status === "unauthenticated" ? "error" : "ready",
     auth: parsedStatus.auth,
     ...(parsedStatus.message ? { message: parsedStatus.message } : {}),
-    ...(latestVersion ? { latestVersion } : {}),
   };
 });
 
@@ -493,6 +492,7 @@ export const FX_ACP_DESCRIPTOR: AcpProviderDescriptor<FxSettings> = {
         : detectBinary(settings.binaryPath),
     ),
   probe: probeFx,
+  resolveLatestVersion: resolveFxLatestRelease,
   modelDiscoveryTimeoutMs: FX_MODEL_DISCOVERY_TIMEOUT_MS,
   enrichDiscoveredModels: (models) => enrichFxModelsWithGatewayCatalog(models),
   modelOptions: FX_MODEL_OPTION_MAPPING,

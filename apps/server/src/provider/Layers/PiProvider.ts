@@ -322,13 +322,16 @@ export const checkPiProviderStatus = (input: {
           }),
           startupTimeout: DISCOVERY_STARTUP_TIMEOUT,
         });
-        const state = decodePi(PiState)(yield* rpc.request({ type: "get_state" }));
-        const models = decodePi(PiAvailableModels)(
-          yield* rpc.request({ type: "get_available_models" }),
+        const state = decodePi(PiState)(rpc.initialState);
+        const [rawModels, rawCommands] = yield* Effect.all(
+          [
+            rpc.request({ type: "get_available_models" }),
+            rpc.request({ type: "get_commands" }).pipe(Effect.orElseSucceed(() => undefined)),
+          ],
+          { concurrency: "unbounded" },
         );
-        const commands = decodePi(PiCommands)(
-          yield* rpc.request({ type: "get_commands" }).pipe(Effect.orElseSucceed(() => undefined)),
-        );
+        const models = decodePi(PiAvailableModels)(rawModels);
+        const commands = decodePi(PiCommands)(rawCommands);
         return {
           state: Option.getOrUndefined(state),
           models: Option.match(models, { onNone: () => [], onSome: (value) => value.models }),

@@ -35,11 +35,24 @@ import {
 } from "../providerTokenUsageHistory.ts";
 import { makeProviderTokenUsageStore, mergeTokenUsageDays } from "../providerTokenUsageStore.ts";
 import { UsageAggregator } from "../../usage/usageAggregation.ts";
-import { dedupeWithinFile, type ScanCache } from "../../usage/usageScanCache.ts";
-import { listTranscriptFiles, readTranscriptRecords } from "../../usage/usageTranscriptReader.ts";
-import { totalTokens } from "../../usage/usageTranscripts.ts";
+import { dedupeWithinFile } from "../../usage/usageScanCache.ts";
+import {
+  listTranscriptFiles,
+  readClaudeTranscriptRecordsFromOffset,
+} from "../../usage/usageTranscriptReader.ts";
+import { totalTokens, type UsageRecord } from "../../usage/usageTranscripts.ts";
 
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
+const TRANSCRIPT_READ_CONCURRENCY = 8;
+
+interface ClaudeCachedFile {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ino: number | undefined;
+  readonly parsedOffset: number;
+  readonly tailSignature: string;
+  readonly records: readonly UsageRecord[];
+}
 
 interface ClaudeStatsTokenUsageHistory {
   readonly dailyBuckets: ReadonlyArray<ServerProviderAccountTokenUsageDailyBucket>;
@@ -176,7 +189,7 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
     const statsCachePath = path.join(dataDir, "stats-cache.json");
     const claudeSettingsPath = path.join(dataDir, "settings.json");
     const transcriptDir = path.join(dataDir, "projects");
-    const fileCache: ScanCache = new Map();
+    const fileCache = new Map<string, ClaudeCachedFile>();
     const store = options.stateDir
       ? yield* makeProviderTokenUsageStore({
           stateDir: options.stateDir,
@@ -233,28 +246,76 @@ export const makeClaudeTokenUsageHistoryReader = Effect.fn("ClaudeTokenUsageHist
         });
         let complete = !folderUnreadable;
 
-        for (const file of files) {
-          const cached = fileCache.get(file.path);
-          let records =
-            cached?.provider === "claude" &&
-            cached.size === file.size &&
-            cached.mtimeMs === file.mtimeMs
-              ? cached.records
-              : undefined;
-          if (!records) {
-            const parsed = await readTranscriptRecords(file.path, "claude", file.mtimeMs);
-            if (parsed === null) {
-              complete = false;
-              continue;
+        const perFileRecords = Array.from<readonly UsageRecord[] | undefined>({
+          length: files.length,
+        });
+        let nextIndex = 0;
+        const workerCount = Math.min(TRANSCRIPT_READ_CONCURRENCY, files.length);
+        await Promise.all(
+          Array.from({ length: workerCount }, async () => {
+            while (nextIndex < files.length) {
+              const index = nextIndex++;
+              const file = files[index]!;
+              const cached = fileCache.get(file.path);
+              const fileIno = file.ino ?? 0;
+              const sameInode = cached !== undefined && fileIno > 0 && cached.ino === fileIno;
+              if (
+                cached &&
+                cached.size === file.size &&
+                cached.mtimeMs === file.mtimeMs &&
+                (fileIno === 0 || cached.ino === fileIno)
+              ) {
+                perFileRecords[index] = cached.records;
+                continue;
+              }
+              if (
+                cached &&
+                sameInode &&
+                file.size > cached.size &&
+                file.mtimeMs >= cached.mtimeMs
+              ) {
+                const delta = await readClaudeTranscriptRecordsFromOffset(
+                  file.path,
+                  cached.parsedOffset,
+                  cached.tailSignature,
+                );
+                if (delta !== null) {
+                  const records =
+                    delta.records.length > 0
+                      ? dedupeWithinFile([...cached.records, ...delta.records])
+                      : cached.records;
+                  fileCache.set(file.path, {
+                    size: file.size,
+                    mtimeMs: file.mtimeMs,
+                    ino: file.ino,
+                    parsedOffset: delta.nextOffset,
+                    tailSignature: delta.tailSignature,
+                    records,
+                  });
+                  perFileRecords[index] = records;
+                  continue;
+                }
+              }
+              const full = await readClaudeTranscriptRecordsFromOffset(file.path, 0);
+              if (full === null) {
+                complete = false;
+                continue;
+              }
+              const records = dedupeWithinFile(full.records);
+              fileCache.set(file.path, {
+                size: file.size,
+                mtimeMs: file.mtimeMs,
+                ino: file.ino,
+                parsedOffset: full.nextOffset,
+                tailSignature: full.tailSignature,
+                records,
+              });
+              perFileRecords[index] = records;
             }
-            records = dedupeWithinFile(parsed);
-            fileCache.set(file.path, {
-              provider: "claude",
-              size: file.size,
-              mtimeMs: file.mtimeMs,
-              records,
-            });
-          }
+          }),
+        );
+        for (const records of perFileRecords) {
+          if (!records) continue;
           for (const record of records) aggregator.add(record);
         }
 
