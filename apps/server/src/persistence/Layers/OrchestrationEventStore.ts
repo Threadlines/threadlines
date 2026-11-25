@@ -46,6 +46,10 @@ const AppendEventRequestSchema = Schema.Struct({
   metadataJson: EventMetadataFromJsonString,
 });
 
+const AppendEventResultSchema = Schema.Struct({
+  sequence: NonNegativeInt,
+});
+
 const OrchestrationEventPersistedRowSchema = Schema.Struct({
   sequence: NonNegativeInt,
   eventId: EventId,
@@ -107,7 +111,7 @@ const makeEventStore = Effect.gen(function* () {
 
   const appendEventRow = SqlSchema.findOne({
     Request: AppendEventRequestSchema,
-    Result: OrchestrationEventPersistedRowSchema,
+    Result: AppendEventResultSchema,
     execute: (request) =>
       sql`
         INSERT INTO orchestration_events (
@@ -148,18 +152,7 @@ const makeEventStore = Effect.gen(function* () {
           ${request.payloadJson},
           ${request.metadataJson}
         )
-        RETURNING
-          sequence,
-          event_id AS "eventId",
-          event_type AS "type",
-          aggregate_kind AS "aggregateKind",
-          stream_id AS "aggregateId",
-          occurred_at AS "occurredAt",
-          command_id AS "commandId",
-          causation_event_id AS "causationEventId",
-          correlation_id AS "correlationId",
-          payload_json AS "payload",
-          metadata_json AS "metadata"
+        RETURNING sequence
       `,
   });
 
@@ -235,7 +228,7 @@ const makeEventStore = Effect.gen(function* () {
         ),
       ),
       Effect.flatMap((row) =>
-        decodeEvent(row).pipe(
+        decodeEvent({ ...event, sequence: row.sequence }).pipe(
           Effect.mapError(toPersistenceDecodeError("OrchestrationEventStore.append:rowToEvent")),
         ),
       ),

@@ -67,6 +67,12 @@ function collectByIds<TKey extends string, TValue>(
   return nextValues;
 }
 
+export function invalidateThreadDerivationCache(shell: ThreadShell | undefined): void {
+  if (shell) {
+    threadCache.delete(shell);
+  }
+}
+
 export function selectThreadMessages(
   state: EnvironmentState,
   threadId: ThreadId,

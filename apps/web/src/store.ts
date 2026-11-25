@@ -83,9 +83,10 @@ import {
   type ThreadTurnState,
   type TurnDiffSummary,
 } from "./types";
+import { scopedThreadKey } from "@threadlines/client-runtime";
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
 import { attachmentPreviewRoutePath } from "./lib/attachmentPreviewQuery";
-import { keyedMemo } from "./lib/derivationMemo";
+import { clearThreadDerivationMemos, keyedMemo } from "./lib/derivationMemo";
 import { createBatchedNotifications } from "./lib/batchedNotifications";
 import { sanitizeThreadErrorMessage } from "./rpc/transportError";
 import {
@@ -97,7 +98,7 @@ import {
   isBlockingUserInput,
   sumTurnDiffStats,
 } from "./session-logic";
-import { getThreadFromEnvironmentState } from "./threadDerivation";
+import { getThreadFromEnvironmentState, invalidateThreadDerivationCache } from "./threadDerivation";
 import { threadMoveStatus } from "./threadMove";
 import {
   movedFromAfter,
@@ -2724,21 +2725,109 @@ export function syncServerThreadDetail(
   );
 }
 
+function omitThreadKey<TValue>(
+  record: Record<ThreadId, TValue> | undefined,
+  threadId: ThreadId,
+): Record<ThreadId, TValue> | undefined {
+  if (record === undefined || !(threadId in record)) {
+    return record;
+  }
+  const { [threadId]: _omitted, ...rest } = record;
+  return rest as Record<ThreadId, TValue>;
+}
+
 /**
  * The thread's detail feed ended (its subscription was released and
- * disposed): what the store holds may fall behind, so the chat waits for the
- * next snapshot before it calls an empty thread empty.
+ * disposed): release its detail slices and derived cache while keeping its
+ * shell, session, turn state, and sidebar summary intact so reopening fetches
+ * a fresh snapshot instead of pinning evicted histories in memory.
  */
 export function markThreadDetailUnloaded(state: AppState, threadRef: ScopedThreadRef): AppState {
   const environmentState = state.environmentStateById[threadRef.environmentId];
-  if (!environmentState?.threadDetailLoadedById?.[threadRef.threadId]) {
+  if (!environmentState) {
     return state;
   }
-  const { [threadRef.threadId]: _unloaded, ...threadDetailLoadedById } =
-    environmentState.threadDetailLoadedById;
+  const threadId = threadRef.threadId;
+  const threadDetailLoadedById = omitThreadKey(environmentState.threadDetailLoadedById, threadId);
+  const messagesByThreadId = omitThreadKey(environmentState.messagesByThreadId, threadId)!;
+  const activitiesByThreadId = omitThreadKey(environmentState.activitiesByThreadId, threadId)!;
+  const proposedPlanIdsByThreadId = omitThreadKey(
+    environmentState.proposedPlanIdsByThreadId,
+    threadId,
+  )!;
+  const proposedPlanByThreadId = omitThreadKey(environmentState.proposedPlanByThreadId, threadId)!;
+  const turnDiffIdsByThreadId = omitThreadKey(environmentState.turnDiffIdsByThreadId, threadId)!;
+  const turnDiffSummaryByThreadId = omitThreadKey(
+    environmentState.turnDiffSummaryByThreadId,
+    threadId,
+  )!;
+  const agentRequestsByThreadId = omitThreadKey(
+    environmentState.agentRequestsByThreadId,
+    threadId,
+  )!;
+  const pagesByThreadId = omitThreadKey(environmentState.pagesByThreadId, threadId);
+  const workflowRunsByThreadId = omitThreadKey(environmentState.workflowRunsByThreadId, threadId);
+  const subagentsByThreadId = omitThreadKey(environmentState.subagentsByThreadId, threadId);
+  const commandRequestsByThreadId = omitThreadKey(
+    environmentState.commandRequestsByThreadId,
+    threadId,
+  );
+  const commandRunsByThreadId = omitThreadKey(environmentState.commandRunsByThreadId, threadId);
+  const childRequestsByThreadId = omitThreadKey(
+    environmentState.childRequestsByThreadId,
+    threadId,
+  )!;
+  const settingsRequestsByThreadId = omitThreadKey(
+    environmentState.settingsRequestsByThreadId,
+    threadId,
+  );
+  const secretRequestsByThreadId = omitThreadKey(
+    environmentState.secretRequestsByThreadId,
+    threadId,
+  );
+
+  invalidateThreadDerivationCache(environmentState.threadShellById[threadId]);
+  clearThreadDerivationMemos(scopedThreadKey(threadRef));
+
+  if (
+    threadDetailLoadedById === environmentState.threadDetailLoadedById &&
+    messagesByThreadId === environmentState.messagesByThreadId &&
+    activitiesByThreadId === environmentState.activitiesByThreadId &&
+    proposedPlanIdsByThreadId === environmentState.proposedPlanIdsByThreadId &&
+    proposedPlanByThreadId === environmentState.proposedPlanByThreadId &&
+    turnDiffIdsByThreadId === environmentState.turnDiffIdsByThreadId &&
+    turnDiffSummaryByThreadId === environmentState.turnDiffSummaryByThreadId &&
+    agentRequestsByThreadId === environmentState.agentRequestsByThreadId &&
+    pagesByThreadId === environmentState.pagesByThreadId &&
+    workflowRunsByThreadId === environmentState.workflowRunsByThreadId &&
+    subagentsByThreadId === environmentState.subagentsByThreadId &&
+    commandRequestsByThreadId === environmentState.commandRequestsByThreadId &&
+    commandRunsByThreadId === environmentState.commandRunsByThreadId &&
+    childRequestsByThreadId === environmentState.childRequestsByThreadId &&
+    settingsRequestsByThreadId === environmentState.settingsRequestsByThreadId &&
+    secretRequestsByThreadId === environmentState.secretRequestsByThreadId
+  ) {
+    return state;
+  }
+
   return commitEnvironmentState(state, threadRef.environmentId, {
     ...environmentState,
-    threadDetailLoadedById,
+    messagesByThreadId,
+    activitiesByThreadId,
+    proposedPlanIdsByThreadId,
+    proposedPlanByThreadId,
+    turnDiffIdsByThreadId,
+    turnDiffSummaryByThreadId,
+    agentRequestsByThreadId,
+    childRequestsByThreadId,
+    ...(threadDetailLoadedById !== undefined ? { threadDetailLoadedById } : {}),
+    ...(pagesByThreadId !== undefined ? { pagesByThreadId } : {}),
+    ...(workflowRunsByThreadId !== undefined ? { workflowRunsByThreadId } : {}),
+    ...(subagentsByThreadId !== undefined ? { subagentsByThreadId } : {}),
+    ...(commandRequestsByThreadId !== undefined ? { commandRequestsByThreadId } : {}),
+    ...(commandRunsByThreadId !== undefined ? { commandRunsByThreadId } : {}),
+    ...(settingsRequestsByThreadId !== undefined ? { settingsRequestsByThreadId } : {}),
+    ...(secretRequestsByThreadId !== undefined ? { secretRequestsByThreadId } : {}),
   });
 }
 

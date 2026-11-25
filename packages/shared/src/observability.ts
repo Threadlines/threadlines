@@ -4,6 +4,7 @@ import type * as Exit from "effect/Exit";
 import * as ExitRuntime from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
 import * as Tracer from "effect/Tracer";
 import { OtlpResource, OtlpTracer } from "effect/observability";
 
@@ -290,15 +291,18 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
   });
 
   const runFork = Effect.runForkWith(yield* Effect.context());
+  const flushSemaphore = yield* Semaphore.make(1);
   let closed = false;
   let flushFiber: Fiber.Fiber<void, never> | undefined;
+  let immediateFlushFiber: Fiber.Fiber<void, never> | undefined;
   let flushFailed = false;
   let nextRetryDelayMs = initialRetryDelayMs;
   let bufferedBytes = 0;
+  let inFlightBytes = 0;
   let buffer: Array<{ readonly line: string; readonly bytes: number }> = [];
 
-  const trimRetryBuffer = (): void => {
-    while (bufferedBytes > maxBufferedBytes && buffer.length > 0) {
+  const trimBufferedRecords = (): void => {
+    while (bufferedBytes + inFlightBytes > maxBufferedBytes && buffer.length > 0) {
       const dropped = buffer.shift();
       if (!dropped) {
         break;
@@ -307,61 +311,109 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     }
   };
 
-  const flushUnsafe = () => {
-    if (buffer.length === 0) {
+  const runFlushOnce = (allowDuringBackoff: boolean) =>
+    flushSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        if (buffer.length === 0 || (!allowDuringBackoff && flushFailed)) {
+          return;
+        }
+
+        const records = buffer;
+        inFlightBytes = bufferedBytes;
+        buffer = [];
+        bufferedBytes = 0;
+        let persistedCount = 0;
+
+        try {
+          while (persistedCount < records.length) {
+            const firstRecord = records[persistedCount];
+            if (!firstRecord) {
+              break;
+            }
+            if (firstRecord.bytes > options.maxBytes) {
+              inFlightBytes = Math.max(0, inFlightBytes - firstRecord.bytes);
+              persistedCount += 1;
+              continue;
+            }
+
+            let nextIndex = persistedCount + 1;
+            let chunkBytes = firstRecord.bytes;
+            while (nextIndex < records.length) {
+              const nextRecord = records[nextIndex];
+              if (!nextRecord || chunkBytes + nextRecord.bytes > options.maxBytes) {
+                break;
+              }
+              chunkBytes += nextRecord.bytes;
+              nextIndex += 1;
+            }
+
+            const chunk = records
+              .slice(persistedCount, nextIndex)
+              .map((record) => record.line)
+              .join("");
+            const written = yield* Effect.tryPromise(() => sink.writeAsync(chunk)).pipe(
+              Effect.as(true),
+              Effect.catch(() => Effect.succeed(false)),
+            );
+            if (!written) {
+              inFlightBytes = 0;
+              buffer = [...records.slice(persistedCount), ...buffer];
+              bufferedBytes = buffer.reduce((total, record) => total + record.bytes, 0);
+              trimBufferedRecords();
+              nextRetryDelayMs = flushFailed
+                ? Math.min(MAX_RETRY_DELAY_MS, nextRetryDelayMs * 2)
+                : initialRetryDelayMs;
+              flushFailed = buffer.length > 0;
+              return;
+            }
+            inFlightBytes = Math.max(0, inFlightBytes - chunkBytes);
+            persistedCount = nextIndex;
+          }
+          flushFailed = false;
+          nextRetryDelayMs = initialRetryDelayMs;
+        } finally {
+          inFlightBytes = 0;
+        }
+      }).pipe(Effect.uninterruptible, Effect.withTracerEnabled(false)),
+    );
+
+  const shouldFlushImmediately = (): boolean =>
+    !flushFailed &&
+    (batchWindowMs <= 0 ||
+      buffer.length >= FLUSH_BUFFER_THRESHOLD ||
+      bufferedBytes >= maxBufferedBytes);
+
+  const triggerImmediateFlush = (): void => {
+    if (closed || immediateFlushFiber !== undefined || buffer.length === 0) {
       return;
     }
-
-    const records = buffer;
-    buffer = [];
-    bufferedBytes = 0;
-    let persistedCount = 0;
-
-    while (persistedCount < records.length) {
-      const firstRecord = records[persistedCount];
-      if (!firstRecord) {
-        break;
-      }
-      if (firstRecord.bytes > options.maxBytes) {
-        persistedCount += 1;
-        continue;
-      }
-
-      let nextIndex = persistedCount + 1;
-      let chunkBytes = firstRecord.bytes;
-      while (nextIndex < records.length) {
-        const nextRecord = records[nextIndex];
-        if (!nextRecord || chunkBytes + nextRecord.bytes > options.maxBytes) {
-          break;
+    const scheduled = flushFiber;
+    flushFiber = undefined;
+    immediateFlushFiber = runFork(
+      Effect.gen(function* () {
+        if (scheduled) {
+          yield* Fiber.interrupt(scheduled).pipe(Effect.ignore);
         }
-        chunkBytes += nextRecord.bytes;
-        nextIndex += 1;
-      }
-
-      const chunk = records
-        .slice(persistedCount, nextIndex)
-        .map((record) => record.line)
-        .join("");
-      try {
-        sink.write(chunk);
-      } catch {
-        buffer = [...records.slice(persistedCount), ...buffer];
-        bufferedBytes = buffer.reduce((total, record) => total + record.bytes, 0);
-        trimRetryBuffer();
-        nextRetryDelayMs = flushFailed
-          ? Math.min(MAX_RETRY_DELAY_MS, nextRetryDelayMs * 2)
-          : initialRetryDelayMs;
-        flushFailed = buffer.length > 0;
-        return;
-      }
-      persistedCount = nextIndex;
-    }
-    flushFailed = false;
-    nextRetryDelayMs = initialRetryDelayMs;
+        yield* runFlushOnce(false);
+        immediateFlushFiber = undefined;
+        if (!closed && buffer.length > 0) {
+          if (shouldFlushImmediately()) {
+            triggerImmediateFlush();
+          } else {
+            scheduleFlush();
+          }
+        }
+      }).pipe(Effect.withTracerEnabled(false)),
+    );
   };
 
   const scheduleFlush = (): void => {
-    if (closed || flushFiber !== undefined || buffer.length === 0) {
+    if (
+      closed ||
+      flushFiber !== undefined ||
+      immediateFlushFiber !== undefined ||
+      buffer.length === 0
+    ) {
       return;
     }
 
@@ -373,10 +425,16 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     flushFiber = runFork(
       Effect.sleep(`${delayMs} millis`).pipe(
         Effect.andThen(
-          Effect.sync(() => {
+          Effect.gen(function* () {
+            yield* runFlushOnce(true);
             flushFiber = undefined;
-            flushUnsafe();
-            scheduleFlush();
+            if (!closed && buffer.length > 0) {
+              if (shouldFlushImmediately()) {
+                triggerImmediateFlush();
+              } else {
+                scheduleFlush();
+              }
+            }
           }),
         ),
         Effect.withTracerEnabled(false),
@@ -390,10 +448,8 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     if (scheduled) {
       yield* Fiber.interrupt(scheduled).pipe(Effect.ignore);
     }
-    yield* Effect.sync(() => {
-      flushUnsafe();
-      scheduleFlush();
-    });
+    yield* runFlushOnce(true);
+    scheduleFlush();
   }).pipe(Effect.withTracerEnabled(false));
 
   const close = Effect.gen(function* () {
@@ -403,7 +459,12 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     if (scheduled) {
       yield* Fiber.interrupt(scheduled).pipe(Effect.ignore);
     }
-    yield* Effect.sync(flushUnsafe);
+    const immediate = immediateFlushFiber;
+    if (immediate) {
+      yield* Fiber.await(immediate).pipe(Effect.ignore);
+      immediateFlushFiber = undefined;
+    }
+    yield* runFlushOnce(true);
   }).pipe(Effect.withTracerEnabled(false));
 
   yield* Effect.addFinalizer(() => close.pipe(Effect.ignore));
@@ -422,18 +483,14 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
         }
         buffer.push({ line, bytes });
         bufferedBytes += bytes;
-        if (flushFailed) {
-          trimRetryBuffer();
+        if (flushFailed || inFlightBytes > 0) {
+          trimBufferedRecords();
         }
-        if (
-          !flushFailed &&
-          (batchWindowMs <= 0 ||
-            buffer.length >= FLUSH_BUFFER_THRESHOLD ||
-            bufferedBytes >= maxBufferedBytes)
-        ) {
-          flushUnsafe();
+        if (shouldFlushImmediately()) {
+          triggerImmediateFlush();
+        } else {
+          scheduleFlush();
         }
-        scheduleFlush();
       } catch {
         return;
       }

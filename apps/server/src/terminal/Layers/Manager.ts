@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   DEFAULT_TERMINAL_ID,
   type TerminalEvent,
@@ -1132,8 +1134,23 @@ function sanitizeTerminalHistoryChunk(
       continue;
     }
 
-    append(input[index] ?? "");
+    const plainStart = index;
     index += 1;
+    while (index < input.length) {
+      const nextCode = input.charCodeAt(index);
+      if (
+        nextCode === 0x1b ||
+        nextCode === 0x9b ||
+        nextCode === 0x9d ||
+        nextCode === 0x90 ||
+        nextCode === 0x9e ||
+        nextCode === 0x9f
+      ) {
+        break;
+      }
+      index += 1;
+    }
+    append(input.slice(plainStart, index));
   }
 
   return result(null);
@@ -2005,10 +2022,14 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     // overwrites newer history or brings back a deleted file.
     let persistVersion = 0;
     const writtenVersions = new Map<string, number>();
+    const writtenHistoryDigests = new Map<string, string>();
     const pendingPersists = new Map<
       string,
       { history: string; version: number; timer: Fiber.Fiber<void, never> | null }
     >();
+
+    const historyDigestOf = (history: string): string =>
+      `${history.length}:${createHash("sha256").update(history).digest("hex")}`;
 
     const persistWorker = yield* makeKeyedCoalescingWorker<
       string,
@@ -2020,21 +2041,33 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       process: Effect.fn("terminal.persistHistoryWorker")(function* (sessionKey, request) {
         if (request.version <= (writtenVersions.get(sessionKey) ?? -1)) return;
         writtenVersions.set(sessionKey, request.version);
+        const digest = historyDigestOf(request.history);
+        if (writtenHistoryDigests.get(sessionKey) === digest) return;
 
         const [threadId, terminalId] = sessionKey.split("\u0000");
         if (!threadId || !terminalId) {
           return;
         }
 
-        yield* fileSystem.writeFileString(historyPath(threadId, terminalId), request.history).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("failed to persist terminal history", {
-              threadId,
-              terminalId,
-              error,
-            }),
-          ),
-        );
+        const wrote = yield* fileSystem
+          .writeFileString(historyPath(threadId, terminalId), request.history)
+          .pipe(
+            Effect.as(true),
+            Effect.catch((error) =>
+              Effect.logWarning("failed to persist terminal history", {
+                threadId,
+                terminalId,
+                error,
+              }).pipe(Effect.as(false)),
+            ),
+          );
+        if (wrote) {
+          writtenHistoryDigests.set(sessionKey, digest);
+        } else {
+          // A partial write may have altered disk contents; clear the cached
+          // digest so a subsequent Clear or retry always overwrites disk.
+          writtenHistoryDigests.delete(sessionKey);
+        }
       }),
     });
 
@@ -2117,6 +2150,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       yield* takePendingPersist(sessionKey);
       persistVersion += 1;
       writtenVersions.set(sessionKey, persistVersion);
+      writtenHistoryDigests.delete(sessionKey);
       yield* persistWorker.drainKey(sessionKey);
     });
 
@@ -2560,6 +2594,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           for (const session of toEvict) {
             const key = toSessionKey(session.threadId, session.terminalId);
             sessions.delete(key);
+            writtenHistoryDigests.delete(key);
           }
 
           return [toEvict, { ...state, sessions }] as const;
@@ -2826,6 +2861,32 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           }
 
           session.pendingProcessEventIndex += 1;
+          let eventData = nextEvent.type === "output" ? nextEvent.data : "";
+          if (
+            nextEvent.type === "output" &&
+            !eventData.includes("\u001b]") &&
+            !eventData.includes("\u009d")
+          ) {
+            // Merge consecutive queued output chunks sharing the same command
+            // generation so bursty PTY output sanitizes and publishes once,
+            // while never merging past OSC command-completion markers.
+            const MAX_COALESCED_OUTPUT_CHARS = 64 * 1024;
+            while (session.pendingProcessEventIndex < session.pendingProcessEvents.length) {
+              const queued = session.pendingProcessEvents[session.pendingProcessEventIndex];
+              if (
+                !queued ||
+                queued.type !== "output" ||
+                queued.commandGeneration !== nextEvent.commandGeneration ||
+                queued.data.includes("\u001b]") ||
+                queued.data.includes("\u009d") ||
+                eventData.length + queued.data.length > MAX_COALESCED_OUTPUT_CHARS
+              ) {
+                break;
+              }
+              eventData += queued.data;
+              session.pendingProcessEventIndex += 1;
+            }
+          }
           if (session.pendingProcessEventIndex >= session.pendingProcessEvents.length) {
             session.pendingProcessEvents = [];
             session.pendingProcessEventIndex = 0;
@@ -2836,7 +2897,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             session.subprocessPoll.outputSincePoll = true;
             const sanitized = sanitizeTerminalHistoryChunk(
               session.pendingHistoryControlSequence,
-              nextEvent.data,
+              eventData,
               nextEvent.commandGeneration,
             );
             // A sequence that never ends (a broken program) is dropped
@@ -3008,7 +3069,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               threadId: session.threadId,
               terminalId: session.terminalId,
               history: sanitized.visibleText.length > 0 ? session.history : null,
-              data: nextEvent.data,
+              data: eventData,
               commandFinished: commandFinished || (runEnd !== null && runEnd.run.mode === "run"),
               runEnd,
               insertEnd,
@@ -3548,6 +3609,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         }
         const sessions = new Map(state.sessions);
         sessions.delete(key);
+        writtenHistoryDigests.delete(key);
         return [undefined, { ...state, sessions }] as const;
       });
       yield* removeCatalogTab(threadId, terminalId);

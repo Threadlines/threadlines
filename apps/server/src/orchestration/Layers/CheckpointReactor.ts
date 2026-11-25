@@ -28,11 +28,12 @@ import {
 } from "@threadlines/shared/threadParticipants";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { settingsChangeTurnsRevertKeeps } from "../settingsChangeDecisions.ts";
 import { turnAdmission } from "../turnAdmission.ts";
 import { checkpointHandover } from "../checkpointHandover.ts";
-import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
+import { makeKeyedDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { normalizeWorkspacePath } from "@threadlines/shared/path";
 import { compareTranscriptOrder } from "@threadlines/shared/transcriptOrder";
 
@@ -1076,24 +1077,50 @@ const make = Effect.gen(function* () {
         0,
       );
       const baselineCheckpointRef = checkpointRefForThreadTurn(thread.id, currentTurnCount);
-      const baselineExists = yield* checkpointStore.hasCheckpointRef({
-        cwd: checkpointCwd,
-        checkpointRef: baselineCheckpointRef,
-      });
       const preTurnCheckpointRef = checkpointPreTurnRefForThreadTurn(thread.id, turnId);
-      const preTurnCheckpointExists = yield* checkpointStore.hasCheckpointRef({
-        cwd: checkpointCwd,
-        checkpointRef: preTurnCheckpointRef,
-      });
-      yield* captureBaselineWith({
-        cwd: checkpointCwd,
-        threadId: thread.id,
-        turnCount: currentTurnCount,
-        baselineRef: baselineCheckpointRef,
-        baselineExists,
-        preTurnRef: preTurnCheckpointExists ? undefined : preTurnCheckpointRef,
-        createdAt: event.createdAt,
-      });
+      yield* checkpointHandover.withPreTurnLock(thread.id, (preTurn) =>
+        Effect.gen(function* () {
+          const baselineExists = yield* checkpointStore.hasCheckpointRef({
+            cwd: checkpointCwd,
+            checkpointRef: baselineCheckpointRef,
+          });
+          // Only consume `pre/turn/<N+1>` when ProviderCommandReactor actively
+          // dispatched this turn start to the provider: a failed request or a
+          // direct runtime `turn.started` after checkout edits must take a fresh
+          // `pre/<turnId>` baseline instead of inheriting an older capture.
+          const latest = preTurn.getLatest();
+          if (
+            baselineExists &&
+            latest !== null &&
+            latest.sentToProvider &&
+            latest.consumedByTurnId === null &&
+            latest.cwd === checkpointCwd &&
+            latest.turnCount === currentTurnCount + 1
+          ) {
+            const latestExists = yield* checkpointStore.hasCheckpointRef({
+              cwd: checkpointCwd,
+              checkpointRef: latest.checkpointRef as CheckpointRef,
+            });
+            if (latestExists) {
+              latest.consumedByTurnId = turnId;
+              return;
+            }
+          }
+          const preTurnCheckpointExists = yield* checkpointStore.hasCheckpointRef({
+            cwd: checkpointCwd,
+            checkpointRef: preTurnCheckpointRef,
+          });
+          yield* captureBaselineWith({
+            cwd: checkpointCwd,
+            threadId: thread.id,
+            turnCount: currentTurnCount,
+            baselineRef: baselineCheckpointRef,
+            baselineExists,
+            preTurnRef: preTurnCheckpointExists ? undefined : preTurnCheckpointRef,
+            createdAt: event.createdAt,
+          });
+        }),
+      );
     },
   );
 
@@ -1159,19 +1186,13 @@ const make = Effect.gen(function* () {
       (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
       0,
     );
+    const nextTurnCount = currentTurnCount + 1;
     const baselineCheckpointRef = checkpointRefForThreadTurn(threadId, currentTurnCount);
-    const baselineExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
     const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
       threadId,
-      currentTurnCount + 1,
+      nextTurnCount,
     );
-    const preTurnCountCheckpointExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: checkpointCwd,
-      checkpointRef: preTurnCountCheckpointRef,
-    });
+    const requestKey = `${event.commandId ?? ""}:${event.payload.messageId}:${event.payload.createdAt}`;
     // A snapshot left by an earlier request that never became a turn (the
     // provider failed to start) would stretch this turn's diff back to that
     // attempt, claiming everything that changed in the checkout since. Each
@@ -1185,141 +1206,212 @@ const make = Effect.gen(function* () {
       (event.type === "thread.message-sent" ||
         thread.messages.find((message) => message.id === event.payload.messageId)?.createdAt !==
           event.payload.createdAt);
-    yield* captureBaselineWith({
-      cwd: checkpointCwd,
-      threadId,
-      turnCount: currentTurnCount,
-      baselineRef: baselineCheckpointRef,
-      baselineExists,
-      preTurnRef:
-        !preTurnCountCheckpointExists || retakesSnapshot ? preTurnCountCheckpointRef : undefined,
-      createdAt: event.occurredAt,
-    });
+
+    yield* checkpointHandover.withPreTurnLock(threadId, (preTurn) =>
+      Effect.gen(function* () {
+        const baselineExists = yield* checkpointStore.hasCheckpointRef({
+          cwd: checkpointCwd,
+          checkpointRef: baselineCheckpointRef,
+        });
+        const preTurnCountCheckpointExists = yield* checkpointStore.hasCheckpointRef({
+          cwd: checkpointCwd,
+          checkpointRef: preTurnCountCheckpointRef,
+        });
+        const latest = preTurn.getLatest();
+        const alreadyCapturedForRequest =
+          latest !== null &&
+          latest.consumedByTurnId === null &&
+          latest.cwd === checkpointCwd &&
+          latest.turnCount === nextTurnCount &&
+          latest.requestKey === requestKey &&
+          preTurnCountCheckpointExists;
+        const shouldCapturePreTurn =
+          !alreadyCapturedForRequest && (!preTurnCountCheckpointExists || retakesSnapshot);
+        yield* captureBaselineWith({
+          cwd: checkpointCwd,
+          threadId,
+          turnCount: currentTurnCount,
+          baselineRef: baselineCheckpointRef,
+          baselineExists,
+          preTurnRef: shouldCapturePreTurn ? preTurnCountCheckpointRef : undefined,
+          createdAt: event.occurredAt,
+        });
+        if (shouldCapturePreTurn) {
+          preTurn.setLatest({
+            cwd: checkpointCwd,
+            turnCount: nextTurnCount,
+            requestKey,
+            checkpointRef: preTurnCountCheckpointRef,
+            sentToProvider: false,
+            consumedByTurnId: null,
+          });
+        }
+      }),
+    );
   });
+
+  const checkoutRevertLocks = new Map<string, Semaphore.Semaphore>();
+  const revertLockFor = (cwd: string) =>
+    Effect.gen(function* () {
+      const normalized = normalizeWorkspacePath(cwd);
+      const existing = checkoutRevertLocks.get(normalized);
+      if (existing !== undefined) {
+        return existing;
+      }
+      const created = yield* Semaphore.make(1);
+      checkoutRevertLocks.set(normalized, created);
+      return created;
+    });
 
   const handleRevertRequested = Effect.fn("handleRevertRequested")(function* (
     event: Extract<OrchestrationEvent, { type: "thread.checkpoint-revert-requested" }>,
   ) {
-    const now = DateTime.formatIso(yield* DateTime.now);
-    const failRevert = (detail: string) =>
-      appendRevertFailureActivity({
+    const runRevert = Effect.gen(function* () {
+      const now = DateTime.formatIso(yield* DateTime.now);
+      const failRevert = (detail: string) =>
+        appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail,
+          createdAt: now,
+        }).pipe(
+          Effect.catch(() => Effect.void),
+          Effect.asVoid,
+        );
+
+      const contextResult = yield* checkpointRevert.resolveContext({
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
-        detail,
-        createdAt: now,
-      }).pipe(
-        Effect.catch(() => Effect.void),
-        Effect.asVoid,
-      );
+      });
+      if (contextResult.kind === "unavailable") {
+        yield* failRevert(contextResult.detail);
+        return;
+      }
+      const context = contextResult.context;
 
-    const contextResult = yield* checkpointRevert.resolveContext({
-      threadId: event.payload.threadId,
-      turnCount: event.payload.turnCount,
-    });
-    if (contextResult.kind === "unavailable") {
-      yield* failRevert(contextResult.detail);
-      return;
-    }
-    const context = contextResult.context;
-
-    const rolledBackTurns = Math.max(0, context.currentTurnCount - event.payload.turnCount);
-    const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
-      thread: context.thread,
-      targetTurnCount: event.payload.turnCount,
-    });
-    // An agent that forgets by starting over (Antigravity) is stopped, and
-    // its conversation forgotten, before any file is restored: a command it
-    // still ran could otherwise write over a restored file. Nothing is
-    // started for an agent that isn't running.
-    // The lookup fails only when the thread's provider instance is no longer
-    // registered (removed or turned off). Removing an instance ends its
-    // runtimes, so nothing of it can still write: the files are restored as
-    // for an agent that isn't running.
-    const capabilities =
-      rolledBackTurns > 0
+      const rolledBackTurns = Math.max(0, context.currentTurnCount - event.payload.turnCount);
+      const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
+        thread: context.thread,
+        targetTurnCount: event.payload.turnCount,
+      });
+      // An agent that forgets by starting over (Antigravity) is stopped, and
+      // its conversation forgotten, before any file is restored: a command it
+      // still ran could otherwise write over a restored file. Nothing is
+      // started for an agent that isn't running.
+      // The lookup fails only when the thread's provider instance is no longer
+      // registered (removed or turned off). Removing an instance ends its
+      // runtimes, so nothing of it can still write: the files are restored as
+      // for an agent that isn't running.
+      const capabilities =
+        rolledBackTurns > 0
+          ? yield* Effect.result(
+              providerService.getCapabilities(
+                context.thread.session?.providerInstanceId ??
+                  context.thread.modelSelection.instanceId,
+              ),
+            )
+          : undefined;
+      const startsOver =
+        capabilities?._tag === "Success" &&
+        capabilities.success.conversationRollback === "new-session";
+      // Undefined: not such an agent. A failure means it couldn't be found or
+      // stopped: something it runs could still write, so no file is restored.
+      const stopped = startsOver
         ? yield* Effect.result(
-            providerService.getCapabilities(
-              context.thread.session?.providerInstanceId ??
-                context.thread.modelSelection.instanceId,
-            ),
+            providerService.rollbackConversation({
+              threadId: event.payload.threadId,
+              numTurns: rolledBackTurns,
+              ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
+            }),
           )
         : undefined;
-    const startsOver =
-      capabilities?._tag === "Success" &&
-      capabilities.success.conversationRollback === "new-session";
-    // Undefined: not such an agent. A failure means it couldn't be found or
-    // stopped: something it runs could still write, so no file is restored.
-    const stopped = startsOver
-      ? yield* Effect.result(
-          providerService.rollbackConversation({
-            threadId: event.payload.threadId,
-            numTurns: rolledBackTurns,
-            ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
-          }),
-        )
-      : undefined;
-    if (stopped !== undefined && stopped._tag === "Failure") {
-      yield* Effect.logWarning("checkpoint revert could not stop the agent", {
+      if (stopped !== undefined && stopped._tag === "Failure") {
+        yield* Effect.logWarning("checkpoint revert could not stop the agent", {
+          threadId: event.payload.threadId,
+          cause: String(stopped.failure),
+        });
+        yield* failRevert(
+          "The agent couldn't be stopped, so no file was restored: something it runs could still write to them. Stop it and try again.",
+        );
+        return;
+      }
+      const startedOver =
+        stopped?._tag === "Success" ? stopped.success.conversationRolledBack : undefined;
+
+      const restored = yield* Effect.result(checkpointRevert.applyRevert(context));
+      const revertOutcome = restored._tag === "Success" ? restored.success : null;
+      if (revertOutcome === null) {
+        const filesDetail =
+          restored._tag === "Failure"
+            ? restored.failure.message
+            : `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`;
+        // Both facts: the agent already forgot, the files stayed as they were.
+        yield* failRevert(
+          startedOver === true
+            ? `${filesDetail} The agent's conversation was already reset: it no longer remembers the turns after this point.`
+            : filesDetail,
+        );
+        return;
+      }
+
+      // Invalidate the workspace entry cache so the @-mention file picker
+      // reflects the reverted filesystem state.
+      yield* workspaceEntries.invalidate(context.cwd);
+
+      yield* appendRevertOutcomeActivity({
         threadId: event.payload.threadId,
-        cause: String(stopped.failure),
-      });
-      yield* failRevert(
-        "The agent couldn't be stopped, so no file was restored: something it runs could still write to them. Stop it and try again.",
-      );
-      return;
-    }
-    const startedOver =
-      stopped?._tag === "Success" ? stopped.success.conversationRolledBack : undefined;
+        turnCount: event.payload.turnCount,
+        outcome: revertOutcome,
+        createdAt: now,
+      }).pipe(Effect.catch(() => Effect.void));
 
-    const restored = yield* Effect.result(checkpointRevert.applyRevert(context));
-    const revertOutcome = restored._tag === "Success" ? restored.success : null;
-    if (revertOutcome === null) {
-      const filesDetail =
-        restored._tag === "Failure"
-          ? restored.failure.message
-          : `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`;
-      // Both facts: the agent already forgot, the files stayed as they were.
-      yield* failRevert(
-        startedOver === true
-          ? `${filesDetail} The agent's conversation was already reset: it no longer remembers the turns after this point.`
-          : filesDetail,
-      );
-      return;
-    }
-
-    // Invalidate the workspace entry cache so the @-mention file picker
-    // reflects the reverted filesystem state.
-    yield* workspaceEntries.invalidate(context.cwd);
-
-    yield* appendRevertOutcomeActivity({
-      threadId: event.payload.threadId,
-      turnCount: event.payload.turnCount,
-      outcome: revertOutcome,
-      createdAt: now,
-    }).pipe(Effect.catch(() => Effect.void));
-
-    if (rolledBackTurns > 0) {
-      if (startsOver || context.hasProviderSession) {
-        const rollback =
-          startedOver !== undefined
-            ? { conversationRolledBack: startedOver }
-            : yield* providerService.rollbackConversation({
+      if (rolledBackTurns > 0) {
+        if (startsOver || context.hasProviderSession) {
+          const rollback =
+            startedOver !== undefined
+              ? { conversationRolledBack: startedOver }
+              : yield* providerService.rollbackConversation({
+                  threadId: event.payload.threadId,
+                  numTurns: rolledBackTurns,
+                  ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
+                });
+          if (!rollback.conversationRolledBack) {
+            yield* orchestrationEngine
+              .dispatch({
+                type: "thread.activity.append",
+                commandId: serverCommandId("checkpoint-revert-rollback-unsupported"),
                 threadId: event.payload.threadId,
-                numTurns: rolledBackTurns,
-                ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
-              });
-        if (!rollback.conversationRolledBack) {
+                activity: {
+                  id: EventId.make(crypto.randomUUID()),
+                  tone: "warning",
+                  kind: "checkpoint.revert.rollback-unsupported",
+                  summary:
+                    "Files were reverted, but this agent can't forget the reverted turns: it still remembers them.",
+                  payload: {
+                    turnCount: event.payload.turnCount,
+                    rolledBackTurns,
+                  },
+                  turnId: null,
+                  createdAt: now,
+                },
+                createdAt: now,
+              })
+              .pipe(Effect.catch(() => Effect.void));
+          }
+        } else {
+          // Files can revert without a live session, but provider conversation
+          // state cannot; surface it instead of failing the whole revert.
           yield* orchestrationEngine
             .dispatch({
               type: "thread.activity.append",
-              commandId: serverCommandId("checkpoint-revert-rollback-unsupported"),
+              commandId: serverCommandId("checkpoint-revert-rollback-skipped"),
               threadId: event.payload.threadId,
               activity: {
                 id: EventId.make(crypto.randomUUID()),
                 tone: "warning",
-                kind: "checkpoint.revert.rollback-unsupported",
+                kind: "checkpoint.revert.rollback-skipped",
                 summary:
-                  "Files were reverted, but this agent can't forget the reverted turns: it still remembers them.",
+                  "Provider conversation was not rolled back: no active session. The provider may still remember reverted turns.",
                 payload: {
                   turnCount: event.payload.turnCount,
                   rolledBackTurns,
@@ -1331,71 +1423,71 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.catch(() => Effect.void));
         }
-      } else {
-        // Files can revert without a live session, but provider conversation
-        // state cannot; surface it instead of failing the whole revert.
-        yield* orchestrationEngine
-          .dispatch({
-            type: "thread.activity.append",
-            commandId: serverCommandId("checkpoint-revert-rollback-skipped"),
-            threadId: event.payload.threadId,
-            activity: {
-              id: EventId.make(crypto.randomUUID()),
-              tone: "warning",
-              kind: "checkpoint.revert.rollback-skipped",
-              summary:
-                "Provider conversation was not rolled back: no active session. The provider may still remember reverted turns.",
-              payload: {
-                turnCount: event.payload.turnCount,
-                rolledBackTurns,
-              },
-              turnId: null,
-              createdAt: now,
-            },
-            createdAt: now,
-          })
-          .pipe(Effect.catch(() => Effect.void));
       }
+
+      const staleCheckpointRefs = context.thread.checkpoints
+        .filter((checkpoint) => checkpoint.checkpointTurnCount > event.payload.turnCount)
+        .flatMap((checkpoint) => [
+          checkpoint.checkpointRef,
+          checkpointPreTurnRefForThreadTurn(event.payload.threadId, checkpoint.turnId),
+          checkpointPreTurnRefForThreadTurnCount(
+            event.payload.threadId,
+            checkpoint.checkpointTurnCount,
+          ),
+        ]);
+
+      if (staleCheckpointRefs.length > 0) {
+        yield* checkpointStore.deleteCheckpointRefs({
+          cwd: context.cwd,
+          checkpointRefs: staleCheckpointRefs,
+        });
+      }
+      yield* checkpointHandover.clearPreTurn(event.payload.threadId);
+
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.revert.complete",
+          commandId: serverCommandId("checkpoint-revert-complete"),
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          keptTurnIds: settingsChangeTurnsRevertKeeps(context.thread, event.payload.turnCount),
+          createdAt: now,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            appendRevertFailureActivity({
+              threadId: event.payload.threadId,
+              turnCount: event.payload.turnCount,
+              detail: error.message,
+              createdAt: now,
+            }),
+          ),
+          Effect.asVoid,
+        );
+    });
+
+    // Serialize reverts per physical checkout across concurrent thread lanes so
+    // two threads sharing one working tree cannot interleave selective file edits.
+    const threadForLock = yield* resolveThreadDetail(event.payload.threadId);
+    const projectsForLock = threadForLock
+      ? yield* resolveThreadProjects(threadForLock.projectId)
+      : [];
+    const lockCwd = threadForLock
+      ? yield* resolveCheckpointCwd({
+          threadId: event.payload.threadId,
+          thread: threadForLock,
+          projects: projectsForLock,
+          preferSessionRuntime: true,
+        })
+      : null;
+
+    if (!lockCwd) {
+      yield* runRevert;
+      return;
     }
 
-    const staleCheckpointRefs = context.thread.checkpoints
-      .filter((checkpoint) => checkpoint.checkpointTurnCount > event.payload.turnCount)
-      .flatMap((checkpoint) => [
-        checkpoint.checkpointRef,
-        checkpointPreTurnRefForThreadTurn(event.payload.threadId, checkpoint.turnId),
-        checkpointPreTurnRefForThreadTurnCount(
-          event.payload.threadId,
-          checkpoint.checkpointTurnCount,
-        ),
-      ]);
-
-    if (staleCheckpointRefs.length > 0) {
-      yield* checkpointStore.deleteCheckpointRefs({
-        cwd: context.cwd,
-        checkpointRefs: staleCheckpointRefs,
-      });
-    }
-
-    yield* orchestrationEngine
-      .dispatch({
-        type: "thread.revert.complete",
-        commandId: serverCommandId("checkpoint-revert-complete"),
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        keptTurnIds: settingsChangeTurnsRevertKeeps(context.thread, event.payload.turnCount),
-        createdAt: now,
-      })
-      .pipe(
-        Effect.catch((error) =>
-          appendRevertFailureActivity({
-            threadId: event.payload.threadId,
-            turnCount: event.payload.turnCount,
-            detail: error.message,
-            createdAt: now,
-          }),
-        ),
-        Effect.asVoid,
-      );
+    const revertLock = yield* revertLockFor(lockCwd);
+    yield* revertLock.withPermits(1)(runRevert);
   });
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (event: OrchestrationEvent) {
@@ -1528,7 +1620,10 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const worker = yield* makeKeyedDrainableWorker(processInputSafely, {
+    keyOf: (input) => (input.source === "domain" ? input.event.aggregateId : input.event.threadId),
+    maxConcurrency: 4,
+  });
 
   const start: CheckpointReactorShape["start"] = Effect.fn("start")(function* () {
     yield* Effect.forkScoped(

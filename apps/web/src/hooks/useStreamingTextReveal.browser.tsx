@@ -71,7 +71,41 @@ describe("useStreamingTextReveal", () => {
       await expect.element(screen.getByTestId("state")).toMatchTextContent("settled");
       expect(body.textContent).toBe(`${FULL_TEXT}Trailing block`);
       expect(body.querySelectorAll<HTMLElement>("p")[1]?.style.display).toBe("");
+
+      // Once settled, no animation frames continue firing while idle.
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame");
+      vi.advanceTimersByTime(300);
+      expect(rafSpy).not.toHaveBeenCalled();
+      rafSpy.mockRestore();
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not schedule animation frames for settled messages or caught-up pauses", async () => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame", "performance"] });
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame");
+    try {
+      function SettledHarness() {
+        const ref = useRef<HTMLDivElement>(null);
+        const { revealing } = useStreamingTextReveal(ref, false);
+        return (
+          <div>
+            <div ref={ref} data-testid="settled-body">
+              <p>{FULL_TEXT}</p>
+            </div>
+            <span data-testid="settled-state">{revealing ? "revealing" : "settled"}</span>
+          </div>
+        );
+      }
+
+      const screen = await render(<SettledHarness />);
+      await expect.element(screen.getByTestId("settled-state")).toMatchTextContent("settled");
+      expect(screen.getByTestId("settled-body").element().textContent).toBe(FULL_TEXT);
+      vi.advanceTimersByTime(300);
+      expect(rafSpy).not.toHaveBeenCalled();
+    } finally {
+      rafSpy.mockRestore();
       vi.useRealTimers();
     }
   });

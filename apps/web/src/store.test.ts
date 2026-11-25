@@ -383,10 +383,13 @@ describe("thread detail loaded", () => {
 
     const loaded = syncServerThreadDetail(fromEvents, detail, localEnvironmentId);
     expect(selectThreadDetailLoaded(loaded, threadRef)).toBe(true);
-    // Its detail feed ended, or the thread is gone: no longer known whole.
-    expect(selectThreadDetailLoaded(markThreadDetailUnloaded(loaded, threadRef), threadRef)).toBe(
-      false,
-    );
+    // Its detail feed ended, or the thread is gone: no longer known whole, and
+    // detail slices are released while the thread shell stays in the sidebar.
+    const unloaded = markThreadDetailUnloaded(loaded, threadRef);
+    expect(selectThreadDetailLoaded(unloaded, threadRef)).toBe(false);
+    expect(localEnvironmentStateOf(unloaded).threadShellById[threadId]).toBeDefined();
+    expect(localEnvironmentStateOf(unloaded).messagesByThreadId[threadId]).toBeUndefined();
+    expect(localEnvironmentStateOf(unloaded).activitiesByThreadId[threadId]).toBeUndefined();
     const deleted = applyOrchestrationEvent(
       loaded,
       makeEvent("thread.deleted", { threadId, deletedAt: "2026-02-27T00:00:03.000Z" }),

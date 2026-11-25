@@ -15,6 +15,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
@@ -342,6 +343,7 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
 
   const sink = sinkResult.sink;
   const scope = yield* Scope.make();
+  const flushSemaphore = yield* Semaphore.make(1);
   const initialRetryDelayMs =
     input.batchWindowMs > 0 ? input.batchWindowMs : DEFAULT_BATCH_WINDOW_MS;
   let closed = false;
@@ -353,89 +355,111 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
   let bufferedBytes = 0;
   let buffer: Array<{ readonly line: string; readonly bytes: number }> = [];
 
-  const flushUnsafe = ():
-    | { ok: true; attempted: boolean }
+  type FlushAttemptResult =
+    | { readonly ok: true; readonly attempted: boolean }
     | {
-        ok: false;
-        error: unknown;
-        droppedRecords: number;
-        droppedBytes: number;
-      } => {
-    if (buffer.length === 0) {
-      return { ok: true, attempted: false };
-    }
+        readonly ok: false;
+        readonly error: unknown;
+        readonly droppedRecords: number;
+        readonly droppedBytes: number;
+      };
 
-    const messages = buffer;
-    buffer = [];
-    bufferedBytes = 0;
-    let persistedCount = 0;
-
-    try {
-      while (persistedCount < messages.length) {
-        const firstMessage = messages[persistedCount];
-        if (!firstMessage) {
-          break;
+  const runFlushAsync = (allowDuringBackoff: boolean) =>
+    flushSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        if (buffer.length === 0 || (!allowDuringBackoff && recovering)) {
+          return {
+            result: { ok: true as const, attempted: false } satisfies FlushAttemptResult,
+            reportFailure: false,
+          };
         }
-        let nextIndex = persistedCount + 1;
-        let chunkBytes = firstMessage.bytes;
-        while (nextIndex < messages.length) {
-          const nextMessage = messages[nextIndex];
-          if (!nextMessage || chunkBytes + nextMessage.bytes > input.maxBytes) {
+
+        const messages = buffer;
+        buffer = [];
+        bufferedBytes = 0;
+        let persistedCount = 0;
+        let failureError: unknown = undefined;
+        let failed = false;
+
+        while (persistedCount < messages.length) {
+          const firstMessage = messages[persistedCount];
+          if (!firstMessage) {
             break;
           }
-          chunkBytes += nextMessage.bytes;
-          nextIndex += 1;
-        }
-        sink.write(
-          messages
+          let nextIndex = persistedCount + 1;
+          let chunkBytes = firstMessage.bytes;
+          while (nextIndex < messages.length) {
+            const nextMessage = messages[nextIndex];
+            if (!nextMessage || chunkBytes + nextMessage.bytes > input.maxBytes) {
+              break;
+            }
+            chunkBytes += nextMessage.bytes;
+            nextIndex += 1;
+          }
+          const chunk = messages
             .slice(persistedCount, nextIndex)
             .map((message) => message.line)
-            .join(""),
-        );
-        input.bufferBudget.release(chunkBytes);
-        persistedCount = nextIndex;
-      }
-      return { ok: true, attempted: true };
-    } catch (error) {
-      buffer = [...messages.slice(persistedCount), ...buffer];
-      bufferedBytes = buffer.reduce((total, message) => total + message.bytes, 0);
-      let droppedRecords = 0;
-      let droppedBytes = 0;
-      while (input.bufferBudget.usedBytes > input.bufferBudget.maxBytes && buffer.length > 0) {
-        const dropped = buffer.pop();
-        if (!dropped) {
-          break;
+            .join("");
+          const writeOutcome = yield* Effect.tryPromise(() => sink.writeAsync(chunk)).pipe(
+            Effect.as({ ok: true as const }),
+            Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+          );
+          if (!writeOutcome.ok) {
+            failed = true;
+            failureError = writeOutcome.error;
+            break;
+          }
+          input.bufferBudget.release(chunkBytes);
+          persistedCount = nextIndex;
         }
-        bufferedBytes -= dropped.bytes;
-        input.bufferBudget.release(dropped.bytes);
-        droppedRecords += 1;
-        droppedBytes += dropped.bytes;
-      }
-      return { ok: false, error, droppedRecords, droppedBytes };
-    }
-  };
 
-  const runFlushUnsafe = () => {
-    const result = flushUnsafe();
-    if (result.ok) {
-      if (result.attempted) {
-        recovering = false;
-        failureReported = false;
-        nextRetryDelayMs = initialRetryDelayMs;
-      }
-      return { result, reportFailure: false };
-    }
+        if (!failed) {
+          recovering = false;
+          failureReported = false;
+          nextRetryDelayMs = initialRetryDelayMs;
+          return {
+            result: { ok: true as const, attempted: true } satisfies FlushAttemptResult,
+            reportFailure: false,
+          };
+        }
 
-    nextRetryDelayMs = recovering
-      ? Math.min(MAX_RETRY_DELAY_MS, nextRetryDelayMs * 2)
-      : initialRetryDelayMs;
-    recovering = true;
-    const reportFailure = !failureReported;
-    failureReported = true;
-    return { result, reportFailure };
-  };
+        buffer = [...messages.slice(persistedCount), ...buffer];
+        bufferedBytes = buffer.reduce((total, message) => total + message.bytes, 0);
+        let droppedRecords = 0;
+        let droppedBytes = 0;
+        while (input.bufferBudget.usedBytes > input.bufferBudget.maxBytes && buffer.length > 0) {
+          const dropped = buffer.pop();
+          if (!dropped) {
+            break;
+          }
+          bufferedBytes -= dropped.bytes;
+          input.bufferBudget.release(dropped.bytes);
+          droppedRecords += 1;
+          droppedBytes += dropped.bytes;
+        }
 
-  const reportFlushResult = (outcome: ReturnType<typeof runFlushUnsafe>) =>
+        nextRetryDelayMs = recovering
+          ? Math.min(MAX_RETRY_DELAY_MS, nextRetryDelayMs * 2)
+          : initialRetryDelayMs;
+        recovering = true;
+        const reportFailure = !failureReported;
+        failureReported = true;
+        return {
+          result: {
+            ok: false as const,
+            error: failureError,
+            droppedRecords,
+            droppedBytes,
+          } satisfies FlushAttemptResult,
+          reportFailure,
+        };
+      }).pipe(Effect.uninterruptible, Effect.withTracerEnabled(false)),
+    );
+
+  const reportFlushResult = (outcome: {
+    readonly result: FlushAttemptResult;
+    readonly reportFailure: boolean;
+  }) =>
     outcome.result.ok || !outcome.reportFailure
       ? Effect.void
       : logWarning("provider event log batch flush failed", {
@@ -445,7 +469,7 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
           droppedBytes: outcome.result.droppedBytes,
         });
 
-  const flush = Effect.sync(runFlushUnsafe).pipe(
+  const flush = runFlushAsync(true).pipe(
     Effect.flatMap(reportFlushResult),
     Effect.withTracerEnabled(false),
   );
@@ -456,17 +480,14 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
       Effect.sleep(`${delayMs} millis`).pipe(
         Effect.andThen(
           Effect.gen(function* () {
-            const outcome = yield* Effect.sync(() => {
-              flushScheduled = false;
-              return runFlushUnsafe();
-            });
+            const outcome = yield* runFlushAsync(true);
             yield* reportFlushResult(outcome);
 
             const retry = yield* Effect.sync(() => {
-              if (closed || buffer.length === 0 || flushScheduled) {
+              if (closed || buffer.length === 0) {
+                flushScheduled = false;
                 return false;
               }
-              flushScheduled = true;
               return true;
             });
             if (retry) {
@@ -487,7 +508,7 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
       const action = yield* Effect.sync(() => {
         if (closed) {
           return {
-            outcome: undefined,
+            flushNow: false,
             schedule: false,
             droppedBytes: 0,
             reportDrop: false,
@@ -500,7 +521,7 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
           const reportOversized = !oversizedRecordWarningReported;
           oversizedRecordWarningReported = true;
           return {
-            outcome: undefined,
+            flushNow: false,
             schedule: false,
             droppedBytes: bytes,
             reportDrop: false,
@@ -510,7 +531,7 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
         const reservation = input.bufferBudget.reserve(bytes, !recovering);
         if (!reservation.reserved) {
           return {
-            outcome: undefined,
+            flushNow: false,
             schedule: false,
             droppedBytes: bytes,
             reportDrop: reservation.reportDrop,
@@ -526,14 +547,9 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
             buffer.length >= FLUSH_BUFFER_THRESHOLD ||
             bufferedBytes >= input.bufferBudget.maxBytes)
         ) {
-          const outcome = runFlushUnsafe();
-          const schedule = !outcome.result.ok && buffer.length > 0 && !flushScheduled;
-          if (schedule) {
-            flushScheduled = true;
-          }
           return {
-            outcome,
-            schedule,
+            flushNow: true,
+            schedule: false,
             droppedBytes: 0,
             reportDrop: false,
             reportOversized: false,
@@ -543,7 +559,7 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
         if (!flushScheduled && (input.batchWindowMs > 0 || recovering)) {
           flushScheduled = true;
           return {
-            outcome: undefined,
+            flushNow: false,
             schedule: true,
             droppedBytes: 0,
             reportDrop: false,
@@ -551,7 +567,7 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
           };
         }
         return {
-          outcome: undefined,
+          flushNow: false,
           schedule: false,
           droppedBytes: 0,
           reportDrop: false,
@@ -575,10 +591,16 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
           droppedBytes: action.droppedBytes,
         });
       }
-      if (action.outcome) {
-        yield* reportFlushResult(action.outcome);
+      let scheduleAfterFlush = action.schedule;
+      if (action.flushNow) {
+        const outcome = yield* runFlushAsync(false);
+        yield* reportFlushResult(outcome);
+        if ((!outcome.result.ok || recovering) && !closed && buffer.length > 0 && !flushScheduled) {
+          flushScheduled = true;
+          scheduleAfterFlush = true;
+        }
       }
-      if (action.schedule) {
+      if (scheduleAfterFlush) {
         yield* scheduleFlush();
       }
     }).pipe(Effect.uninterruptible, Effect.withTracerEnabled(false));

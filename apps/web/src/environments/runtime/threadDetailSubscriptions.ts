@@ -288,8 +288,14 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
     }
   }
 
+  const disconnectedEnvironments = new Set<EnvironmentId>();
+
   function shouldEvict(entry: ThreadDetailSubscriptionEntry): boolean {
-    return entry.refCount === 0 && !isNonIdleThread(entry.environmentId, entry.threadId);
+    return (
+      entry.refCount === 0 &&
+      !disconnectedEnvironments.has(entry.environmentId) &&
+      !isNonIdleThread(entry.environmentId, entry.threadId)
+    );
   }
 
   function attach(entry: ThreadDetailSubscriptionEntry): boolean {
@@ -986,6 +992,7 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
    * wait was for the connection that just got replaced.
    */
   function attachForEnvironment(environmentId: EnvironmentId): void {
+    disconnectedEnvironments.delete(environmentId);
     const environmentEntries = [...entries.values()]
       .filter((entry) => entry.environmentId === environmentId)
       .toSorted(
@@ -997,6 +1004,7 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
       );
     for (const entry of environmentEntries) {
       attach(entry);
+      reconcileEvictionState(entry);
     }
     if (bootGate) {
       for (const [key, ref] of bootGate.heldWarms) {
@@ -1013,10 +1021,14 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
   }
 
   function detachForEnvironment(environmentId: EnvironmentId): void {
+    disconnectedEnvironments.add(environmentId);
     for (const entry of entries.values()) {
       if (entry.environmentId !== environmentId) {
         continue;
       }
+      // Keep already-loaded threads readable while offline instead of letting
+      // the idle timer evict them while the client cannot reload them.
+      clearEviction(entry);
       detach(entry);
       watchConnection(entry);
     }
@@ -1027,6 +1039,7 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
   }
 
   function disposeForEnvironment(environmentId: EnvironmentId): void {
+    disconnectedEnvironments.delete(environmentId);
     for (const entry of entries.values()) {
       if (entry.environmentId === environmentId) {
         disposeByKey(entry.key);
@@ -1108,6 +1121,7 @@ export function createThreadDetailSubscriptions(host: ThreadDetailSubscriptionHo
       bootForegroundHoldTimeoutId = null;
     }
     bootStarted = false;
+    disconnectedEnvironments.clear();
     shellLoadedEnvironments.clear();
     entriesAwaitingShell.clear();
     if (shellWaitCapTimeoutId !== null) {

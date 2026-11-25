@@ -129,6 +129,11 @@ export const ProviderEventLoggersLive = Layer.effect(
       stream: "canonical",
       keepStreamFragments,
     });
+    yield* Effect.addFinalizer(() =>
+      Effect.all([native?.close() ?? Effect.void, canonical?.close() ?? Effect.void], {
+        discard: true,
+      }).pipe(Effect.ignore),
+    );
     return {
       native,
       canonical,

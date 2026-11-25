@@ -260,6 +260,15 @@ interface Rules {
 export const makeScratchIndexes = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const gitVersionCache = new Map<string, string>();
+  const gitSystemAttrCache = new Map<string, string>();
+  const gitExecPathCache = new Map<string, ReadonlyArray<string>>();
+
+  const binaryCacheKey = (env: NodeJS.ProcessEnv): string =>
+    `${env.PATH ?? process.env.PATH ?? ""}\0${env.GIT_EXEC_PATH ?? process.env.GIT_EXEC_PATH ?? ""}`;
+
+  const systemAttrCacheKey = (env: NodeJS.ProcessEnv): string =>
+    `${binaryCacheKey(env)}\0${env.GIT_ATTR_NOSYSTEM ?? process.env.GIT_ATTR_NOSYSTEM ?? ""}\0${env.GIT_CONFIG_NOSYSTEM ?? process.env.GIT_CONFIG_NOSYSTEM ?? ""}\0${env.GIT_CONFIG_SYSTEM ?? process.env.GIT_CONFIG_SYSTEM ?? ""}`;
 
   const hashFile = (filePath: string) =>
     fileSystem.readFile(filePath).pipe(
@@ -309,6 +318,8 @@ export const makeScratchIndexes = Effect.gen(function* () {
     Effect.gen(function* () {
       // Pathspecs here are patterns, even under an agent's literal profile.
       const listingEnv: NodeJS.ProcessEnv = { ...input.env, GIT_LITERAL_PATHSPECS: "0" };
+      const binKey = binaryCacheKey(input.env);
+      const sysKey = systemAttrCacheKey(input.env);
       // Attribute file paths as git itself resolves them, on git 2.42 and later.
       const gitVar = (variable: "GIT_ATTR_GLOBAL" | "GIT_ATTR_SYSTEM") =>
         input.git(["var", variable], input.env).pipe(
@@ -316,21 +327,44 @@ export const makeScratchIndexes = Effect.gen(function* () {
           Effect.map(withoutLineEnding),
           Effect.orElseSucceed(() => ""),
         );
-      const [version, globalVar, systemVar, treeListing, fileListing] = yield* Effect.all(
-        [
-          input.git(["version"], input.env),
-          gitVar("GIT_ATTR_GLOBAL"),
-          gitVar("GIT_ATTR_SYSTEM"),
-          input.tree === null
-            ? Effect.succeed({ stdout: "" })
-            : input.git(["ls-tree", "-r", "-z", "--full-tree", input.tree], input.env, {
-                maxOutputBytes: LISTING_MAX_OUTPUT_BYTES,
-              }),
-          listUntracked(input, listingEnv),
-        ],
-        { concurrency: "unbounded" },
-      );
+      const cachedVersion = gitVersionCache.get(binKey);
+      const cachedSystemVar = gitSystemAttrCache.get(sysKey);
+      const [versionText, globalVar, systemVar, configListing, treeListing, fileListing] =
+        yield* Effect.all(
+          [
+            cachedVersion !== undefined
+              ? Effect.succeed(cachedVersion)
+              : input.git(["version"], input.env).pipe(
+                  Effect.flatMap(completeOutput),
+                  Effect.map((stdout) => stdout.trim()),
+                  Effect.tap((value) =>
+                    Effect.sync(() => {
+                      gitVersionCache.set(binKey, value);
+                    }),
+                  ),
+                ),
+            gitVar("GIT_ATTR_GLOBAL"),
+            cachedSystemVar !== undefined
+              ? Effect.succeed(cachedSystemVar)
+              : gitVar("GIT_ATTR_SYSTEM").pipe(
+                  Effect.tap((value) =>
+                    Effect.sync(() => {
+                      gitSystemAttrCache.set(sysKey, value);
+                    }),
+                  ),
+                ),
+            input.git(["config", "-z", "--list"], input.env),
+            input.tree === null
+              ? Effect.succeed({ stdout: "" })
+              : input.git(["ls-tree", "-r", "-z", "--full-tree", input.tree], input.env, {
+                  maxOutputBytes: LISTING_MAX_OUTPUT_BYTES,
+                }),
+            listUntracked(input, listingEnv),
+          ],
+          { concurrency: "unbounded" },
+        );
 
+      const initialSettings = parseConfigList(yield* completeOutput(configListing));
       const treeEntries = parseEntries(yield* completeOutput(treeListing), 2);
       // `ls-files --others` names a nested repository by its folder, `sub/`.
       const untrackedFiles = splitNul(yield* completeOutput(fileListing)).map((file) =>
@@ -351,75 +385,84 @@ export const makeScratchIndexes = Effect.gen(function* () {
       const globalFiles =
         globalVar.length > 0
           ? [path.resolve(input.cwd, globalVar)]
-          : yield* olderGitGlobalAttributes(input);
+          : olderGitGlobalAttributes(input, initialSettings);
       const systemFiles =
         systemVar.length > 0
           ? [path.resolve(input.cwd, systemVar)]
-          : yield* olderGitSystemAttributes(input);
+          : yield* olderGitSystemAttributes(input, binKey);
       if (globalFiles === null) {
         return null;
       }
       return {
-        version: (yield* completeOutput(version)).trim(),
-        attributeFiles: [
-          ...inTreeAttributes,
-          path.join(input.gitCommonDir, "info", "attributes"),
-          ...globalFiles,
-          ...systemFiles,
-        ],
-        indexedAttributes,
-        treeEntries,
-        untrackedFiles,
-      } satisfies RuleSources;
+        sources: {
+          version: versionText,
+          attributeFiles: [
+            ...inTreeAttributes,
+            path.join(input.gitCommonDir, "info", "attributes"),
+            ...globalFiles,
+            ...systemFiles,
+          ],
+          indexedAttributes,
+          treeEntries,
+          untrackedFiles,
+        } satisfies RuleSources,
+        initialSettings,
+      };
     }).pipe(Effect.orElseSucceed(() => null));
 
   /**
    * Where a git older than 2.42 reads the global attributes file, or null
    * when only git can expand the configured path (`~user/`, `%(prefix)/`).
    */
-  const olderGitGlobalAttributes = <GitError>(input: {
-    readonly git: ScratchIndexGit<GitError>;
-    readonly env: NodeJS.ProcessEnv;
-    readonly cwd: string;
-  }) =>
-    input.git(["config", "-z", "--list"], input.env).pipe(
-      Effect.flatMap(completeOutput),
-      Effect.map((config) => {
-        const configured = lastValue(parseConfigList(config), "core.attributesfile")?.[1];
-        if (configured === undefined || configured.trim().length === 0) {
-          const configHome =
-            input.env.XDG_CONFIG_HOME ||
-            process.env.XDG_CONFIG_HOME ||
-            path.join(homedir(), ".config");
-          return [path.join(configHome, "git", "attributes")];
-        }
-        if (/^~[^/\\]/.test(configured) || configured.includes("%(")) {
-          return null;
-        }
-        return [path.resolve(input.cwd, configured.replace(/^~(?=$|[/\\])/, homedir()))];
-      }),
-    );
+  const olderGitGlobalAttributes = (
+    input: {
+      readonly env: NodeJS.ProcessEnv;
+      readonly cwd: string;
+    },
+    settings: ReadonlyArray<ConfigEntry>,
+  ): ReadonlyArray<string> | null => {
+    const configured = lastValue(settings, "core.attributesfile")?.[1];
+    if (configured === undefined || configured.trim().length === 0) {
+      const configHome =
+        input.env.XDG_CONFIG_HOME || process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config");
+      return [path.join(configHome, "git", "attributes")];
+    }
+    if (/^~[^/\\]/.test(configured) || configured.includes("%(")) {
+      return null;
+    }
+    return [path.resolve(input.cwd, configured.replace(/^~(?=$|[/\\])/, homedir()))];
+  };
 
   /**
    * Where a git older than 2.42 may keep its system attributes file. It
    * cannot say, so every place a standard build looks is read.
    */
-  const olderGitSystemAttributes = <GitError>(input: {
-    readonly git: ScratchIndexGit<GitError>;
-    readonly env: NodeJS.ProcessEnv;
-  }) =>
-    input.git(["--exec-path"], input.env).pipe(
+  const olderGitSystemAttributes = <GitError>(
+    input: {
+      readonly git: ScratchIndexGit<GitError>;
+      readonly env: NodeJS.ProcessEnv;
+    },
+    binKey: string,
+  ) => {
+    const cached = gitExecPathCache.get(binKey);
+    if (cached !== undefined) {
+      return Effect.succeed(cached);
+    }
+    return input.git(["--exec-path"], input.env).pipe(
       Effect.flatMap(completeOutput),
       Effect.map((execPath) => {
         // `<prefix>/libexec/git-core`
         const prefix = path.dirname(path.dirname(withoutLineEnding(execPath)));
-        return [
+        const files = [
           "/etc/gitattributes",
           path.join(prefix, "etc", "gitattributes"),
           path.join(prefix, "share", "git-core", "gitattributes"),
         ];
+        gitExecPathCache.set(binKey, files);
+        return files;
       }),
     );
+  };
 
   /**
    * A fingerprint of the rules git converts the checkout's files under, or
@@ -429,16 +472,20 @@ export const makeScratchIndexes = Effect.gen(function* () {
   const fingerprintRules = <GitError>(
     input: { readonly git: ScratchIndexGit<GitError>; readonly env: NodeJS.ProcessEnv },
     sources: RuleSources,
+    preloadedSettings?: ReadonlyArray<ConfigEntry>,
   ) =>
     Effect.gen(function* () {
-      const [config, hashes] = yield* Effect.all(
+      const [settings, hashes] = yield* Effect.all(
         [
-          input.git(["config", "-z", "--list"], input.env),
-          Effect.forEach(sources.attributeFiles, hashFile, { concurrency: 16 }),
+          preloadedSettings !== undefined
+            ? Effect.succeed(preloadedSettings)
+            : input
+                .git(["config", "-z", "--list"], input.env)
+                .pipe(Effect.flatMap(completeOutput), Effect.map(parseConfigList)),
+          Effect.forEach(sources.attributeFiles, hashFile, { concurrency: 32 }),
         ],
         { concurrency: "unbounded" },
       );
-      const settings = parseConfigList(yield* completeOutput(config));
       if (cacheUnsafe(settings, input.env)) {
         return null;
       }
@@ -513,14 +560,22 @@ export const makeScratchIndexes = Effect.gen(function* () {
       const env: NodeJS.ProcessEnv = { ...baseEnv, GIT_INDEX_FILE: indexPath };
       const removeIndex = fileSystem.remove(indexPath, { force: true }).pipe(Effect.ignore);
       const rulesInput = { git: input.git, env: baseEnv };
-      const sources = yield* readRuleSources({
+      const ruleSourcesResult = yield* readRuleSources({
         ...rulesInput,
         cwd: input.cwd,
         toplevel,
         gitCommonDir,
         tree: input.tree,
       });
-      const rules = sources === null ? null : yield* fingerprintRules(rulesInput, sources);
+      const sources = ruleSourcesResult?.sources ?? null;
+      const rules =
+        ruleSourcesResult === null
+          ? null
+          : yield* fingerprintRules(
+              rulesInput,
+              ruleSourcesResult.sources,
+              ruleSourcesResult.initialSettings,
+            );
       const cachePrefix =
         rules === null ? null : `${SCRATCH_INDEX_CACHE_PREFIX}${rules.fingerprint}`;
       // A checkpoint's cache names the tree it was staged over: a file it

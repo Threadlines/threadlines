@@ -4,6 +4,7 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -13,6 +14,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Tracer from "effect/Tracer";
 import { OtlpExporter, OtlpSerialization, OtlpTracer } from "effect/observability";
@@ -22,6 +24,8 @@ import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 const DESKTOP_LOG_FILE_MAX_BYTES = 10 * 1024 * 1024;
 const DESKTOP_LOG_FILE_MAX_FILES = 10;
+const DESKTOP_LOG_BATCH_WINDOW_MS = 25;
+const DESKTOP_LOG_BATCH_MAX_BYTES = 16 * 1024;
 const DESKTOP_BACKEND_CHILD_LOG_FIBER_ID = "#backend-child";
 const DESKTOP_TRACE_BATCH_WINDOW_MS = 200;
 
@@ -50,6 +54,7 @@ ignoreDevelopmentConsoleBrokenPipe(process.stderr);
 export interface RotatingLogFileWriter {
   readonly writeBytes: (chunk: Uint8Array) => Effect.Effect<void>;
   readonly writeText: (chunk: string) => Effect.Effect<void>;
+  readonly flush: Effect.Effect<void>;
 }
 
 export interface DesktopBackendOutputLogShape {
@@ -162,10 +167,11 @@ const makeRotatingLogFileWriter = Effect.fn("makeRotatingLogFileWriter")(functio
 }): Effect.fn.Return<
   RotatingLogFileWriter,
   DesktopLogFileWriterError,
-  FileSystem.FileSystem | Path.Path
+  FileSystem.FileSystem | Path.Path | Scope.Scope
 > {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const writerScope = yield* Scope.Scope;
   const maxBytes = input.maxBytes ?? DESKTOP_LOG_FILE_MAX_BYTES;
   const maxFiles = input.maxFiles ?? DESKTOP_LOG_FILE_MAX_FILES;
   const directory = path.dirname(input.filePath);
@@ -189,6 +195,10 @@ const makeRotatingLogFileWriter = Effect.fn("makeRotatingLogFileWriter")(functio
   const withSuffix = (index: number) => `${input.filePath}.${index}`;
   const currentSize = yield* Ref.make(yield* refreshFileSize(fileSystem, input.filePath));
   const mutex = yield* Semaphore.make(1);
+  let pendingChunks: Array<Uint8Array> = [];
+  let pendingBytes = 0;
+  let flushTimer: Fiber.Fiber<void, never> | null = null;
+  let closed = false;
 
   const pruneOverflowBackups = Effect.gen(function* () {
     const entries = yield* fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed(() => []));
@@ -224,38 +234,99 @@ const makeRotatingLogFileWriter = Effect.fn("makeRotatingLogFileWriter")(functio
     ),
   );
 
-  const writeBytes = (chunk: Uint8Array): Effect.Effect<void> => {
-    if (chunk.byteLength === 0) return Effect.void;
+  const writeCombinedLocked = (combined: Uint8Array): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const beforeSize = yield* Ref.get(currentSize);
+      if (beforeSize > 0 && beforeSize + combined.byteLength > maxBytes) {
+        yield* rotate;
+      }
 
-    return mutex.withPermits(1)(
-      Effect.gen(function* () {
-        const beforeSize = yield* Ref.get(currentSize);
-        if (beforeSize > 0 && beforeSize + chunk.byteLength > maxBytes) {
-          yield* rotate;
-        }
+      yield* fileSystem.writeFile(input.filePath, combined, { flag: "a" });
+      const afterSize = (yield* Ref.get(currentSize)) + combined.byteLength;
+      yield* Ref.set(currentSize, afterSize);
 
-        yield* fileSystem.writeFile(input.filePath, chunk, { flag: "a" });
-        const afterSize = (yield* Ref.get(currentSize)) + chunk.byteLength;
-        yield* Ref.set(currentSize, afterSize);
-
-        if (afterSize > maxBytes) {
-          yield* rotate;
-        }
-      }).pipe(
-        Effect.catch(() =>
-          refreshFileSize(fileSystem, input.filePath).pipe(
-            Effect.flatMap((size) => Ref.set(currentSize, size)),
-          ),
+      if (afterSize > maxBytes) {
+        yield* rotate;
+      }
+    }).pipe(
+      Effect.catch(() =>
+        refreshFileSize(fileSystem, input.filePath).pipe(
+          Effect.flatMap((size) => Ref.set(currentSize, size)),
         ),
       ),
     );
+
+  const flushPending: Effect.Effect<void> = mutex.withPermits(1)(
+    Effect.gen(function* () {
+      if (pendingChunks.length === 0) {
+        return;
+      }
+      const chunks = pendingChunks;
+      const totalBytes = pendingBytes;
+      pendingChunks = [];
+      pendingBytes = 0;
+
+      let combined: Uint8Array;
+      if (chunks.length === 1) {
+        combined = chunks[0]!;
+      } else {
+        combined = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+      }
+      yield* writeCombinedLocked(combined);
+    }).pipe(Effect.uninterruptible),
+  );
+
+  const flush: Effect.Effect<void> = Effect.gen(function* () {
+    const timer = flushTimer;
+    flushTimer = null;
+    if (timer !== null) {
+      yield* Fiber.interrupt(timer).pipe(Effect.ignore);
+    }
+    yield* flushPending;
+  });
+
+  const writeBytes = (chunk: Uint8Array): Effect.Effect<void> => {
+    if (chunk.byteLength === 0) return Effect.void;
+
+    return Effect.gen(function* () {
+      pendingChunks.push(chunk);
+      pendingBytes += chunk.byteLength;
+
+      if (closed || pendingBytes >= DESKTOP_LOG_BATCH_MAX_BYTES) {
+        yield* flush;
+        return;
+      }
+
+      if (flushTimer === null) {
+        flushTimer = yield* Effect.sleep(`${DESKTOP_LOG_BATCH_WINDOW_MS} millis`).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              flushTimer = null;
+              yield* flushPending;
+            }),
+          ),
+          Effect.forkIn(writerScope),
+        );
+      }
+    });
   };
 
   yield* pruneOverflowBackups;
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      closed = true;
+    }).pipe(Effect.andThen(flush), Effect.ignore),
+  );
 
   return {
     writeBytes,
     writeText: (chunk) => writeBytes(textEncoder.encode(chunk)),
+    flush,
   } satisfies RotatingLogFileWriter;
 });
 
@@ -350,6 +421,7 @@ const backendOutputLogLayer = Layer.effect(
                 details: sanitizeLogValue(details),
               },
             });
+            yield* logFile.flush;
           }),
           writeOutputChunk: Effect.fn("desktop.observability.backendOutput.writeOutputChunk")(
             function* (streamName, chunk) {
