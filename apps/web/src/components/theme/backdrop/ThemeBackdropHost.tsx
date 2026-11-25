@@ -41,6 +41,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { LAYOUT_DIVIDER_SELECTOR } from "../../../theme/layoutBusy";
 import { measureStillTint } from "./backdropStillTint";
 
 export type ThemeBackdropStatus =
@@ -125,6 +126,8 @@ export interface ThemeBackdropHostHandle {
 export const BACKDROP_WATCHDOG_MS = 3_000;
 /** How long `captureStill` waits for the frame's answer. */
 export const BACKDROP_STILL_TIMEOUT_MS = 5_000;
+/** Minimum interval between hover pointermove messages to the frame (20 Hz ceiling). */
+export const BACKDROP_POINTER_MOVE_MS = 50;
 
 const decodeFrameMessage = Schema.decodeUnknownOption(BackdropFrameMessage);
 
@@ -318,6 +321,7 @@ interface BackdropFrameProps extends ThemeBackdropHostProps {
  */
 function BackdropFrame(props: BackdropFrameProps) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const [wantsHover, setWantsHover] = useState(false);
   // The latest props, for message handlers and timers that outlive a render.
   const latest = useRef(props);
   useEffect(() => {
@@ -378,6 +382,9 @@ function BackdropFrame(props: BackdropFrameProps) {
       switch (message.type) {
         case "ready":
           start();
+          return;
+        case "capabilities":
+          setWantsHover(message.hover);
           return;
         case "heartbeat":
           state.lastHeartbeatAt = performance.now();
@@ -501,6 +508,125 @@ function BackdropFrame(props: BackdropFrameProps) {
     state.pulse = pulse;
     post({ type: "pulse", kind: "turn-done" });
   }, [pulse, post]);
+
+  // Pointer input: completed clicks always while live; throttled hover only when the art opted in.
+  const pointerActive = props.conditions.motion === "live" && mayRun(props.conditions);
+  useEffect(() => {
+    if (!pointerActive) return;
+    let onDivider = false;
+    let suppressDividerClick = false;
+    let dividerResetTimer: number | null = null;
+    const isDividerTarget = (target: EventTarget | null) =>
+      target instanceof Element && target.closest(LAYOUT_DIVIDER_SELECTOR) !== null;
+    const clearDividerReset = () => {
+      if (dividerResetTimer !== null) {
+        window.clearTimeout(dividerResetTimer);
+        dividerResetTimer = null;
+      }
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      clearDividerReset();
+      onDivider = isDividerTarget(event.target);
+      suppressDividerClick = onDivider;
+    };
+    const onPointerEnd = () => {
+      if (!onDivider) return;
+      onDivider = false;
+      clearDividerReset();
+      // Any click synthesized from this release fires synchronously right after pointerup;
+      // clear on the next turn so a cancelled or off-target drag never swallows the next click.
+      dividerResetTimer = window.setTimeout(() => {
+        dividerResetTimer = null;
+        suppressDividerClick = false;
+      }, 0);
+    };
+    const onClick = (event: MouseEvent) => {
+      if (!session.current.started) return;
+      // Mouse/touch clicks have detail >= 1; keyboard Enter/Space synthetic clicks have detail === 0.
+      if (event.detail <= 0) return;
+      if (suppressDividerClick || isDividerTarget(event.target)) {
+        suppressDividerClick = false;
+        return;
+      }
+      post({
+        type: "pointer",
+        kind: "click",
+        x: Math.round(event.clientX),
+        y: Math.round(event.clientY),
+      });
+    };
+    const passiveCapture = { capture: true, passive: true } as const;
+    window.addEventListener("pointerdown", onPointerDown, passiveCapture);
+    window.addEventListener("pointerup", onPointerEnd, passiveCapture);
+    window.addEventListener("pointercancel", onPointerEnd, passiveCapture);
+    window.addEventListener("click", onClick, passiveCapture);
+    if (!wantsHover) {
+      return () => {
+        clearDividerReset();
+        window.removeEventListener("pointerdown", onPointerDown, { capture: true });
+        window.removeEventListener("pointerup", onPointerEnd, { capture: true });
+        window.removeEventListener("pointercancel", onPointerEnd, { capture: true });
+        window.removeEventListener("click", onClick, { capture: true });
+      };
+    }
+    let lastSentAt = Number.NEGATIVE_INFINITY;
+    let trailingTimer: number | null = null;
+    let pendingMove: { x: number; y: number } | null = null;
+    let inside = false;
+    const cancelTrailing = () => {
+      if (trailingTimer !== null) {
+        window.clearTimeout(trailingTimer);
+        trailingTimer = null;
+      }
+      pendingMove = null;
+    };
+    const sendMove = (x: number, y: number) => {
+      if (!session.current.started || latest.current.conditions.busy) return;
+      lastSentAt = performance.now();
+      inside = true;
+      post({ type: "pointer", kind: "move", x, y });
+    };
+    const onMove = (event: PointerEvent) => {
+      if (!session.current.started || latest.current.conditions.busy) return;
+      const x = Math.round(event.clientX);
+      const y = Math.round(event.clientY);
+      const elapsed = performance.now() - lastSentAt;
+      if (elapsed >= BACKDROP_POINTER_MOVE_MS) {
+        cancelTrailing();
+        sendMove(x, y);
+        return;
+      }
+      pendingMove = { x, y };
+      if (trailingTimer === null) {
+        trailingTimer = window.setTimeout(() => {
+          trailingTimer = null;
+          const next = pendingMove;
+          pendingMove = null;
+          if (next) sendMove(next.x, next.y);
+        }, BACKDROP_POINTER_MOVE_MS - elapsed);
+      }
+    };
+    const onLeave = () => {
+      cancelTrailing();
+      if (!inside || !session.current.started) return;
+      inside = false;
+      post({ type: "pointer", kind: "leave" });
+    };
+    window.addEventListener("pointermove", onMove, { passive: true });
+    document.documentElement.addEventListener("pointerleave", onLeave);
+    window.addEventListener("blur", onLeave);
+    return () => {
+      clearDividerReset();
+      window.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      window.removeEventListener("pointerup", onPointerEnd, { capture: true });
+      window.removeEventListener("pointercancel", onPointerEnd, { capture: true });
+      window.removeEventListener("click", onClick, { capture: true });
+      window.removeEventListener("pointermove", onMove);
+      document.documentElement.removeEventListener("pointerleave", onLeave);
+      window.removeEventListener("blur", onLeave);
+      onLeave();
+    };
+  }, [pointerActive, wantsHover, post]);
 
   // The watchdog: a frame that stops answering, or answers but stops drawing, is removed.
   useEffect(() => {

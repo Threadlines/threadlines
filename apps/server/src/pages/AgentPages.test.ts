@@ -37,6 +37,7 @@ import { AnalyticsService } from "../telemetry/Services/AnalyticsService.ts";
 import { ThemeVsCode } from "../themes/ThemeVsCode.ts";
 import { ThemeWorkshop } from "../themes/ThemeWorkshop.ts";
 import { AgentPages, layer as AgentPagesLayer } from "./AgentPages.ts";
+import { themePreviewText } from "./themePages.ts";
 import * as PagePreview from "./preview/PagePreview.ts";
 
 const THREAD = ThreadId.make("thread-pages");
@@ -722,5 +723,69 @@ it.layer(NodeServices.layer)("AgentPages.showTheme", (it) => {
         ),
       );
     },
+  );
+});
+
+it.layer(NodeServices.layer)("themePreviewText", (it) => {
+  const baseManifest = (maxFps: number): ThemeManifest => ({
+    format: THEME_FILE_FORMAT,
+    name: "Grid",
+    base: "dark",
+    colors: {
+      background: "#0a1029",
+      foreground: "#e7ecff",
+      mutedForeground: "#a3aed2",
+      accent: "#2fd6b0",
+      accentForeground: "#03231c",
+    },
+    backdrop: {
+      mode: "canvas",
+      script: 'threadlines.backdrop({ mode: "canvas", draw() {} });',
+      maxFps,
+    },
+  });
+
+  const previewReport = (canvasContext: "2d" | "webgl2") => ({
+    shots: [{ layout: "thread" as const, png: "" }],
+    stats: {
+      fps: 20,
+      msPerSecond: 4.5,
+      energy: "light" as const,
+      throttled: false,
+      canvasContext,
+    },
+    failure: null,
+    consoleMessages: [],
+  });
+
+  it.effect("warns when canvas 2d exceeds 12 fps, and stays quiet for webgl2 or low-fps 2d", () =>
+    Effect.sync(() => {
+      const fast2d = themePreviewText({
+        manifest: baseManifest(24),
+        problems: [],
+        fontProblem: null,
+        report: previewReport("2d"),
+      });
+      assert.include(fast2d, "canvas (2d) mode, up to 24 fps");
+      assert.include(fast2d, 'context: "webgl2"');
+
+      const slow2d = themePreviewText({
+        manifest: baseManifest(12),
+        problems: [],
+        fontProblem: null,
+        report: previewReport("2d"),
+      });
+      assert.include(slow2d, "canvas (2d) mode, up to 12 fps");
+      assert.notInclude(slow2d, 'context: "webgl2"');
+
+      const webgl = themePreviewText({
+        manifest: baseManifest(24),
+        problems: [],
+        fontProblem: null,
+        report: previewReport("webgl2"),
+      });
+      assert.include(webgl, "canvas (webgl2) mode, up to 24 fps");
+      assert.notInclude(webgl, 'context: "webgl2"');
+    }),
   );
 });

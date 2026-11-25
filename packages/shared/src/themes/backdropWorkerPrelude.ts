@@ -17,11 +17,11 @@
  *
  *   threadlines.backdrop({
  *     mode: "grid", cell: { width: 11, height: 15 }, glyphs: " .:+#",
- *     fontSize?, fontWeight?, background?: ["#top", ..., "#bottom"],
+ *     fontSize?, fontWeight?, background?: ["#top", ..., "#bottom"], hover?,
  *     setup?(info), draw(grid, info),
  *   })
- *   threadlines.backdrop({ mode: "pixels", width, height | scale, smooth?, background?, setup?(info), draw(pixels, info) })
- *   threadlines.backdrop({ mode: "canvas", context: "2d" | "webgl2", setup?(info), draw(ctx, info) })
+ *   threadlines.backdrop({ mode: "pixels", width, height | scale, smooth?, background?, hover?, setup?(info), draw(pixels, info) })
+ *   threadlines.backdrop({ mode: "canvas", context: "2d" | "webgl2", hover?, setup?(info), draw(ctx, info) })
  *
  * - grid: `grid.glyph` Int16Array (index into `glyphs`, -1 empty),
  *   `grid.fg` / `grid.bg` Uint8Array RGBA per cell, `grid.cols`, `grid.rows`.
@@ -34,15 +34,19 @@
  * - canvas: an OffscreenCanvas context sized to the window (pixel ratio at
  *   most 2, at most 4 megapixels); a 2d context arrives scaled so the art
  *   draws in CSS px. Draw the whole frame each time.
- * - info: `{ t, dt, frame, cols, rows, width, height, state, palette }`.
+ * - info: `{ t, dt, frame, cols, rows, width, height, state, pointer, palette }`.
  *   `t` is seconds of art time; `cols` and `rows` the drawing target's size
  *   in its own units (cells, buffer pixels, or canvas pixels); `width` and
  *   `height` the window in CSS px; `state` `{ working, waiting, pulse,
  *   sincePulse }`: agents working and waiting across every computer, `pulse`
  *   1 right after a finished turn falling to 0 over 2 seconds, `sincePulse`
- *   the seconds since that turn (very large when none); `palette` the
- *   theme's colors by token name. Grid mode adds `cell` (CSS px), canvas
- *   mode `scale` (canvas pixels per CSS px).
+ *   the seconds since that turn (very large when none); `pointer`
+ *   `{ x, y, inside, clicks, sinceClick }`: `clicks` is the batch of
+ *   `{ x, y }` clicks (CSS px) since the previous tick (empty during `setup`),
+ *   `sinceClick` the seconds since the latest click, and `x`, `y`, `inside`
+ *   are live cursor coordinates when the theme set `hover: true` (otherwise
+ *   0, 0, false); `palette` the theme's colors by token name. Grid mode adds
+ *   `cell` (CSS px), canvas mode `scale` (canvas pixels per CSS px).
  * - `setup(info)` runs before the first draw, when the window size changes,
  *   and when the art resumes after a pause (a new worker each time, its state
  *   fresh; the frame fades the last picture into it). It also gets the
@@ -315,6 +319,12 @@ export function backdropWorkerPrelude(global: object, config: BackdropWorkerConf
       draw: raw.draw as Definition["draw"],
       ...(raw.setup ? { setup: raw.setup as NonNullable<Definition["setup"]> } : {}),
     };
+    if (hasOwn.call(raw, "hover")) {
+      if (raw.hover !== undefined && typeof raw.hover !== "boolean") {
+        return "hover must be true or false.";
+      }
+      if (raw.hover === true) out.hover = true;
+    }
     if (raw.background !== undefined) {
       const stops = raw.background;
       if (
@@ -459,10 +469,29 @@ export function backdropWorkerPrelude(global: object, config: BackdropWorkerConf
     return bytes.slice().buffer;
   };
 
+  const EMPTY_CLICKS = freeze([] as ReadonlyArray<{ readonly x: number; readonly y: number }>);
+
   /** Draws for one tick; `startedAt` is when its message arrived. */
   const onTick = (tick: BackdropWorkerTick, startedAt: number) => {
     const art = definition;
     if (!art || failed || drawing) return;
+    const rawClicks = tick.pointer.clicks;
+    let drawClicks: ReadonlyArray<{ readonly x: number; readonly y: number }> = EMPTY_CLICKS;
+    if (rawClicks.length > 0) {
+      const list: Array<{ readonly x: number; readonly y: number }> = [];
+      for (let index = 0; index < rawClicks.length; index++) {
+        const entry = rawClicks[index]!;
+        list[index] = freeze({ x: entry.x, y: entry.y });
+      }
+      drawClicks = freeze(list);
+    }
+    const drawPointer = freeze({
+      x: tick.pointer.x,
+      y: tick.pointer.y,
+      inside: tick.pointer.inside,
+      clicks: drawClicks,
+      sinceClick: tick.pointer.sinceClick,
+    });
     const info: Record<string, unknown> = {
       t: tick.t,
       dt: tick.dt,
@@ -473,6 +502,7 @@ export function backdropWorkerPrelude(global: object, config: BackdropWorkerConf
         ...tick.state,
         pulse: mathMax(0, 1 - tick.state.sincePulse / 2),
       }),
+      pointer: drawPointer,
       palette: config.palette,
     };
     let target: unknown;
@@ -551,8 +581,23 @@ export function backdropWorkerPrelude(global: object, config: BackdropWorkerConf
         sizedFor = key;
         if (art.setup) {
           try {
+            // Setup gets its own info object when clicks are queued so it never consumes them
+            // and freezing info inside setup cannot break draw.
+            const setupInfo =
+              drawClicks.length > 0
+                ? {
+                    ...info,
+                    pointer: freeze({
+                      x: tick.pointer.x,
+                      y: tick.pointer.y,
+                      inside: tick.pointer.inside,
+                      clicks: EMPTY_CLICKS,
+                      sinceClick: tick.pointer.sinceClick,
+                    }),
+                  }
+                : info;
             scaleContext();
-            art.setup(info, target);
+            art.setup(setupInfo, target);
           } catch (error) {
             fail("setup", error);
             return;

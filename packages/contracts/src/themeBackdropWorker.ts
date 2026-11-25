@@ -34,6 +34,8 @@ export const BACKDROP_MAX_CANVAS_DPR = 2;
 export const BACKDROP_MAX_BACKGROUND_STOPS = 8;
 /** Widest gap between grid cells' backgrounds, in device pixels. */
 export const BACKDROP_MAX_CELL_GAP = 2;
+/** Most clicks queued between two ticks. */
+export const BACKDROP_MAX_PENDING_CLICKS = 8;
 
 const Finite = Schema.Number.check(Schema.isFinite());
 const Generation = NonNegativeInt;
@@ -54,6 +56,27 @@ export const BackdropArtState = Schema.Struct({
   sincePulse: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
 });
 export type BackdropArtState = typeof BackdropArtState.Type;
+
+export const BackdropArtClick = Schema.Struct({
+  x: Finite,
+  y: Finite,
+});
+export type BackdropArtClick = typeof BackdropArtClick.Type;
+
+/**
+ * Pointer state handed to `draw` as `info.pointer`. Clicks arrive for every
+ * live theme; `x`, `y` and `inside` are populated only when the theme opted
+ * into `hover: true`.
+ */
+export const BackdropArtPointer = Schema.Struct({
+  x: Finite,
+  y: Finite,
+  inside: Schema.Boolean,
+  clicks: Schema.Array(BackdropArtClick).check(Schema.isMaxLength(BACKDROP_MAX_PENDING_CLICKS)),
+  /** Seconds since the most recent click; very large when there hasn't been one. */
+  sinceClick: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type BackdropArtPointer = typeof BackdropArtPointer.Type;
 
 /** The window in CSS px and its device pixel ratio. */
 export const BackdropArtSize = Schema.Struct({
@@ -100,6 +123,7 @@ export const BackdropWorkerTick = Schema.Struct({
   /** Seconds since the previous frame. */
   dt: Finite,
   state: BackdropArtState,
+  pointer: BackdropArtPointer,
   size: BackdropArtSize,
   grid: Schema.optional(BackdropGridGeometry),
   pixels: Schema.optional(BackdropPixelsGeometry),
@@ -116,6 +140,8 @@ export const BackdropArtDefinition = Schema.Struct({
   type: Schema.Literal("defined"),
   generation: Generation,
   mode: Schema.Literals(["grid", "pixels", "canvas"]),
+  /** Opt-in: deliver throttled pointer hover position (`info.pointer.x/y/inside`). */
+  hover: Schema.optional(Schema.Boolean),
   /** Grid: cell size in CSS px. */
   cell: Schema.optional(Schema.Struct({ width: CellPx, height: CellPx })),
   /** Grid: the glyph set, one glyph per code point; `glyph` values index it. */

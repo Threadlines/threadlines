@@ -83,6 +83,7 @@ export interface BackdropRuntimeLimits {
   readonly maxCanvasDpr: number;
   readonly maxBackgroundStops: number;
   readonly maxCellGap: number;
+  readonly maxPendingClicks: number;
   readonly maxStillChars: number;
   readonly maxSlowdown: number;
 }
@@ -330,6 +331,10 @@ export function backdropFrameRuntime(
   let theme: Init | null = null;
   let zones: Zone[] = [];
   let activity: BackdropActivity = { working: 0, waiting: 0 };
+  let pointer = { x: 0, y: 0, inside: false };
+  let pendingClicks: Array<{ x: number; y: number }> = [];
+  let lastClickAt = Number.NEGATIVE_INFINITY;
+  let lastCanvasContext: "2d" | "webgl2" | undefined;
   // Until the app says otherwise, the art doesn't run.
   let conditions: BackdropConditions | null = null;
   let viewport = {
@@ -744,11 +749,12 @@ void main() {
   bool inCore = false;
   float coreAlpha = 0.0;
   vec3 coreColor = vec3(0.0);
+  bool clearGlass = uClarity >= 0.999;
   for (int layer = 0; layer * 4 < ${MAX_ZONE_CLASSES}; layer++) {
     if (layer * 4 >= uClassCount) break;
     vec4 reach = texelFetch(uMask, ivec3(at, layer), 0);
     if (max(max(reach.r, reach.g), max(reach.b, reach.a)) <= 0.0) continue;
-    if (!needsRead) {
+    if (!clearGlass && !needsRead) {
       needs = textureLod(uTintMap, below * uMapScale, 0.0);
       needsRead = true;
     }
@@ -758,9 +764,14 @@ void main() {
       float e = reach[j];
       if (e <= 0.0) continue;
       // The patch's tint for this class's color and floor; a class the map holds no channel for is opaque.
-      float k = uChannel[i];
-      float need = k < -0.5 ? 1.0 : k < 0.5 ? needs.r : k < 1.5 ? needs.g : k < 2.5 ? needs.b : needs.a;
-      float full = max(uClass[i].a, need * (1.0 - uClarity));
+      float full;
+      if (clearGlass) {
+        full = uClass[i].a;
+      } else {
+        float k = uChannel[i];
+        float need = k < -0.5 ? 1.0 : k < 0.5 ? needs.r : k < 1.5 ? needs.g : k < 2.5 ? needs.b : needs.a;
+        full = max(uClass[i].a, need * (1.0 - uClarity));
+      }
       if (e > 0.998) {
         // Text can be here: a core's own color at its full tint, never another
         // zone's color at a strength worked out for a different one.
@@ -775,8 +786,11 @@ void main() {
   }
   if (inCore) { m = 1.0; tintAlpha = coreAlpha; tintColor = coreColor; }
   if (m <= 0.0) { outColor = vec4(art, 1.0); return; }
-  vec3 frost = textureLod(uFrost, below * uFrostScale, 0.0).rgb;
-  vec3 color = mix(art, frost, m * (1.0 - uClarity));
+  vec3 color = art;
+  if (!clearGlass) {
+    vec3 frost = textureLod(uFrost, below * uFrostScale, 0.0).rgb;
+    color = mix(art, frost, m * (1.0 - uClarity));
+  }
   outColor = vec4(mix(color, tintColor, tintAlpha), 1.0);
 }`;
 
@@ -1138,6 +1152,8 @@ void main() {
     tickTimer = null;
     lastTickAt = null;
     lastTickDue = null;
+    pendingClicks = [];
+    pointer = { x: 0, y: 0, inside: false };
     const current = art;
     if (!current) return;
     art = null;
@@ -1152,6 +1168,8 @@ void main() {
   const startArt = () => {
     if (!theme || art || failed) return;
     generation += 1;
+    pendingClicks = [];
+    lastClickAt = Number.NEGATIVE_INFINITY;
     // A new worker starts the art's own state over (setup reruns): rather
     // than snap to it, the picture on screen (the last frame, or before the
     // first one the still the app shows) dissolves into its first frames.
@@ -1273,7 +1291,9 @@ void main() {
   };
 
   /** Checks the theme's declaration again here: the worker is untrusted. */
-  const readDefinition = (raw: Record<string, unknown>): Art["definition"] | string => {
+  const readDefinition = (
+    raw: Record<string, unknown>,
+  ): NonNullable<Art["definition"]> | string => {
     const mode = raw.mode;
     if (!theme) return "no theme";
     if (mode !== theme.mode) {
@@ -1294,6 +1314,8 @@ void main() {
     if (angle !== undefined && (background === undefined || !isNum(angle, 0, 360))) {
       return "bad backgroundAngle";
     }
+    if (raw.hover !== undefined && typeof raw.hover !== "boolean") return "bad hover";
+    const hover = raw.hover === true ? { hover: true } : {};
     const base =
       background === undefined
         ? {}
@@ -1314,6 +1336,7 @@ void main() {
       if (raw.gap !== undefined && !isInt(raw.gap, 0, limits.maxCellGap)) return "bad gap";
       return {
         mode,
+        ...hover,
         ...base,
         cell: { width: cell.width, height: cell.height },
         glyphs: raw.glyphs,
@@ -1331,13 +1354,13 @@ void main() {
         ) {
           return "bad pixel size";
         }
-        return { mode, ...base, ...smooth, width: raw.width, height: raw.height };
+        return { mode, ...hover, ...base, ...smooth, width: raw.width, height: raw.height };
       }
       if (!isNum(raw.scale, 1, 64)) return "bad pixel scale";
-      return { mode, ...base, ...smooth, scale: raw.scale };
+      return { mode, ...hover, ...base, ...smooth, scale: raw.scale };
     }
     if (raw.context !== "2d" && raw.context !== "webgl2") return "bad context";
-    return { mode: "canvas", context: raw.context };
+    return { mode: "canvas", ...hover, context: raw.context };
   };
 
   const onWorkerMessage = (from: Art, data: unknown) => {
@@ -1382,7 +1405,9 @@ void main() {
           return;
         }
         from.definition = definition;
+        lastCanvasContext = definition.mode === "canvas" ? definition.context : undefined;
         win.clearTimeout(from.startTimer);
+        send({ type: "capabilities", hover: definition.hover === true });
         schedule();
         return;
       }
@@ -1620,12 +1645,17 @@ void main() {
     if (!gl || !gpu) return;
     gl.bindTexture(gl.TEXTURE_2D, gpu.source);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-    gpu.sourceSize = `${bitmap.width}x${bitmap.height}`;
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const size = `${bitmap.width}x${bitmap.height}`;
+    if (gpu.sourceSize !== size) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+      gpu.sourceSize = size;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+    }
   };
 
   // ---------------------------------------------------------------------
@@ -1658,6 +1688,8 @@ void main() {
     const result = new Map<string, { tint: number; box: BackdropTintBox }>();
     const frost = gpu?.quarterA;
     if (!gl || !theme || !frost || contextLost) return result;
+    // Frost passes skip when Clear or without zones: generate on demand for test probes.
+    if (frostStale) blurArt();
     const pixels = new Uint8Array(frost.width * frost.height * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, frost.framebuffer);
     gl.readPixels(0, 0, frost.width, frost.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
@@ -1828,16 +1860,17 @@ void main() {
   };
 
   /**
-   * Puts the kept frame on screen: the art and its frost, each patch of
-   * glass's tint worked out from that frost, then the composite. All on the
-   * GPU, nothing read back.
+   * Puts the kept frame on screen: the art and, when glass uses it, its frost
+   * and patch tint map, then the composite. All on the GPU, nothing read back.
    */
   const render = () => {
     if (!theme || !gl || !gpu || contextLost) return;
     sizeTargets();
-    if (!drawFrost()) return;
+    if (!drawArt()) return;
+    const needsFrost = zones.length > 0 && theme.clarity < 0.999;
+    if (needsFrost) blurArt();
     drawZoneMask();
-    drawTintMap();
+    if (needsFrost) drawTintMap();
     present();
   };
 
@@ -1858,6 +1891,78 @@ void main() {
   let zoneClassOf: number[] = [];
   /** The zone mask was drawn for other zones (a new window size makes a new mask). */
   let maskStale = true;
+  /** The quarter-res frost does not match the current art target yet. */
+  let frostStale = true;
+  /** Cached composite uniforms for `zoneClasses`, rebuilt only when zones change. */
+  let zoneUniformCount = 0;
+  const zoneUniformClasses = new Float32Array(MAX_ZONE_CLASSES * 4);
+  const zoneUniformChannels = new Float32Array(MAX_ZONE_CLASSES).fill(-1);
+  /** Cached text luminance bounds for `drawTintMap`, rebuilt on init and glass changes. */
+  let cachedTextBounds = {
+    darkFloor: -1,
+    lightCeiling: 2,
+    eitherData: new Float32Array(16),
+    eitherCount: 0,
+  };
+  /** Cached Gaussian blur weights, rebuilt when `theme.blur` changes. */
+  let cachedBlur: {
+    blur: number;
+    center: number;
+    offsets: Float32Array;
+    pairWeights: Float32Array;
+    taps: number;
+  } | null = null;
+
+  const updateTextBounds = (texts: Init["texts"]) => {
+    let darkFloor = -1;
+    let lightCeiling = 2;
+    const either: number[] = [];
+    for (const text of texts) {
+      const darker = text.ratio * (text.luminance + 0.05) - 0.05 + ROUNDING_MARGIN;
+      const lighter = (text.luminance + 0.05) / text.ratio - 0.05 - ROUNDING_MARGIN;
+      const canBeDarker = darker <= 1;
+      const canBeLighter = lighter >= 0;
+      if (canBeDarker && !canBeLighter) darkFloor = Math.max(darkFloor, darker);
+      else if (canBeLighter && !canBeDarker) lightCeiling = Math.min(lightCeiling, lighter);
+      // Either way, or neither (nothing passes it, so only opaque glass will do).
+      else if (either.length < 16) either.push(darker, lighter);
+      else darkFloor = 2;
+    }
+    const eitherData = new Float32Array(16);
+    eitherData.set(either);
+    cachedTextBounds = {
+      darkFloor,
+      lightCeiling,
+      eitherData,
+      eitherCount: either.length / 2,
+    };
+  };
+
+  const blurKernelFor = (blur: number) => {
+    if (cachedBlur && cachedBlur.blur === blur) return cachedBlur;
+    const sigma = blur / QUARTER;
+    const radius = Math.max(1, Math.ceil(sigma * 2));
+    const weights: number[] = [];
+    let total = 0;
+    for (let k = 0; k <= radius; k++) {
+      const weight = Math.exp(-(k * k) / (2 * sigma * sigma));
+      weights.push(weight);
+      total += k === 0 ? weight : weight * 2;
+    }
+    const offsets = new Float32Array(32);
+    const pairWeights = new Float32Array(32);
+    let taps = 0;
+    for (let k = 1; k <= radius && taps < 32; k += 2) {
+      const first = weights[k]!;
+      const second = k + 1 <= radius ? weights[k + 1]! : 0;
+      const weight = first + second;
+      offsets[taps] = (k * first + (k + 1) * second) / weight;
+      pairWeights[taps] = weight / total;
+      taps += 1;
+    }
+    cachedBlur = { blur, center: weights[0]! / total, offsets, pairWeights, taps };
+    return cachedBlur;
+  };
 
   const classifyZones = () => {
     const alike = (entry: { color: Rgb; floor: number }, zone: Zone) =>
@@ -1883,6 +1988,14 @@ void main() {
       zoneClasses.push({ color: zone.color, floor: zone.tint, channel });
       return zoneClasses.length - 1;
     });
+    zoneUniformCount = Math.min(MAX_ZONE_CLASSES, zoneClasses.length);
+    zoneUniformClasses.fill(0);
+    zoneUniformChannels.fill(-1);
+    for (const [index, zoneClass] of zoneClasses.slice(0, zoneUniformCount).entries()) {
+      const { color, floor, channel } = zoneClass;
+      zoneUniformClasses.set([color.r, color.g, color.b, floor], index * 4);
+      zoneUniformChannels[index] = channel;
+    }
     maskStale = true;
   };
 
@@ -2017,24 +2130,7 @@ void main() {
     const { quarterA, tintMap } = gpu;
     if (!quarterA || !tintMap) return;
     if (tintChannels.length === 0) return;
-    // Each text color as the glass luminance it needs: at least `darker` to
-    // read as darker text, at most `lighter` to read as lighter text. The
-    // margin covers rounding the shown pixel to 8 bits a channel (half a
-    // step moves luminance by under 0.005).
-    let darkFloor = -1;
-    let lightCeiling = 2;
-    const either: number[] = [];
-    for (const text of theme.texts) {
-      const darker = text.ratio * (text.luminance + 0.05) - 0.05 + ROUNDING_MARGIN;
-      const lighter = (text.luminance + 0.05) / text.ratio - 0.05 - ROUNDING_MARGIN;
-      const canBeDarker = darker <= 1;
-      const canBeLighter = lighter >= 0;
-      if (canBeDarker && !canBeLighter) darkFloor = Math.max(darkFloor, darker);
-      else if (canBeLighter && !canBeDarker) lightCeiling = Math.min(lightCeiling, lighter);
-      // Either way, or neither (nothing passes it, so only opaque glass will do).
-      else if (either.length < 16) either.push(darker, lighter);
-      else darkFloor = 2;
-    }
+    const { darkFloor, lightCeiling, eitherData, eitherCount } = cachedTextBounds;
     gl.bindFramebuffer(gl.FRAMEBUFFER, tintMap.framebuffer);
     gl.viewport(0, 0, tintMap.width, tintMap.height);
     gl.disable(gl.BLEND);
@@ -2046,10 +2142,8 @@ void main() {
     gl.uniform2i(gpu.tint.uniform("uFrostSize"), quarterA.width, quarterA.height);
     gl.uniform1f(gpu.tint.uniform("uDarkFloor"), darkFloor);
     gl.uniform1f(gpu.tint.uniform("uLightCeiling"), lightCeiling);
-    const eitherData = new Float32Array(16);
-    eitherData.set(either);
     gl.uniform2fv(gpu.tint.uniform("uEither[0]"), eitherData);
-    gl.uniform1i(gpu.tint.uniform("uEitherCount"), either.length / 2);
+    gl.uniform1i(gpu.tint.uniform("uEitherCount"), eitherCount);
     // Each zone's patches, into its tint color's channel. A patch is
     // PATCH CSS px a side; the map counts rows from the bottom.
     const PATCH = QUARTER * 2;
@@ -2080,13 +2174,13 @@ void main() {
     gl.colorMask(true, true, true, true);
   };
 
-  /** The art and its frost, into the targets. False when there are none to draw into. */
-  const drawFrost = () => {
+  /** Draws the art and any active fade into the art target. False when targets are absent. */
+  const drawArt = () => {
     if (!theme || !gl || !gpu || contextLost) return false;
     const frame = shown;
     const size = deviceSize();
-    const { art: artTarget, quarterA, quarterB } = gpu;
-    if (!artTarget || !quarterA || !quarterB) return false;
+    const { art: artTarget } = gpu;
+    if (!artTarget) return false;
 
     // 1. The art, over its background, into the art target.
     gl.bindFramebuffer(gl.FRAMEBUFFER, artTarget.framebuffer);
@@ -2172,8 +2266,20 @@ void main() {
     }
     gl.disable(gl.BLEND);
     artHeld = frame !== null;
+    frostStale = true;
+    return true;
+  };
+
+  /** Quarter-resolution downsample and two-pass Gaussian blur into `gpu.quarterA`. */
+  const blurArt = () => {
+    if (!theme || !gl || !gpu || contextLost) return;
+    const size = deviceSize();
+    const { art: artTarget, quarterA, quarterB } = gpu;
+    if (!artTarget || !quarterA || !quarterB) return;
 
     // 2. A quarter-resolution copy: each quarter pixel the average of the art under it.
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(gpu.empty);
     gl.bindFramebuffer(gl.FRAMEBUFFER, quarterA.framebuffer);
     gl.viewport(0, 0, quarterA.width, quarterA.height);
     gl.useProgram(gpu.downsample.program);
@@ -2193,31 +2299,12 @@ void main() {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     // 3. Blur it, two passes.
-    const sigma = theme.blur / QUARTER;
-    const radius = Math.max(1, Math.ceil(sigma * 2));
-    const weights: number[] = [];
-    let total = 0;
-    for (let k = 0; k <= radius; k++) {
-      const weight = Math.exp(-(k * k) / (2 * sigma * sigma));
-      weights.push(weight);
-      total += k === 0 ? weight : weight * 2;
-    }
-    const offsets = new Float32Array(32);
-    const pairWeights = new Float32Array(32);
-    let taps = 0;
-    for (let k = 1; k <= radius && taps < 32; k += 2) {
-      const first = weights[k]!;
-      const second = k + 1 <= radius ? weights[k + 1]! : 0;
-      const weight = first + second;
-      offsets[taps] = (k * first + (k + 1) * second) / weight;
-      pairWeights[taps] = weight / total;
-      taps += 1;
-    }
+    const kernel = blurKernelFor(theme.blur);
     gl.useProgram(gpu.blur.program);
-    gl.uniform1f(gpu.blur.uniform("uCenter"), weights[0]! / total);
-    gl.uniform1fv(gpu.blur.uniform("uOffsets[0]"), offsets);
-    gl.uniform1fv(gpu.blur.uniform("uWeights[0]"), pairWeights);
-    gl.uniform1i(gpu.blur.uniform("uTaps"), taps);
+    gl.uniform1f(gpu.blur.uniform("uCenter"), kernel.center);
+    gl.uniform1fv(gpu.blur.uniform("uOffsets[0]"), kernel.offsets);
+    gl.uniform1fv(gpu.blur.uniform("uWeights[0]"), kernel.pairWeights);
+    gl.uniform1i(gpu.blur.uniform("uTaps"), kernel.taps);
     gl.uniform2f(gpu.blur.uniform("uTexel"), 1 / quarterA.width, 1 / quarterA.height);
     gl.uniform1i(gpu.blur.uniform("uSource"), 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, quarterB.framebuffer);
@@ -2228,8 +2315,7 @@ void main() {
     gl.bindTexture(gl.TEXTURE_2D, quarterB.texture);
     gl.uniform2f(gpu.blur.uniform("uDirection"), 0, 1);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-    return true;
+    frostStale = false;
   };
 
   /**
@@ -2270,17 +2356,9 @@ void main() {
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, mask.texture);
     gl.uniform1i(gpu.composite.uniform("uMask"), 3);
-    const count = Math.min(MAX_ZONE_CLASSES, zoneClasses.length);
-    const classes = new Float32Array(MAX_ZONE_CLASSES * 4);
-    const channelOf = new Float32Array(MAX_ZONE_CLASSES).fill(-1);
-    for (const [index, zoneClass] of zoneClasses.slice(0, count).entries()) {
-      const { color, floor, channel } = zoneClass;
-      classes.set([color.r, color.g, color.b, floor], index * 4);
-      channelOf[index] = channel;
-    }
-    gl.uniform1i(gpu.composite.uniform("uClassCount"), count);
-    gl.uniform4fv(gpu.composite.uniform("uClass[0]"), classes);
-    gl.uniform1fv(gpu.composite.uniform("uChannel[0]"), channelOf);
+    gl.uniform1i(gpu.composite.uniform("uClassCount"), zoneUniformCount);
+    gl.uniform4fv(gpu.composite.uniform("uClass[0]"), zoneUniformClasses);
+    gl.uniform1fv(gpu.composite.uniform("uChannel[0]"), zoneUniformChannels);
     gl.uniform1f(gpu.composite.uniform("uClarity"), theme.clarity);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.activeTexture(gl.TEXTURE0);
@@ -2503,6 +2581,9 @@ void main() {
     };
     pending.timer = win.setTimeout(() => onDeadline(current, pending), interval * 2);
     current.outstanding = pending;
+    const wantsHover = current.definition.hover === true;
+    const clicks = pendingClicks;
+    pendingClicks = [];
     const tick: BackdropWorkerTick = {
       type: "tick",
       generation: current.generation,
@@ -2513,6 +2594,13 @@ void main() {
         working: activity.working,
         waiting: activity.waiting,
         sincePulse: Number.isFinite(lastPulseAt) ? Math.max(0, (sentAt - lastPulseAt) / 1000) : 1e9,
+      },
+      pointer: {
+        x: wantsHover ? pointer.x : 0,
+        y: wantsHover ? pointer.y : 0,
+        inside: wantsHover && pointer.inside,
+        clicks,
+        sinceClick: Number.isFinite(lastClickAt) ? Math.max(0, (sentAt - lastClickAt) / 1000) : 1e9,
       },
       size: { width: viewport.width, height: viewport.height, dpr: viewport.dpr },
       ...shape,
@@ -2604,6 +2692,7 @@ void main() {
             ? "medium"
             : "light",
       throttled: throttle > 0 || (conditions?.slowdown ?? 0) > 0,
+      ...(lastCanvasContext !== undefined ? { canvasContext: lastCanvasContext } : {}),
     });
   };
 
@@ -2655,6 +2744,8 @@ void main() {
     const init = readInit(message);
     if (!init) return;
     theme = init;
+    lastCanvasContext = undefined;
+    updateTextBounds(init.texts);
     const base = `rgb(${Math.round(init.base.r * 255)} ${Math.round(init.base.g * 255)} ${Math.round(init.base.b * 255)})`;
     doc.documentElement.style.background = base;
     doc.documentElement.style.colorScheme = message.base === "dark" ? "dark" : "light";
@@ -2717,6 +2808,7 @@ void main() {
         const texts = readTexts(message.textColors, message.textRatios);
         if (!texts || !theme || !isNum(message.clarity, 0, 1)) return;
         theme = { ...theme, texts, clarity: message.clarity };
+        updateTextBounds(texts);
         render();
         return;
       }
@@ -2741,6 +2833,27 @@ void main() {
         if (message.kind !== "turn-done") return;
         lastPulseAt = now();
         schedule();
+        return;
+      }
+      case "pointer": {
+        if (message.kind === "leave") {
+          pointer = { x: 0, y: 0, inside: false };
+          return;
+        }
+        if (message.kind !== "move" && message.kind !== "click") return;
+        const { x, y } = message;
+        if (!isNum(x, -1e5, 1e5) || !isNum(y, -1e5, 1e5)) return;
+        if (message.kind === "move") {
+          if (art?.definition?.hover !== true) return;
+          pointer = { x, y, inside: true };
+          return;
+        }
+        // Keep clicks while live art's worker lives (running or brief busy hold), drop while paused.
+        if (runState() === "paused" || conditions?.motion !== "live" || !art) return;
+        lastClickAt = now();
+        pendingClicks.push({ x, y });
+        // Bounded newest-N buffer per tick: rapid burst clicks beyond the cap drop the oldest.
+        if (pendingClicks.length > limits.maxPendingClicks) pendingClicks.shift();
         return;
       }
       case "conditions": {

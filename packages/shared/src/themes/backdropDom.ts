@@ -162,6 +162,15 @@ export interface BackdropGL {
     type: number,
     pixels: ArrayBufferView,
   ): void;
+  texSubImage2D(
+    target: number,
+    level: number,
+    x: number,
+    y: number,
+    format: number,
+    type: number,
+    source: TexImageSource,
+  ): void;
   uniform1f(location: GLHandle | null, x: number): void;
   uniform1fv(location: GLHandle | null, data: Float32Array): void;
   uniform1i(location: GLHandle | null, x: number): void;

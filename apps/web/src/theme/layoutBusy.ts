@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 export const LAYOUT_BUSY_QUIET_MS = 150;
 
 /** Where a drag reshapes the layout: the dividers between panes and the sidebar's edge. */
-const DIVIDER_SELECTOR = '[role="separator"], [data-slot="sidebar-rail"]';
+export const LAYOUT_DIVIDER_SELECTOR = '[role="separator"], [data-slot="sidebar-rail"]';
 
 /**
  * The user is resizing the window or dragging a divider, or did within the
@@ -36,7 +36,7 @@ export function useLayoutBusy(): boolean {
     };
     const onPointerDown = (event: PointerEvent) => {
       onDivider =
-        event.target instanceof Element && event.target.closest(DIVIDER_SELECTOR) !== null;
+        event.target instanceof Element && event.target.closest(LAYOUT_DIVIDER_SELECTOR) !== null;
     };
     const onPointerMove = (event: PointerEvent) => {
       if (onDivider && event.buttons !== 0) mark();

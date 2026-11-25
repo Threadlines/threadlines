@@ -660,6 +660,181 @@ describe("backdrop frame", { timeout: 60_000 }, () => {
     });
   });
 
+  it("preserves non-zero zone floors at Clear while skipping frost and tint-map work", async () => {
+    mounted = await mountFrame();
+    mounted.start(
+      "grid",
+      `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #",
+        draw(grid) { grid.glyph.fill(-1); grid.bg.fill(255); } });`,
+      [{ ...COLUMN, tint: 0.5, tintColor: "#000000" }],
+    );
+    mounted.post({
+      type: "glass",
+      textColors: texts.map((text) => text.color),
+      textRatios: texts.map((text) => text.ratio),
+      clarity: 1,
+    });
+    await mounted.framesAbove(3);
+    // White art blended 50% with black floor is mid-gray (~0.21 luminance), never raw white (~1.0).
+    const shown = await mounted.shownNow();
+    expect(shown.column?.high).toBeLessThan(0.35);
+    expect(shown.column?.low).toBeGreaterThan(0.1);
+    // Test probe with measure=true still computes frost on demand when skipped at Clear.
+    const measured = await mounted.probe(true);
+    expect(measured.boxes.column?.maxR).toBe(1);
+  });
+
+  it("reuses bitmap texture storage across steady-state canvas frames and handles resize and webgl2 stats", async () => {
+    mounted = await mountFrame();
+    mounted.start(
+      "canvas",
+      `threadlines.backdrop({ mode: "canvas", context: "webgl2",
+        draw(gl, info) {
+          gl.viewport(0, 0, info.cols, info.rows);
+          const bright = info.frame >= 3 ? 1.0 : 0.0;
+          gl.clearColor(bright, bright, bright, 1.0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+        } });`,
+      [{ ...COLUMN, tint: 0 }],
+    );
+    mounted.post({
+      type: "glass",
+      textColors: texts.map((text) => text.color),
+      textRatios: texts.map((text) => text.ratio),
+      clarity: 1,
+    });
+    await mounted.framesAbove(4);
+    expect((await mounted.shownNow()).column?.high).toBeGreaterThan(0.95);
+    // Resize reallocates texture storage and keeps drawing.
+    mounted.post({ type: "viewport", width: 640, height: 420, dpr: 1 });
+    await mounted.framesAbove((await mounted.probe()).drawnFrames + 2);
+    expect((await mounted.shownNow()).column?.high).toBeGreaterThan(0.95);
+    const stats = await waitForFrame(
+      () => {
+        const found = mounted!.messages.findLast((message) => message.type === "stats");
+        if (!found) throw new Error("no stats yet");
+        return found;
+      },
+      { interval: 100 },
+    );
+    expect(stats.canvasContext).toBe("webgl2");
+    expect(mounted.messages.some((message) => message.type === "failure")).toBe(false);
+  });
+
+  it("batches clicks without losing them across ticks or resize, clears them on pause, and gates hover behind opt-in", async () => {
+    mounted = await mountFrame();
+    // 1 fps makes batching multiple clicks before the next tick deterministic.
+    // Red channel encodes total clicks seen by draw (x60), green encodes setup clicks (must stay 0),
+    // blue encodes whether hover coordinates ever showed up (must stay 0 without hover: true).
+    mounted.post({
+      type: "init",
+      mode: "grid",
+      script: `Object.prototype.hover = true;
+        let totalClicks = 0, setupClicks = 0, sawHover = 0;
+        threadlines.backdrop({ mode: "grid", cell: { width: 20, height: 20 }, glyphs: " ",
+          setup(info) {
+            setupClicks += info.pointer.clicks.length;
+            Object.freeze(info);
+          },
+          draw(grid, info) {
+            totalClicks += info.pointer.clicks.length;
+            if (info.pointer.inside || info.pointer.x !== 0 || info.pointer.y !== 0) sawHover = 1;
+            const r = Math.min(255, totalClicks * 60);
+            const g = setupClicks > 0 ? 255 : 0;
+            const b = sawHover ? 255 : 0;
+            for (let i = 0; i < grid.glyph.length; i++) {
+              grid.glyph[i] = -1;
+              grid.bg[i * 4] = r; grid.bg[i * 4 + 1] = g; grid.bg[i * 4 + 2] = b; grid.bg[i * 4 + 3] = 255;
+            }
+          } });`,
+      maxFps: 1,
+      base: "dark",
+      palette: { ...tokens },
+      textColors: texts.map((text) => text.color),
+      textRatios: texts.map((text) => text.ratio),
+      blur: 16,
+      clarity: 1,
+    });
+    mounted.post({ type: "viewport", width: 800, height: 500, dpr: 1 });
+    mounted.post({ type: "zones", zones: [{ ...COLUMN, tint: 0 }] });
+    mounted.post({ type: "conditions", conditions: { ...LIVE, focused: true } });
+
+    const caps = await waitForFrame(() => {
+      const found = mounted!.messages.find((message) => message.type === "capabilities");
+      if (!found) throw new Error("no capabilities yet");
+      return found;
+    });
+    expect(caps.hover).toBe(false);
+    await mounted.framesAbove(1);
+
+    // Send two clicks and a hover move + viewport resize before the next 1 fps tick.
+    mounted.post({ type: "pointer", kind: "move", x: 123, y: 456 });
+    mounted.post({ type: "pointer", kind: "click", x: 100, y: 120 });
+    mounted.post({ type: "pointer", kind: "click", x: 200, y: 220 });
+    mounted.post({ type: "viewport", width: 760, height: 480, dpr: 1 });
+    await mounted.framesAbove(2);
+
+    const measured = await mounted.probe(true);
+    // 2 clicks * 60 = 120 / 255 ~= 0.47; setupClicks = 0; sawHover = 0.
+    expect(measured.boxes.column?.maxR).toBeGreaterThan(0.4);
+    expect(measured.boxes.column?.maxG).toBe(0);
+    expect(measured.boxes.column?.maxB).toBe(0);
+
+    // Queue a click before pausing and another while paused: pausing drops pending input
+    // so the restarted worker starts clean once the resume fade finishes.
+    mounted.post({ type: "pointer", kind: "click", x: 250, y: 250 });
+    mounted.post({ type: "conditions", conditions: { ...LIVE, visible: false } });
+    await waitForFrame(async () => expect((await mounted!.probe()).workerAlive).toBe(false));
+    mounted.post({ type: "pointer", kind: "click", x: 300, y: 300 });
+    mounted.post({ type: "conditions", conditions: { ...LIVE, focused: true } });
+    await mounted.framesAbove(3);
+    await waitForFrame(async () => expect((await mounted!.probe()).fading).toBe(false));
+    const afterResume = await mounted.probe(true);
+    expect(afterResume.boxes.column?.maxR).toBe(0);
+  });
+
+  it("delivers hover coordinates when opted in and clears inside on leave", async () => {
+    mounted = await mountFrame();
+    mounted.start(
+      "grid",
+      `threadlines.backdrop({ mode: "grid", cell: { width: 20, height: 20 }, glyphs: " ", hover: true,
+        draw(grid, info) {
+          const on = info.pointer.inside && info.pointer.x === 320 && info.pointer.y === 240;
+          const v = on ? 255 : 0;
+          for (let i = 0; i < grid.glyph.length; i++) {
+            grid.glyph[i] = -1;
+            grid.bg[i * 4] = v; grid.bg[i * 4 + 1] = v; grid.bg[i * 4 + 2] = v; grid.bg[i * 4 + 3] = 255;
+          }
+        } });`,
+      [{ ...COLUMN, tint: 0 }],
+    );
+    const caps = await waitForFrame(() => {
+      const found = mounted!.messages.find((message) => message.type === "capabilities");
+      if (!found) throw new Error("no capabilities yet");
+      return found;
+    });
+    expect(caps.hover).toBe(true);
+    mounted.post({ type: "pointer", kind: "move", x: 320, y: 240 });
+    await waitForFrame(async () =>
+      expect((await mounted!.probe(true)).boxes.column?.maxR).toBeGreaterThan(0.95),
+    );
+    mounted.post({ type: "pointer", kind: "leave" });
+    await waitForFrame(async () =>
+      expect((await mounted!.probe(true)).boxes.column?.maxR).toBeLessThan(0.05),
+    );
+  });
+
+  it("rejects a non-boolean hover declaration", async () => {
+    mounted = await mountFrame();
+    mounted.start(
+      "grid",
+      `threadlines.backdrop({ mode: "grid", cell: { width: 10, height: 14 }, glyphs: " #", hover: "yes", draw() {} });`,
+    );
+    const failure = await mounted.failure();
+    expect(failure.reason).toBe("script-error");
+    expect(failure.detail).toContain("hover");
+  });
+
   it("keeps column text readable over one-pixel white lines on black", async () => {
     mounted = await mountFrame();
     mounted.start(

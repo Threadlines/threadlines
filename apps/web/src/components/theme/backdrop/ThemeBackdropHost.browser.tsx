@@ -229,4 +229,135 @@ describe("ThemeBackdropHost", () => {
     await vi.waitFor(() => expect(frameElement()).toBeNull());
     expect(stillElement()).not.toBeNull();
   });
+
+  /** Reads the center pixel RGB of a captured still data URL. */
+  async function readStillPixel(still: string): Promise<[number, number, number]> {
+    const image = new Image();
+    image.src = still;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(image, 0, 0);
+    const [r, g, b] = ctx.getImageData(
+      Math.floor(canvas.width / 2),
+      Math.floor(canvas.height / 2),
+      1,
+      1,
+    ).data;
+    return [r!, g!, b!];
+  }
+
+  it("forwards real clicks, ignores keyboard synthetic clicks, and skips hover listeners unless opted in", async () => {
+    const addSpy = vi.spyOn(window, "addEventListener");
+    cleanup.push(() => addSpy.mockRestore());
+
+    const clickArt = `let count = 0; let lastX = 0;
+    threadlines.backdrop({
+      mode: "pixels", width: 8, height: 8,
+      draw(pixels, info) {
+        if (info.pointer && info.pointer.clicks.length > 0) {
+          count += info.pointer.clicks.length;
+          lastX = info.pointer.clicks[info.pointer.clicks.length - 1].x;
+        }
+        const r = Math.min(255, count * 80);
+        const g = Math.min(255, Math.max(0, lastX));
+        const b = info.pointer && info.pointer.inside ? 255 : 0;
+        for (let i = 0; i < pixels.data.length; i += 4) {
+          pixels.data[i] = r; pixels.data[i + 1] = g; pixels.data[i + 2] = b; pixels.data[i + 3] = 255;
+        }
+      },
+    });`;
+
+    const host = mountHost({ mode: "pixels", script: clickArt, maxFps: 20 });
+    await host.statusOf("running");
+    // Give capabilities(hover: false) a beat to settle, then confirm no pointermove listener was added.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(addSpy.mock.calls.some(([type]) => type === "pointermove")).toBe(false);
+
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, clientY: 60 }));
+    // Keyboard Enter/Space synthetic click (detail: 0) is ignored.
+    window.dispatchEvent(new MouseEvent("click", { clientX: 10, clientY: 10, detail: 0 }));
+    // A divider drag/release click is ignored even after the layout-busy hold would have expired.
+    const divider = document.createElement("div");
+    divider.setAttribute("role", "separator");
+    document.body.appendChild(divider);
+    cleanup.push(() => divider.remove());
+    divider.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, clientX: 20, clientY: 20 }),
+    );
+    divider.dispatchEvent(
+      new PointerEvent("pointerup", { bubbles: true, clientX: 40, clientY: 20 }),
+    );
+    divider.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, clientX: 40, clientY: 20, detail: 1 }),
+    );
+    // Real completed mouse click (detail: 1) is forwarded with rounded coordinates.
+    window.dispatchEvent(new MouseEvent("click", { clientX: 123.6, clientY: 245.2, detail: 1 }));
+
+    await vi.waitFor(
+      async () => {
+        const [r, g, b] = await readStillPixel(await host.ref.current!.captureStill(8, 8));
+        expect(Math.abs(r - 80)).toBeLessThanOrEqual(4);
+        expect(Math.abs(g - 124)).toBeLessThanOrEqual(4);
+        expect(b).toBeLessThanOrEqual(4);
+      },
+      { timeout: 6_000, interval: 80 },
+    );
+  });
+
+  it("delivers throttled hover moves and clears inside on blur when the art opts into hover", async () => {
+    const addSpy = vi.spyOn(window, "addEventListener");
+    cleanup.push(() => addSpy.mockRestore());
+
+    const hoverArt = `threadlines.backdrop({
+      mode: "pixels", width: 8, height: 8, hover: true,
+      draw(pixels, info) {
+        const p = info.pointer || { x: 0, y: 0, inside: false };
+        const r = p.inside ? 200 : 20;
+        const g = Math.min(255, Math.max(0, p.x));
+        const b = Math.min(255, Math.max(0, p.y));
+        for (let i = 0; i < pixels.data.length; i += 4) {
+          pixels.data[i] = r; pixels.data[i + 1] = g; pixels.data[i + 2] = b; pixels.data[i + 3] = 255;
+        }
+      },
+    });`;
+
+    const host = mountHost({ mode: "pixels", script: hoverArt, maxFps: 20 });
+    await host.statusOf("running");
+    await vi.waitFor(() =>
+      expect(addSpy.mock.calls.some(([type]) => type === "pointermove")).toBe(true),
+    );
+
+    // Burst of moves: leading fires right away and trailing settles at (50, 60).
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 10, clientY: 20 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 30, clientY: 40 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 50, clientY: 60 }));
+
+    await vi.waitFor(
+      async () => {
+        const [r, g, b] = await readStillPixel(await host.ref.current!.captureStill(8, 8));
+        expect(Math.abs(r - 200)).toBeLessThanOrEqual(4);
+        expect(Math.abs(g - 50)).toBeLessThanOrEqual(4);
+        expect(Math.abs(b - 60)).toBeLessThanOrEqual(4);
+      },
+      { timeout: 6_000, interval: 80 },
+    );
+
+    // Move then blur immediately: blur must cancel any trailing move and clear inside.
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 90, clientY: 95 }));
+    window.dispatchEvent(new Event("blur"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    await vi.waitFor(
+      async () => {
+        const [r, g, b] = await readStillPixel(await host.ref.current!.captureStill(8, 8));
+        expect(Math.abs(r - 20)).toBeLessThanOrEqual(4);
+        expect(g).toBeLessThanOrEqual(4);
+        expect(b).toBeLessThanOrEqual(4);
+      },
+      { timeout: 6_000, interval: 80 },
+    );
+  });
 });

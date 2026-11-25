@@ -227,12 +227,14 @@ Three layers, each knowing less than the one above:
    // Pixel art: a small RGBA buffer, scaled up with crisp pixels.
    threadlines.backdrop({ mode: "pixels", width: 320, height: 180, draw(pixels, info) {} });
 
-   // Free drawing on an OffscreenCanvas, under a stricter budget.
-   threadlines.backdrop({ mode: "canvas", context: "2d", draw(ctx, info) {} });
+   // Free drawing on an OffscreenCanvas: use context: "webgl2" for crisp
+   // 20-24 fps geometric/shader art; reserve "2d" for low-fps scenes (8-12).
+   // Any mode may set hover: true to opt into throttled cursor coordinates.
+   threadlines.backdrop({ mode: "canvas", context: "webgl2", hover: false, draw(gl, info) {} });
    ```
 
-   `grid` and `pixels` are the fast paths and what the starters use; see
-   Performance.
+   `grid`, `pixels` and `canvas` with `context: "webgl2"` are the fast paths;
+   see Performance.
 
 **Frames are pulled, not pushed.** The frame sends a tick; the worker runs
 `draw` once and answers with its buffers (grid, pixels; transferred, not
@@ -408,20 +410,28 @@ CSS `backdrop-filter` is not used for glass: in this Electron build its blur
 ignores `mask-image`, so a feathered column shows as a hard box (seen in the
 prototype), and the art's frame would be read twice.
 
-**State goes one way.** The app posts `{ working, waiting, idle }` counts
+**State goes one way.** The app posts `{ working, waiting }` counts
 across every connected computer
-(`selectRunningSidebarThreadsAcrossEnvironments`) and a `turn-done` pulse
-(the Dock badge's finished signal). The frame passes them to `draw` as
-`state`. The art never sees titles, text, paths or anything else.
-`palette` is the theme's resolved colors.
+(`selectRunningSidebarThreadsAcrossEnvironments`), a `turn-done` pulse
+(the Dock badge's finished signal), and while live art is running, rounded
+viewport click coordinates from completed clicks in the host window (not
+inside embedded browser or agent-page iframes) plus throttled (~20 Hz)
+hover coordinates only when the theme opted in with `hover: true`. The frame
+passes activity as `state` and pointer state as `pointer` (`{ x, y, inside,
+clicks, sinceClick }`, with up to 8 most recent `clicks` batched per tick and
+empty during `setup`, and `x/y/inside` zeroed when `hover` is not opted in) on
+the existing tick clock without scheduling extra frames. The art never sees
+keystrokes, titles, text, paths, click targets or anything else. `palette`
+is the theme's resolved colors.
 
 **The bridge is typed.** `packages/contracts/src/themes.ts` defines
-`BackdropHostMessage` (zones, state, pulse, size, motion, palette),
-`BackdropFrameMessage` (ready, heartbeat, stats, still, failure) and the
-frame↔worker messages, with bounded sizes. Each side decodes only the
-direction it expects. The app accepts only messages whose `source` is its own
-frame's window; the frame accepts only its parent's, and worker replies only
-through the current worker's handler with the current generation.
+`BackdropHostMessage` (zones, state, pulse, pointer, size, motion, palette),
+`BackdropFrameMessage` (ready, capabilities, heartbeat, stats, still,
+failure) and the frame↔worker messages, with bounded sizes. Each side
+decodes only the direction it expects. The app accepts only messages whose
+`source` is its own frame's window; the frame accepts only its parent's,
+and worker replies only through the current worker's handler with the
+current generation.
 
 ## Performance
 
@@ -434,8 +444,13 @@ expensive way to do it. Measured in the prototype on the same Aurora art at
 drawn as a GPU character grid (about 12 times less, the draw call itself
 under 0.1 ms). The design leans on that:
 
-- **Fast modes first.** Starters and the guide's examples use `grid` or
-  `pixels`. `canvas` stays for art that needs it, under the stricter budget.
+- **Fast modes first.** Starters and the guide's examples use `grid`,
+  `pixels` or `canvas` with `context: "webgl2"`. `canvas` with `context: "2d"`
+  uploads a full bitmap per frame, so `preview_theme` warns when a 2d theme
+  runs above 12 fps. Steady-state canvas frames reuse the source texture via
+  `texSubImage2D`, and frames at Clear (`clarity === 1`) or without zones
+  skip the quarter-res blur and tint-map passes while keeping non-zero zone
+  floors intact.
 - **Frame rate follows where you are.** While the Threadlines window is in
   front, the art runs at the theme's own rate (at most 30): the first build
   ran 10 fps there, and moving art at 10 (5 on battery) reads as lag. Behind
