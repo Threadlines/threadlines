@@ -141,10 +141,11 @@ export const makeMuseTextGeneration = (options: MuseTextGenerationOptions) =>
             ),
             Effect.forkScoped,
           );
-          const effort = getModelSelectionStringOptionValue(
-            input.modelSelection as never,
-            "reasoningEffort",
-          );
+          const effort =
+            getModelSelectionStringOptionValue(input.modelSelection as never, "reasoningEffort") ??
+            (input.operation === "generateThreadTitle" || input.operation === "generateBranchName"
+              ? "low"
+              : undefined);
           yield* host
             .command(
               "turn/start",

@@ -66,15 +66,22 @@ export const APP_TOOL_NAMES = [
   PROJECT_NOTE_WRITE_TOOL_NAME,
 ] as const;
 
-export const ROOM_TOOL_NAMES = [
+/** Tools used only once another agent is in the thread (a room). */
+export const MULTI_AGENT_ROOM_TOOL_NAMES = [
   "room_agents",
   "room_ask",
   "room_review",
   "room_hand_off",
   "room_history",
   "room_diff",
-  "room_available_agents",
-  "room_invite",
+] as const;
+
+/** Tools for bringing another agent into the thread. */
+export const INVITE_TOOL_NAMES = ["room_available_agents", "room_invite"] as const;
+
+export const ROOM_TOOL_NAMES = [
+  ...MULTI_AGENT_ROOM_TOOL_NAMES,
+  ...INVITE_TOOL_NAMES,
   ...THREAD_TOOL_NAMES,
   ...SCHEDULE_TOOL_NAMES,
   ...APP_TOOL_NAMES,

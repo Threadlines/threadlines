@@ -848,6 +848,9 @@ export const CURSOR_ACP_DESCRIPTOR: AcpProviderDescriptor<CursorSettings> = {
   modelCapabilitiesVaryByModel: true,
   listModelOptions: listCursorModelOptions,
   resolveModelId: resolveCursorAcpBaseModelId,
+  // Run throwaway text generation in an empty directory so workspace rules,
+  // hooks, and MCP configs stay out of title/branch/commit prompts.
+  isolateTextGeneration: true,
   extensions: {
     source: "acp.cursor.extension",
     register: (context) =>

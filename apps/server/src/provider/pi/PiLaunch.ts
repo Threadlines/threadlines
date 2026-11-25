@@ -65,7 +65,12 @@ export type PiProcessSpec =
   /** Copies a session into another folder: no extensions, no tools, no model needed. */
   | { readonly purpose: "fork"; readonly sessionFile: string }
   /** Titles and commit messages: nothing written, no tools, the user's extensions on. */
-  | { readonly purpose: "utility"; readonly launchArgs: ReadonlyArray<string> }
+  | {
+      readonly purpose: "utility";
+      readonly launchArgs: ReadonlyArray<string>;
+      /** Lightweight system prompt file replacing Pi's coding-agent prompt. */
+      readonly systemPromptPath?: string | undefined;
+    }
   /**
    * One sign-in: nothing written, the sign-in extension and the user's own
    * (whose providers can be signed in to as well).
@@ -111,7 +116,15 @@ export function piProcessArgs(launcher: PiLauncher, spec: PiProcessSpec): Array<
       return [...base, "--no-extensions", "--no-tools", "--fork", spec.sessionFile];
     case "utility":
       // A tools list would override `--no-tools`: these processes run no tools at all.
-      return [...base, ...withoutToolSelection(spec.launchArgs), "--no-session", "--no-tools"];
+      // Put our lightweight `--system-prompt` ahead of user launchArgs so an
+      // explicit `--system-prompt` in the user's launchArgs still wins.
+      return [
+        ...base,
+        ...(spec.systemPromptPath ? ["--system-prompt", spec.systemPromptPath] : []),
+        ...withoutToolSelection(spec.launchArgs),
+        "--no-session",
+        "--no-tools",
+      ];
     case "signIn":
       return [
         ...base,
@@ -135,6 +148,52 @@ const TOOL_SELECTION_FLAGS: ReadonlyMap<string, boolean> = new Map([
   ["--no-builtin-tools", false],
   ["-nbt", false],
 ]);
+
+/** Whether `launchArgs` sets any of the given CLI flag names (e.g. `["--thinking"]`). */
+export function piLaunchArgsHasFlag(
+  args: ReadonlyArray<string>,
+  flags: ReadonlyArray<string>,
+): boolean {
+  for (const word of args) {
+    const [flag] = word.split("=", 1) as [string];
+    if (flags.includes(flag)) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolves relative path values for `--extension`/`-e` flags against `baseCwd`
+ * so a utility process running in an isolated temp folder can still load
+ * user-configured relative model extensions.
+ */
+export function resolvePiExtensionLaunchArgs(
+  args: ReadonlyArray<string>,
+  resolvePath: (relativePath: string) => string,
+): Array<string> {
+  const resolved: Array<string> = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (word === "--extension" || word === "-e") {
+      resolved.push(word);
+      const next = args[index + 1];
+      if (next !== undefined) {
+        resolved.push(resolvePath(next));
+        index += 1;
+      }
+      continue;
+    }
+    if (word.startsWith("--extension=")) {
+      resolved.push(`--extension=${resolvePath(word.slice("--extension=".length))}`);
+      continue;
+    }
+    if (word.startsWith("-e=")) {
+      resolved.push(`-e=${resolvePath(word.slice("-e=".length))}`);
+      continue;
+    }
+    resolved.push(word);
+  }
+  return resolved;
+}
 
 /** The user's flags without the ones that choose tools. */
 function withoutToolSelection(args: ReadonlyArray<string>): Array<string> {

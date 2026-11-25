@@ -86,14 +86,20 @@ export interface ThreadTitleGenerationInput {
   cwd: string;
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  /** When true, the model also returns a semantic branch name fragment for the first turn. */
+  includeBranch?: boolean;
   /** What model and provider to use for generation. */
   modelSelection: ModelSelection;
   /** Optional backup model on a different provider. Used only after the primary fails. */
   backupModelSelection?: ModelSelection | null;
+  /** Writing style policy resolved from settings and the repository. */
+  policy?: TextGenerationPolicy | undefined;
 }
 
 export interface ThreadTitleGenerationResult {
   title: string;
+  /** Only present when `includeBranch` was set on the input. */
+  branch?: string | undefined;
 }
 
 export interface TextGenerationService {

@@ -17,11 +17,18 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
 import { piTurnFailure } from "../provider/pi/PiFailure.ts";
-import { type PiLaunch, piProcessArgs, piProcessEnvironment } from "../provider/pi/PiLaunch.ts";
+import {
+  type PiLaunch,
+  piLaunchArgsHasFlag,
+  piProcessArgs,
+  piProcessEnvironment,
+  resolvePiExtensionLaunchArgs,
+} from "../provider/pi/PiLaunch.ts";
 import {
   decodePi,
   parsePiModelSlug,
@@ -38,6 +45,9 @@ import {
 
 const GENERATION_TIMEOUT = Duration.seconds(180);
 
+const PI_TEXT_GENERATION_SYSTEM_PROMPT =
+  "You write short pieces of text for a developer tool: thread titles, branch names, commit messages and pull request text. Follow the instructions in the message exactly. Answer in one step with only what they ask for: never ask a question, and never write anything before or after the answer.";
+
 export interface PiTextGenerationOptions {
   readonly launch: PiLaunch;
   /** The instance's extra `pi` flags. */
@@ -50,6 +60,7 @@ export interface PiTextGenerationOptions {
 export const makePiTextGeneration = (options: PiTextGenerationOptions) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
     const generateText = (request: TextGenerationRequest) =>
@@ -61,15 +72,42 @@ export const makePiTextGeneration = (options: PiTextGenerationOptions) =>
               detail,
               ...(cause !== undefined ? { cause } : {}),
             });
-          const directory = yield* fileSystem
+          // Run in an empty temp folder with a short system prompt so Pi does
+          // not load its coding-agent prompt or repository context files for
+          // one-shot title, branch, commit, and PR generation. Resolve any
+          // relative `--extension`/`-e` paths against the real cwd first so
+          // user-configured model extensions still load.
+          const realCwd = yield* fileSystem
             .realPath(request.cwd)
             .pipe(Effect.orElseSucceed(() => request.cwd));
+          const directory = yield* fileSystem
+            .makeTempDirectoryScoped({ prefix: "threadlines-pi-text-" })
+            .pipe(
+              Effect.mapError((cause) =>
+                failure("Could not prepare an isolated directory for Pi text generation.", cause),
+              ),
+            );
+          const systemPromptPath = yield* fileSystem
+            .makeTempFileScoped({ prefix: "threadlines-pi-text-prompt-", suffix: ".md" })
+            .pipe(
+              Effect.tap((filePath) =>
+                fileSystem.writeFileString(filePath, PI_TEXT_GENERATION_SYSTEM_PROMPT),
+              ),
+              Effect.orElseSucceed(() => undefined),
+            );
+          const utilityLaunchArgs = resolvePiExtensionLaunchArgs(options.launchArgs, (extPath) =>
+            path.isAbsolute(extPath) ? extPath : path.resolve(realCwd, extPath),
+          );
           const launcher = yield* options.launch.pipe(
             Effect.mapError((error) => failure(error.message, error)),
           );
           const rpc = yield* startPiRpc({
             command: launcher.command,
-            args: piProcessArgs(launcher, { purpose: "utility", launchArgs: options.launchArgs }),
+            args: piProcessArgs(launcher, {
+              purpose: "utility",
+              launchArgs: utilityLaunchArgs,
+              systemPromptPath,
+            }),
             cwd: directory,
             environment: piProcessEnvironment({
               instanceEnvironment: options.instanceEnvironment,
@@ -86,10 +124,17 @@ export const makePiTextGeneration = (options: PiTextGenerationOptions) =>
           if (model) {
             yield* ask({ type: "set_model", provider: model.provider, modelId: model.modelId });
           }
-          const effort = getModelSelectionStringOptionValue(
+          const explicitEffort = getModelSelectionStringOptionValue(
             request.modelSelection as never,
             "reasoningEffort",
           );
+          const effort =
+            explicitEffort ??
+            (!piLaunchArgsHasFlag(options.launchArgs, ["--thinking"]) &&
+            (request.operation === "generateThreadTitle" ||
+              request.operation === "generateBranchName")
+              ? "low"
+              : undefined);
           // A level the model lacks is Pi's to clamp; never a reason to fail.
           if (effort) yield* Effect.ignore(ask({ type: "set_thinking_level", level: effort }));
 

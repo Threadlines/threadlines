@@ -225,6 +225,7 @@ interface PersistedStartTools {
   readonly artifacts: boolean;
   readonly commandRequests: boolean;
   readonly deviceTools: boolean;
+  readonly promptSuggestions: boolean;
 }
 
 function toRuntimePayloadFromSession(
@@ -263,6 +264,7 @@ function toRuntimePayloadFromSession(
           artifacts: extra.startedWith.artifacts,
           commandRequests: extra.startedWith.commandRequests,
           deviceTools: extra.startedWith.deviceTools,
+          promptSuggestions: extra.startedWith.promptSuggestions,
         }
       : {}),
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
@@ -347,6 +349,20 @@ function readPersistedStartToolFlag(
     !Array.isArray(runtimePayload) &&
     key in runtimePayload &&
     (runtimePayload as Record<string, unknown>)[key] === true
+  );
+}
+
+/** Whether a default-true start flag was explicitly persisted as false. */
+function readPersistedStartFlagDisabled(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+  key: keyof PersistedStartTools,
+): boolean {
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    key in runtimePayload &&
+    (runtimePayload as Record<string, unknown>)[key] === false
   );
 }
 
@@ -972,6 +988,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ...(readPersistedStartToolFlag(input.binding.runtimePayload, "deviceTools")
               ? { deviceTools: true }
               : {}),
+            ...(readPersistedStartFlagDisabled(input.binding.runtimePayload, "promptSuggestions")
+              ? { promptSuggestions: false }
+              : {}),
             runtimeMode: input.binding.runtimeMode ?? "full-access",
           }),
         );
@@ -1322,6 +1341,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             artifacts: input.artifacts === true,
             commandRequests: input.commandRequests === true,
             deviceTools: input.deviceTools === true,
+            promptSuggestions: input.promptSuggestions !== false,
           },
         });
         return { sessionWithInstance, sessionStart } as const;

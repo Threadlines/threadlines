@@ -4,8 +4,10 @@ import {
   PI_EXTENSION_ENV,
   parsePiLaunchArgs,
   piAccessLevel,
+  piLaunchArgsHasFlag,
   piProcessArgs,
   piProcessEnvironment,
+  resolvePiExtensionLaunchArgs,
 } from "./PiLaunch.ts";
 
 const managed = { command: "/node", prefixArgs: ["/pi/cli.js"] };
@@ -43,8 +45,28 @@ describe("piProcessArgs", () => {
       piProcessArgs(managed, {
         purpose: "utility",
         launchArgs: ["--tools", "bash,read", "--model", "x/y", "-xt=ask", "-nbt"],
+        systemPromptPath: "/tmp/prompt.md",
       }),
-    ).toEqual(["/pi/cli.js", "--mode", "rpc", "--model", "x/y", "--no-session", "--no-tools"]);
+    ).toEqual([
+      "/pi/cli.js",
+      "--mode",
+      "rpc",
+      "--system-prompt",
+      "/tmp/prompt.md",
+      "--model",
+      "x/y",
+      "--no-session",
+      "--no-tools",
+    ]);
+    expect(piLaunchArgsHasFlag(["--thinking", "high"], ["--thinking"])).toBe(true);
+    expect(piLaunchArgsHasFlag(["--thinking=high"], ["--thinking"])).toBe(true);
+    expect(piLaunchArgsHasFlag(["--model", "x/y"], ["--thinking"])).toBe(false);
+    expect(
+      resolvePiExtensionLaunchArgs(
+        ["--extension", "./local.ts", "-e=./other.ts", "--model", "x/y"],
+        (rel) => `/repo/${rel.replace(/^\.\//, "")}`,
+      ),
+    ).toEqual(["--extension", "/repo/local.ts", "-e=/repo/other.ts", "--model", "x/y"]);
     // A sign-in loads the user's extensions (their providers count) and its own.
     expect(
       piProcessArgs(managed, {

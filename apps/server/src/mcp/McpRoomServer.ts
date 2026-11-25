@@ -39,9 +39,13 @@ import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import {
   GUIDE_TOOL_NAME,
+  INVITE_TOOL_NAMES,
+  MULTI_AGENT_ROOM_TOOL_NAMES,
   PROJECT_NOTE_WRITE_TOOL_NAME,
   SCHEDULE_TOOL_NAMES,
+  THREAD_TOOL_NAMES,
 } from "./roomToolAccess.ts";
+import { hasAgentRecords } from "@threadlines/shared/threadParticipants";
 import { ProjectContext } from "../projectContext/ProjectContext.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
@@ -161,6 +165,7 @@ type ToolsReaching<R> = {
 
 const authenticate = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;
+  const snapshots = yield* Effect.serviceOption(ProjectionSnapshotQuery);
   const limits = yield* makeOutsideToolLimits;
   return Effect.fn("McpRoomServer.authenticate")(function* (
     handler: Effect.Effect<
@@ -174,21 +179,47 @@ const authenticate = Effect.gen(function* () {
     if (scope === null || scope.roomTools.size === 0) {
       return unauthorizedMcpResponse;
     }
-    // The schedule tools follow "Agents can start threads", read live: off,
-    // they aren't listed (and their handlers refuse a call anyway).
-    const mode = yield* settings.getSettings.pipe(
-      Effect.map(agentThreadsMode),
-      Effect.orElseSucceed(() => "off" as const),
-    );
-    // So does project_note_write "Notes agents write".
-    const notesOff = yield* settings.getSettings.pipe(
-      Effect.map((current) => current.projectNotes === "off"),
-      Effect.orElseSucceed(() => true),
-    );
+    // Live settings hide tools whose feature is off so agents do not carry
+    // unusable schemas on every turn (their handlers refuse calls too).
+    const currentSettings = yield* settings.getSettings.pipe(Effect.option);
+    const threadsOff = Option.match(currentSettings, {
+      onNone: () => true,
+      onSome: (current) => agentThreadsMode(current) === "off",
+    });
+    const invitesOff = Option.match(currentSettings, {
+      onNone: () => true,
+      onSome: (current) => agentInvitesMode(current) === "off",
+    });
+    const notesOff = Option.match(currentSettings, {
+      onNone: () => true,
+      onSome: (current) => current.projectNotes === "off",
+    });
+    // Solo threads do not list multi-agent room tools; entering a room restarts
+    // the runtime so it picks them up. Side runtimes keep their narrow grants.
+    const soloThread =
+      scope.side === undefined && Option.isSome(snapshots)
+        ? yield* snapshots.value.getThreadShellById(scope.threadId).pipe(
+            Effect.map((shell) => Option.isSome(shell) && !hasAgentRecords(shell.value)),
+            Effect.orElseSucceed(() => false),
+          )
+        : false;
+    if (scope.side === undefined) {
+      yield* mcpSessionRegistry.recordListedRoomScope(scope.sessionKey, scope.generation, {
+        inRoom: !soloThread,
+        invitesOn: !invitesOff,
+        threadsOn: !threadsOff,
+      });
+    }
     const listed: ReadonlySet<string> = new Set(
       [...scope.roomTools].filter(
         (tool) =>
-          !(mode === "off" && (SCHEDULE_TOOL_NAMES as ReadonlyArray<string>).includes(tool)) &&
+          !(soloThread && (MULTI_AGENT_ROOM_TOOL_NAMES as ReadonlyArray<string>).includes(tool)) &&
+          !(invitesOff && (INVITE_TOOL_NAMES as ReadonlyArray<string>).includes(tool)) &&
+          !(
+            threadsOff &&
+            ((SCHEDULE_TOOL_NAMES as ReadonlyArray<string>).includes(tool) ||
+              (THREAD_TOOL_NAMES as ReadonlyArray<string>).includes(tool))
+          ) &&
           !(notesOff && tool === PROJECT_NOTE_WRITE_TOOL_NAME),
       ),
     );

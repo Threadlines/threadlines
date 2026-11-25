@@ -2,13 +2,15 @@
  * Antigravity prompt suggestion model selection and quota guard.
  *
  * Prefers a fast-but-smart Gemini Hydrogen model (e.g. `gemini-4-hydrogen`),
- * then Gemini Flash (non-lite first), then the thread's own model, at the
- * lightest good thinking level so suggestions stay quick without spending
- * frontier or Claude/GPT quota.
+ * then Gemini Flash (non-lite first), at the lightest good thinking level so
+ * suggestions stay quick without spending frontier or Claude/GPT quota. When
+ * neither Hydrogen nor Flash is in the catalog, suggestions are skipped rather
+ * than falling back to the thread's own frontier model.
  *
  * @module provider/antigravity/AntigravityPromptSuggestions
  */
 import type {
+  AntigravityAuthMethod,
   ProviderOptionSelection,
   ServerProviderAccountUsage,
   ServerProviderModel,
@@ -25,11 +27,20 @@ import {
   selectSuggestionEffort,
 } from "../promptSuggestions.ts";
 
+/**
+ * Only subscription/OAuth Antigravity accounts get automatic prompt
+ * suggestions: pay-per-token API key and Vertex AI accounts have no quota
+ * windows to guard against and would be billed per turn for an extra process.
+ */
+export function isAntigravityPromptSuggestionAuthSupported(method: AntigravityAuthMethod): boolean {
+  return method === "oauth-personal" || method === "oauth-business";
+}
+
 export interface AntigravitySuggestionTarget {
-  /** Model slug to select on the ephemeral suggestion session, if any. */
-  readonly model: string | undefined;
+  /** Model slug to select on the ephemeral suggestion session. */
+  readonly model: string;
   /** Display name (or slug fallback) matched against Antigravity's scoped usage windows. */
-  readonly modelName: string | undefined;
+  readonly modelName: string;
   /** Lightest good reasoning option selection for `model`, when supported. */
   readonly options: ReadonlyArray<ProviderOptionSelection>;
 }
@@ -86,39 +97,27 @@ function reasoningOptionsFor(
  *   1. Highest-version Gemini Hydrogen (e.g. `gemini-4-hydrogen`)
  *   2. Highest-version non-lite Gemini Flash (e.g. `gemini-3.8-flash`)
  *   3. Any Gemini Flash
- *   4. The thread's active `fallbackModel`
+ *
+ * Returns `undefined` when no lightweight Gemini model is listed, so
+ * suggestions never spend frontier or Claude/GPT quota.
  */
 export function selectAntigravitySuggestionTarget(
   models: ReadonlyArray<ServerProviderModel>,
-  fallbackModel: string | undefined,
-): AntigravitySuggestionTarget {
+): AntigravitySuggestionTarget | undefined {
   const hydrogen = models.filter(isHydrogenModel).toSorted(compareDescVersion)[0];
-  const flash =
+  const chosen =
     hydrogen ??
     models
       .filter((model) => isFlashModel(model) && !isFlashLiteModel(model))
       .toSorted(compareDescVersion)[0] ??
     models.filter(isFlashModel).toSorted(compareDescVersion)[0];
 
-  const chosen =
-    flash ??
-    (fallbackModel !== undefined
-      ? models.find((candidate) => candidate.slug === fallbackModel)
-      : undefined) ??
-    models.find((candidate) => candidate.isDefault === true);
-
-  if (chosen !== undefined) {
-    return {
-      model: chosen.slug,
-      modelName: chosen.name || chosen.slug,
-      options: reasoningOptionsFor(chosen),
-    };
-  }
+  if (chosen === undefined) return undefined;
 
   return {
-    model: fallbackModel,
-    modelName: fallbackModel,
-    options: [],
+    model: chosen.slug,
+    modelName: chosen.name || chosen.slug,
+    options: reasoningOptionsFor(chosen),
   };
 }
 

@@ -50,7 +50,7 @@ const ACP_TEXT_GENERATION_TIMEOUT_MS = 180_000;
 const ACP_PROMPT_SUGGESTION_TIMEOUT_MS = 30_000;
 /** Text generation must not touch the workspace; prefer the agent's ask/read-only mode. */
 const ACP_TEXT_GENERATION_MODE_ID = "ask";
-const REASONING_CONFIG_ID = /^(?:thought_level|reasoning_effort|reasoning|effort)$/iu;
+const REASONING_CONFIG_ID = /^(?:thought[_-]?level|reasoning[_-]?effort|reasoning|effort)$/iu;
 
 type TextGenerationOperation =
   | "generateCommitMessage"
@@ -157,6 +157,30 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
               cause,
             ),
         });
+        // Short title and branch runs do not need high thinking; lower the
+        // live reasoning option when the caller did not choose one explicitly.
+        const hasExplicitReasoning = (modelSelection.options ?? []).some((option) =>
+          REASONING_CONFIG_ID.test(option.id),
+        );
+        if (
+          !hasExplicitReasoning &&
+          (operation === "generateThreadTitle" || operation === "generateBranchName")
+        ) {
+          const liveConfigOptions = yield* runtime.getConfigOptions;
+          const reasoningOption = liveConfigOptions.find(
+            (candidate) =>
+              candidate.type === "select" &&
+              (candidate.category === "thought_level" || REASONING_CONFIG_ID.test(candidate.id)),
+          );
+          if (reasoningOption) {
+            const choices = flattenSessionConfigSelectOptions(reasoningOption);
+            const effort = selectSuggestionEffort(choices.map((choice) => choice.value));
+            const currentValue = selectConfigOptionCurrentValue(reasoningOption);
+            if (effort !== undefined && effort !== currentValue) {
+              yield* Effect.ignore(runtime.setConfigOption(reasoningOption.id, effort));
+            }
+          }
+        }
 
         return yield* runtime.prompt({
           prompt: [{ type: "text", text: prompt }],
@@ -305,6 +329,8 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
     const { prompt, outputSchema } = buildThreadTitlePrompt({
       message: input.message,
       attachments: input.attachments,
+      includeBranch: input.includeBranch === true,
+      policy: input.policy,
     });
 
     const generated = yield* runJson({
@@ -317,6 +343,9 @@ export const makeAcpTextGeneration = Effect.fn("makeAcpTextGeneration")(function
 
     return {
       title: sanitizeThreadTitle(generated.title),
+      ...("branch" in generated && typeof generated.branch === "string"
+        ? { branch: sanitizeBranchFragment(generated.branch) }
+        : {}),
     };
   });
 

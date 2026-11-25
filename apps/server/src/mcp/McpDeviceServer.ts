@@ -45,6 +45,7 @@ import {
   unauthorizedMcpResponse,
 } from "./McpHttpServer.ts";
 import { type McpInvocationScope, mcpSessionRegistry } from "./McpSessionRegistry.ts";
+import { toolMeta } from "./toolLoading.ts";
 
 /** Which runtime a device tool call came from, with the outside-work limit read for this request. */
 export class McpDeviceInvocation extends Context.Service<McpDeviceInvocation, McpInvocationScope>()(
@@ -96,6 +97,8 @@ const describe = (tool: Tool.Any) =>
       idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
       openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
     },
+    // A toolkit passes `_meta` on by itself; here it is by hand (toolLoading.ts).
+    _meta: toolMeta(tool),
   });
 
 const textResult = (text: string, isError: boolean, structured?: Record<string, unknown>) =>

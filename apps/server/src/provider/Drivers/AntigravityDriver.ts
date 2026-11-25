@@ -28,6 +28,7 @@ import {
 import { type AcpProviderDriverEnv, makeAcpProviderDriver } from "../acp/AcpProviderDriver.ts";
 import { sampleAcpPromptSuggestion } from "../acp/AcpTextGeneration.ts";
 import {
+  isAntigravityPromptSuggestionAuthSupported,
   isAntigravitySuggestionUsageNearLimit,
   selectAntigravitySuggestionTarget,
 } from "../antigravity/AntigravityPromptSuggestions.ts";
@@ -173,6 +174,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         promptSuggestions: ({ settings: effectiveSettings, environment, getSnapshot }) => {
           const isAllowed = (targetModelName: string | undefined) =>
             Effect.gen(function* () {
+              if (!isAntigravityPromptSuggestionAuthSupported(signIn.method)) return false;
               const on = yield* serverSettings.readStored.pipe(
                 Effect.map((current) => current.antigravitySuggestions),
                 Effect.orElseSucceed(() => false),
@@ -186,20 +188,22 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
               );
             });
           return Effect.succeed({
-            shouldSuggest: (model) =>
+            shouldSuggest: () =>
               Effect.gen(function* () {
                 const current = yield* getSnapshot;
-                const target = selectAntigravitySuggestionTarget(current.models, model);
+                const target = selectAntigravitySuggestionTarget(current.models);
+                if (target === undefined) return false;
                 return yield* isAllowed(target.modelName);
               }),
-            sample: ({ cwd, model, messages }) =>
+            sample: ({ cwd, messages }) =>
               Effect.gen(function* () {
                 const prompt = buildTranscriptPromptSuggestionPrompt(messages);
                 if (prompt === undefined) return undefined;
                 // Select and quota-check one target from a single snapshot so
                 // a catalog refresh cannot switch models between check and call.
                 const current = yield* getSnapshot;
-                const target = selectAntigravitySuggestionTarget(current.models, model);
+                const target = selectAntigravitySuggestionTarget(current.models);
+                if (target === undefined) return undefined;
                 if (!(yield* isAllowed(target.modelName))) return undefined;
                 let checkedModelName = target.modelName;
                 const sampled = yield* sampleAcpPromptSuggestion({

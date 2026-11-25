@@ -1807,10 +1807,13 @@ export function makePiAdapter(options: PiAdapterOptions) {
             }),
             ...(input.projectInstructions !== undefined ? [input.projectInstructions] : []),
           ].join("\n\n");
+          // Each thread's page assets path embeds its threadId, so instructions
+          // vary per session. Write a per-session file and remove it on scope
+          // close so old instruction files do not accumulate on disk.
           const instructionsPath = NodePath.join(
             options.extensionDir,
             "instructions",
-            `${createHash("sha256").update(instructions).digest("hex").slice(0, 16)}.md`,
+            `${createHash("sha256").update(instructions).digest("hex").slice(0, 16)}-${yield* randomUUIDv4}.md`,
           );
           yield* writePrivateFile(instructionsPath, instructions).pipe(
             Effect.mapError(
@@ -1823,6 +1826,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
                 }),
             ),
           );
+          yield* Scope.addFinalizer(scope, fileSystem.remove(instructionsPath).pipe(Effect.ignore));
           const boundSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const now = yield* nowIso;

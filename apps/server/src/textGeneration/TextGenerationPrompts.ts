@@ -212,17 +212,21 @@ function buildPromptFromMessage(input: PromptFromMessageInput): string {
   return promptSections.join("\n");
 }
 
+const BRANCH_NAME_RULES: ReadonlyArray<string> = [
+  "Format the branch as <kind>/<description>, for example fix/login-timeout.",
+  `Pick the kind that fits the requested work best: ${WORK_BRANCH_KINDS.map(
+    (entry) => `${entry.kind} (${entry.description})`,
+  ).join(", ")}.`,
+  "The description says what the work is about: short and specific (2-6 words).",
+  "Use plain words only, no issue prefixes and no punctuation-heavy text.",
+];
+
 export function buildBranchNamePrompt(input: BranchNamePromptInput) {
   const prompt = buildPromptFromMessage({
     instruction: "You generate concise git branch names.",
     responseShape: "Return a JSON object with key: branch.",
     rules: [
-      "Format the branch as <kind>/<description>, for example fix/login-timeout.",
-      `Pick the kind that fits the requested work best: ${WORK_BRANCH_KINDS.map(
-        (entry) => `${entry.kind} (${entry.description})`,
-      ).join(", ")}.`,
-      "The description says what the work is about: short and specific (2-6 words).",
-      "Use plain words only, no issue prefixes and no punctuation-heavy text.",
+      ...BRANCH_NAME_RULES,
       "If images are attached, use them as primary context for visual/UI issues.",
     ],
     message: input.message,
@@ -243,26 +247,51 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
 export interface ThreadTitlePromptInput {
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  includeBranch?: boolean;
   policy?: TextGenerationPolicy | undefined;
 }
 
 export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
+  const wantsBranch = input.includeBranch === true;
+  const combinedPolicy = wantsBranch
+    ? [input.policy?.threadTitleInstructions?.trim(), input.policy?.branchInstructions?.trim()]
+        .filter((part): part is string => Boolean(part))
+        .join("\n\n") || undefined
+    : input.policy?.threadTitleInstructions;
+
   const prompt = buildPromptFromMessage({
-    instruction: "You write concise thread titles for coding conversations.",
-    responseShape: "Return a JSON object with key: title.",
+    instruction: wantsBranch
+      ? "You write concise thread titles and git branch names for coding conversations."
+      : "You write concise thread titles for coding conversations.",
+    responseShape: wantsBranch
+      ? "Return a JSON object with keys: title, branch."
+      : "Return a JSON object with key: title.",
     rules: [
       "Title should summarize the user's request, not restate it verbatim.",
-      "Keep it short and specific (3-8 words).",
-      "Avoid quotes, filler, prefixes, and trailing punctuation.",
+      "Keep the title short and specific (3-8 words).",
+      "Avoid quotes, filler, prefixes, and trailing punctuation in the title.",
+      ...(wantsBranch ? BRANCH_NAME_RULES : []),
       "If images are attached, use them as primary context for visual/UI issues.",
     ],
     message: input.message,
     attachments: input.attachments,
-    additionalInstructions: input.policy?.threadTitleInstructions,
-  });
-  const outputSchema = Schema.Struct({
-    title: Schema.String,
+    additionalInstructions: combinedPolicy,
   });
 
-  return { prompt, outputSchema };
+  if (wantsBranch) {
+    return {
+      prompt,
+      outputSchema: Schema.Struct({
+        title: Schema.String,
+        branch: Schema.String,
+      }),
+    };
+  }
+
+  return {
+    prompt,
+    outputSchema: Schema.Struct({
+      title: Schema.String,
+    }),
+  };
 }
