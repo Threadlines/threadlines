@@ -1,6 +1,6 @@
-import { memo, useMemo, useState } from "react";
-import { getVscodeIconUrlForEntry } from "../../vscode-icons";
+import { memo, useState } from "react";
 import { FileIcon, FolderIcon } from "lucide-react";
+import { useVscodeIconUrl } from "../../lib/useVscodeIconUrl";
 import { cn } from "~/lib/utils";
 
 export const VscodeEntryIcon = memo(function VscodeEntryIcon(props: {
@@ -10,17 +10,20 @@ export const VscodeEntryIcon = memo(function VscodeEntryIcon(props: {
   className?: string;
 }) {
   const [failedIconUrl, setFailedIconUrl] = useState<string | null>(null);
-  const iconUrl = useMemo(
-    () => getVscodeIconUrlForEntry(props.pathValue, props.kind, props.theme),
-    [props.kind, props.pathValue, props.theme],
-  );
-  const failed = failedIconUrl === iconUrl;
+  const iconUrl = useVscodeIconUrl(props.pathValue, props.kind, props.theme);
+  const failed = iconUrl !== null && failedIconUrl === iconUrl;
 
-  if (failed) {
+  if (iconUrl === null || failed) {
     return props.kind === "directory" ? (
-      <FolderIcon className={cn("size-4 text-muted-foreground/80", props.className)} />
+      <FolderIcon
+        aria-hidden="true"
+        className={cn("size-4 shrink-0 text-muted-foreground/80", props.className)}
+      />
     ) : (
-      <FileIcon className={cn("size-4 text-muted-foreground/80", props.className)} />
+      <FileIcon
+        aria-hidden="true"
+        className={cn("size-4 shrink-0 text-muted-foreground/80", props.className)}
+      />
     );
   }
 

@@ -6,8 +6,6 @@
  */
 import type { Options as ReactMarkdownOptions } from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
-import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
@@ -37,16 +35,6 @@ export { splitMarkdownBlocks } from "@threadlines/shared/markdownBlocks";
 export const CHAT_MARKDOWN_REMARK_PLUGINS: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [
   remarkGfm,
   [remarkMath, { singleDollarTextMath: false }],
-];
-
-/**
- * GitHub's own allowlist, which is what the host already applied to the text
- * before it reached us. Anything outside it is unwrapped to its children, so a
- * `<relative-time>` still reads as its date and a `<picture>` as its image.
- */
-export const GITHUB_HTML_REHYPE_PLUGINS: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [
-  rehypeRaw,
-  [rehypeSanitize, defaultSchema],
 ];
 
 const MARKDOWN_LINK_HREF_PATTERN = /\[[^\]]*]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^"']*["'])?\s*\)/g;

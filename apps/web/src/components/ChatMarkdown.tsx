@@ -7,11 +7,13 @@ import type {
 import React, {
   Children,
   Fragment,
+  Suspense,
   type CSSProperties,
   type ComponentPropsWithoutRef,
   type MouseEvent as ReactMouseEvent,
   createContext,
   isValidElement,
+  lazy,
   useCallback,
   memo,
   useContext,
@@ -56,10 +58,9 @@ import {
   runFileAction,
   useFileActionLaunchers,
 } from "./fileActionsMenu";
-import { editorLabel } from "./EditorOpenOptions";
+import { editorLabel } from "../editorLabels";
 import { useComputerLabel } from "./sidebar/linkedComputers";
-import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
-import { fnv1a32 } from "../lib/diffRendering";
+import { fnv1a32, resolveDiffThemeName, type DiffThemeName } from "../lib/diffThemeName";
 import {
   highlightCode,
   openStreamingHighlight,
@@ -107,7 +108,6 @@ import {
   buildFileLinkLabel,
   CHAT_MARKDOWN_REMARK_PLUGINS,
   chatMarkdownUrlTransform,
-  GITHUB_HTML_REHYPE_PLUGINS,
   indexWrittenFilePathsByBasename,
   isFileNameMention,
   normalizeMarkdownLinkHrefKey,
@@ -464,11 +464,15 @@ function ChatCodeBlock({ className, code, plain }: ChatCodeBlockProps) {
     if (highlightedCodeCache.get(cacheKey) != null) return;
 
     let cancelled = false;
-    void highlightCode(code, language, themeName).then((html) => {
-      if (cancelled || html === null) return;
-      highlightedCodeCache.set(cacheKey, html, estimateHighlightedSize(html, code));
-      setHighlighted({ cacheKey, html });
-    });
+    void highlightCode(code, language, themeName)
+      .then((html) => {
+        if (cancelled || html === null) return;
+        highlightedCodeCache.set(cacheKey, html, estimateHighlightedSize(html, code));
+        setHighlighted({ cacheKey, html });
+      })
+      .catch(() => {
+        // Keep plain code fallback if highlighting fails.
+      });
 
     return () => {
       cancelled = true;
@@ -1708,19 +1712,38 @@ function ChatMarkdownDocument({
     ],
   );
 
+  const plainMarkdown = (
+    <ReactMarkdown
+      remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
+      components={MARKDOWN_COMPONENTS}
+      urlTransform={markdownUrlTransform}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+
+  // When a GitHub document contains raw HTML tags or comments, avoid flashing
+  // literal markup through plain ReactMarkdown while the sanitizer chunk loads.
+  const githubFallback = text.includes("<") ? null : plainMarkdown;
+
   return (
     <MarkdownDocumentContext value={documentContext}>
-      <ReactMarkdown
-        remarkPlugins={CHAT_MARKDOWN_REMARK_PLUGINS}
-        rehypePlugins={html === "github" ? GITHUB_HTML_REHYPE_PLUGINS : undefined}
-        components={MARKDOWN_COMPONENTS}
-        urlTransform={markdownUrlTransform}
-      >
-        {text}
-      </ReactMarkdown>
+      {html === "github" ? (
+        <Suspense fallback={githubFallback}>
+          <LazyGitHubHtmlMarkdown
+            text={text}
+            components={MARKDOWN_COMPONENTS}
+            urlTransform={markdownUrlTransform}
+          />
+        </Suspense>
+      ) : (
+        plainMarkdown
+      )}
     </MarkdownDocumentContext>
   );
 }
+
+const LazyGitHubHtmlMarkdown = lazy(() => import("./chat/GitHubHtmlMarkdown"));
 
 const MemoChatMarkdownDocument = memo(ChatMarkdownDocument);
 
@@ -1821,12 +1844,15 @@ function ChatMarkdown({
   className,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
-  // Boots the highlighting worker and its theme while the page is idle, so the
-  // first code block of a session is not also the one that loads Shiki.
+  // Boot the highlighting worker and its theme while idle only once a message
+  // actually has a fenced code block, so prose-only threads avoid fetching
+  // @pierre/diffs on startup.
   const codeThemeName = useCodeThemeName();
+  const hasFencedCode = text.includes("```") || text.includes("~~~");
   useEffect(() => {
+    if (!hasFencedCode) return;
     warmCodeHighlighter(codeThemeName);
-  }, [codeThemeName]);
+  }, [codeThemeName, hasFencedCode]);
   const canRenderVisualizations = environmentId !== undefined && threadId !== undefined;
   const parsedSegments = useMemo(() => {
     const rawSegments = canRenderVisualizations

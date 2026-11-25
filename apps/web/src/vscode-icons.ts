@@ -1,5 +1,8 @@
+import { basenameOfPath, inferEntryKindFromPath } from "./lib/vscodeIconPath";
 import vscodeIconsManifest from "./vscode-icons-manifest.json";
 import languageAssociationsData from "./vscode-icons-language-associations.json";
+
+export { basenameOfPath, inferEntryKindFromPath };
 
 const VSCODE_ICONS_VERSION = "v12.17.0";
 const VSCODE_ICONS_BASE_URL = `https://cdn.jsdelivr.net/gh/vscode-icons/vscode-icons@${VSCODE_ICONS_VERSION}/icons`;
@@ -67,23 +70,6 @@ function toLowercaseLookup(source: Record<string, string>): Record<string, strin
     lookup[key.toLowerCase()] = value;
   }
   return lookup;
-}
-
-export function basenameOfPath(pathValue: string): string {
-  const slashIndex = pathValue.lastIndexOf("/");
-  if (slashIndex === -1) return pathValue;
-  return pathValue.slice(slashIndex + 1);
-}
-
-export function inferEntryKindFromPath(pathValue: string): "file" | "directory" {
-  const base = basenameOfPath(pathValue);
-  if (base.startsWith(".") && !base.slice(1).includes(".")) {
-    return "directory";
-  }
-  if (base.includes(".")) {
-    return "file";
-  }
-  return "directory";
 }
 
 function extensionCandidates(fileName: string): string[] {

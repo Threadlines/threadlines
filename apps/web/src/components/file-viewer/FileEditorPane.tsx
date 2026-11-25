@@ -29,6 +29,7 @@ import { EditProvider, File as PierreFile, type EditorFactory } from "@pierre/di
 
 import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
 import { useTheme } from "../../hooks/useTheme";
+import "../../theme/attachPierreCodeThemes";
 import { useCodeThemeName } from "../../theme/codeTheme";
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 import { applyEditSeedToEditor } from "./FileViewerOverlay.logic";

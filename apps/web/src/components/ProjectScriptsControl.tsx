@@ -20,7 +20,7 @@ import {
   keybindingValueForCommand,
   decodeProjectScriptKeybindingRule,
 } from "~/lib/projectScriptKeybindings";
-import { keybindingFromKeyboardEvent } from "~/components/settings/KeybindingsSettings.logic";
+import { keybindingFromKeyboardEvent } from "~/components/settings/keybindingCapture";
 import {
   commandForProjectScript,
   nextProjectScriptId,

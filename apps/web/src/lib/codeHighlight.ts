@@ -1,15 +1,23 @@
-import {
-  getSharedHighlighter,
-  resolveLanguages,
-  resolveThemes,
-  type DiffsHighlighter,
-  type DiffsTheme,
-  type SupportedLanguages,
-} from "@pierre/diffs";
+import type { DiffsHighlighter, DiffsTheme, SupportedLanguages } from "@pierre/diffs";
 import type { ResolvedLanguage } from "@pierre/diffs/worker";
 
-import type { DiffThemeName } from "./diffRendering";
+import type { DiffThemeName } from "./diffThemeName";
 import { toOneByteString } from "./oneByteString";
+import { attachPierreCodeThemeRegistry } from "../theme/codeTheme";
+
+let pierreDiffsPromise: Promise<typeof import("@pierre/diffs")> | null = null;
+function loadPierreDiffs(): Promise<typeof import("@pierre/diffs")> {
+  pierreDiffsPromise ??= import("@pierre/diffs")
+    .then((pierre) => {
+      attachPierreCodeThemeRegistry(pierre.registerCustomTheme, pierre.resolveThemes);
+      return pierre;
+    })
+    .catch((error: unknown) => {
+      pierreDiffsPromise = null;
+      throw error;
+    });
+  return pierreDiffsPromise;
+}
 
 /**
  * Client for the syntax-highlighting worker.
@@ -163,7 +171,12 @@ async function resolveRequestAssets(
     let themeResolution = themeResolutions.get(theme);
     if (!themeResolution) {
       // The worker tokenizes with shiki-js, which reads the theme's TextMate half.
-      themeResolution = resolveThemes([theme], "shiki-js");
+      themeResolution = loadPierreDiffs()
+        .then(({ resolveThemes }) => resolveThemes([theme], "shiki-js"))
+        .catch((error: unknown) => {
+          themeResolutions.delete(theme);
+          throw error;
+        });
       themeResolutions.set(theme, themeResolution);
     }
     resolvedThemes = await themeResolution;
@@ -175,7 +188,9 @@ async function resolveRequestAssets(
 
   let languageResolution = languageResolutions.get(language);
   if (!languageResolution) {
-    languageResolution = resolveLanguages([language as SupportedLanguages]);
+    languageResolution = loadPierreDiffs().then(({ resolveLanguages }) =>
+      resolveLanguages([language as SupportedLanguages]),
+    );
     languageResolutions.set(language, languageResolution);
   }
   try {
@@ -196,11 +211,18 @@ async function highlightOnMainThread(
   theme: DiffThemeName,
 ): Promise<string | null> {
   try {
-    fallbackHighlighterPromise ??= getSharedHighlighter({
-      themes: [theme],
-      langs: [language as SupportedLanguages],
-      preferredHighlighter: "shiki-js",
-    });
+    fallbackHighlighterPromise ??= loadPierreDiffs()
+      .then(({ getSharedHighlighter }) =>
+        getSharedHighlighter({
+          themes: [theme],
+          langs: [language as SupportedLanguages],
+          preferredHighlighter: "shiki-js",
+        }),
+      )
+      .catch((error: unknown) => {
+        fallbackHighlighterPromise = null;
+        throw error;
+      });
     const highlighter = await fallbackHighlighterPromise;
     const oneByteCode = toOneByteString(code);
     try {
@@ -224,7 +246,12 @@ export async function highlightCode(
   theme: DiffThemeName,
 ): Promise<string | null> {
   const worker = getWorker();
-  const assets = await resolveRequestAssets(language, theme);
+  let assets: Awaited<ReturnType<typeof resolveRequestAssets>>;
+  try {
+    assets = await resolveRequestAssets(language, theme);
+  } catch {
+    return null;
+  }
   if (!worker) {
     return highlightOnMainThread(code, assets.language, theme);
   }
@@ -382,7 +409,11 @@ export function warmCodeHighlighter(theme: DiffThemeName): void {
   if (warmedThemes.has(theme)) return;
   warmedThemes.add(theme);
   const warm = () => {
-    void highlightCode("", PLAIN_TEXT_LANGUAGE, theme);
+    void highlightCode("", PLAIN_TEXT_LANGUAGE, theme).then((html) => {
+      if (html === null) {
+        warmedThemes.delete(theme);
+      }
+    });
   };
   if (typeof requestIdleCallback === "function") {
     requestIdleCallback(warm, { timeout: 2_000 });

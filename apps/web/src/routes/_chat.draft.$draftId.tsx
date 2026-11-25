@@ -41,10 +41,7 @@ import {
 } from "../rightPanelLayout";
 import { SidebarInset } from "../components/ui/sidebar";
 import { RightPanelSheet } from "../components/RightPanelSheet";
-import {
-  SourceControlPanel,
-  type SourceControlProjectTarget,
-} from "../components/source-control/SourceControlPanel";
+import type { SourceControlProjectTarget } from "../components/source-control/SourceControlPanel";
 import {
   createProjectSelectorByRef,
   createThreadSelectorAcrossEnvironments,
@@ -59,6 +56,11 @@ import {
 import { usePanelTabCommands } from "../commands/panelTabCommands";
 
 const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
+const SourceControlPanel = lazy(() =>
+  import("../components/source-control/SourceControlPanel").then((module) => ({
+    default: module.SourceControlPanel,
+  })),
+);
 
 /** A draft has no turns at all, which is a real "none" rather than an unknown. */
 const EMPTY_TURN_DIFF_SUMMARIES = [] as const;
@@ -353,19 +355,23 @@ function DraftChatThreadRouteView() {
         <div
           className={cn("h-full w-full min-w-0 flex-col", sourceControlOpen ? "flex" : "hidden")}
         >
-          <SourceControlPanel
-            target={sourceControlTarget}
-            activeThreadRef={draftThreadRef}
-            embedded
-            onActiveBranchChange={handleSourceControlBranchChange}
-            onOpenDiff={(filePath?: string) => {
-              openDiffOnThreadRoute({
-                diffMode: "workingTree",
-                ...(filePath ? { diffFilePath: filePath } : {}),
-              });
-            }}
-            onPrefetchDiff={prefetchWorkingTreeDiff}
-          />
+          <Suspense
+            fallback={<p className="px-3 py-3 text-xs text-muted-foreground">Loading source…</p>}
+          >
+            <SourceControlPanel
+              target={sourceControlTarget}
+              activeThreadRef={draftThreadRef}
+              embedded
+              onActiveBranchChange={handleSourceControlBranchChange}
+              onOpenDiff={(filePath?: string) => {
+                openDiffOnThreadRoute({
+                  diffMode: "workingTree",
+                  ...(filePath ? { diffFilePath: filePath } : {}),
+                });
+              }}
+              onPrefetchDiff={prefetchWorkingTreeDiff}
+            />
+          </Suspense>
         </div>
       ) : null}
     </ChatRightPanel>

@@ -11,13 +11,13 @@
  * The editor's selected text and cursor line take their backgrounds from
  * the theme too (withEditorColors), so those are set to match the fit.
  */
-import { type DiffsTheme, registerCustomTheme, resolveThemes } from "@pierre/diffs";
+import type { DiffsTheme, registerCustomTheme, resolveThemes } from "@pierre/diffs";
 import type { ThemeBase, ThemeCodePalette } from "@threadlines/contracts";
 import type { Rgba } from "@threadlines/shared/themeColor";
 import type { ThemeTokens } from "@threadlines/shared/themeTokens";
 import { useMemo } from "react";
 
-import { type DiffThemeName, resolveDiffThemeName } from "../lib/diffRendering";
+import { type DiffThemeName, resolveDiffThemeName } from "../lib/diffThemeName";
 import { useActiveTheme } from "./themeStore";
 import type { ActiveTheme } from "./themeTypes";
 
@@ -125,7 +125,70 @@ export function customCodeThemeName(hash: string): DiffThemeName {
 
 const builtinCodeThemeName = (base: ThemeBase): DiffThemeName => `tl-code-${base}`;
 
-const registered = new Set<string>();
+interface PendingCodeThemeSpec {
+  readonly name: DiffThemeName;
+  readonly themeBase: ThemeBase;
+  readonly palette: ThemeCodePalette | null;
+  readonly tokens: ThemeTokens | null;
+}
+
+interface PierreCodeThemeRegistry {
+  readonly registerCustomTheme: typeof registerCustomTheme;
+  readonly resolveThemes: typeof resolveThemes;
+}
+
+const pendingSpecs = new Map<DiffThemeName, PendingCodeThemeSpec>();
+const registeredWithPierre = new Set<string>();
+let pierreRegistry: PierreCodeThemeRegistry | null = null;
+
+function registerSpecWithPierre(
+  registry: PierreCodeThemeRegistry,
+  spec: PendingCodeThemeSpec,
+): void {
+  if (registeredWithPierre.has(spec.name)) return;
+  registeredWithPierre.add(spec.name);
+  registry.registerCustomTheme(
+    spec.name,
+    async () => {
+      const [[baseTheme], codeColors, builtinTokens] = await Promise.all([
+        registry.resolveThemes([resolveDiffThemeName(spec.themeBase)], "shiki-js"),
+        import("@threadlines/shared/themeCodeColors"),
+        spec.tokens ? null : import("@threadlines/shared/themeBuiltinTokens"),
+      ]);
+      if (!baseTheme?.textmate) throw new Error(`No base theme for ${spec.name}`);
+      const withPalette = spec.palette
+        ? buildCodeTheme(spec.name, spec.palette, baseTheme.textmate)
+        : { ...baseTheme.textmate, name: spec.name };
+      const surfaceTokens = spec.tokens ?? builtinTokens?.BUILTIN_THEME_TOKENS[spec.themeBase];
+      if (!surfaceTokens) throw new Error(`No tokens for ${spec.name}`);
+      const surfaces = codeColors.codeSurfaces(surfaceTokens);
+      const fitted = fitCodeTheme(withPalette, surfaces, {
+        color: codeColors.fitCodeColor,
+        ratioFor: codeColors.codeRatioForScopes,
+        textRatio: codeColors.CODE_TEXT_RATIO,
+      });
+      return withEditorColors(fitted, codeColors.editorSelectionHex(surfaceTokens));
+    },
+    "textmate",
+  );
+}
+
+/**
+ * Connects Pierre's theme registry once `@pierre/diffs` actually loads,
+ * registering any code themes requested before that point synchronously so
+ * chat routes do not pull `@pierre/diffs` into their initial chunk.
+ */
+export function attachPierreCodeThemeRegistry(
+  registerFn: typeof registerCustomTheme,
+  resolveFn: typeof resolveThemes,
+): void {
+  if (pierreRegistry === null) {
+    pierreRegistry = { registerCustomTheme: registerFn, resolveThemes: resolveFn };
+  }
+  for (const spec of pendingSpecs.values()) {
+    registerSpecWithPierre(pierreRegistry, spec);
+  }
+}
 
 /**
  * Registers a code theme under its name, once (Pierre refuses a second
@@ -139,32 +202,12 @@ function ensureRegistered(
   palette: ThemeCodePalette | null,
   tokens: ThemeTokens | null,
 ): void {
-  if (registered.has(name)) return;
-  registered.add(name);
-  registerCustomTheme(
-    name,
-    async () => {
-      const [[baseTheme], codeColors, builtinTokens] = await Promise.all([
-        resolveThemes([resolveDiffThemeName(themeBase)], "shiki-js"),
-        import("@threadlines/shared/themeCodeColors"),
-        tokens ? null : import("@threadlines/shared/themeBuiltinTokens"),
-      ]);
-      if (!baseTheme?.textmate) throw new Error(`No base theme for ${name}`);
-      const withPalette = palette
-        ? buildCodeTheme(name, palette, baseTheme.textmate)
-        : { ...baseTheme.textmate, name };
-      const surfaceTokens = tokens ?? builtinTokens?.BUILTIN_THEME_TOKENS[themeBase];
-      if (!surfaceTokens) throw new Error(`No tokens for ${name}`);
-      const surfaces = codeColors.codeSurfaces(surfaceTokens);
-      const fitted = fitCodeTheme(withPalette, surfaces, {
-        color: codeColors.fitCodeColor,
-        ratioFor: codeColors.codeRatioForScopes,
-        textRatio: codeColors.CODE_TEXT_RATIO,
-      });
-      return withEditorColors(fitted, codeColors.editorSelectionHex(surfaceTokens));
-    },
-    "textmate",
-  );
+  if (!pendingSpecs.has(name)) {
+    pendingSpecs.set(name, { name, themeBase, palette, tokens });
+  }
+  if (pierreRegistry !== null) {
+    registerSpecWithPierre(pierreRegistry, pendingSpecs.get(name)!);
+  }
 }
 
 /** The code theme a theme highlights with, registered and ready to resolve. */

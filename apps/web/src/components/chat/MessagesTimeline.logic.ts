@@ -152,6 +152,11 @@ const startsExchange = (
     (message.fromThread !== undefined || message.fromOutside !== undefined) &&
     !isTurnAside(message));
 
+export type TimelineWorkEntry = Extract<
+  MessagesTimelineRow,
+  { kind: "work" }
+>["groupedEntries"][number];
+
 export type MessagesTimelineRow = TimelineRowPlacement &
   (
     | {

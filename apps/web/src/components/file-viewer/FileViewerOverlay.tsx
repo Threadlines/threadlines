@@ -64,6 +64,7 @@ import {
 } from "./FileViewerOverlay.logic";
 import { formatFileSelectionLineRange, sliceFileSelection } from "../../lib/fileSelectionContext";
 import { fnv1a32 } from "../../lib/diffRendering";
+import "../../theme/attachPierreCodeThemes";
 import { useCodeThemeName } from "../../theme/codeTheme";
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 

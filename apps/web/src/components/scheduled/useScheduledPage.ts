@@ -12,7 +12,7 @@ import type {
 } from "@threadlines/contracts";
 import { roomAgentKey } from "@threadlines/shared/threadParticipants";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -43,33 +43,7 @@ export function useScheduledSearch(): ScheduledSearch {
   return useMemo(() => parseScheduledSearch(search as Record<string, unknown>), [search]);
 }
 
-/** Moving around the Scheduled page. Opening a task from the overview is a step back undoes. */
-export function useScheduledNavigation() {
-  const navigate = useNavigate();
-  return useMemo(
-    () => ({
-      openTask: (ref: ScheduledTaskRef, options?: { readonly replace?: boolean }) =>
-        void navigate({
-          to: "/scheduled",
-          search: { environment: ref.environmentId, task: ref.taskId },
-          ...(options?.replace ? { replace: true } : {}),
-        }),
-      editTask: (ref: ScheduledTaskRef) =>
-        void navigate({
-          to: "/scheduled",
-          search: { environment: ref.environmentId, task: ref.taskId, view: "edit" },
-        }),
-      newTask: () => void navigate({ to: "/scheduled", search: { view: "new" } }),
-      showAll: (options?: { readonly replace?: boolean }) =>
-        void navigate({
-          to: "/scheduled",
-          search: {},
-          ...(options?.replace ? { replace: true } : {}),
-        }),
-    }),
-    [navigate],
-  );
-}
+export { useScheduledNavigation } from "./useScheduledNavigation";
 
 /** A task with the computer it lives on. */
 export interface LocatedTask {

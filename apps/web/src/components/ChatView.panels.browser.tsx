@@ -332,7 +332,12 @@ describe("ChatView (full app): right panel and header actions", () => {
         "Unable to find the sidebar's Source tab.",
       );
       expect(changesTab.getAttribute("data-active")).toBe("true");
-      expect(visibleSourceControlPanel()).not.toBeNull();
+      await vi.waitFor(
+        () => {
+          expect(visibleSourceControlPanel()).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
       expect(document.querySelector("[data-agents-panel]")).toBeNull();
 
       // The `+` menu adds the second tab and focuses it.
