@@ -18,7 +18,11 @@ import type {
 } from "@threadlines/contracts";
 import { ROOM_AGENT_ROLE_MAX_LENGTH, ThreadParticipantId } from "@threadlines/contracts";
 import { scopedThreadKey } from "@threadlines/client-runtime";
-import { activeParticipants, nextRoomAgentName } from "@threadlines/shared/threadParticipants";
+import {
+  activeParticipants,
+  nextRoomAgentName,
+  resolveMainParticipantId,
+} from "@threadlines/shared/threadParticipants";
 import { useMemo } from "react";
 
 import { type DraftId, type DraftRoom, useComposerDraftStore } from "~/composerDraftStore";
@@ -27,18 +31,26 @@ import { newCommandId, randomUUID } from "~/lib/utils";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import {
   buildRoomAgentLabels,
+  chosenRoomRecipient,
   resolveRoomRecipient,
   roomAgentKey,
   roomModelName,
   useRoomRecipientStore,
 } from "../../rooms";
-import { changeRoomAgentModel, pickRoomAgentOptions, renameRoomAgent } from "./roomAgentActions";
+import {
+  changeRoomAgentModel,
+  makeRoomAgentMain,
+  pickRoomAgentOptions,
+  renameRoomAgent,
+} from "./roomAgentActions";
 import { getPickerModelName } from "./providerIconUtils";
 
 /** One agent as the picker lists it. */
 export interface RoomAgentRow {
   /** Null: the thread's own agent. */
   readonly id: ThreadParticipantId | null;
+  /** Whether this agent is currently the room's main agent. */
+  readonly isMain: boolean;
   /** "GPT-6 Astra 2 (Reviewer)". */
   readonly name: string;
   /** "GPT-6 Astra 2": what stays when the user's name is cleared. */
@@ -50,7 +62,7 @@ export interface RoomAgentRow {
 }
 
 export interface RoomAgents {
-  /** The thread's own agent first, then every added agent still in it. */
+  /** The room's main agent first, then every other agent still in it. */
   readonly rows: ReadonlyArray<RoomAgentRow>;
   /** Another agent is in the thread besides its own. */
   readonly inRoom: boolean;
@@ -68,6 +80,8 @@ export interface RoomAgents {
   readonly remove: (row: RoomAgentRow) => Promise<void>;
   /** An empty name clears it. */
   readonly rename: (row: RoomAgentRow, typed: string) => Promise<void>;
+  /** Switch this agent with main, making it the room's new main agent. */
+  readonly makeMain: (row: RoomAgentRow) => Promise<void>;
   readonly changeModel: (
     row: RoomAgentRow,
     instanceId: ProviderInstanceId,
@@ -83,6 +97,7 @@ export interface RoomAgents {
 interface RoomThreadInput {
   readonly participants?: ReadonlyArray<OrchestrationThreadParticipant> | undefined;
   readonly agentRole?: string | undefined;
+  readonly mainParticipantId?: ThreadParticipantId | undefined;
   readonly session?: { readonly participantId?: ThreadParticipantId | null | undefined } | null;
 }
 
@@ -127,8 +142,12 @@ export function useRoomAgents(input: {
     draftTarget === null ? false : (store.getDraftThread(draftTarget)?.promotedTo ?? null) !== null,
   );
 
-  const { rows, takenNames } = useMemo(() => {
+  const { rows, takenNames, mainId } = useMemo(() => {
     const participants = thread.participants ?? [];
+    const currentMainId = resolveMainParticipantId({
+      participants,
+      mainParticipantId: thread.mainParticipantId,
+    });
     const labels = buildRoomAgentLabels(
       { modelSelection: primaryModelSelection, participants, agentRole: thread.agentRole },
       instanceEntries,
@@ -146,6 +165,7 @@ export function useRoomAgents(input: {
       const role = label?.role ?? (id === null ? (thread.agentRole ?? null) : null);
       return {
         id,
+        isMain: id === currentMainId,
         name: label?.name ?? (role ? `${modelName} (${role})` : modelName),
         modelName,
         role,
@@ -160,18 +180,27 @@ export function useRoomAgents(input: {
         rowFor(participant.id, participant.modelSelection),
       ),
     ];
+    if (currentMainId !== null) {
+      const mainIndex = listed.findIndex((row) => row.id === currentMainId);
+      if (mainIndex > 0) {
+        const previousMain = listed[0]!;
+        listed[0] = listed[mainIndex]!;
+        listed[mainIndex] = previousMain;
+      }
+    }
     // Every name an agent ever had here, guests and agents that left
     // included: the server keeps a guest's name taken.
     const taken = labels
       ? [...labels.entries()].map(([key, label]) => ({ key, modelName: label.modelName }))
       : listed.map((row) => ({ key: roomAgentKey(row.id), modelName: row.modelName }));
-    return { rows: listed, takenNames: taken };
+    return { rows: listed, takenNames: taken, mainId: currentMainId };
   }, [
     input.sideTurns,
     input.workingId,
     instanceEntries,
     primaryModelSelection,
     thread.agentRole,
+    thread.mainParticipantId,
     thread.participants,
   ]);
 
@@ -218,7 +247,7 @@ export function useRoomAgents(input: {
   };
 
   const remove = async (row: RoomAgentRow) => {
-    if (row.id === null || !editable) return;
+    if (row.id === null || row.isMain || !editable) return;
     const id = row.id;
     if (draftTarget !== null) {
       writeDraftRoom((room) => ({
@@ -235,7 +264,56 @@ export function useRoomAgents(input: {
       });
     }
     if (recipient.id === id) {
-      choose(null);
+      choose(mainId);
+    }
+  };
+
+  const makeMain = async (row: RoomAgentRow) => {
+    if (row.isMain || !editable) return;
+    if (draftTarget !== null) {
+      if (row.id === null) return;
+      const room = draftRoom ?? { agents: [] };
+      const targetAgent = room.agents.find((agent) => agent.id === row.id);
+      if (!targetAgent) return;
+      const nextMainSelection = targetAgent.modelSelection;
+      const nextMainRole = targetAgent.role;
+      const oldMainRole = room.agentRole;
+      const taken: string[] = [roomModelName(nextMainSelection, instanceEntries, pickerName)];
+      const nextAgents = room.agents.map((agent) => {
+        const nextSelection =
+          agent.id === targetAgent.id ? primaryModelSelection : agent.modelSelection;
+        const handle = nextRoomAgentName(
+          roomModelName(nextSelection, instanceEntries, pickerName),
+          taken,
+        );
+        taken.push(handle);
+        if (agent.id !== targetAgent.id) {
+          return { ...agent, handle };
+        }
+        return {
+          id: agent.id,
+          handle,
+          modelSelection: primaryModelSelection,
+          ...(oldMainRole !== undefined ? { role: oldMainRole } : {}),
+        };
+      });
+      const nextRoom: DraftRoom = {
+        agents: nextAgents,
+        ...(nextMainRole !== undefined ? { agentRole: nextMainRole } : {}),
+      };
+      useComposerDraftStore
+        .getState()
+        .setDraftMainModelAndRoom(draftTarget, nextMainSelection, nextRoom);
+      if (recipient.id === row.id) {
+        choose(null);
+      }
+      return;
+    }
+    const wasOnMain = recipient.id === mainId;
+    const chosenBefore = chosenRoomRecipient(threadRef);
+    await makeRoomAgentMain(threadRef, row.id);
+    if (wasOnMain && chosenRoomRecipient(threadRef) === chosenBefore) {
+      choose(row.id);
     }
   };
 
@@ -315,6 +393,7 @@ export function useRoomAgents(input: {
     add,
     remove,
     rename,
+    makeMain,
     changeModel,
     pickOptions,
   };

@@ -817,10 +817,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
-          const { participants, agentRole } = applyRoomAgentUpdate(
+          const { participants, agentRole, mainParticipantId } = applyRoomAgentUpdate(
             {
               participants: existingRow.value.participants ?? [],
               agentRole: existingRow.value.agentRole ?? undefined,
+              mainParticipantId: existingRow.value.mainParticipantId ?? undefined,
             },
             event.payload,
           );
@@ -828,6 +829,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             participants,
             agentRole: agentRole ?? null,
+            mainParticipantId: mainParticipantId ?? null,
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -1106,6 +1108,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 ? { ...entry, leftAt: event.payload.updatedAt }
                 : entry,
             ),
+            ...(existingRow.value.mainParticipantId === event.payload.participantId
+              ? { mainParticipantId: null }
+              : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;

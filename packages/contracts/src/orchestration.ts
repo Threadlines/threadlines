@@ -3258,6 +3258,8 @@ export const OrchestrationThread = Schema.Struct({
   sideTurns: Schema.optional(Schema.Array(OrchestrationSideTurn)),
   /** See OrchestrationThreadShell.agentRole. */
   agentRole: Schema.optional(RoomAgentRole),
+  /** See OrchestrationThreadShell.mainParticipantId. */
+  mainParticipantId: Schema.optional(ThreadParticipantId),
   /** Room tools: open agent requests and the Stop hold. */
   agentRequests: OrchestrationAgentRequestState.pipe(
     Schema.withDecodingDefault(Effect.succeed(EMPTY_AGENT_REQUEST_STATE)),
@@ -3520,6 +3522,11 @@ export const OrchestrationThreadShell = Schema.Struct({
   sideTurn: Schema.optional(Schema.NullOr(OrchestrationSideTurn)),
   /** In a room, the user's name for the thread's own agent (RoomAgentRole). */
   agentRole: Schema.optional(RoomAgentRole),
+  /**
+   * In a room, an added agent promoted to be the room's main agent. Absent:
+   * the thread's own agent (`null`) is main.
+   */
+  mainParticipantId: Schema.optional(ThreadParticipantId),
   /**
    * Child threads: the thread whose agent started this one. Set once, kept
    * after the child is separated ("Started by" stays true). Null: none.
@@ -4091,6 +4098,8 @@ const ThreadParticipantUpdateCommand = Schema.Struct({
    * unique in the room like an added agent's. Absent: unchanged.
    */
   handle: Schema.optional(TrimmedNonEmptyString),
+  /** Make this agent the room's main agent. Absent: unchanged. */
+  makeMain: Schema.optional(Schema.Literal(true)),
   createdAt: IsoDateTime,
 });
 
@@ -6064,6 +6073,7 @@ const ThreadImportCommand = Schema.Struct({
    */
   participants: Schema.optional(Schema.Array(OrchestrationThreadParticipant)),
   agentRole: Schema.optional(RoomAgentRole),
+  mainParticipantId: Schema.optional(ThreadParticipantId),
   /**
    * The agents outside work still limits (OrchestrationOutsideWork), with
    * this computer's agent ids: they stay limited here until they start fresh.
@@ -6603,6 +6613,8 @@ export const ThreadParticipantUpdatedPayload = Schema.Struct({
   joined: Schema.optional(Schema.Literal(true)),
   /** A moved-in agent's carried session proved itself or fell back (OrchestrationThreadParticipant.nativeSession). */
   nativeSession: Schema.optional(ThreadNativeSession),
+  /** New main agent for the room; null returns main to the thread's own agent. Absent: unchanged. */
+  mainParticipantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   updatedAt: IsoDateTime,
 });
 

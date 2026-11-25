@@ -708,6 +708,7 @@ export type PeerMoveRoomParticipant = typeof PeerMoveRoomParticipant.Type;
 /** A moved room: its agents, and the user's name for the thread's own agent. */
 export const PeerMoveRoom = Schema.Struct({
   agentRole: Schema.optional(RoomAgentRole),
+  mainParticipantId: Schema.optional(ThreadParticipantId),
   participants: Schema.Array(PeerMoveRoomParticipant),
   /** See PeerMoveRoomParticipant.seenThroughMessageId, for the thread's own agent. */
   ownAgentSeenThroughMessageId: Schema.optional(MessageId),

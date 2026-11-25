@@ -3144,6 +3144,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           { role: "Reviewer", modelOptions: [{ id: "reasoningEffort", value: "high" }] },
         ],
         ["cmd-room-name-own", null, { role: "Researcher" }],
+        ["cmd-room-main-astra", astraId, { makeMain: true as const }],
       ] as const) {
         yield* engine.dispatch({
           type: "thread.participant.update",
@@ -3157,8 +3158,9 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       const named = yield* sql<{
         readonly participants: string;
         readonly agentRole: string | null;
+        readonly mainParticipantId: string | null;
       }>`
-        SELECT participants, agent_role AS "agentRole"
+        SELECT participants, agent_role AS "agentRole", main_participant_id AS "mainParticipantId"
         FROM projection_threads WHERE thread_id = ${threadId}
       `;
       const namedAstra = JSON.parse(named[0]?.participants ?? "[]")[0];
@@ -3167,6 +3169,20 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         { id: "reasoningEffort", value: "high" },
       ]);
       assert.equal(named[0]?.agentRole, "Researcher");
+      assert.equal(named[0]?.mainParticipantId, astraId);
+      yield* engine.dispatch({
+        type: "thread.participant.update",
+        commandId: CommandId.make("cmd-room-main-own"),
+        threadId,
+        participantId: null,
+        makeMain: true,
+        createdAt: "2026-01-01T00:00:03.550Z",
+      });
+      const restoredMain = yield* sql<{ readonly mainParticipantId: string | null }>`
+        SELECT main_participant_id AS "mainParticipantId"
+        FROM projection_threads WHERE thread_id = ${threadId}
+      `;
+      assert.equal(restoredMain[0]?.mainParticipantId, null);
       // The reasoning picked since does not reach what astra already wrote,
       // even as more of it streams in.
       yield* engine.dispatch({

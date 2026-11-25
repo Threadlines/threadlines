@@ -27,6 +27,7 @@ import {
   ThreadDoneOverrideState,
   ThreadEffectiveCwdSource,
   ThreadId,
+  ThreadParticipantId,
   TurnId,
   OrchestrationAgentRequestState,
   OrchestrationChildRequestState,
@@ -173,6 +174,12 @@ export const ProjectionThread = Schema.Struct({
    * migration 060 decode.
    */
   agentRole: Schema.optional(Schema.NullOr(RoomAgentRole)),
+  /**
+   * An added agent promoted to be the room's main agent; see
+   * `OrchestrationThreadShell.mainParticipantId`. Optional so rows written
+   * before migration 127 decode.
+   */
+  mainParticipantId: Schema.optional(Schema.NullOr(ThreadParticipantId)),
   /**
    * Room tools: open agent requests, the Stop hold and the limit's count; see
    * `OrchestrationThread.agentRequests`. Optional so rows written before

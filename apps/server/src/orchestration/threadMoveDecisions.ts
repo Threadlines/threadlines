@@ -1855,6 +1855,23 @@ export function decideThreadImport(
       type: "thread.participant-added",
       payload: { threadId: command.threadId, participant, updatedAt: command.createdAt },
     })),
+    ...(command.mainParticipantId !== undefined &&
+    (command.participants ?? []).some(
+      (participant) => participant.id === command.mainParticipantId && participant.leftAt === null,
+    )
+      ? [
+          {
+            ...base(),
+            type: "thread.participant-updated" as const,
+            payload: {
+              threadId: command.threadId,
+              participantId: command.mainParticipantId,
+              mainParticipantId: command.mainParticipantId,
+              updatedAt: command.createdAt,
+            },
+          },
+        ]
+      : []),
   ];
   const messages: PlannedEvent[] = command.messages.map((message) => ({
     ...base(),

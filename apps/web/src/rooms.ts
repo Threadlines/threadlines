@@ -30,6 +30,7 @@ import {
   hasAgentRecords,
   isRoomThread,
   nextRoomAgentName,
+  resolveMainParticipantId,
   roomAgentKey,
 } from "@threadlines/shared/threadParticipants";
 import { awaitingInvite } from "@threadlines/shared/roomAgentRequests";
@@ -48,6 +49,7 @@ import type { ChatMessage } from "./types";
 
 export interface RoomThreadLike {
   readonly participants?: ReadonlyArray<OrchestrationThreadParticipant> | undefined;
+  readonly mainParticipantId?: ThreadParticipantId | undefined;
   readonly session?: { readonly participantId?: ThreadParticipantId | null | undefined } | null;
 }
 
@@ -80,12 +82,20 @@ export function resolveRoomRecipient(
   thread: RoomThreadLike,
   chosen: ThreadParticipantId | null | undefined,
 ): ThreadParticipantId | null {
-  const present = new Set(activeParticipants(participantsOf(thread)).map((entry) => entry.id));
+  const participants = thread.participants ?? [];
+  const present = new Set(activeParticipants({ participants }).map((entry) => entry.id));
+  const mainId = resolveMainParticipantId({
+    participants,
+    mainParticipantId: thread.mainParticipantId,
+  });
   if (chosen !== undefined) {
-    return chosen === null || present.has(chosen) ? chosen : null;
+    return chosen === null || present.has(chosen) ? chosen : mainId;
   }
-  const holder = thread.session?.participantId ?? null;
-  return holder !== null && present.has(holder) ? holder : null;
+  if (thread.session != null) {
+    const holder = thread.session.participantId ?? null;
+    return holder === null || present.has(holder) ? holder : mainId;
+  }
+  return mainId;
 }
 
 interface RoomRecipientState {
@@ -551,6 +561,24 @@ export function roomModelName(
   return model && entry ? modelDisplayName(model, entry) : selection.model;
 }
 
+function resolveRoomSlotHolderId(thread: RoomThreadLike): ThreadParticipantId | null {
+  const participants = thread.participants ?? [];
+  const mainId = resolveMainParticipantId({
+    participants,
+    mainParticipantId: thread.mainParticipantId,
+  });
+  if (thread.session == null) {
+    return mainId;
+  }
+  const holder = thread.session.participantId ?? null;
+  if (holder === null) {
+    return null;
+  }
+  return activeParticipants({ participants }).some((entry) => entry.id === holder)
+    ? holder
+    : mainId;
+}
+
 /**
  * The model of the agent a room's inbox row names as working or last at
  * work. Null outside rooms, where the row just says "working".
@@ -561,7 +589,7 @@ export function roomSlotModelSelection(
   if (!isRoom(thread)) {
     return null;
   }
-  const holderId = thread.session?.participantId ?? null;
+  const holderId = resolveRoomSlotHolderId(thread);
   const holder =
     holderId === null ? undefined : thread.participants?.find((entry) => entry.id === holderId);
   return holder?.modelSelection ?? thread.modelSelection;
@@ -574,7 +602,7 @@ export function roomSlotRole(
   if (!isRoom(thread)) {
     return null;
   }
-  const holderId = thread.session?.participantId ?? null;
+  const holderId = resolveRoomSlotHolderId(thread);
   return holderId === null
     ? (thread.agentRole ?? null)
     : (thread.participants?.find((entry) => entry.id === holderId)?.role ?? null);

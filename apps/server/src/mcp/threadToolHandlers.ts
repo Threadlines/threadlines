@@ -52,6 +52,7 @@ import {
 import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { saferRuntimeMode } from "@threadlines/shared/runtimeMode";
+import { resolveMainParticipantId } from "@threadlines/shared/threadParticipants";
 import {
   type ChildRequestRefusal,
   childSendRefusal,
@@ -2444,10 +2445,10 @@ export function makeThreadToolHandlers(deps: ThreadToolDeps) {
       const gated = yield* gate(scope, "thread_move");
       if ("refusal" in gated) return gated.refusal satisfies ThreadMoveResult;
       const { thread } = gated;
-      if (scope.participantId !== null) {
+      if (scope.participantId !== resolveMainParticipantId(thread)) {
         return {
           outcome: "not_allowed",
-          detail: "Only the thread's own agent can move it.",
+          detail: "Only the thread's main agent can move it.",
         } satisfies ThreadMoveResult;
       }
       if ((thread.outsideOrigin ?? null) !== null) {

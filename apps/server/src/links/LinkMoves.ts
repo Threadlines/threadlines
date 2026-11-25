@@ -2886,6 +2886,9 @@ const make = Effect.gen(function* () {
           ...(carried ? { nativeSession: "carried" as const } : {}),
           ...(room.participants.length > 0 ? { participants: room.participants } : {}),
           ...(room.agentRole !== undefined ? { agentRole: room.agentRole } : {}),
+          ...(room.mainParticipantId !== undefined
+            ? { mainParticipantId: room.mainParticipantId }
+            : {}),
           ...(outsideWork.length > 0 ? { outsideWork } : {}),
           ...state,
           ...(arrival !== undefined ? { arrival } : {}),

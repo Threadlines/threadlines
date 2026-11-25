@@ -518,6 +518,7 @@ export interface MoveExportInput {
  */
 export interface MoveRoomExport {
   readonly agentRole?: string | undefined;
+  readonly mainParticipantId?: ThreadParticipantId | undefined;
   /** The last moved message the thread's own agent's session saw (seenThroughOf). */
   readonly ownAgentSeenThroughMessageId?: MessageId | undefined;
   readonly participants: ReadonlyArray<Omit<PeerMoveRoomParticipant, "session" | "sessionOmitted">>;
@@ -1193,6 +1194,9 @@ function roomManifestOf(
       ? {
           room: {
             ...(room.agentRole !== undefined ? { agentRole: room.agentRole } : {}),
+            ...(room.mainParticipantId !== undefined
+              ? { mainParticipantId: room.mainParticipantId }
+              : {}),
             ...(room.ownAgentSeenThroughMessageId !== undefined
               ? { ownAgentSeenThroughMessageId: room.ownAgentSeenThroughMessageId }
               : {}),

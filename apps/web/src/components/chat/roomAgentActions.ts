@@ -22,6 +22,7 @@ const updateRoomAgent = async (
     readonly modelOptions?: ReadonlyArray<ProviderOptionSelection>;
     readonly modelSelection?: ModelSelection;
     readonly handle?: string;
+    readonly makeMain?: true;
   },
 ) => {
   const api = readEnvironmentApi(threadRef.environmentId);
@@ -37,6 +38,7 @@ const updateRoomAgent = async (
     ...(change.modelOptions !== undefined ? { modelOptions: [...change.modelOptions] } : {}),
     ...(change.modelSelection !== undefined ? { modelSelection: change.modelSelection } : {}),
     ...(change.handle !== undefined ? { handle: change.handle } : {}),
+    ...(change.makeMain === true ? { makeMain: true as const } : {}),
     createdAt: new Date().toISOString(),
   });
 };
@@ -47,6 +49,12 @@ export const renameRoomAgent = (
   participantId: ThreadParticipantId | null,
   role: string | null,
 ) => updateRoomAgent(threadRef, participantId, { role });
+
+/** Make an agent the room's main agent (null returns main to the thread's own agent). */
+export const makeRoomAgentMain = (
+  threadRef: ScopedThreadRef,
+  participantId: ThreadParticipantId | null,
+) => updateRoomAgent(threadRef, participantId, { makeMain: true });
 
 /**
  * Pick model options (reasoning and the like) for an added agent. The

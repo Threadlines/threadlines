@@ -920,6 +920,9 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     participants: thread.participants ?? [],
     sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...(thread.mainParticipantId !== undefined
+      ? { mainParticipantId: thread.mainParticipantId }
+      : {}),
     ...outsideWorkField(thread.outsideWork),
     agentRequests: thread.agentRequests,
     childRequests: thread.childRequests,
@@ -981,6 +984,9 @@ function mapThreadShell(
     participants: thread.participants ?? [],
     sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...(thread.mainParticipantId !== undefined
+      ? { mainParticipantId: thread.mainParticipantId }
+      : {}),
     ...outsideWorkField(thread.outsideWork),
     ...threadLineage(thread),
     awaitedChildThreadCount: thread.awaitedChildThreadCount,
@@ -1033,6 +1039,9 @@ function mapThreadShell(
     participants: thread.participants ?? [],
     sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...(thread.mainParticipantId !== undefined
+      ? { mainParticipantId: thread.mainParticipantId }
+      : {}),
     roomSlotModelSelection: roomSlotModelSelection(thread),
     roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
@@ -1071,6 +1080,9 @@ function toThreadShell(thread: Thread): ThreadShell {
     participants: thread.participants ?? [],
     sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...(thread.mainParticipantId !== undefined
+      ? { mainParticipantId: thread.mainParticipantId }
+      : {}),
     ...outsideWorkField(thread.outsideWork),
     ...threadLineage(thread),
     ...childRequestCounts(thread),
@@ -1194,6 +1206,9 @@ function toSidebarThreadSummary(
     participants: thread.participants ?? [],
     sideTurns: liveSideTurns(thread),
     ...(thread.agentRole !== undefined ? { agentRole: thread.agentRole } : {}),
+    ...(thread.mainParticipantId !== undefined
+      ? { mainParticipantId: thread.mainParticipantId }
+      : {}),
     roomSlotModelSelection: roomSlotModelSelection(thread),
     roomSlotRole: roomSlotRole(thread),
     roomSideModelSelection: roomSideModelSelection(thread),
@@ -1463,6 +1478,7 @@ function sidebarThreadSummariesEqual(
     (left.roomSideModelSelection?.model ?? null) ===
       (right.roomSideModelSelection?.model ?? null) &&
     (left.agentRole ?? null) === (right.agentRole ?? null) &&
+    (left.mainParticipantId ?? null) === (right.mainParticipantId ?? null) &&
     (left.roomSlotRole ?? null) === (right.roomSlotRole ?? null) &&
     (left.roomSideRole ?? null) === (right.roomSideRole ?? null) &&
     (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
@@ -1636,6 +1652,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     participantsEqual(left.participants, right.participants) &&
     sideTurnsEqual(left.sideTurns, right.sideTurns) &&
     (left.agentRole ?? null) === (right.agentRole ?? null) &&
+    (left.mainParticipantId ?? null) === (right.mainParticipantId ?? null) &&
     (left.parentThreadId ?? null) === (right.parentThreadId ?? null) &&
     (left.parentTurnId ?? null) === (right.parentTurnId ?? null) &&
     (left.attachedToParent ?? false) === (right.attachedToParent ?? false) &&
@@ -3075,29 +3092,37 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.participant-updated":
       return updateThreadState(state, event.payload.threadId, (thread) => {
-        const { participants, agentRole } = applyRoomAgentUpdate(
-          { participants: thread.participants ?? [], agentRole: thread.agentRole },
+        const { participants, agentRole, mainParticipantId } = applyRoomAgentUpdate(
+          {
+            participants: thread.participants ?? [],
+            agentRole: thread.agentRole,
+            mainParticipantId: thread.mainParticipantId,
+          },
           event.payload,
         );
-        const { agentRole: _previous, ...rest } = thread;
+        const { agentRole: _previous, mainParticipantId: _previousMain, ...rest } = thread;
         return {
           ...rest,
           participants,
           ...(agentRole !== undefined ? { agentRole } : {}),
+          ...(mainParticipantId !== undefined ? { mainParticipantId } : {}),
           updatedAt: event.payload.updatedAt,
         };
       });
 
     case "thread.participant-removed":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        participants: (thread.participants ?? []).map((entry) =>
-          entry.id === event.payload.participantId && entry.leftAt === null
-            ? { ...entry, leftAt: event.payload.updatedAt }
-            : entry,
-        ),
-        updatedAt: event.payload.updatedAt,
-      }));
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const { mainParticipantId: _clearedMain, ...withoutMain } = thread;
+        return {
+          ...(thread.mainParticipantId === event.payload.participantId ? withoutMain : thread),
+          participants: (thread.participants ?? []).map((entry) =>
+            entry.id === event.payload.participantId && entry.leftAt === null
+              ? { ...entry, leftAt: event.payload.updatedAt }
+              : entry,
+          ),
+          updatedAt: event.payload.updatedAt,
+        };
+      });
 
     case "thread.pull-request-linked":
       return updateThreadState(state, event.payload.threadId, (thread) => {

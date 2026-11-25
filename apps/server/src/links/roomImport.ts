@@ -34,6 +34,7 @@ export interface RoomArrival {
   /** Every agent's record here, those that didn't come marked as having left. */
   readonly participants: ReadonlyArray<OrchestrationThreadParticipant>;
   readonly agentRole?: string | undefined;
+  readonly mainParticipantId?: ThreadParticipantId | undefined;
   /** The agent's id there → its id here. */
   readonly ids: ReadonlyMap<string, ThreadParticipantId>;
   /** The agents that came (ids there), each with the agent it runs as here. */
@@ -120,9 +121,14 @@ export function roomArrivalOf(input: {
     },
   );
   const cameNames = participants.filter((entry) => entry.movedIn === true).map((e) => e.handle);
+  const mainParticipantId =
+    room?.mainParticipantId !== undefined && came.has(room.mainParticipantId)
+      ? ids.get(room.mainParticipantId)
+      : undefined;
   return {
     participants,
     ...(room?.agentRole !== undefined ? { agentRole: room.agentRole } : {}),
+    ...(mainParticipantId !== undefined ? { mainParticipantId } : {}),
     ids,
     came,
     brought: cameNames.length > 0 ? [`its agents ${names(cameNames)}`] : [],

@@ -1196,6 +1196,52 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(useComposerDraftStore.getState().getDraftThread(draftId)?.room).toBeUndefined();
   });
 
+  it("atomically swaps a draft's main model and room, clearing stale options on the new main", () => {
+    const claudeInstance = ProviderInstanceId.make("claudeAgent");
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setModelSelection(draftId, {
+      instanceId: CODEX_INSTANCE,
+      model: "gpt-6-astra",
+      options: [{ id: "reasoningEffort", value: "low" }],
+    });
+    store.setModelSelection(draftId, {
+      instanceId: claudeInstance,
+      model: "claude-opus-5-5",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    });
+    const swappedRoom = {
+      agents: [
+        {
+          id: ThreadParticipantId.make("7a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d"),
+          handle: "Opus 5.5",
+          role: "Builder",
+          modelSelection: {
+            instanceId: claudeInstance,
+            model: "claude-opus-5-5",
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+        },
+      ],
+      agentRole: "Reviewer",
+    };
+    store.setDraftMainModelAndRoom(
+      draftId,
+      { instanceId: CODEX_INSTANCE, model: "gpt-6-astra" },
+      swappedRoom,
+    );
+    const updated = useComposerDraftStore.getState();
+    const draft = updated.getComposerDraft(draftId);
+    expect(draft?.activeProvider).toBe(CODEX_INSTANCE);
+    expect(draft?.modelPicked).toBe(true);
+    // Incoming agent had no options, so stale options for codex are cleared.
+    expect(draft?.modelSelectionByProvider[CODEX_INSTANCE]).toEqual({
+      instanceId: CODEX_INSTANCE,
+      model: "gpt-6-astra",
+    });
+    expect(updated.getDraftThread(draftId)?.room).toEqual(swappedRoom);
+  });
+
   // A project with no repository is filed under its folder, so the key a
   // draft is filed under is not always the project's id.
   it("keeps a draft's project across a reload when it is filed under a folder", () => {

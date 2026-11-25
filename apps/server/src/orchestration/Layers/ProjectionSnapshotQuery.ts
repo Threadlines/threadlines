@@ -654,6 +654,7 @@ function mapThreadShellRow(
     participants: row.participants ?? [],
     ...liveSideTurnFields(row.sideTurns),
     ...(row.agentRole ? { agentRole: row.agentRole } : {}),
+    ...(row.mainParticipantId ? { mainParticipantId: row.mainParticipantId } : {}),
     doneOverride: mapThreadDoneOverride(row),
     lastSeenAt: row.lastSeenAt ?? null,
     session: related.session,
@@ -1001,6 +1002,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           participants AS "participants",
           side_turn AS "sideTurns",
           agent_role AS "agentRole",
+          main_participant_id AS "mainParticipantId",
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_requests AS "agentRequests",
@@ -1076,6 +1078,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           participants AS "participants",
           side_turn AS "sideTurns",
           agent_role AS "agentRole",
+          main_participant_id AS "mainParticipantId",
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_requests AS "agentRequests",
@@ -1153,6 +1156,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           participants AS "participants",
           side_turn AS "sideTurns",
           agent_role AS "agentRole",
+          main_participant_id AS "mainParticipantId",
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_requests AS "agentRequests",
@@ -2055,6 +2059,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           participants AS "participants",
           side_turn AS "sideTurns",
           agent_role AS "agentRole",
+          main_participant_id AS "mainParticipantId",
           room_context AS "roomContext",
           sent_models AS "sentModels",
           agent_requests AS "agentRequests",
@@ -3035,6 +3040,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ...threadLineageFields(row),
                 ...liveSideTurnFields(row.sideTurns),
                 ...(row.agentRole ? { agentRole: row.agentRole } : {}),
+                ...(row.mainParticipantId ? { mainParticipantId: row.mainParticipantId } : {}),
                 ...(row.roomContext && Object.keys(row.roomContext).length > 0
                   ? { roomContext: row.roomContext }
                   : {}),
@@ -3360,6 +3366,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   ...threadLineageFields(row),
                   ...liveSideTurnFields(row.sideTurns),
                   ...(row.agentRole ? { agentRole: row.agentRole } : {}),
+                  ...(row.mainParticipantId ? { mainParticipantId: row.mainParticipantId } : {}),
                   ...(row.roomContext && Object.keys(row.roomContext).length > 0
                     ? { roomContext: row.roomContext }
                     : {}),
@@ -3929,6 +3936,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     participants AS "participants",
     side_turn AS "sideTurns",
     agent_role AS "agentRole",
+    main_participant_id AS "mainParticipantId",
     room_context AS "roomContext",
     sent_models AS "sentModels",
     agent_requests AS "agentRequests",
@@ -4445,6 +4453,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ...threadLineageFields(threadRow.value),
         ...liveSideTurnFields(threadRow.value.sideTurns),
         ...(threadRow.value.agentRole ? { agentRole: threadRow.value.agentRole } : {}),
+        ...(threadRow.value.mainParticipantId
+          ? { mainParticipantId: threadRow.value.mainParticipantId }
+          : {}),
         ...(threadRow.value.roomContext && Object.keys(threadRow.value.roomContext).length > 0
           ? { roomContext: threadRow.value.roomContext }
           : {}),
