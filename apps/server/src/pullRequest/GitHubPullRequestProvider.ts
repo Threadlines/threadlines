@@ -440,13 +440,31 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
       readonly readAtMs: number;
     }
   >();
+  // Incremented when `runAction` succeeds so an in-flight base-state read that
+  // started before the write cannot repopulate `heldBaseStates` with stale data.
+  const baseStateEpochs = new Map<string, number>();
+
+  const baseStateKey = (input: { readonly repository: string; readonly number: number }) =>
+    `${input.repository.toLowerCase()}#${input.number}`;
+
+  const invalidateBaseState = (input: { readonly repository: string; readonly number: number }) => {
+    const key = baseStateKey(input);
+    heldBaseStates.delete(key);
+    const nextEpoch = (baseStateEpochs.get(key) ?? 0) + 1;
+    baseStateEpochs.delete(key);
+    baseStateEpochs.set(key, nextEpoch);
+    if (baseStateEpochs.size > HELD_BASE_STATES_MAX) {
+      const oldest = baseStateEpochs.keys().next().value;
+      if (oldest !== undefined) baseStateEpochs.delete(oldest);
+    }
+  };
 
   const readBaseState = (
     input: ProviderRepositoryRef & { readonly number: number; readonly fresh?: boolean },
     row: GitHubPullRequestDetailRow,
   ): Effect.Effect<GitHubDetailBaseState> =>
     Effect.gen(function* () {
-      const key = `${input.repository.toLowerCase()}#${input.number}`;
+      const key = baseStateKey(input);
       const head = `${row.headSha ?? ""}@${row.updatedAt}`;
       const nowMs = yield* Clock.currentTimeMillis;
       const held = heldBaseStates.get(key);
@@ -464,6 +482,7 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
       ) {
         return held.state;
       }
+      const epochBeforeRead = baseStateEpochs.get(key) ?? 0;
       const state = yield* graphqlRead({
         operation: "detail",
         cwd: input.cwd,
@@ -485,12 +504,14 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
           Effect.succeed({ state: { behindBy: null } as GitHubDetailBaseState, answered: false }),
         ),
       );
-      heldBaseStates.delete(key);
-      if (state.answered) {
-        heldBaseStates.set(key, { head, state: state.state, readAtMs: nowMs });
-        if (heldBaseStates.size > HELD_BASE_STATES_MAX) {
-          const oldest = heldBaseStates.keys().next().value;
-          if (oldest !== undefined) heldBaseStates.delete(oldest);
+      if ((baseStateEpochs.get(key) ?? 0) === epochBeforeRead) {
+        heldBaseStates.delete(key);
+        if (state.answered) {
+          heldBaseStates.set(key, { head, state: state.state, readAtMs: nowMs });
+          if (heldBaseStates.size > HELD_BASE_STATES_MAX) {
+            const oldest = heldBaseStates.keys().next().value;
+            if (oldest !== undefined) heldBaseStates.delete(oldest);
+          }
         }
       }
       return state.state;
@@ -814,33 +835,43 @@ export const make = Effect.fn("makeGitHubPullRequestProvider")(function* () {
       // `gh pr merge --auto` merges outright when nothing is pending, which is
       // not what someone arming a merge asked for. The readiness is read first
       // and a ready pull request is sent back to the Merge button instead.
-      if (input.action === "enable-auto-merge") {
-        return refuseIfImmediatelyMergeable(input).pipe(Effect.flatMap(action));
-      }
       // `gh pr merge --disable-auto` stops short on a pull request the host has
       // already taken into its merge queue and leaves it there, so that case
       // is taken out of the queue by name instead.
-      if (input.action === "disable-auto-merge") {
-        return graphqlRead({
-          operation: "runAction",
-          cwd: input.cwd,
-          query: MERGE_QUEUE_STANDING_GRAPHQL_QUERY,
-          variables: graphQlVariables(input),
-          decode: decodeGitHubMergeQueueStandingJson,
-        }).pipe(
-          Effect.flatMap((queuedId) =>
-            queuedId === null
-              ? action()
-              : graphql({
-                  operation: "runAction",
-                  cwd: input.cwd,
-                  query: DEQUEUE_PULL_REQUEST_GRAPHQL_MUTATION,
-                  variables: { id: queuedId },
-                }).pipe(Effect.asVoid),
-          ),
-        );
-      }
-      return action();
+      const execute =
+        input.action === "enable-auto-merge"
+          ? refuseIfImmediatelyMergeable(input).pipe(Effect.flatMap(action))
+          : input.action === "disable-auto-merge"
+            ? graphqlRead({
+                operation: "runAction",
+                cwd: input.cwd,
+                query: MERGE_QUEUE_STANDING_GRAPHQL_QUERY,
+                variables: graphQlVariables(input),
+                decode: decodeGitHubMergeQueueStandingJson,
+              }).pipe(
+                Effect.flatMap((queuedId) =>
+                  queuedId === null
+                    ? action()
+                    : graphql({
+                        operation: "runAction",
+                        cwd: input.cwd,
+                        query: DEQUEUE_PULL_REQUEST_GRAPHQL_MUTATION,
+                        variables: { id: queuedId },
+                      }).pipe(Effect.asVoid),
+                ),
+              )
+            : action();
+      // Any action can move merge-queue standing or branch freshness without
+      // bumping `updatedAt` (entering a queue drops `autoMergeRequest`), so the
+      // follow-up detail read must ask the host fresh instead of reusing a
+      // held pre-action base state.
+      return execute.pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            invalidateBaseState(input);
+          }),
+        ),
+      );
     },
 
     comment: (input) =>

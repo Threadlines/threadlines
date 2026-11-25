@@ -215,6 +215,8 @@ export function composerPullRequestRow(input: {
   readonly detail: PullRequestDetail | undefined;
   /** This thread asked the server to merge it once its checks pass. */
   readonly threadAutoMerge: boolean;
+  /** A host-side auto-merge write still in flight from this row. */
+  readonly pendingAction?: ComposerPendingAutoMergeAction | null;
   /** What the detail's checks are still waiting on the host for; null when they can be believed. */
   readonly waitingFor: PullRequestChecksWait | null;
   /** The detail is a current read, not one remembered from earlier or left by a failed re-read. */
@@ -232,9 +234,13 @@ export function composerPullRequestRow(input: {
     ? detail
     : undefined;
   const state = stateSource?.state ?? pullRequest.state;
-  const autoMergeEnabled =
-    input.threadAutoMerge ||
-    (stateSource ? pullRequestArmedToMerge(stateSource) : pullRequest.autoMergeEnabled);
+  const hostAutoMergeEnabled =
+    input.pendingAction != null && (detail === undefined || !isInMergeQueue(detail))
+      ? input.pendingAction === "enable-auto-merge"
+      : stateSource
+        ? pullRequestArmedToMerge(stateSource)
+        : pullRequest.autoMergeEnabled;
+  const autoMergeEnabled = input.threadAutoMerge || hostAutoMergeEnabled;
   return {
     number: pullRequest.number,
     state,
@@ -262,6 +268,28 @@ export function composerPullRequestRow(input: {
 
 function isInMergeQueue(detail: Pick<PullRequestDetail, "mergeQueue">): boolean {
   return detail.mergeQueue !== undefined && detail.mergeQueue.position !== null;
+}
+
+/** An in-flight host-side auto-merge write started from the composer popover. */
+export type ComposerPendingAutoMergeAction = "enable-auto-merge" | "disable-auto-merge";
+
+/**
+ * The quiet status word shown on the right edge of the "Merge when checks
+ * pass" row while the host processes the click, or null at rest.
+ */
+export function composerAutoMergePendingLabel(input: {
+  readonly detail: PullRequestDetail;
+  readonly pendingAction: ComposerPendingAutoMergeAction | null;
+}): string | null {
+  if (input.pendingAction === null || isInMergeQueue(input.detail)) {
+    return null;
+  }
+  if (input.pendingAction === "enable-auto-merge") {
+    return input.detail.mergeQueue !== undefined && input.detail.mergeGate === "clear"
+      ? "Queuing…"
+      : "Enabling…";
+  }
+  return "Cancelling…";
 }
 
 /**
@@ -302,6 +330,8 @@ export function composerAutoMergeControl(
     readonly detail: PullRequestDetail | undefined;
     /** The thread's own request that the server merge it, or null. */
     readonly threadAutoMerge: PullRequestMergeMethod | null;
+    /** A host-side auto-merge write still in flight from this row. */
+    readonly pendingAction?: ComposerPendingAutoMergeAction | null;
   },
 ): ComposerAutoMergeControl {
   const { detail } = input;
@@ -323,6 +353,12 @@ export function composerAutoMergeControl(
   }
   if (!detail.viewer.canWrite) {
     return { kind: "unavailable", reason: "Write access is needed to merge" };
+  }
+  // Keep the switch in place in its target state while the host confirms the
+  // click, even on a draft or conflicting PR where cancelling would otherwise
+  // flip to "unavailable" mid-flight.
+  if (input.pendingAction && detail.autoMergeEnabled !== null) {
+    return { kind: "toggle", checked: input.pendingAction === "enable-auto-merge" };
   }
   const hostCanArm =
     detail.autoMergeEnabled !== null &&

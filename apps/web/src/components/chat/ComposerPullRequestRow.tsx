@@ -52,11 +52,13 @@ import { DiffStatLabel } from "./DiffStatLabel";
 import {
   composerAutoFixOffered,
   composerAutoMergeControl,
+  composerAutoMergePendingLabel,
   composerPullRequestCheckBuckets,
   composerPullRequestChecksFootnote,
   composerPullRequestChecksNotice,
   composerPullRequestRow,
   pullRequestChecksUrl,
+  type ComposerPendingAutoMergeAction,
   type ComposerPullRequestChipTone,
 } from "./composerPullRequest.logic";
 
@@ -136,6 +138,19 @@ const CHIP_TONE_CLASS: Readonly<
   closed: { chip: "text-zinc-500 dark:text-zinc-400/80", dot: "bg-current" },
 };
 
+/** The host-side auto-merge write owned by the row so closing the popover keeps it alive. */
+interface ComposerAutoMergeMutation {
+  readonly isPending: boolean;
+  readonly isError: boolean;
+  readonly error: unknown;
+  readonly pendingAction: ComposerPendingAutoMergeAction | null;
+  readonly mutate: (variables: {
+    readonly action: PullRequestAction;
+    readonly mergeMethod?: PullRequestMergeMethod;
+  }) => void;
+  readonly reset: () => void;
+}
+
 export function ComposerPullRequestRow({
   pullRequest,
   divided,
@@ -144,6 +159,7 @@ export function ComposerPullRequestRow({
   /** Another row or a notice sits under this one, so the two are ruled apart. */
   readonly divided: boolean;
 }) {
+  const queryClient = useQueryClient();
   // The same read the Pull request tab makes, on the same key, so one poll
   // serves both while checks run.
   const read = usePullRequestDetail({
@@ -151,11 +167,46 @@ export function ComposerPullRequestRow({
     reference: pullRequest.reference,
     pushedHead: pullRequest.pushedHead,
   });
+  const detailQueryKey = pullRequestQueryKeys.detail(
+    pullRequest.environmentId,
+    pullRequest.reference,
+  );
+  const actionOptions = pullRequestActionMutationOptions({
+    environmentId: pullRequest.environmentId,
+    reference: pullRequest.reference,
+    queryClient,
+  });
+  // Owned by the row rather than the popover body so closing and reopening the
+  // popover while GitHub is working keeps both the in-flight state and any
+  // refusal in view. Optimistic state is overlaid from `pendingAction` rather
+  // than written into the query cache, where a newer observation record would
+  // overwrite it and kick off a competing refresh mid-write.
+  const action = useMutation({
+    ...actionOptions,
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: detailQueryKey, exact: true });
+    },
+  });
+  const pendingAction: ComposerPendingAutoMergeAction | null =
+    action.isPending &&
+    (action.variables?.action === "enable-auto-merge" ||
+      action.variables?.action === "disable-auto-merge")
+      ? action.variables.action
+      : null;
+  const autoMergeMutation: ComposerAutoMergeMutation = {
+    isPending: action.isPending,
+    isError: action.isError,
+    error: action.error,
+    pendingAction,
+    mutate: action.mutate,
+    reset: action.reset,
+  };
   const row = composerPullRequestRow({
     pullRequest: pullRequest.pullRequest,
     projectTitle: pullRequest.projectTitle,
     detail: read.detail,
     threadAutoMerge: pullRequest.autoMerge !== null,
+    pendingAction,
     waitingFor: read.waitingFor,
     detailCurrent: read.lastKnown === null,
   });
@@ -241,6 +292,7 @@ export function ComposerPullRequestRow({
         read={read}
         chip={row.chip}
         checksUrl={pullRequestChecksUrl(row.url)}
+        autoMergeMutation={autoMergeMutation}
       />
       <button
         type="button"
@@ -360,13 +412,23 @@ function ComposerPullRequestChecksChip({
   read,
   chip,
   checksUrl,
+  autoMergeMutation,
 }: {
   readonly pullRequest: ComposerPullRequest;
   readonly read: PullRequestDetailRead;
   readonly chip: ReturnType<typeof composerPullRequestRow>["chip"];
   readonly checksUrl: string;
+  readonly autoMergeMutation: ComposerAutoMergeMutation;
 }) {
   const [open, setOpen] = useState(false);
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    // Once a refusal has been shown and dismissed, clear it so the next open
+    // starts clean; a failure that lands while closed stays visible next time.
+    if (!nextOpen && !autoMergeMutation.isPending && autoMergeMutation.isError) {
+      autoMergeMutation.reset();
+    }
+  };
   const toneClass = CHIP_TONE_CLASS[chip.tone];
   const chipClass = cn(
     "inline-flex h-[22px] shrink-0 items-center gap-1.5 rounded-md border border-border px-1.5 text-xs",
@@ -385,7 +447,7 @@ function ComposerPullRequestChecksChip({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger
         render={
           <button
@@ -410,7 +472,8 @@ function ComposerPullRequestChecksChip({
           pullRequest={pullRequest}
           read={read}
           checksUrl={checksUrl}
-          onOpenExternal={() => setOpen(false)}
+          autoMergeMutation={autoMergeMutation}
+          onOpenExternal={() => handleOpenChange(false)}
         />
       </PopoverPopup>
     </Popover>
@@ -421,12 +484,14 @@ function ComposerPullRequestChecksPopover({
   pullRequest,
   read,
   checksUrl,
+  autoMergeMutation,
   onOpenExternal,
 }: {
   readonly pullRequest: ComposerPullRequest;
   /** The row's read of this pull request. */
   readonly read: PullRequestDetailRead;
   readonly checksUrl: string;
+  readonly autoMergeMutation: ComposerAutoMergeMutation;
   readonly onOpenExternal: () => void;
 }) {
   const { detail } = read;
@@ -479,6 +544,7 @@ function ComposerPullRequestChecksPopover({
         <ComposerPullRequestAutoMergeSection
           pullRequest={pullRequest}
           detail={detail}
+          action={autoMergeMutation}
           onOpenExternal={onOpenExternal}
         />
       ) : null}
@@ -525,13 +591,14 @@ function ComposerPullRequestChecksPopover({
 function ComposerPullRequestAutoMergeSection({
   pullRequest,
   detail,
+  action,
   onOpenExternal,
 }: {
   readonly pullRequest: ComposerPullRequest;
   readonly detail: PullRequestDetail;
+  readonly action: ComposerAutoMergeMutation;
   readonly onOpenExternal: () => void;
 }) {
-  const queryClient = useQueryClient();
   const [rememberedMergeMethod] = useRememberedMergeMethod(detail.provider, detail.repository);
   const mergeMethod = resolveDefaultMergeMethod(detail.mergeMethods, rememberedMergeMethod);
   // Read once as the popover opens. Only the "waiting for checks" wording
@@ -544,43 +611,12 @@ function ComposerPullRequestAutoMergeSection({
     threadHold: pullRequest.threadHold,
     unpushedCommits: pullRequest.unpushedCommits,
     pushedHead: pullRequest.pushedHead,
+    pendingAction: action.pendingAction,
     now: openedAt,
   });
-  const detailQueryKey = pullRequestQueryKeys.detail(
-    pullRequest.environmentId,
-    pullRequest.reference,
-  );
-  const actionOptions = pullRequestActionMutationOptions({
-    environmentId: pullRequest.environmentId,
-    reference: pullRequest.reference,
-    queryClient,
-  });
-  const action = useMutation({
-    ...actionOptions,
-    // The switch flips the moment it is clicked. The host takes seconds to arm
-    // the merge and seconds more to be re-read, and a switch that waits for
-    // both reads as one that did not take the click. If the host refuses, the
-    // detail it was read from comes back.
-    onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: detailQueryKey });
-      const previous = queryClient.getQueryData<PullRequestDetail>(detailQueryKey);
-      if (
-        previous &&
-        previous.mergeQueue?.position == null &&
-        variables.action.endsWith("auto-merge")
-      ) {
-        queryClient.setQueryData<PullRequestDetail>(detailQueryKey, {
-          ...previous,
-          autoMergeEnabled: variables.action === "enable-auto-merge",
-        });
-      }
-      return { previous };
-    },
-    onError: (_error, _variables, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(detailQueryKey, context.previous);
-      }
-    },
+  const pendingLabel = composerAutoMergePendingLabel({
+    detail,
+    pendingAction: action.pendingAction,
   });
 
   return (
@@ -592,18 +628,32 @@ function ComposerPullRequestAutoMergeSection({
         />
       ) : null}
       {autoMergeControl.kind === "toggle" ? (
-        <label className="flex cursor-pointer items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
-          <Checkbox
-            className={POPOVER_CHECKBOX_CLASS}
-            checked={autoMergeControl.checked}
-            disabled={action.isPending}
-            onCheckedChange={(checked) => {
-              const next: PullRequestAction = checked ? "enable-auto-merge" : "disable-auto-merge";
-              action.mutate(checked ? { action: next, mergeMethod } : { action: next });
-            }}
-          />
-          Merge when checks pass
-        </label>
+        <div className="flex items-center gap-2 px-3 py-1 transition-colors hover:bg-accent">
+          <label
+            className={cn(
+              "flex min-w-0 flex-1 items-center gap-2",
+              action.isPending ? "cursor-default" : "cursor-pointer",
+            )}
+          >
+            <Checkbox
+              className={POPOVER_CHECKBOX_CLASS}
+              checked={autoMergeControl.checked}
+              disabled={action.isPending}
+              onCheckedChange={(checked) => {
+                const next: PullRequestAction = checked
+                  ? "enable-auto-merge"
+                  : "disable-auto-merge";
+                action.mutate(checked ? { action: next, mergeMethod } : { action: next });
+              }}
+            />
+            Merge when checks pass
+          </label>
+          {pendingLabel !== null ? (
+            <span aria-live="polite" className="shrink-0 text-[11px] text-muted-foreground">
+              {pendingLabel}
+            </span>
+          ) : null}
+        </div>
       ) : null}
       {autoMergeControl.kind === "server" ? (
         <ComposerPullRequestThreadSwitch
@@ -641,7 +691,7 @@ function ComposerPullRequestAutoMergeSection({
               className="ml-auto cursor-pointer rounded-sm hover:text-foreground disabled:cursor-default disabled:opacity-60 focus-ring"
               onClick={() => action.mutate({ action: "disable-auto-merge" })}
             >
-              {action.isPending ? "Leaving…" : "Leave queue"}
+              {action.pendingAction === "disable-auto-merge" ? "Leaving…" : "Leave queue"}
             </button>
           ) : null}
         </p>

@@ -1,5 +1,5 @@
 import { EnvironmentId, ProjectId, type PullRequestDetail } from "@threadlines/contracts";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { ensureEnvironmentApi } from "../environmentApi";
@@ -12,6 +12,7 @@ import {
   markPullRequestListSettled,
   orderPullRequestEnvironments,
   PULL_REQUEST_ON_SCREEN_POLL_INTERVAL_MS,
+  pullRequestActionMutationOptions,
   pullRequestDetailQueryOptions,
   pullRequestDiffQueryOptions,
   pullRequestListQueryOptions,
@@ -141,5 +142,75 @@ describe("refreshing a pull request", () => {
     expect(
       queryClient.getQueryData(pullRequestQueryKeys.diff(input.environmentId, REFERENCE)),
     ).toEqual({ files: [] });
+  });
+});
+
+describe("pull request action invalidation", () => {
+  it("settles as soon as the pull request's own detail refreshes, without waiting on workspace listings", async () => {
+    const environmentId = EnvironmentId.make("environment-a");
+    let finishList = () => {};
+    let listCalls = 0;
+    const list = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          listCalls += 1;
+          if (listCalls === 1) {
+            resolve({ viewer: null, entries: [], errors: [] });
+            return;
+          }
+          finishList = () => resolve({ viewer: null, entries: [], errors: [] });
+        }),
+    );
+    const detail = vi.fn(async () => ({
+      state: "open",
+      autoMergeEnabled: true,
+      checks: [],
+      mergeability: "mergeable",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }));
+    const runAction = vi.fn(async () => ({ state: "open", isDraft: false }));
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({
+      pullRequests: { list, detail, runAction },
+    } as never);
+
+    const queryClient = new QueryClient();
+    const listOptions = pullRequestListQueryOptions({ environmentId, state: "open" });
+    const detailOptions = pullRequestDetailQueryOptions({ environmentId, reference: REFERENCE });
+    const listObserver = new QueryObserver(queryClient, listOptions);
+    const detailObserver = new QueryObserver(queryClient, detailOptions);
+    const unsubList = listObserver.subscribe(() => undefined);
+    const unsubDetail = detailObserver.subscribe(() => undefined);
+    await queryClient.fetchQuery(listOptions);
+    await queryClient.fetchQuery(detailOptions);
+
+    const options = pullRequestActionMutationOptions({
+      environmentId,
+      reference: REFERENCE,
+      queryClient,
+    });
+    const result = await options.mutationFn!(
+      { action: "enable-auto-merge", mergeMethod: "squash" },
+      undefined as never,
+    );
+    expect(result).toEqual({ state: "open", isDraft: false });
+
+    // `onSuccess` must resolve once `detail` refreshes, even while the active
+    // `list` query is still fetching in the background.
+    await options.onSuccess!(
+      result,
+      { action: "enable-auto-merge", mergeMethod: "squash" },
+      undefined,
+      undefined as never,
+    );
+    expect(detail).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(
+      queryClient.getQueryState(pullRequestQueryKeys.list(environmentId, "open"))?.fetchStatus,
+    ).toBe("fetching");
+    finishList();
+    unsubDetail();
+    unsubList();
+    listObserver.destroy();
+    detailObserver.destroy();
   });
 });

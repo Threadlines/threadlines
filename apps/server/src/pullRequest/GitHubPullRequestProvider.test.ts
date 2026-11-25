@@ -1,7 +1,9 @@
 // @effect-diagnostics preferSchemaOverJson:off
 import { assert, afterEach, describe, expect, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/process";
@@ -266,6 +268,200 @@ describe("GitHubPullRequestProvider.getChangeRequest", () => {
       yield* read();
       yield* read();
       assert.strictEqual(comparisons(), 6);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "re-reads merge queue standing right after runAction even when updatedAt stays put",
+    () =>
+      Effect.gen(function* () {
+        let queued = false;
+        mockExecute.mockImplementation((input) => {
+          if (input.args[0] === "api") {
+            const stdin = String(input.stdin ?? "");
+            if (stdin.includes("mergeStateStatus")) {
+              return Effect.succeed(
+                processOutput(
+                  JSON.stringify({
+                    data: {
+                      repository: {
+                        pullRequest: { mergeStateStatus: "CLEAN", isMergeQueueEnabled: true },
+                      },
+                    },
+                  }),
+                ),
+              );
+            }
+            return Effect.succeed(
+              processOutput(
+                JSON.stringify({
+                  data: {
+                    repository: {
+                      pullRequest: {
+                        baseRef: { compare: { behindBy: 0 } },
+                        isMergeQueueEnabled: true,
+                        isInMergeQueue: queued,
+                        mergeQueueEntry: queued ? { position: 1 } : null,
+                      },
+                    },
+                  },
+                }),
+              ),
+            );
+          }
+          if (input.args[0] === "pr" && input.args[1] === "merge") {
+            // Entering a merge queue drops autoMergeRequest on GitHub and does
+            // not always bump updatedAt.
+            queued = true;
+            return Effect.succeed(processOutput(""));
+          }
+          return Effect.succeed(
+            processOutput(
+              JSON.stringify({
+                number: 12,
+                title: "Add the pull request detail panel",
+                url: "https://github.com/octocat/example-app/pull/12",
+                author: { login: "octocat", is_bot: false },
+                headRefName: "feature/pull-request-detail",
+                headRefOid: "aaa111",
+                baseRefName: "main",
+                state: "OPEN",
+                mergedAt: null,
+                closedAt: null,
+                isDraft: false,
+                additions: 40,
+                deletions: 4,
+                changedFiles: 3,
+                createdAt: "2026-08-30T10:00:00Z",
+                updatedAt: "2026-08-31T10:00:00Z",
+                body: "",
+                mergeable: "MERGEABLE",
+                reviewDecision: "",
+                reviewRequests: [],
+                reviews: [],
+                labels: [],
+                statusCheckRollup: [],
+                autoMergeRequest: null,
+              }),
+            ),
+          );
+        });
+        const provider = yield* GitHubPullRequestProvider.make();
+
+        const before = yield* provider.getChangeRequest({ ...repository, number: 12 });
+        assert.deepStrictEqual(before.mergeQueue, { position: null });
+
+        yield* provider.runAction({
+          ...repository,
+          number: 12,
+          action: "enable-auto-merge",
+          mergeMethod: "squash",
+        });
+
+        const after = yield* provider.getChangeRequest({ ...repository, number: 12 });
+        assert.deepStrictEqual(after.mergeQueue, { position: 1 });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("does not let an in-flight base-state read repopulate the cache after runAction", () =>
+    Effect.gen(function* () {
+      let queued = false;
+      let baseReads = 0;
+      const pollStarted = yield* Deferred.make<void>();
+      const releasePoll = yield* Deferred.make<void>();
+      mockExecute.mockImplementation((input) => {
+        if (input.args[0] === "api") {
+          const stdin = String(input.stdin ?? "");
+          if (stdin.includes("mergeStateStatus")) {
+            return Effect.succeed(
+              processOutput(
+                JSON.stringify({
+                  data: {
+                    repository: {
+                      pullRequest: { mergeStateStatus: "CLEAN", isMergeQueueEnabled: true },
+                    },
+                  },
+                }),
+              ),
+            );
+          }
+          baseReads += 1;
+          const readNumber = baseReads;
+          const payload = JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  baseRef: { compare: { behindBy: 0 } },
+                  isMergeQueueEnabled: true,
+                  isInMergeQueue: queued,
+                  mergeQueueEntry: queued ? { position: 1 } : null,
+                },
+              },
+            },
+          });
+          if (readNumber === 1) {
+            return Deferred.succeed(pollStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releasePoll)),
+              Effect.as(processOutput(payload)),
+            );
+          }
+          return Effect.succeed(processOutput(payload));
+        }
+        if (input.args[0] === "pr" && input.args[1] === "merge") {
+          queued = true;
+          return Effect.succeed(processOutput(""));
+        }
+        return Effect.succeed(
+          processOutput(
+            JSON.stringify({
+              number: 12,
+              title: "Add the pull request detail panel",
+              url: "https://github.com/octocat/example-app/pull/12",
+              author: { login: "octocat", is_bot: false },
+              headRefName: "feature/pull-request-detail",
+              headRefOid: "aaa111",
+              baseRefName: "main",
+              state: "OPEN",
+              mergedAt: null,
+              closedAt: null,
+              isDraft: false,
+              additions: 40,
+              deletions: 4,
+              changedFiles: 3,
+              createdAt: "2026-08-30T10:00:00Z",
+              updatedAt: "2026-08-31T10:00:00Z",
+              body: "",
+              mergeable: "MERGEABLE",
+              reviewDecision: "",
+              reviewRequests: [],
+              reviews: [],
+              labels: [],
+              statusCheckRollup: [],
+              autoMergeRequest: null,
+            }),
+          ),
+        );
+      });
+      const provider = yield* GitHubPullRequestProvider.make();
+
+      const pollFiber = yield* Effect.forkChild(
+        provider.getChangeRequest({ ...repository, number: 12 }),
+      );
+      yield* Deferred.await(pollStarted);
+
+      yield* provider.runAction({
+        ...repository,
+        number: 12,
+        action: "enable-auto-merge",
+        mergeMethod: "squash",
+      });
+
+      yield* Deferred.succeed(releasePoll, undefined);
+      const stalePoll = yield* Fiber.join(pollFiber);
+      assert.deepStrictEqual(stalePoll.mergeQueue, { position: null });
+
+      const after = yield* provider.getChangeRequest({ ...repository, number: 12 });
+      assert.deepStrictEqual(after.mergeQueue, { position: 1 });
     }).pipe(Effect.provide(layer)),
   );
 });

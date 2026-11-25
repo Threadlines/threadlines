@@ -12,12 +12,14 @@ import type { ThreadPullRequest } from "../pull-requests/pullRequests.logic";
 import {
   composerAutoFixOffered,
   composerAutoMergeControl,
+  composerAutoMergePendingLabel,
   composerPullRequestCheckBuckets,
   composerPullRequestChecksFootnote,
   composerPullRequestChecksNotice,
   composerPullRequestChip,
   composerPullRequestRow,
   composerPullRequestThreadHold,
+  type ComposerPendingAutoMergeAction,
 } from "./composerPullRequest.logic";
 
 const THREAD_PULL_REQUEST: ThreadPullRequest = {
@@ -356,6 +358,7 @@ function control(
     readonly threadHold?: PullRequestAutomationHold | null;
     readonly unpushedCommits?: number;
     readonly pushedHead?: string | null;
+    readonly pendingAction?: ComposerPendingAutoMergeAction | null;
   } = {},
 ) {
   return composerAutoMergeControl({
@@ -365,6 +368,7 @@ function control(
     threadHold: thread.threadHold ?? null,
     unpushedCommits: thread.unpushedCommits ?? 0,
     pushedHead: thread.pushedHead ?? null,
+    ...(thread.pendingAction === undefined ? {} : { pendingAction: thread.pendingAction }),
     now: NOW,
   });
 }
@@ -552,6 +556,92 @@ describe("composerAutoMergeControl", () => {
     expect(control(detail({ autoMergeEnabled: false, mergeQueue: { position: 1 } }))).toEqual({
       kind: "queued",
     });
+  });
+
+  it("holds the toggle in its target state while a host write is in flight, even on a draft", () => {
+    expect(
+      control(detail({ autoMergeEnabled: false }), { pendingAction: "enable-auto-merge" }),
+    ).toEqual({
+      kind: "toggle",
+      checked: true,
+    });
+    expect(
+      control(detail({ autoMergeEnabled: true, isDraft: true }), {
+        pendingAction: "disable-auto-merge",
+      }),
+    ).toEqual({
+      kind: "toggle",
+      checked: false,
+    });
+  });
+});
+
+describe("composerPullRequestRow pendingAction and composerAutoMergePendingLabel", () => {
+  it("reflects an in-flight enable even when a newer listing says auto-merge is off", () => {
+    const newerListing = Date.parse("2026-10-26T10:05:00.000Z");
+    const row = composerPullRequestRow({
+      pullRequest: {
+        ...THREAD_PULL_REQUEST,
+        autoMergeEnabled: false,
+        observedAt: newerListing,
+      },
+      projectTitle: null,
+      detail: {
+        ...detail({
+          checksState: "success",
+          autoMergeEnabled: false,
+          mergeQueue: {
+            position: null,
+            removal: {
+              id: "RFMQE_1",
+              removedAt: "2026-10-26T10:00:00.000Z",
+              failedChecks: [check("failure", "Browser Test")],
+            },
+          },
+        }),
+        observedAt: "2026-10-26T10:00:00.000Z",
+      },
+      threadAutoMerge: false,
+      pendingAction: "enable-auto-merge",
+      waitingFor: null,
+      detailCurrent: true,
+    });
+    expect(row.autoMergeEnabled).toBe(true);
+    expect(row.chip).toEqual({ label: "CI", tone: "success", interactive: true });
+  });
+
+  it("names queuing for a clear merge-queue PR, enabling otherwise, and cancelling when turning off", () => {
+    expect(
+      composerAutoMergePendingLabel({
+        detail: detail({ mergeQueue: { position: null }, mergeGate: "clear" }),
+        pendingAction: "enable-auto-merge",
+      }),
+    ).toBe("Queuing…");
+    expect(
+      composerAutoMergePendingLabel({
+        detail: detail({ mergeQueue: { position: null }, mergeGate: "blocked" }),
+        pendingAction: "enable-auto-merge",
+      }),
+    ).toBe("Enabling…");
+    expect(
+      composerAutoMergePendingLabel({
+        detail: detail({ mergeGate: "blocked" }),
+        pendingAction: "enable-auto-merge",
+      }),
+    ).toBe("Enabling…");
+    expect(
+      composerAutoMergePendingLabel({
+        detail: detail({ autoMergeEnabled: true }),
+        pendingAction: "disable-auto-merge",
+      }),
+    ).toBe("Cancelling…");
+    expect(
+      composerAutoMergePendingLabel({
+        detail: detail({ mergeQueue: { position: 1 } }),
+        pendingAction: "disable-auto-merge",
+      }),
+    ).toBeNull();
+    expect(composerAutoMergePendingLabel({ detail: detail(), pendingAction: null })).toBeNull();
   });
 });
 

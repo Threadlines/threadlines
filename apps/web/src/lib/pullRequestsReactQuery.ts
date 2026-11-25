@@ -534,8 +534,17 @@ export interface PullRequestWriteInput {
  * is filed under `all`, so one invalidation covers this pull request's detail
  * and conversation as well as the listings behind them; a merge moves the row
  * out of the open listing too, and this covers that without naming it.
+ *
+ * Only this pull request's own affected reads are awaited before the mutation
+ * settles: listings and lookups across the workspace still invalidate and
+ * refresh in the background rather than holding buttons or checkboxes disabled
+ * while every repository re-lists.
  */
-function pullRequestWriteBase(input: PullRequestWriteInput, name: string) {
+function pullRequestWriteBase(
+  input: PullRequestWriteInput,
+  name: string,
+  awaitReads: readonly ("detail" | "activity" | "reviewer-candidates")[] = ["detail", "activity"],
+) {
   return {
     mutationKey: [
       "pull-requests",
@@ -545,7 +554,31 @@ function pullRequestWriteBase(input: PullRequestWriteInput, name: string) {
       input.reference.number,
     ] as const,
     onSuccess: async () => {
-      await input.queryClient.invalidateQueries({ queryKey: pullRequestQueryKeys.all });
+      const awaitedKeys = awaitReads.map((read) =>
+        read === "detail"
+          ? pullRequestQueryKeys.detail(input.environmentId, input.reference)
+          : read === "activity"
+            ? pullRequestQueryKeys.activity(input.environmentId, input.reference)
+            : pullRequestQueryKeys.reviewerCandidates(input.environmentId, input.reference),
+      );
+      const isAwaitedKey = (queryKey: readonly unknown[]) =>
+        awaitedKeys.some(
+          (target) =>
+            queryKey.length === target.length &&
+            target.every((part, index) => queryKey[index] === part),
+        );
+      const ownRefresh = Promise.all(
+        awaitedKeys.map((queryKey) =>
+          input.queryClient.invalidateQueries({ queryKey, exact: true }),
+        ),
+      );
+      void input.queryClient
+        .invalidateQueries({
+          queryKey: pullRequestQueryKeys.all,
+          predicate: (query) => !isAwaitedKey(query.queryKey),
+        })
+        .catch(() => undefined);
+      await ownRefresh;
     },
   };
 }
@@ -569,7 +602,7 @@ export function pullRequestCommentMutationOptions(input: PullRequestWriteInput) 
 /** Merging, closing, reopening, the draft switches, update branch and auto-merge. */
 export function pullRequestActionMutationOptions(input: PullRequestWriteInput) {
   return mutationOptions({
-    ...pullRequestWriteBase(input, "action"),
+    ...pullRequestWriteBase(input, "action", ["detail"]),
     mutationFn: (variables: {
       readonly action: PullRequestAction;
       readonly mergeMethod?: PullRequestMergeMethod;
@@ -648,7 +681,7 @@ export function pullRequestReactionMutationOptions(input: PullRequestWriteInput)
 /** Rewriting the pull request's own title or description. */
 export function pullRequestUpdateMutationOptions(input: PullRequestWriteInput) {
   return mutationOptions({
-    ...pullRequestWriteBase(input, "update"),
+    ...pullRequestWriteBase(input, "update", ["detail"]),
     mutationFn: (variables: { readonly title?: string; readonly body?: string }) =>
       ensureEnvironmentApi(input.environmentId).pullRequests.update({
         ...input.reference,
@@ -676,7 +709,7 @@ export function pullRequestCommentUpdateMutationOptions(input: PullRequestWriteI
 /** Asking someone for a review, and taking the ask back. */
 export function pullRequestReviewerRequestMutationOptions(input: PullRequestWriteInput) {
   return mutationOptions({
-    ...pullRequestWriteBase(input, "reviewer-request"),
+    ...pullRequestWriteBase(input, "reviewer-request", ["detail", "reviewer-candidates"]),
     mutationFn: (variables: {
       readonly reviewers: readonly {
         readonly id: string;
