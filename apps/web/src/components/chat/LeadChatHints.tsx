@@ -149,40 +149,42 @@ export function LeadChatSuggestion({ parentRef }: { parentRef: ScopedThreadRef }
   }
   const dismiss = () => setDismissed(true);
   return (
-    <div
-      data-testid="lead-chat-suggestion"
-      className="mx-3 mt-1.5 mb-1 flex items-center gap-2.5 rounded-md bg-muted px-2.5 py-1.5 text-xs text-muted-foreground sm:mx-5"
-    >
-      <CrownIcon aria-hidden="true" className="size-3.5 shrink-0" />
-      <span className="min-w-0 flex-1">
-        This thread is running other threads. Make it the lead chat and it stays on top and hands
-        out new work by itself.
-      </span>
-      <Button
-        size="xs"
-        variant="outline"
-        data-testid="lead-chat-suggestion-make"
-        onClick={() => {
-          dismiss();
-          void setProjectLead({
-            environmentId: parentRef.environmentId,
-            projectId,
-            threadId: parentRef.threadId,
-          });
-        }}
+    <div className="page-gutters pt-1.5 pb-1 [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)]">
+      <div
+        data-testid="lead-chat-suggestion"
+        className="flex items-center gap-2.5 rounded-md bg-muted px-2.5 py-1.5 text-xs text-muted-foreground"
       >
-        Make lead chat
-      </Button>
-      <Button
-        size="icon-xs"
-        variant="ghost"
-        aria-label="Don't suggest a lead chat for this project again"
-        data-testid="lead-chat-suggestion-dismiss"
-        className="text-muted-foreground"
-        onClick={dismiss}
-      >
-        <XIcon className="size-3.5" />
-      </Button>
+        <CrownIcon aria-hidden="true" className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1">
+          This thread is running other threads. Make it the lead chat and it stays on top and hands
+          out new work by itself.
+        </span>
+        <Button
+          size="xs"
+          variant="outline"
+          data-testid="lead-chat-suggestion-make"
+          onClick={() => {
+            dismiss();
+            void setProjectLead({
+              environmentId: parentRef.environmentId,
+              projectId,
+              threadId: parentRef.threadId,
+            });
+          }}
+        >
+          Make lead chat
+        </Button>
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          aria-label="Don't suggest a lead chat for this project again"
+          data-testid="lead-chat-suggestion-dismiss"
+          className="text-muted-foreground"
+          onClick={dismiss}
+        >
+          <XIcon className="size-3.5" />
+        </Button>
+      </div>
     </div>
   );
 }

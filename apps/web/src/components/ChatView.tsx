@@ -8996,10 +8996,10 @@ export default function ChatView(props: ChatViewProps) {
             ref={chatHeaderBottomVarRef}
             data-find-region="chat"
             className={cn(
-              "relative transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
+              "page-gutters relative transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)]",
               isElectron || titleRowPresent
-                ? cn("drag-region flex items-center px-3 sm:px-5", ELECTRON_HEADER_HEIGHT_CLASS)
-                : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
+                ? cn("drag-region flex items-center", ELECTRON_HEADER_HEIGHT_CLASS)
+                : "py-2 sm:py-3",
             )}
           >
             {chatHeader}
@@ -9154,7 +9154,7 @@ export default function ChatView(props: ChatViewProps) {
 
               {/* scroll to bottom button — shown when user has scrolled away from the bottom. */}
               {showScrollToBottom && (
-                <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 py-1.5">
+                <div className="page-gutters pointer-events-none absolute inset-x-0 bottom-2 z-30 flex justify-center py-1.5 [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)]">
                   <button
                     type="button"
                     aria-label="Scroll to bottom"
@@ -9173,7 +9173,7 @@ export default function ChatView(props: ChatViewProps) {
             <div
               ref={setInputBarElement}
               className={cn(
-                "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
+                "page-gutters [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)]",
                 isGitRepo
                   ? "pb-[calc(var(--safe-area-bottom)+0.25rem)]"
                   : "pb-[calc(var(--safe-area-bottom)+0.75rem)] sm:pb-[calc(var(--safe-area-bottom)+1rem)]",

@@ -165,10 +165,10 @@ function LinkedThreadFrame({
         fallback={
           <header
             className={cn(
-              "relative",
+              "page-gutters relative [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)]",
               isElectron || titleRowPresent
-                ? cn("drag-region flex items-center px-3 sm:px-5", ELECTRON_HEADER_HEIGHT_CLASS)
-                : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
+                ? cn("drag-region flex items-center", ELECTRON_HEADER_HEIGHT_CLASS)
+                : "py-2 sm:py-3",
             )}
           >
             {header}
@@ -289,9 +289,9 @@ function LinkedThreadMessages({
         ref={scrollRef}
         onScroll={onScroll}
         data-testid="linked-thread-messages"
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="page-gutters min-h-0 flex-1 overflow-y-auto [--side-gutter:--spacing(4)] sm:[--side-gutter:--spacing(6)]"
       >
-        <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 pt-4 pb-6 sm:px-6">
+        <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 pt-4 pb-6">
           {messages === null ? (
             query.isPending ? (
               <p className="text-[13px] text-muted-foreground">
@@ -324,27 +324,29 @@ function LinkedThreadMessages({
         </div>
       </div>
       {/* Where the message box would be: why there is none, and the way to one. */}
-      <div className="mx-auto w-full max-w-4xl px-4 pb-4 sm:px-6">
-        <div
-          data-testid="linked-thread-notice"
-          className="rounded-4xl border border-border bg-card px-1 py-0.5"
-        >
-          <ComposerNoticeDock
-            notices={[
-              {
-                id: "linked-thread",
-                severity: "info",
-                lead: "Read through the link.",
-                detail: `Its messages from ${child.computerLabel}, without tool steps.`,
-                wrapActions: true,
-                actions: (
-                  <Button size="xs" variant="outline" onClick={openConnectComputerDialog}>
-                    Connect
-                  </Button>
-                ),
-              },
-            ]}
-          />
+      <div className="page-gutters pb-[calc(var(--safe-area-bottom)+1rem)] [--side-gutter:--spacing(4)] sm:[--side-gutter:--spacing(6)]">
+        <div className="mx-auto w-full max-w-4xl">
+          <div
+            data-testid="linked-thread-notice"
+            className="rounded-4xl border border-border bg-card px-1 py-0.5"
+          >
+            <ComposerNoticeDock
+              notices={[
+                {
+                  id: "linked-thread",
+                  severity: "info",
+                  lead: "Read through the link.",
+                  detail: `Its messages from ${child.computerLabel}, without tool steps.`,
+                  wrapActions: true,
+                  actions: (
+                    <Button size="xs" variant="outline" onClick={openConnectComputerDialog}>
+                      Connect
+                    </Button>
+                  ),
+                },
+              ]}
+            />
+          </div>
         </div>
       </div>
     </>

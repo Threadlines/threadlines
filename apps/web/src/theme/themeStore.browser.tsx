@@ -20,7 +20,13 @@ import {
   serializeThemeChoice,
   themeChoiceKey,
 } from "./themeChoice";
-import { adoptStoredThemeChoice, chooseTheme, endThemeTrial, startThemeTrial } from "./themeStore";
+import {
+  adoptStoredThemeChoice,
+  chooseTheme,
+  endThemeTrial,
+  startThemeTrial,
+  syncBrowserChromeColor,
+} from "./themeStore";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -359,6 +365,55 @@ describe("theme store, applied", () => {
       endThemeTrial(second.id);
     } finally {
       await screen.unmount();
+    }
+  });
+
+  it("collapses static media theme-color tags into one active unconditional tag", () => {
+    const previous = [...document.head.querySelectorAll('meta[name="theme-color"]')];
+    for (const tag of previous) tag.remove();
+    const lightTag = document.createElement("meta");
+    lightTag.name = "theme-color";
+    lightTag.media = "(prefers-color-scheme: light)";
+    lightTag.content = "#ffffff";
+    const darkTag = document.createElement("meta");
+    darkTag.name = "theme-color";
+    darkTag.media = "(prefers-color-scheme: dark)";
+    darkTag.content = "#161616";
+    document.head.prepend(lightTag, darkTag);
+
+    const trial = startThemeTrial({
+      choice: unsaved(HASH_A, "Winter night"),
+      manifest: darkTheme("#e7ecff"),
+    });
+    try {
+      syncBrowserChromeColor();
+
+      const tags = [...document.head.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')];
+      expect(tags).toHaveLength(1);
+      expect(tags[0]?.hasAttribute("media")).toBe(false);
+      expect(tags[0]?.content).toBe("#0a1029");
+
+      // Switching built-in light -> dark with no sidebar surface in the DOM
+      // reads the updated CSS token instead of the stale inline body fill.
+      endThemeTrial(trial.id);
+      chooseTheme({ kind: "builtin", id: "light" });
+      syncBrowserChromeColor();
+      const lightChrome = document.head.querySelector<HTMLMetaElement>(
+        'meta[name="theme-color"]',
+      )?.content;
+      chooseTheme({ kind: "builtin", id: "dark" });
+      syncBrowserChromeColor();
+      const darkChrome = document.head.querySelector<HTMLMetaElement>(
+        'meta[name="theme-color"]',
+      )?.content;
+      expect(lightChrome).toBeTruthy();
+      expect(darkChrome).toBeTruthy();
+      expect(darkChrome).not.toBe(lightChrome);
+    } finally {
+      endThemeTrial(trial.id);
+      chooseTheme({ kind: "builtin", id: "system" });
+      for (const tag of document.head.querySelectorAll('meta[name="theme-color"]')) tag.remove();
+      for (const tag of previous) document.head.append(tag);
     }
   });
 });

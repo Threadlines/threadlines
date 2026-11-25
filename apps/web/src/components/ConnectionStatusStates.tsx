@@ -97,7 +97,7 @@ function ConnectionStatusState({
 
 function SidebarInsetShell({ children }: { children: ReactNode }) {
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
+    <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
       {children}
     </SidebarInset>
   );
@@ -105,7 +105,7 @@ function SidebarInsetShell({ children }: { children: ReactNode }) {
 
 function StandaloneShell({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-dvh min-h-0 flex-col overflow-hidden overscroll-y-none bg-background text-foreground">
+    <div className="flex h-[calc(100dvh-var(--safe-area-top))] min-h-0 flex-col overflow-hidden overscroll-y-none bg-background text-foreground">
       {children}
     </div>
   );

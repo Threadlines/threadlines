@@ -363,7 +363,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
 
   return (
     <SidebarProvider
-      className="h-dvh! min-h-0! flex-col bg-frame"
+      className="h-full! min-h-0! flex-col bg-frame"
       open={listShown && hasList}
       onOpenChange={setListOpen}
       overlay={listFloats}
