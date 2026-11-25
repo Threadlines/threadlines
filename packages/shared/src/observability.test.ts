@@ -14,6 +14,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 import { vi } from "vite-plus/test";
 
+import { RotatingFileSink } from "./logging.ts";
 import {
   compactTraceAttributes,
   makeLocalFileTracer,
@@ -89,6 +90,28 @@ const waitUntil = (predicate: () => boolean, timeoutMs = 2_000): Effect.Effect<v
         check();
       }),
   );
+
+const drainAsyncFlush: Effect.Effect<void> = Effect.gen(function* () {
+  yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+  yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+  yield* Effect.yieldNow;
+});
+
+const spySettledWrites = Effect.fn("spySettledWrites")(function* () {
+  let settledWrites = 0;
+  const originalWriteAsync = RotatingFileSink.prototype.writeAsync;
+  const writeSpy = vi
+    .spyOn(RotatingFileSink.prototype, "writeAsync")
+    .mockImplementation(async function (this: RotatingFileSink, chunk: string | Buffer) {
+      try {
+        return await originalWriteAsync.call(this, chunk);
+      } finally {
+        settledWrites += 1;
+      }
+    });
+  yield* Effect.addFinalizer(() => Effect.sync(() => writeSpy.mockRestore()));
+  return () => settledWrites;
+});
 
 const makeTestLayer = (tracePath: string) =>
   Layer.mergeAll(
@@ -181,6 +204,7 @@ describe("observability", () => {
           const path = yield* Path.Path;
           const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
           const tracePath = path.join(tempDir, "shared.trace.ndjson");
+          const settledWrites = yield* spySettledWrites();
 
           const sink = yield* makeTraceSink({
             filePath: tracePath,
@@ -190,19 +214,26 @@ describe("observability", () => {
           });
 
           sink.push(makeRecord("first"));
+          yield* Effect.yieldNow;
           assert.equal(fs.existsSync(tracePath), false);
           yield* TestClock.adjust("999 millis");
           yield* Effect.yieldNow;
           assert.equal(fs.existsSync(tracePath), false);
           yield* TestClock.adjust("1 millis");
-          yield* waitUntil(() => fs.existsSync(tracePath));
-          yield* Effect.yieldNow;
+          yield* waitUntil(() => settledWrites() === 1 && fs.existsSync(tracePath));
+          yield* drainAsyncFlush;
           assert.equal(fs.existsSync(tracePath), true);
 
           sink.push(makeRecord("second"));
+          yield* Effect.yieldNow;
           assert.equal(fs.readFileSync(tracePath, "utf8").includes('"name":"second"'), false);
           yield* TestClock.adjust("1 second");
-          yield* waitUntil(() => fs.readFileSync(tracePath, "utf8").includes('"name":"second"'));
+          yield* waitUntil(
+            () =>
+              settledWrites() === 2 &&
+              fs.readFileSync(tracePath, "utf8").includes('"name":"second"'),
+          );
+          yield* drainAsyncFlush;
 
           const records = yield* readTraceRecords(tracePath);
           assert.deepStrictEqual(
@@ -464,12 +495,14 @@ describe("observability", () => {
             ["first"],
           );
 
+          yield* Effect.yieldNow;
           yield* TestClock.adjust("1 second");
           yield* waitUntil(
             () =>
               fs.existsSync(`${tracePath}.1`) &&
               fs.readFileSync(tracePath, "utf8").includes('"name":"third"'),
           );
+          yield* drainAsyncFlush;
 
           const names = ["shared.trace.ndjson.2", "shared.trace.ndjson.1", "shared.trace.ndjson"]
             .filter((entry) => fs.existsSync(path.join(tempDir, entry)))
@@ -505,6 +538,7 @@ describe("observability", () => {
               await Reflect.apply(realAppendFile, fs.promises, args);
             });
           yield* Effect.addFinalizer(() => Effect.sync(() => appendSpy.mockRestore()));
+          const settledWrites = yield* spySettledWrites();
           yield* TestClock.setTime(0);
 
           const sink = yield* makeTraceSink({
@@ -515,9 +549,14 @@ describe("observability", () => {
             maxBufferedBytes: 4_096,
           });
 
+          const waitForSettledAttempt = (expected: number) =>
+            Effect.gen(function* () {
+              yield* waitUntil(() => appendAttempts === expected && settledWrites() === expected);
+              yield* drainAsyncFlush;
+            });
+
           sink.push(makeRecord("first"));
-          yield* waitUntil(() => appendAttempts === 1);
-          yield* Effect.yieldNow;
+          yield* waitForSettledAttempt(1);
           assert.equal(appendAttempts, 1);
           sink.push(makeRecord("second"));
           yield* Effect.yieldNow;
@@ -527,8 +566,7 @@ describe("observability", () => {
           yield* Effect.yieldNow;
           assert.equal(appendAttempts, 1);
           yield* TestClock.adjust("1 millis");
-          yield* waitUntil(() => appendAttempts === 2);
-          yield* Effect.yieldNow;
+          yield* waitForSettledAttempt(2);
           assert.equal(appendAttempts, 2);
 
           sink.push(makeRecord("third"));
@@ -538,16 +576,14 @@ describe("observability", () => {
           yield* Effect.yieldNow;
           assert.equal(appendAttempts, 2);
           yield* TestClock.adjust("1 millis");
-          yield* waitUntil(() => appendAttempts === 3);
-          yield* Effect.yieldNow;
+          yield* waitForSettledAttempt(3);
           assert.equal(appendAttempts, 3);
 
           let expectedAttempts = 3;
           for (const delayMs of [800, 1_600, 3_200, 6_400, 12_800, 25_600, 30_000]) {
             yield* TestClock.adjust(`${delayMs} millis`);
             expectedAttempts += 1;
-            yield* waitUntil(() => appendAttempts === expectedAttempts);
-            yield* Effect.yieldNow;
+            yield* waitForSettledAttempt(expectedAttempts);
             assert.equal(appendAttempts, expectedAttempts);
           }
           assert.equal(appendAttempts, 10);
@@ -555,12 +591,10 @@ describe("observability", () => {
           yield* Effect.yieldNow;
           assert.equal(appendAttempts, 10);
           yield* TestClock.adjust("1 millis");
-          yield* waitUntil(() => appendAttempts === 11);
-          yield* Effect.yieldNow;
+          yield* waitForSettledAttempt(11);
           assert.equal(appendAttempts, 11);
           yield* TestClock.adjust("30 seconds");
-          yield* waitUntil(() => appendAttempts === 12);
-          yield* Effect.yieldNow;
+          yield* waitForSettledAttempt(12);
           assert.equal(appendAttempts, 12);
 
           failWrites = false;

@@ -268,6 +268,59 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: buildSourcemap,
+    rolldownOptions: {
+      output: {
+        // Keep stable initial libraries and shared startup code in cacheable
+        // chunks without pulling lazy routes or heavy on-demand panels into
+        // the initial bundle (`tags: ["$initial"]` and `entriesAware: true`).
+        codeSplitting: {
+          groups: [
+            {
+              name: "vendor-react",
+              test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+              tags: ["$initial"],
+              priority: 40,
+            },
+            {
+              name: "vendor-effect",
+              test: /node_modules[\\/]effect[\\/]/,
+              tags: ["$initial"],
+              priority: 35,
+            },
+            {
+              name: "vendor-tanstack",
+              test: /node_modules[\\/]@tanstack[\\/]/,
+              tags: ["$initial"],
+              priority: 32,
+            },
+            {
+              name: "vendor-ui",
+              test: /node_modules[\\/](@base-ui|@floating-ui|lucide-react|tailwind-merge|class-variance-authority|clsx|zustand)[\\/]/,
+              tags: ["$initial"],
+              priority: 30,
+            },
+            {
+              name: "vendor-chat-editor",
+              test: /node_modules[\\/](@legendapp|lexical|@lexical)[\\/]/,
+              entriesAware: true,
+              priority: 25,
+            },
+            {
+              name: "app-contracts",
+              test: /packages[\\/]contracts[\\/]/,
+              tags: ["$initial"],
+              priority: 20,
+            },
+            {
+              name: "app-initial",
+              tags: ["$initial"],
+              minShareCount: 2,
+              priority: 10,
+            },
+          ],
+        },
+      },
+    },
   },
   test: {
     projects: [defineProject(unitTestProject)],
