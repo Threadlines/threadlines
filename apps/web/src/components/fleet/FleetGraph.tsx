@@ -437,26 +437,38 @@ export function FleetGraph({
     [edges, indexById],
   );
 
-  const layout = useMemo(
-    () =>
-      width === null
-        ? null
-        : layoutFleetGraph({
-            width,
-            height,
-            centerProviderCount: centerProviders.length,
-            otherProviderCounts: others.map((computer) =>
-              computer.kind === "device" ? 0 : computer.providers.length,
-            ),
-            // Lines between two other computers: agents keep clear of them too.
-            otherLines: drawnEdges.flatMap((edge) => {
-              const from = indexById.get(edge.fromId)!;
-              const to = indexById.get(edge.toId)!;
-              return from >= 0 && to >= 0 ? [[from, to] as const] : [];
-            }),
-          }),
-    [centerProviders.length, drawnEdges, height, indexById, others, width],
-  );
+  // Key layout by topology primitives so streaming thread updates that keep
+  // the same computers, provider counts, and cross-computer lines don't re-run
+  // the geometry search on every flush.
+  const otherCountsKey = others
+    .map((computer) => (computer.kind === "device" ? 0 : computer.providers.length))
+    .join(",");
+  const otherLinesKey = drawnEdges
+    .flatMap((edge) => {
+      const from = indexById.get(edge.fromId)!;
+      const to = indexById.get(edge.toId)!;
+      return from >= 0 && to >= 0 ? [`${from}-${to}`] : [];
+    })
+    .join(",");
+  const layout = useMemo(() => {
+    if (width === null) return null;
+    const otherProviderCounts = otherCountsKey === "" ? [] : otherCountsKey.split(",").map(Number);
+    const otherLines =
+      otherLinesKey === ""
+        ? []
+        : otherLinesKey.split(",").map((pair) => {
+            const [from, to] = pair.split("-").map(Number);
+            return [from!, to!] as const;
+          });
+    return layoutFleetGraph({
+      width,
+      height,
+      centerProviderCount: centerProviders.length,
+      otherProviderCounts,
+      // Lines between two other computers: agents keep clear of them too.
+      otherLines,
+    });
+  }, [centerProviders.length, height, otherCountsKey, otherLinesKey, width]);
 
   const lines = useMemo((): GraphLine[] => {
     if (layout === null) return [];
@@ -509,11 +521,29 @@ export function FleetGraph({
         : lines.filter((line) => line.state === "working").slice(0, FLEET_GRAPH_MAX_MOVING_LINES),
     [lines, reducedMotion],
   );
+  // Key keyframes by moving line geometry so unchanged coordinates keep the
+  // same <style> string instead of rewriting CSS and restarting animations.
+  const movingKey = moving
+    .map((line) => {
+      const away = line.awayFrom
+        ? `${line.awayFrom.x.toFixed(1)},${line.awayFrom.y.toFixed(1)}`
+        : "";
+      return `${line.from.x.toFixed(1)},${line.from.y.toFixed(1)},${line.to.x.toFixed(1)},${line.to.y.toFixed(1)},${line.fromRadius},${line.toRadius},${away}`;
+    })
+    .join("|");
   const dotStyles = useMemo(() => {
-    if (moving.length === 0) return "";
-    const keyframes = moving
-      .map((line, index) => {
-        const frames = buildTravelingDotKeyframes(`${scope}-${index}`, line);
+    if (movingKey === "") return "";
+    const keyframes = movingKey
+      .split("|")
+      .map((entry, index) => {
+        const [fx, fy, tx, ty, fromRadius, toRadius, ax, ay] = entry.split(",");
+        const frames = buildTravelingDotKeyframes(`${scope}-${index}`, {
+          from: { x: Number(fx), y: Number(fy) },
+          to: { x: Number(tx), y: Number(ty) },
+          fromRadius: Number(fromRadius),
+          toRadius: Number(toRadius),
+          awayFrom: ax !== "" && ay !== undefined ? { x: Number(ax), y: Number(ay) } : undefined,
+        });
         return frames.dot + frames.ring;
       })
       .join("");
@@ -528,7 +558,7 @@ export function FleetGraph({
       `.${scope}[data-paused] .fleet-dot,.${scope}[data-paused] .fleet-ring{animation-play-state:paused!important}`,
       keyframes,
     ].join("\n");
-  }, [moving, scope]);
+  }, [movingKey, scope]);
 
   return (
     <div

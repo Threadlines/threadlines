@@ -84,8 +84,12 @@ import { ProjectionThreadRepository } from "../persistence/Services/ProjectionTh
 import { ComputerLinkClient, type ComputerLinkUnavailableError } from "./ComputerLinkClient.ts";
 import { ComputerLinkRepository, isUsableLink } from "./ComputerLinkRepository.ts";
 
-/** How often owed work is retried while a computer can't be reached. */
+/** How often owed work is checked; individual offline computers back off further. */
 const RETRY_EVERY = Duration.seconds(15);
+/** Per-computer backoff when owed requests/cancels/acks/wraps fail to reach a peer. */
+const RETRY_BACKOFF_OWED_MS = [15_000, 30_000, 60_000, 120_000, 300_000] as const;
+/** Slower backoff when only startup drain or settled remote children are waiting. */
+const RETRY_BACKOFF_QUIET_MS = [30_000, 60_000, 180_000, 600_000] as const;
 
 /** How long a watch with nothing left to wait for stays open. */
 const WATCH_LINGER_MS = 10_000;
@@ -215,6 +219,31 @@ const make = Effect.gen(function* () {
    * too: a word is owed to that computer however the parent is filed here.
    */
   const wrapOwers = new Map<string, Set<ThreadId>>();
+  /**
+   * Per-computer retry backoff after a watch or request couldn't reach it.
+   * Cleared immediately by any live event for that computer or when it answers.
+   */
+  const retryBackoff = new Map<string, { readonly nextAt: number; readonly attempts: number }>();
+
+  const clearRetryBackoff = (environmentId: string) => {
+    retryBackoff.delete(environmentId);
+  };
+
+  const hasUrgentWork = (environmentId: string) =>
+    Effect.gen(function* () {
+      if ((pendingAcks.get(environmentId)?.size ?? 0) > 0) return true;
+      if ((wrapOwers.get(environmentId)?.size ?? 0) > 0) return true;
+      return (yield* parentsOwing(environmentId)).length > 0;
+    }).pipe(Effect.orElseSucceed(() => true));
+
+  const noteUnreachable = (environmentId: string) =>
+    Effect.gen(function* () {
+      const urgent = yield* hasUrgentWork(environmentId);
+      const delays = urgent ? RETRY_BACKOFF_OWED_MS : RETRY_BACKOFF_QUIET_MS;
+      const attempts = (retryBackoff.get(environmentId)?.attempts ?? 0) + 1;
+      const delayMs = delays[Math.min(attempts - 1, delays.length - 1)]!;
+      retryBackoff.set(environmentId, { nextAt: Date.now() + delayMs, attempts });
+    });
 
   const laneOf = (lanes: Map<string, Semaphore.Semaphore>, environmentId: string) => {
     let lane = lanes.get(environmentId);
@@ -538,6 +567,7 @@ const make = Effect.gen(function* () {
       switch (event.type) {
         case "synced":
           drained.add(environmentId);
+          clearRetryBackoff(environmentId);
           return;
         case "status": {
           const found = yield* findRequest(environmentId, event.requestId);
@@ -767,7 +797,12 @@ const make = Effect.gen(function* () {
         unavailable._tag === "ComputerLinkUnavailableError" &&
         (unavailable.revoked === true || (yield* isGone(environmentId)))
       ) {
+        clearRetryBackoff(environmentId);
         yield* abandon(environmentId, error as ComputerLinkUnavailableError);
+        return;
+      }
+      if (unavailable._tag === "ComputerLinkUnavailableError") {
+        yield* noteUnreachable(environmentId);
       }
     });
 
@@ -1238,6 +1273,7 @@ const make = Effect.gen(function* () {
           watching.has(environmentId) && !watchedThreads.get(environmentId)?.has(child.threadId);
         if (unasked) rewatch.add(environmentId);
         if (!watching.has(environmentId) || owed) {
+          clearRetryBackoff(environmentId);
           yield* pump(environmentId).pipe(Effect.forkDetach);
         }
         return;
@@ -1249,6 +1285,7 @@ const make = Effect.gen(function* () {
         if (parent === undefined) return;
         for (const environmentId of followAll(parent)) {
           if (!watching.has(environmentId)) {
+            clearRetryBackoff(environmentId);
             yield* pump(environmentId).pipe(Effect.forkDetach);
           } else if (
             (parent.childRequests.remoteChildren ?? []).some(
@@ -1268,6 +1305,7 @@ const make = Effect.gen(function* () {
       ) {
         const environmentId = event.payload.request.remote.environmentId;
         track(environmentId, event.payload.threadId);
+        clearRetryBackoff(environmentId);
         yield* pump(environmentId).pipe(Effect.forkDetach);
         return;
       }
@@ -1277,6 +1315,7 @@ const make = Effect.gen(function* () {
           (entry) => entry.requestId === event.payload.requestId,
         );
         if (request?.remote !== undefined) {
+          clearRetryBackoff(request.remote.environmentId);
           yield* pump(request.remote.environmentId).pipe(Effect.forkDetach);
         }
         return;
@@ -1284,6 +1323,7 @@ const make = Effect.gen(function* () {
       if (event.type === "thread.remote-cancel-queued") {
         const environmentId = event.payload.cancel.environmentId;
         track(environmentId, event.payload.threadId);
+        clearRetryBackoff(environmentId);
         yield* pumpCancels(environmentId).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("remote child reactor could not send owed cancels", {
@@ -1341,6 +1381,8 @@ const make = Effect.gen(function* () {
           environments.add(environmentId);
         }
         for (const environmentId of environments) {
+          const backoff = retryBackoff.get(environmentId);
+          if (backoff !== undefined && backoff.nextAt > Date.now()) continue;
           yield* pump(environmentId);
         }
       }).pipe(Effect.repeat(Schedule.spaced(RETRY_EVERY)), Effect.forkScoped);

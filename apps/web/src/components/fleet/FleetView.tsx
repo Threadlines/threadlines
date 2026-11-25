@@ -27,7 +27,8 @@ import { glassPage } from "../../theme/glassPage";
 
 /** Graph heights: room for the arc of computers, or just this one and its agents. */
 const GRAPH_HEIGHT = 300;
-const GRAPH_HEIGHT_PHONE = 270;
+const GRAPH_HEIGHT_PHONE = 312;
+const GRAPH_HEIGHT_PHONE_CROWDED = 374;
 const GRAPH_HEIGHT_ONE_COMPUTER = 210;
 
 /**
@@ -77,7 +78,9 @@ export function FleetView() {
   const graphHeight = alone
     ? GRAPH_HEIGHT_ONE_COMPUTER
     : isMobile
-      ? GRAPH_HEIGHT_PHONE
+      ? model.others.length >= 3
+        ? GRAPH_HEIGHT_PHONE_CROWDED
+        : GRAPH_HEIGHT_PHONE
       : GRAPH_HEIGHT;
 
   const openComputer = useCallback(

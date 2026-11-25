@@ -20,6 +20,7 @@ import {
   resolveFleetDirection,
   resolveFleetPair,
   resolveFleetUnlinkOutcomes,
+  resolveOutboundLinkConnection,
   trustedOriginEnvironment,
   unreachableNote,
 } from "./fleetLinks.logic";
@@ -689,6 +690,65 @@ describe("cross-computer work in the graph", () => {
     expect(edges.find((edge) => edge.key === `connection:${WINDOWS}`)).toMatchObject({
       fromId: WINDOWS,
       toId: MAC,
+      state: "working",
+    });
+  });
+
+  it("treats idle outbound links as offline and ignores cached cross-work on offline links", () => {
+    expect(
+      resolveOutboundLinkConnection([outbound(LINUX, "build box", { connection: "idle" })]),
+    ).toBe("offline");
+    expect(
+      resolveOutboundLinkConnection([outbound(LINUX, "build box", { connection: "connected" })]),
+    ).toBe("connected");
+    expect(
+      resolveOutboundLinkConnection([outbound(LINUX, "build box", { connection: "reconnecting" })]),
+    ).toBe("reconnecting");
+    expect(
+      resolveOutboundLinkConnection([
+        outbound(LINUX, "build box", { state: "revoked", connection: "connected" }),
+      ]),
+    ).toBe("offline");
+
+    const idleLinks: FleetLinksByEnvironment = {
+      [WINDOWS]: {
+        live: true,
+        snapshot: snapshot({
+          outbound: [outbound(LINUX, "build box", { connection: "idle" })],
+        }),
+      },
+    };
+    const idleEdges = buildFleetGraphEdges({
+      model,
+      links: idleLinks,
+      crossWork: [
+        {
+          askerEnvironmentId: WINDOWS,
+          workerEnvironmentId: LINUX,
+          working: 1,
+          needsYou: 0,
+          live: false,
+        },
+      ],
+    });
+    expect(idleEdges.find((edge) => edge.key.startsWith("link:"))).toMatchObject({
+      state: "offline",
+    });
+
+    const liveWorkEdges = buildFleetGraphEdges({
+      model,
+      links: idleLinks,
+      crossWork: [
+        {
+          askerEnvironmentId: WINDOWS,
+          workerEnvironmentId: LINUX,
+          working: 1,
+          needsYou: 0,
+          live: true,
+        },
+      ],
+    });
+    expect(liveWorkEdges.find((edge) => edge.key.startsWith("link:"))).toMatchObject({
       state: "working",
     });
   });

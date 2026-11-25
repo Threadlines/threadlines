@@ -844,11 +844,16 @@ function isRelayHeld(environmentId: EnvironmentId): boolean {
   return hold !== undefined && hold.until > Date.now();
 }
 
-function clearRelayHold(environmentId: EnvironmentId): void {
+function clearRelayHold(environmentId: EnvironmentId): boolean {
   const hold = relayHolds.get(environmentId);
-  if (hold?.timer) clearTimeout(hold.timer);
-  if (hold?.probe) clearInterval(hold.probe);
+  if (hold === undefined) return false;
+  if (hold.timer) clearTimeout(hold.timer);
+  if (hold.probe) clearInterval(hold.probe);
   relayHolds.delete(environmentId);
+  if (useSavedEnvironmentRuntimeStore.getState().byId[environmentId]?.waitingToReconnect === true) {
+    useSavedEnvironmentRuntimeStore.getState().patch(environmentId, { waitingToReconnect: false });
+  }
+  return true;
 }
 
 function cantReachComputerMessage(label: string): string {
@@ -1038,39 +1043,65 @@ async function saveDirectRoutes(
 
 function holdRelayEnvironment(environmentId: EnvironmentId, delayMs: number, reason: string): void {
   clearRelayHold(environmentId);
-  const timer = Number.isFinite(delayMs)
-    ? setTimeout(() => {
-        relayHolds.delete(environmentId);
-        if (getSavedEnvironmentRecord(environmentId)) {
-          void reconnectSavedEnvironment(environmentId).catch(() => undefined);
-        }
-      }, delayMs)
-    : null;
-  // A held relay route doesn't stop a computer on the same network: keep
-  // checking its direct routes and come back as soon as one answers.
+  const willRetry = Number.isFinite(delayMs);
+  const hold: {
+    until: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    probe: ReturnType<typeof setInterval> | null;
+  } = {
+    until: Date.now() + delayMs,
+    timer: null,
+    probe: null,
+  };
+  if (willRetry) {
+    hold.timer = setTimeout(() => {
+      if (relayHolds.get(environmentId) !== hold) return;
+      clearRelayHold(environmentId);
+      if (getSavedEnvironmentRecord(environmentId) && !isDisconnectedByUser(environmentId)) {
+        void reconnectSavedEnvironment(environmentId).catch(() => undefined);
+      }
+    }, delayMs);
+  }
+  // A retryable relay hold doesn't stop a computer on the same network: keep
+  // checking its direct routes while the app is visible and come back as soon
+  // as one answers. Non-retryable holds (access removed, replaced by another
+  // window) never probe direct routes.
   const record = getSavedEnvironmentRecord(environmentId);
   const hasDirectRoutes =
+    willRetry &&
     record?.relay !== undefined &&
     "version" in record.relay &&
     record.relay.version === 2 &&
     (record.relay.directRoutes?.length ?? 0) > 0;
-  const probe = hasDirectRoutes
-    ? setInterval(() => {
-        void resolveSecureRelayTarget(environmentId)
-          .then((target) => probeDirectRoutes(target))
-          .then((route) => {
-            if (!route || !relayHolds.has(environmentId)) return;
-            clearRelayHold(environmentId);
-            void reconnectSavedEnvironment(environmentId).catch(() => undefined);
-          })
-          .catch(() => undefined);
-      }, RELAY_HOLD_DIRECT_PROBE_MS)
-    : null;
-  relayHolds.set(environmentId, { until: Date.now() + delayMs, timer, probe });
+  if (hasDirectRoutes) {
+    hold.probe = setInterval(() => {
+      if (relayHolds.get(environmentId) !== hold) {
+        if (hold.probe) clearInterval(hold.probe);
+        return;
+      }
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+      void resolveSecureRelayTarget(environmentId)
+        .then((target) => probeDirectRoutes(target))
+        .then((route) => {
+          if (!route || relayHolds.get(environmentId) !== hold) return;
+          clearRelayHold(environmentId);
+          void reconnectSavedEnvironment(environmentId).catch(() => undefined);
+        })
+        .catch(() => undefined);
+    }, RELAY_HOLD_DIRECT_PROBE_MS);
+  }
+  relayHolds.set(environmentId, hold);
   void disconnectSavedEnvironment(environmentId)
     .catch(() => undefined)
     .then(() => {
       setRuntimeDisconnected(environmentId, reason);
+      if (willRetry && relayHolds.get(environmentId) === hold) {
+        useSavedEnvironmentRuntimeStore
+          .getState()
+          .patch(environmentId, { waitingToReconnect: true });
+      }
     });
 }
 
@@ -2267,8 +2298,14 @@ export async function disconnectSavedEnvironmentByUser(
   environmentId: EnvironmentId,
 ): Promise<void> {
   useSavedEnvironmentRuntimeStore.getState().patch(environmentId, { disconnectedByUser: true });
-  clearRelayHold(environmentId);
+  const wasRelayHeld = clearRelayHold(environmentId);
   await disconnectSavedEnvironment(environmentId);
+  if (wasRelayHeld) {
+    useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
+      lastError: null,
+      lastErrorAt: null,
+    });
+  }
 }
 
 export async function reconnectSavedEnvironment(environmentId: EnvironmentId): Promise<void> {
@@ -2597,6 +2634,9 @@ export function startEnvironmentConnectionService(
       for (const environmentId of unreachableSavedEnvironments.keys()) {
         stopWaitingForUnreachableSavedEnvironment(environmentId);
       }
+      for (const environmentId of [...relayHolds.keys()]) {
+        clearRelayHold(environmentId);
+      }
     },
   };
 
@@ -2613,6 +2653,10 @@ export function startEnvironmentConnectionService(
 
 export async function resetEnvironmentServiceForTests(): Promise<void> {
   stopActiveService();
+  for (const environmentId of [...relayHolds.keys()]) {
+    clearRelayHold(environmentId);
+  }
+  relayOfflineAttempts.clear();
   lastBrowserHiddenAt = null;
   lastBrowserResumeReconnectAt = Number.NEGATIVE_INFINITY;
   lastAppliedProjectionVersionByEnvironment.clear();

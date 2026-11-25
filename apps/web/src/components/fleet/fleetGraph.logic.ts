@@ -31,7 +31,11 @@ const DOT_SAMPLES = 16;
 /** Keeps nodes and their labels inside the stage. */
 const EDGE_PADDING_X = 56;
 const EDGE_PADDING_TOP = 34;
-const EDGE_PADDING_BOTTOM = 44;
+const EDGE_PADDING_BOTTOM = 60;
+/** Narrow stages wrap names/subtitles onto up to four lines under the lowest computer. */
+const EDGE_PADDING_BOTTOM_NARROW = 92;
+/** Agents have a single-line label, so they can sit nearer the bottom edge. */
+const PROVIDER_EDGE_PADDING_BOTTOM = 44;
 
 export interface FleetGraphLayoutInput {
   readonly width: number;
@@ -56,10 +60,11 @@ function clampPoint(
   width: number,
   height: number,
   paddingX: number = EDGE_PADDING_X,
+  paddingBottom: number = EDGE_PADDING_BOTTOM,
 ): Point {
   return {
     x: Math.min(Math.max(point.x, paddingX), width - paddingX),
-    y: Math.min(Math.max(point.y, EDGE_PADDING_TOP), height - EDGE_PADDING_BOTTOM),
+    y: Math.min(Math.max(point.y, EDGE_PADDING_TOP), height - paddingBottom),
   };
 }
 
@@ -72,11 +77,19 @@ const ARC_SAMPLES = 240;
 /** Clear space kept between any two nodes' edges. */
 const NODE_GAP = 8;
 /** The name and location line under a computer, roughly. */
-const COMPUTER_LABEL = { halfWidth: 44, offset: 6, height: 32 } as const;
+const COMPUTER_LABEL = {
+  maxFootprintWidth: 152,
+  offset: 6,
+  heightWide: 38,
+  heightNarrow: 68,
+  heightShort: 26,
+} as const;
 /** An agent's name, above or below it (see FleetGraph's ProviderNode). */
-const PROVIDER_LABEL = { halfWidth: 28, offset: 2, height: 16 } as const;
+const PROVIDER_LABEL = { halfWidth: 38, offset: 4, height: 18 } as const;
 /** An agent's name is shorter than a computer's, so agents may go nearer the sides. */
-const PROVIDER_EDGE_PADDING_X = 36;
+const PROVIDER_EDGE_PADDING_X = 42;
+/** Below this stage width, use the phone layout and taller label footprints. */
+const NARROW_STAGE_WIDTH = 480;
 /** Directions tried around an agent's own spot, nearest first. */
 const SEARCH_STEP_DEG = 15;
 /** Distances tried, as shares of the agent's usual distance from its computer. */
@@ -140,13 +153,16 @@ function footprint(center: Point, radius: number, label: Box): Footprint {
   };
 }
 
-function computerFootprint(point: Point): Footprint {
+function computerFootprint(point: Point, stageWidth: number, labelHeight: number): Footprint {
+  const labelWidth = Math.min(fleetLabelMaxWidth(stageWidth), COMPUTER_LABEL.maxFootprintWidth);
+  const shift = fitLabelShift(point.x, labelWidth, stageWidth);
+  const left = point.x + shift - labelWidth / 2;
   const top = point.y + FLEET_COMPUTER_NODE_RADIUS + COMPUTER_LABEL.offset;
   return footprint(point, FLEET_COMPUTER_NODE_RADIUS, {
-    left: point.x - COMPUTER_LABEL.halfWidth,
-    right: point.x + COMPUTER_LABEL.halfWidth,
+    left,
+    right: left + labelWidth,
     top,
-    bottom: top + COMPUTER_LABEL.height,
+    bottom: top + labelHeight,
   });
 }
 
@@ -316,6 +332,7 @@ function placeProviders(
             stage.width,
             stage.height,
             PROVIDER_EDGE_PADDING_X,
+            PROVIDER_EDGE_PADDING_BOTTOM,
           );
           const cost =
             placementCost(stage, computer, point) +
@@ -349,16 +366,30 @@ function placeProviders(
  */
 export function layoutFleetGraph(input: FleetGraphLayoutInput): FleetGraphLayout {
   const { width, height } = input;
-  // Alone, this computer sits low with its agents above it; with company it
-  // sits higher, leaving the bottom of the arc to the others.
   const alone = input.otherProviderCounts.length === 0;
-  const center = { x: width / 2, y: height * (alone ? 0.6 : 0.42) };
+  const centerProviderCount = Math.min(input.centerProviderCount, FLEET_GRAPH_MAX_PROVIDERS);
+  const narrow = width < NARROW_STAGE_WIDTH;
+  // On a phone with no local agents, put this device near the top so the other
+  // computers arc clearly below its label instead of colliding across its row.
+  const phoneTopCenter = narrow && !alone && centerProviderCount === 0;
+  const center = {
+    x: width / 2,
+    y: alone ? height * 0.6 : phoneTopCenter ? EDGE_PADDING_TOP + 6 : height * 0.42,
+  };
 
   const count = Math.min(input.otherProviderCounts.length, FLEET_GRAPH_MAX_COMPUTERS);
-  // From a little above the right, through the bottom, to a little above the left.
-  const startDeg = -14;
-  const endDeg = 194;
-  const radius = { x: Math.min(width * 0.36, 340), y: height * 0.36 };
+  const bottomPadding = narrow ? EDGE_PADDING_BOTTOM_NARROW : EDGE_PADDING_BOTTOM;
+  const arcCenterY = phoneTopCenter ? center.y + 68 : center.y;
+  const startDeg = phoneTopCenter ? (count <= 2 ? 32 : 8) : narrow ? 10 : -14;
+  const endDeg = phoneTopCenter ? (count <= 2 ? 148 : 172) : narrow ? 170 : 194;
+  const radius = phoneTopCenter
+    ? {
+        x: Math.min(width * 0.38, 340),
+        y: Math.max(64, height - bottomPadding - arcCenterY),
+      }
+    : narrow
+      ? { x: Math.min(width * 0.38, 340), y: height * 0.38 }
+      : { x: Math.min(width * 0.36, 340), y: height * 0.36 };
   // The arc as drawn (the stage's edges flatten it), finely sampled, so the
   // computers can be spaced evenly along it: even angles would bunch them up
   // the steep sides of a wide ellipse, each name under the next one.
@@ -367,10 +398,12 @@ export function layoutFleetGraph(input: FleetGraphLayoutInput): FleetGraphLayout
     return clampPoint(
       {
         x: center.x + Math.cos(angle) * radius.x,
-        y: center.y + Math.sin(angle) * radius.y,
+        y: arcCenterY + Math.sin(angle) * radius.y,
       },
       width,
       height,
+      EDGE_PADDING_X,
+      bottomPadding,
     );
   });
   const travelled = [0];
@@ -383,16 +416,26 @@ export function layoutFleetGraph(input: FleetGraphLayoutInput): FleetGraphLayout
   const others: Point[] = [];
   let sample = 0;
   for (let index = 0; index < count; index += 1) {
-    const target = count === 1 ? 0 : (arcLength * index) / (count - 1);
+    const target =
+      count === 1 ? (phoneTopCenter ? arcLength / 2 : 0) : (arcLength * index) / (count - 1);
     while (sample < ARC_SAMPLES && travelled[sample]! < target - 1e-9) sample += 1;
     others.push(arc[sample]!);
   }
 
   // Every computer is on the stage before any agent, so agents keep clear of all of them.
+  const centerLabelHeight = phoneTopCenter
+    ? COMPUTER_LABEL.heightShort
+    : narrow
+      ? COMPUTER_LABEL.heightNarrow
+      : COMPUTER_LABEL.heightWide;
+  const otherLabelHeight = narrow ? COMPUTER_LABEL.heightNarrow : COMPUTER_LABEL.heightWide;
   const stage: Stage = {
     width,
     height,
-    footprints: [center, ...others].map(computerFootprint),
+    footprints: [
+      computerFootprint(center, width, centerLabelHeight),
+      ...others.map((position) => computerFootprint(position, width, otherLabelHeight)),
+    ],
     lines: [
       ...others.map((position) => lineBetween(center, position)),
       ...(input.otherLines ?? []).flatMap(([from, to]) =>
@@ -402,7 +445,6 @@ export function layoutFleetGraph(input: FleetGraphLayoutInput): FleetGraphLayout
       ),
     ],
   };
-  const centerProviderCount = Math.min(input.centerProviderCount, FLEET_GRAPH_MAX_PROVIDERS);
   const centerProviders = placeProviders(
     stage,
     center,
@@ -411,6 +453,7 @@ export function layoutFleetGraph(input: FleetGraphLayoutInput): FleetGraphLayout
     { x: Math.min(alone ? 170 : 130, width * 0.18), y: height * (alone ? 0.42 : 0.3) },
     centerProviderCount > 2 ? 34 : 46,
   );
+  const providerDistance = narrow ? { x: 64, y: 54 } : { x: 74, y: 62 };
   const otherProviders = others.map((position, index) => {
     const outward = Math.atan2(position.y - center.y, position.x - center.x);
     // Pointing down would put the agents under the stage's edge: turn them
@@ -422,7 +465,7 @@ export function layoutFleetGraph(input: FleetGraphLayoutInput): FleetGraphLayout
       position,
       Math.min(input.otherProviderCounts[index] ?? 0, FLEET_GRAPH_MAX_PROVIDERS),
       directionDeg,
-      { x: 74, y: 62 },
+      providerDistance,
       40,
     );
   });
@@ -461,7 +504,7 @@ export const FLEET_LABEL_INSET = 8;
  * at most): a share of the graph, so a phone wraps what a desktop has room for.
  */
 export function fleetLabelMaxWidth(stageWidth: number): number {
-  return Math.round(Math.min(240, Math.max(150, stageWidth * 0.4)));
+  return Math.round(Math.min(240, Math.max(136, stageWidth * 0.4)));
 }
 
 /**

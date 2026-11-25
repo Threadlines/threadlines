@@ -180,10 +180,13 @@ export function savedComputerInput(
   recentStall: ReceivedComputerStall | null = null,
 ): FleetComputerInput {
   const connectionState = runtime?.connectionState ?? "disconnected";
+  // A relay computer parked in an offline hold still offers Stop trying via
+  // waitingToReconnect, but reads offline on the graph until an active retry runs.
+  const waitingDirect = !record.relay && runtime?.waitingToReconnect === true;
   const connection: FleetConnection =
     connectionState === "connected"
       ? "connected"
-      : connectionState === "connecting" || runtime?.waitingToReconnect === true
+      : connectionState === "connecting" || waitingDirect
         ? "reconnecting"
         : savedComputerNeedsNewCode(record, runtime)
           ? "needs-code"
@@ -274,7 +277,7 @@ function buildComputer(
   threads: readonly FleetThreadInput[],
 ): FleetComputer {
   const own =
-    input.environmentId === null
+    input.environmentId === null || (input.kind === "computer" && input.connection !== "connected")
       ? []
       : threads.filter((thread) => thread.environmentId === input.environmentId);
   const live = own
@@ -380,8 +383,13 @@ function describeComputerPlace(computer: FleetComputerInput, nowMs: number): str
         : "This computer · Offline";
   }
   if (computer.kind === "linked") {
-    // This app doesn't connect to it: what is known is its link.
-    return computer.linkedWith ? `Linked with ${computer.linkedWith}` : "Linked";
+    // This app doesn't connect to it: what is known is its link and last contact.
+    const base = computer.linkedWith ? `Linked with ${computer.linkedWith}` : "Linked";
+    if (computer.connection === "reconnecting") return `${base} · Reconnecting`;
+    if (computer.connection === "offline" && computer.lastSeenAt !== null) {
+      return `${base} · ${lastSeenPhrase(computer.lastSeenAt, nowMs)}`;
+    }
+    return base;
   }
   switch (computer.connection) {
     case "reconnecting":

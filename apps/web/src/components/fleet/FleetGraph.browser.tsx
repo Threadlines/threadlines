@@ -1,12 +1,13 @@
 import "../../index.css";
 
-import type { EnvironmentId } from "@threadlines/contracts";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 
-import { buildFleetModel, type FleetComputerInput } from "./fleet.logic";
+import { buildFleetModel, type FleetComputerInput, type FleetThreadInput } from "./fleet.logic";
 import { FleetGraph } from "./FleetGraph";
+import type { FleetGraphEdge } from "./fleetLinks.logic";
 
 function computer(
   overrides: Partial<FleetComputerInput> & Pick<FleetComputerInput, "id" | "label">,
@@ -70,6 +71,121 @@ describe("FleetGraph", () => {
         })
         .toBe(true);
     }
+  });
+
+  it("keeps three computers and active agents clear of each other on a phone", async () => {
+    const mac = EnvironmentId.make("env-mac");
+    const desktopA = EnvironmentId.make("env-desktop-a");
+    const desktopB = EnvironmentId.make("env-desktop-b");
+    const workThread = (
+      id: string,
+      instanceId: string,
+      driverKind: "antigravity" | "claudeAgent",
+    ): FleetThreadInput => ({
+      threadKey: `${mac}:${id}`,
+      environmentId: mac,
+      threadId: ThreadId.make(id),
+      title: id,
+      projectLabel: "threadlines",
+      status: null,
+      attention: "working",
+      sessionLive: true,
+      provider: { instanceId: ProviderInstanceId.make(instanceId), driverKind },
+      modelSelection: null,
+      startedByTitle: null,
+      startedByComputer: null,
+    });
+    const model = buildFleetModel({
+      center: computer({
+        id: "this-phone",
+        environmentId: null,
+        label: "This phone",
+        kind: "this",
+        glyph: "phone",
+        route: null,
+      }),
+      others: [
+        computer({
+          id: desktopA,
+          label: "DESKTOP-PSHNIVI",
+          kind: "linked",
+          connection: "offline",
+          linkedWith: "M5 Pro MacBook Pro",
+          route: null,
+          lastSeenAt: "2026-10-25T20:00:00.000Z",
+        }),
+        computer({ id: mac, label: "M5 Pro MacBook Pro", glyph: "laptop", route: "relay" }),
+        computer({
+          id: desktopB,
+          label: "Will's Windows Desktop",
+          kind: "linked",
+          connection: "offline",
+          linkedWith: "M5 Pro MacBook Pro",
+          route: null,
+          lastSeenAt: "2026-10-26T02:00:00.000Z",
+        }),
+      ],
+      threads: [
+        workThread("t1", "antigravity", "antigravity"),
+        workThread("t2", "claude", "claudeAgent"),
+      ],
+    });
+    const edges: FleetGraphEdge[] = [
+      { key: `connection:${mac}`, fromId: "this-phone", toId: mac, state: "working" },
+      { key: `link:${mac}:${desktopA}`, fromId: mac, toId: desktopA, state: "offline" },
+      { key: `link:${mac}:${desktopB}`, fromId: mac, toId: desktopB, state: "offline" },
+    ];
+    mounted = await render(
+      <div style={{ width: 358 }}>
+        <FleetGraph
+          model={model}
+          edges={edges}
+          nowMs={Date.parse("2026-10-26T08:25:00.000Z")}
+          height={374}
+          onOpenComputer={() => {}}
+          providerLabel={(provider) =>
+            provider.driverKind === "antigravity" ? "Antigravity" : "Claude"
+          }
+        />
+      </div>,
+    );
+
+    const stage = page.getByTestId("fleet-graph").element().getBoundingClientRect();
+    const labelIds = ["this-phone", desktopA, mac, desktopB];
+    await expect
+      .poll(() => {
+        const boxes = [
+          ...labelIds.map((id) =>
+            page.getByTestId(`fleet-node-label-${id}`).element().getBoundingClientRect(),
+          ),
+          ...["antigravity", "claude"].map((key) =>
+            page
+              .getByTestId(`fleet-provider-${key}`)
+              .element()
+              .querySelector("span:last-child")!
+              .getBoundingClientRect(),
+          ),
+        ];
+        const allInside = boxes.every(
+          (box) =>
+            box.left >= stage.left - 1 &&
+            box.right <= stage.right + 1 &&
+            box.top >= stage.top - 1 &&
+            box.bottom <= stage.bottom + 1,
+        );
+        if (!allInside) return false;
+        for (let i = 0; i < boxes.length; i += 1) {
+          for (let j = i + 1; j < boxes.length; j += 1) {
+            const a = boxes[i]!;
+            const b = boxes[j]!;
+            if (a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom) {
+              return false;
+            }
+          }
+        }
+        return true;
+      })
+      .toBe(true);
   });
 
   it("opens a computer's or a phone's menu where it is right-clicked", async () => {

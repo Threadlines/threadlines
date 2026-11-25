@@ -62,6 +62,23 @@ describe("layoutFleetGraph", () => {
     expect(layout.otherProviders.flat()).toHaveLength(FLEET_GRAPH_MAX_COMPUTERS * 4);
     expect(touchingNodes(layout)).toEqual([]);
   });
+
+  it("places a phone without local agents above the other computers on a narrow stage", () => {
+    const layout = layoutFleetGraph({
+      width: 358,
+      height: 340,
+      centerProviderCount: 0,
+      otherProviderCounts: [0, 2, 0],
+      otherLines: [
+        [1, 0],
+        [1, 2],
+      ],
+    });
+    expect(touchingNodes(layout)).toEqual([]);
+    for (const other of layout.others) {
+      expect(other.y).toBeGreaterThan(layout.center.y + 60);
+    }
+  });
 });
 
 /** Every pair of nodes whose circles overlap, as readable labels. */
