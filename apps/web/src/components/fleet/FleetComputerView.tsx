@@ -389,9 +389,20 @@ export function FleetComputerView({ entryKey }: { readonly entryKey: string }) {
   }
 
   const providers = computer?.providers ?? [];
+  const linkedDetail =
+    entry.kind === "linked" && computer
+      ? [
+          describeComputerLocation(computer, nowMs),
+          computer.connection === "offline" && computer.lastSeenAt === null ? "Offline" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : "";
   const location =
     entry.kind === "linked"
-      ? "Not connected to this app"
+      ? linkedDetail
+        ? `Not connected to this app · ${linkedDetail}`
+        : "Not connected to this app"
       : isFleetDeviceEntry(entry)
         ? FLEET_DEVICE_ENTRY_STATUS[entry.kind]
         : computer

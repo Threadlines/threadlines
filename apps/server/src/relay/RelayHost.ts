@@ -260,6 +260,7 @@ const make = Effect.gen(function* () {
   let credentials: { readonly hostId: string; readonly hostSecret: string } | null = null;
   let control: WebSocket | null = null;
   let controlTimers: Array<ReturnType<typeof setInterval>> = [];
+  let controlErrorTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPongAt = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -480,6 +481,10 @@ const make = Effect.gen(function* () {
   function clearControlTimers(): void {
     for (const timer of controlTimers) clearInterval(timer);
     controlTimers = [];
+    if (controlErrorTimer !== null) {
+      clearTimeout(controlErrorTimer);
+      controlErrorTimer = null;
+    }
   }
 
   function dropControl(reason: string): void {
@@ -612,13 +617,21 @@ const make = Effect.gen(function* () {
       }
       if (event?.code === 1008 || event?.code === 4404) {
         setStatus("offline", "The relay no longer knows this computer.");
-      } else {
-        setStatus("offline", "Lost the connection to the relay. Reconnecting.");
+        return;
       }
+      setStatus("offline", "Lost the connection to the relay. Reconnecting.");
       scheduleReconnect();
     };
     socket.addEventListener("close", (event) => onGone(event));
-    socket.addEventListener("error", () => onGone());
+    socket.addEventListener("error", () => {
+      if (control !== socket || controlErrorTimer !== null) return;
+      // WebSockets fire `error` before `close`; wait briefly so `close` can
+      // deliver codes like 4001 (replaced) instead of scheduling a reconnect fight.
+      controlErrorTimer = setTimeout(() => {
+        controlErrorTimer = null;
+        onGone();
+      }, 50);
+    });
   }).pipe(
     controlLock.withPermits(1),
     Effect.catchCause((cause) =>
