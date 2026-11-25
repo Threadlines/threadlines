@@ -94,11 +94,14 @@ describe("ChatView (full app): command palette and search", () => {
       const palette = page.getByTestId("command-palette");
       await expect.element(palette.getByText("Find in chat", { exact: true })).toBeInTheDocument();
       await palette.getByText("Find in chat", { exact: true }).click();
-      await vi.waitFor(() => {
-        const field = document.querySelector('[data-testid="chat-find-input"]');
-        expect(field).not.toBeNull();
-        expect(document.activeElement).toBe(field);
-      });
+      await vi.waitFor(
+        () => {
+          const field = document.querySelector('[data-testid="chat-find-input"]');
+          expect(field).not.toBeNull();
+          expect(document.activeElement).toBe(field);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }

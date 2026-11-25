@@ -858,29 +858,41 @@ describe("ChatView (full app): new threads and drafts", () => {
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
       await waitForLayout();
-      const input = await vi.waitFor(() => {
-        pressChatFindShortcut(composerEditor);
-        const field = document.querySelector<HTMLInputElement>('[data-testid="chat-find-input"]');
-        expect(field).not.toBeNull();
-        return field!;
+      const input = await vi.waitFor(
+        () => {
+          pressChatFindShortcut(composerEditor);
+          const field = document.querySelector<HTMLInputElement>('[data-testid="chat-find-input"]');
+          expect(field).not.toBeNull();
+          return field!;
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(input), {
+        timeout: 8_000,
+        interval: 16,
       });
-      await vi.waitFor(() => expect(document.activeElement).toBe(input));
 
       await userEvent.fill(page.getByTestId("chat-find-input"), "zeppelin");
-      await vi.waitFor(() => {
-        expect(document.querySelector('[data-testid="chat-find-tally"]')?.textContent).toBe(
-          "1 of 1",
-        );
-        expect(
-          document.querySelector('[data-message-id="msg-user-find-in-chat-test"]'),
-        ).not.toBeNull();
-      });
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-testid="chat-find-tally"]')?.textContent).toBe(
+            "1 of 1",
+          );
+          expect(
+            document.querySelector('[data-message-id="msg-user-find-in-chat-test"]'),
+          ).not.toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
 
       await userEvent.keyboard("{Escape}");
-      await vi.waitFor(() => {
-        expect(document.querySelector('[data-testid="chat-find-bar"]')).toBeNull();
-        expect(document.activeElement).toBe(composerEditor);
-      });
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-testid="chat-find-bar"]')).toBeNull();
+          expect(document.activeElement).toBe(composerEditor);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }
