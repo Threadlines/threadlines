@@ -238,9 +238,9 @@ describe("MessagesTimeline with the real virtual list", () => {
     const screen = await renderTimeline(renderList(message.text));
     let stopReading = () => {};
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
       const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      await waitForListToSettle(list);
+      const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
       expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
       const positions: number[] = [];
       stopReading = readAfterEachPaint(() => positions.push(body.getBoundingClientRect().top));
@@ -385,25 +385,31 @@ describe("MessagesTimeline with the real virtual list", () => {
       await nextFrames(2);
     };
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
       const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      await waitForListToSettle(list);
+      const readBodyTop = () =>
+        document
+          .querySelector<HTMLElement>('[data-assistant-message-body="true"]')!
+          .getBoundingClientRect().top;
       await streamChunk();
-      expect(list.scrollHeight - list.clientHeight - list.scrollTop).toBeLessThanOrEqual(1);
+      await vi.waitFor(
+        () => expect(list.scrollHeight - list.clientHeight - list.scrollTop).toBeLessThanOrEqual(1),
+        { timeout: 1_500 },
+      );
 
       const drift: number[] = [];
       dispatchTouch(list, "touchstart", 200);
-      const restingTop = body.getBoundingClientRect().top;
+      const restingTop = readBodyTop();
       await streamChunk();
-      drift.push(Math.abs(body.getBoundingClientRect().top - restingTop));
+      drift.push(Math.abs(readBodyTop() - restingTop));
 
       dispatchTouch(list, "touchmove", 220);
       list.scrollTop -= 20;
       await nextFrames();
-      const heldTop = body.getBoundingClientRect().top;
+      const heldTop = readBodyTop();
       for (let chunk = 0; chunk < 6; chunk++) {
         await streamChunk();
-        drift.push(Math.abs(body.getBoundingClientRect().top - heldTop));
+        drift.push(Math.abs(readBodyTop() - heldTop));
       }
       dispatchTouch(list, "touchend", 220);
 
@@ -456,8 +462,8 @@ describe("MessagesTimeline with the real virtual list", () => {
       await nextFrames(2);
     };
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
       const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      await waitForListToSettle(list);
       const distanceFromEnd = () => list.scrollHeight - list.clientHeight - list.scrollTop;
       // The list follows the stream once it has measured the new lines, which
       // a busy runner takes more than two frames to do. Wait for it, as below.
@@ -539,12 +545,14 @@ describe("MessagesTimeline with the real virtual list", () => {
         }),
       );
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
       const list = document.querySelector<HTMLElement>('[data-chat-messages-list="true"]')!;
+      await waitForListToSettle(list);
+      const body = document.querySelector<HTMLElement>('[data-assistant-message-body="true"]')!;
       const distanceFromEnd = () => list.scrollHeight - list.clientHeight - list.scrollTop;
       await streamChunk();
-      expect(distanceFromEnd()).toBeLessThanOrEqual(1);
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeLessThanOrEqual(1), {
+        timeout: 1_500,
+      });
 
       pointer("pointerdown", body);
       const restingTop = body.getBoundingClientRect().top;
@@ -579,7 +587,9 @@ describe("MessagesTimeline with the real virtual list", () => {
       list.scrollTop = list.scrollHeight;
       await nextFrames(2);
       await streamChunk();
-      expect(distanceFromEnd()).toBeLessThanOrEqual(1);
+      await vi.waitFor(() => expect(distanceFromEnd()).toBeLessThanOrEqual(1), {
+        timeout: 1_500,
+      });
 
       // A quick drag can leave the bottom in one scroll and let go before the
       // list hears another. It stays where it was let go.

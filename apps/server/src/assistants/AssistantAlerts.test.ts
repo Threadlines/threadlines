@@ -973,12 +973,20 @@ it.layer(NodeServices.layer)("AssistantAlerts", (it) => {
         [`event-${waiting}`, `event-${missed}`],
       );
 
-      // Left expired for a week, it's removed with its key.
-      yield* TestClock.adjust("8 days");
-      yield* settle();
-      assert.isTrue(Option.isNone(yield* repo.get(subscriptionTarget)));
-      assert.strictEqual(harness.secrets.size, 0);
+      // Left expired for a week, it's removed with its key. Skip most of the
+      // 7-day grace window with the 30s idle loop stopped (avoiding ~23k empty
+      // ticks), then step across one live prune interval while running.
       yield* stop;
+      yield* TestClock.adjust("166 hours");
+      const rebooted = yield* harness.boot;
+      yield* settle();
+      assert.isTrue(Option.isSome(yield* rebooted.repo.get(subscriptionTarget)));
+
+      yield* TestClock.adjust("7 hours");
+      yield* settle();
+      assert.isTrue(Option.isNone(yield* rebooted.repo.get(subscriptionTarget)));
+      assert.strictEqual(harness.secrets.size, 0);
+      yield* rebooted.stop;
     }),
   );
 

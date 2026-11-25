@@ -2004,14 +2004,11 @@ describe("ChatView (full app): right panel and header actions", () => {
       );
       checkoutItem.click();
 
-      const worktreeButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Worktree",
-          ) as HTMLButtonElement | null,
-        "Unable to find Worktree button.",
-      );
-      worktreeButton.click();
+      // PullRequestThreadDialog disables "Worktree" until the debounced PR
+      // lookup resolves; wait for it to enable before clicking.
+      const worktreeButton = page.getByRole("button", { name: "Worktree" });
+      await expect.element(worktreeButton).toBeEnabled();
+      await worktreeButton.click();
 
       await vi.waitFor(
         () => {

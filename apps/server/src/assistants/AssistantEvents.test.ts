@@ -582,7 +582,8 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
         const harness = yield* makeHarness;
         harness.state.assistants = 0;
         yield* TestClock.adjust("1 hour");
-        const { record } = yield* harness.boot;
+        const first = yield* harness.boot;
+        let record = first.record;
         harness.state.thread = makeThread({
           activities: [approvalRequested("before").activity] as never,
         });
@@ -605,8 +606,17 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
         yield* settle();
         assert.strictEqual((yield* recorded(record)).length, 1);
 
-        yield* TestClock.adjust("8 days");
-        yield* settle(31_000);
+        // Skip most of the 7-day retention window with the 30s idle loops
+        // stopped (avoiding ~46k TestClock ticks), then step past one live
+        // prune interval while running to prove scheduled pruning still fires.
+        yield* first.stop;
+        yield* TestClock.adjust("164 hours");
+        ({ record } = yield* harness.boot);
+        yield* settle();
+        assert.strictEqual((yield* recorded(record)).length, 1);
+
+        yield* TestClock.adjust("7 hours");
+        yield* settle();
         assert.deepStrictEqual(yield* recorded(record), []);
         const position = yield* record.position;
         assert.strictEqual(position.prunedThroughSeq, 1);
@@ -619,7 +629,8 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
       Effect.gen(function* () {
         const harness = yield* makeHarness;
         yield* TestClock.adjust("1 hour");
-        const { record } = yield* harness.boot;
+        const first = yield* harness.boot;
+        let record = first.record;
         yield* settle();
         const activities: Array<unknown> = [];
         const ask = (requestId: string) =>
@@ -700,9 +711,12 @@ it.layer(NodeServices.layer)("AssistantEvents", (it) => {
           truncated: false,
         });
 
-        // Pruned: it can't start before what's still kept.
+        // Pruned: it can't start before what's still kept. Stop the 30s loops
+        // across the 8-day jump so TestClock doesn't execute ~46k idle ticks.
+        yield* first.stop;
         yield* TestClock.adjust("8 days");
-        yield* settle(31_000);
+        ({ record } = yield* harness.boot);
+        yield* settle();
         assert.strictEqual((yield* record.position).prunedThroughSeq, 4);
         assert.deepStrictEqual(yield* resume(1), { start: 4, truncated: true });
       }),
