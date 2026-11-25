@@ -737,4 +737,29 @@ describe("OpenCodeAdapter", () => {
         expect(extra.filter((event) => event.type === "content.delta")).toHaveLength(0);
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
+
+  it.live(
+    "shares one session.active call on reconnect and skips resync HTTP work for idle sessions",
+    () =>
+      Effect.gen(function* () {
+        let createdCount = 0;
+        const { adapter, calls, signals, cwd } = yield* harnessWith({
+          "session.create": () => ({ id: `ses_reconnect_${++createdCount}` }),
+          "session.active": () => ({}),
+        });
+        const idleThreadA = ThreadId.make("thread-idle-a");
+        const idleThreadB = ThreadId.make("thread-idle-b");
+        yield* adapter.startSession({ threadId: idleThreadA, cwd, runtimeMode: "full-access" });
+        yield* adapter.startSession({ threadId: idleThreadB, cwd, runtimeMode: "full-access" });
+        calls.length = 0;
+
+        yield* PubSub.publish(signals, { _tag: "StreamOpened", generation: 1 });
+        yield* Effect.sleep(Duration.millis(50));
+
+        expect(calls.filter((call) => call.method === "session.active")).toHaveLength(1);
+        expect(calls.filter((call) => call.method === "session.list")).toHaveLength(0);
+        expect(calls.filter((call) => call.method === "permission.list")).toHaveLength(0);
+        expect(calls.filter((call) => call.method === "form.list")).toHaveLength(0);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
 });

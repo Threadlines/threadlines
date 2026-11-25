@@ -47,6 +47,35 @@ const MODEL_REPLY_STEP_TYPE = 15;
 const MAX_ERROR_PAYLOAD_BYTES = 16_384;
 /** A conversation id as the CLI names its files: nothing that walks a path. */
 const SESSION_ID = /^[\w-]{1,128}$/u;
+const utf8Decoder = new TextDecoder();
+/** Async retry delays (ms) when SQLite reports BUSY/LOCKED, ~100ms total without blocking the event loop. */
+const SQLITE_BUSY_RETRY_DELAYS_MS = [5, 10, 15, 20, 25, 25] as const;
+
+function isSqliteBusyError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const record = error as {
+    readonly errcode?: unknown;
+    readonly errstr?: unknown;
+    readonly message?: unknown;
+  };
+  if (record.errcode === 5 || record.errcode === 6) return true;
+  if (typeof record.errstr === "string") {
+    const lower = record.errstr.toLowerCase();
+    if (lower.includes("locked") || lower.includes("busy")) return true;
+  }
+  if (typeof record.message === "string") {
+    const lower = record.message.toLowerCase();
+    if (
+      lower.includes("database is locked") ||
+      lower.includes("database table is locked") ||
+      lower.includes("sqlite_busy") ||
+      lower.includes("sqlite_locked")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /** How a turn's steps ended, as far as the log says. */
 export interface AntigravityTurnSteps {
@@ -163,17 +192,17 @@ async function withSessionLog<A>(
   const file = await openAntigravityProfileFile(profileDir, ["conversations", `${sessionId}.db`]);
   if (typeof file === "string") return file;
   try {
-    const value = readLog(file.path, read);
+    const value = await readLogAsync(file.path, read);
     return (await file.stillHeld()) ? { value } : "refused";
   } finally {
     await file.handle.close();
   }
 }
 
-function readLog<A>(file: string, read: (database: DatabaseSync) => A): A | undefined {
+function readLogOnce<A>(file: string, read: (database: DatabaseSync) => A): A | undefined {
   const database = new DatabaseSync(file, { readOnly: true });
   try {
-    database.exec("PRAGMA busy_timeout = 100");
+    database.exec("PRAGMA busy_timeout = 0");
     const hasSteps =
       database
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'steps'")
@@ -181,6 +210,25 @@ function readLog<A>(file: string, read: (database: DatabaseSync) => A): A | unde
     return hasSteps ? read(database) : undefined;
   } finally {
     database.close();
+  }
+}
+
+async function readLogAsync<A>(
+  file: string,
+  read: (database: DatabaseSync) => A,
+): Promise<A | undefined> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return readLogOnce(file, read);
+    } catch (error) {
+      const delayMs = SQLITE_BUSY_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined || !isSqliteBusyError(error)) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs);
+      });
+    }
   }
 }
 
@@ -220,7 +268,7 @@ export const antigravityTurnSteps = (profileDir: string, sessionId: string, afte
       const errorText =
         last.type === ERROR_STEP_TYPE
           ? payload instanceof Uint8Array
-            ? new TextDecoder().decode(payload)
+            ? utf8Decoder.decode(payload)
             : typeof payload === "string"
               ? payload
               : ""

@@ -410,23 +410,27 @@ export function makePiAdapter(options: PiAdapterOptions) {
         ...(turnId ? { turnId } : {}),
       }));
 
-    const logNative = (ctx: SessionContext, proc: ProcessState, record: PiRecord) =>
-      options.nativeEventLogger
-        ? Effect.flatMap(nowIso, (observedAt) =>
-            options.nativeEventLogger!.write(
-              {
-                observedAt,
-                event: {
-                  provider: PROVIDER,
-                  method: record.type,
-                  payload: withoutNonce(record, proc.nonce),
-                },
-              },
-              ctx.threadId,
-              { streamFragment: PI_STREAM_FRAGMENT_TYPES.has(record.type) },
-            ),
-          ).pipe(Effect.ignore)
-        : Effect.void;
+    const logNative = (ctx: SessionContext, proc: ProcessState, record: PiRecord) => {
+      const logger = options.nativeEventLogger;
+      const streamFragment = PI_STREAM_FRAGMENT_TYPES.has(record.type);
+      if (!logger || (streamFragment && logger.keepsStreamFragments === false)) {
+        return Effect.void;
+      }
+      return Effect.flatMap(nowIso, (observedAt) =>
+        logger.write(
+          {
+            observedAt,
+            event: {
+              provider: PROVIDER,
+              method: record.type,
+              payload: withoutNonce(record, proc.nonce),
+            },
+          },
+          ctx.threadId,
+          { streamFragment },
+        ),
+      ).pipe(Effect.ignore);
+    };
 
     const requireSession = (
       threadId: ThreadId,
@@ -723,7 +727,11 @@ export function makePiAdapter(options: PiAdapterOptions) {
             ? markTurn(ctx, proc, turn.turnId, "end").pipe(Effect.asVoid)
             : Effect.void;
         }).pipe(Effect.ensuring(Deferred.succeed(turn.done, undefined)));
-        yield* reportContextUsage(ctx);
+        yield* reportContextUsage(ctx, { requireIdle: true }).pipe(
+          Effect.ignore,
+          Effect.forkIn(ctx.scope),
+          Effect.asVoid,
+        );
       });
 
     const terminalFor = (ctx: SessionContext, turn: ActiveTurn): Terminal =>
@@ -776,8 +784,12 @@ export function makePiAdapter(options: PiAdapterOptions) {
         yield* finishTurn(ctx, turn, terminalFor(ctx, turn));
       });
 
-    const reportContextUsage = (ctx: SessionContext) =>
+    const reportContextUsage = (
+      ctx: SessionContext,
+      reportOptions?: { readonly requireIdle?: boolean },
+    ) =>
       Effect.gen(function* () {
+        if (ctx.stopped) return;
         const proc = ctx.proc;
         if (!proc || proc.closing) return;
         const stats = decodePi(PiSessionStats)(
@@ -785,14 +797,20 @@ export function makePiAdapter(options: PiAdapterOptions) {
             .request({ type: "get_session_stats" })
             .pipe(Effect.orElseSucceed(() => undefined)),
         );
-        if (Option.isNone(stats)) return;
+        if (ctx.stopped || Option.isNone(stats)) return;
+        // If a new turn started while post-turn stats were in flight, skip
+        // emitting the pre-turn snapshot under the new turn's id.
+        if (reportOptions?.requireIdle === true && ctx.activeTurn !== undefined) return;
         const usage = stats.value.contextUsage;
         const window = usage?.contextWindow ?? ctx.contextWindow;
         // Right after a compaction Pi has no count yet; the next turn reports one.
         if (!usage || usage.tokens === null) return;
         yield* emit({
           type: "thread.token-usage.updated",
-          ...(yield* eventBase(ctx, ctx.activeTurn?.turnId)),
+          ...(yield* eventBase(
+            ctx,
+            reportOptions?.requireIdle === true ? undefined : ctx.activeTurn?.turnId,
+          )),
           payload: {
             usage: {
               usedTokens: Math.round(usage.tokens),

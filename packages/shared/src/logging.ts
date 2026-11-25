@@ -8,6 +8,12 @@ export interface RotatingFileSinkOptions {
   readonly maxBytes: number;
   readonly maxFiles: number;
   readonly throwOnError?: boolean;
+  /**
+   * Skips synchronous directory creation, backup pruning, and initial `statSync`
+   * in the constructor for callers that already created the log directory and
+   * write exclusively via `writeAsync`.
+   */
+  readonly asyncInit?: boolean;
 }
 
 function isFileNotFoundError(error: unknown): boolean {
@@ -25,6 +31,7 @@ interface SharedPathState {
   currentSize: number | null;
 }
 
+const MAX_IDLE_SHARED_PATH_STATES = 256;
 const sharedPathStates = new Map<string, SharedPathState>();
 
 function getOrCreateSharedPathState(resolvedPath: string): SharedPathState {
@@ -32,8 +39,22 @@ function getOrCreateSharedPathState(resolvedPath: string): SharedPathState {
   if (state === undefined) {
     state = { pendingWrite: Promise.resolve(), activeOps: 0, currentSize: null };
     sharedPathStates.set(resolvedPath, state);
+  } else {
+    // Refresh insertion order for LRU eviction of idle path states.
+    sharedPathStates.delete(resolvedPath);
+    sharedPathStates.set(resolvedPath, state);
   }
   return state;
+}
+
+function evictIdleSharedPathStates(): void {
+  if (sharedPathStates.size <= MAX_IDLE_SHARED_PATH_STATES) return;
+  for (const [key, entry] of sharedPathStates) {
+    if (sharedPathStates.size <= MAX_IDLE_SHARED_PATH_STATES) break;
+    if (entry.activeOps === 0) {
+      sharedPathStates.delete(key);
+    }
+  }
 }
 
 export class RotatingFileSink {
@@ -58,9 +79,16 @@ export class RotatingFileSink {
     this.maxFiles = options.maxFiles;
     this.throwOnError = options.throwOnError ?? false;
 
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    this.pruneOverflowBackups();
-    this.currentSize = this.readCurrentSize();
+    if (!options.asyncInit) {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      this.pruneOverflowBackups();
+      this.currentSize = this.readCurrentSize();
+    }
+
+    const existingShared = sharedPathStates.get(this.resolvedPath);
+    if (existingShared !== undefined && existingShared.activeOps === 0) {
+      existingShared.currentSize = options.asyncInit ? null : this.currentSize;
+    }
   }
 
   write(chunk: string | Buffer): void {
@@ -114,7 +142,7 @@ export class RotatingFileSink {
       .finally(() => {
         shared.activeOps -= 1;
         if (shared.activeOps === 0 && sharedPathStates.get(this.resolvedPath) === shared) {
-          sharedPathStates.delete(this.resolvedPath);
+          evictIdleSharedPathStates();
         }
       });
     return next;

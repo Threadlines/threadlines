@@ -88,6 +88,29 @@ export interface ProviderSessionRuntimeRepositoryShape {
   >;
 
   /**
+   * List all persisted canonical thread ids without reading JSON payload blobs.
+   */
+  readonly listThreadIds?: () => Effect.Effect<
+    ReadonlyArray<ThreadId>,
+    ProviderSessionRuntimeRepositoryError
+  >;
+
+  /**
+   * List persisted session keys for one thread (its primary key plus room
+   * participant keys) using the primary-key index.
+   */
+  readonly listThreadIdsForThread?: (
+    input: GetProviderSessionRuntimeInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProviderSessionRuntimeRepositoryError>;
+
+  /**
+   * Read provider runtime rows for a batch of canonical thread ids in one query.
+   */
+  readonly getByThreadIds?: (
+    threadIds: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<ReadonlyArray<ProviderSessionRuntime>, ProviderSessionRuntimeRepositoryError>;
+
+  /**
    * Merges flat fields into a row's payload, in one statement, only while
    * the row still names runtime `sessionCreatedAt`: a write that names an
    * older runtime never lands on its replacement. True when it was written.

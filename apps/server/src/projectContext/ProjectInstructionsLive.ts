@@ -56,12 +56,22 @@ export const makeProjectInstructions = Effect.gen(function* () {
         yield* projects.getById({ projectId: thread.projectId }),
       );
       if (project === undefined || project.deletedAt !== null) return undefined;
-      const brief = Option.getOrUndefined(yield* briefs.get(thread.projectId));
+      const [briefOption, projectNotes, mode] = yield* Effect.all(
+        [
+          briefs.get(thread.projectId),
+          notes.listNotesByProjectId
+            ? notes.listNotesByProjectId(thread.projectId)
+            : notes.listNotes(),
+          notesMode,
+        ],
+        { concurrency: "unbounded" },
+      );
+      const brief = Option.getOrUndefined(briefOption);
       const parts = [
         projectInstructionsText({ projectTitle: project.title, brief: brief?.text ?? "" }),
         projectNotesText({
-          notes: visibleNotes(yield* notes.listNotes(), thread.projectId, runtimeMode),
-          mode: yield* notesMode,
+          notes: visibleNotes(projectNotes, thread.projectId, runtimeMode),
+          mode,
           ...(canUseNoteTools !== undefined ? { canUseNoteTools } : {}),
         }),
       ].filter((part): part is string => part !== undefined);

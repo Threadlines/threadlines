@@ -35,6 +35,7 @@ import * as NodeFSP from "node:fs/promises";
 import type { ProviderSubagentTranscriptEntry } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 
+import { readOpenedRegularFile } from "./AntigravityFileReads.ts";
 import { antigravityProfileEntry, openAntigravityProfileFile } from "./AntigravitySessionLog.ts";
 import { boundAntigravityText } from "./AntigravityToolCalls.ts";
 
@@ -108,23 +109,6 @@ interface ReadBudget {
   bytes: number;
 }
 
-/** The bytes of a file held open, at most `maxBytes`; `undefined` past that. */
-async function readHeld(
-  handle: NodeFSP.FileHandle,
-  maxBytes: number,
-  from = 0,
-): Promise<Buffer | undefined> {
-  // One byte past the cap: a file that grew since it was checked is refused.
-  const buffer = Buffer.alloc(maxBytes + 1);
-  let total = 0;
-  while (total < buffer.length) {
-    const { bytesRead } = await handle.read(buffer, total, buffer.length - total, from + total);
-    if (bytesRead === 0) break;
-    total += bytesRead;
-  }
-  return total > maxBytes ? undefined : buffer.subarray(0, total);
-}
-
 /**
  * A small JSON record of the CLI's, or `undefined` when it is missing, not
  * the file at its place in the profile, too big, past the read's budget, or
@@ -136,7 +120,10 @@ async function readRecord(profileDir: string, segments: ReadonlyArray<string>, b
   try {
     const maxBytes = Math.min(MAX_RECORD_BYTES, budget.bytes);
     if (file.size > maxBytes) return undefined;
-    const bytes = await readHeld(file.handle, maxBytes);
+    const bytes = await readOpenedRegularFile(file.handle, {
+      maxBytes,
+      expectedSize: file.size,
+    });
     if (bytes === undefined) return undefined;
     budget.bytes -= bytes.length;
     return parseJson(bytes.toString("utf8"));

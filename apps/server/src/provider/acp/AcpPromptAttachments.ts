@@ -109,10 +109,19 @@ const readStaged = (path: string, name: string, maxBytes: number) =>
         const stat = await handle.stat();
         if (!stat.isFile()) throw notAFile(name);
         if (stat.size > maxBytes) return "too-big";
-        // One byte past the cap tells a file that grew since its size was read.
-        const buffer = Buffer.alloc(maxBytes + 1);
+        // Size the buffer from stat.size + 1 so small attachments don't allocate
+        // maxBytes + 1 (10-20 MiB), while still growing up to maxBytes + 1 to
+        // catch a file that grew past maxBytes since stat.
+        const limit = maxBytes + 1;
+        let buffer = Buffer.allocUnsafe(Math.min(limit, Math.max(1, stat.size + 1)));
         let total = 0;
-        while (total < buffer.length) {
+        while (total < limit) {
+          if (total === buffer.length) {
+            const nextCapacity = Math.min(limit, Math.max(buffer.length * 2, total + 4096));
+            const next = Buffer.allocUnsafe(nextCapacity);
+            buffer.copy(next, 0, 0, total);
+            buffer = next;
+          }
           const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
           if (bytesRead === 0) break;
           total += bytesRead;

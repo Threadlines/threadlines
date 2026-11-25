@@ -2914,19 +2914,89 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const reconcileActiveSession = (
+    operation: string,
+    session: ProviderSession,
+    binding: ProviderRuntimeBinding | undefined,
+    handoffEpochBefore: number | undefined,
+  ): Effect.Effect<ProviderSession | undefined> =>
+    Effect.gen(function* () {
+      if (!binding) {
+        return session;
+      }
+
+      const overrides: {
+        resumeCursor?: ProviderSession["resumeCursor"];
+        runtimeMode?: ProviderSession["runtimeMode"];
+        providerInstanceId?: ProviderSession["providerInstanceId"];
+      } = {};
+      overrides.providerInstanceId = dieOnMissingBindingInstanceId(operation, binding);
+      if (
+        binding.provider !== session.provider ||
+        overrides.providerInstanceId !== session.providerInstanceId
+      ) {
+        // A replacement start registers the new runtime before stopping the
+        // outgoing session and updating the persisted binding. Omit only the
+        // mismatched half belonging to that transition (in flight, or
+        // completed between our adapter snapshot and binding read) so real
+        // out-of-band binding corruption still dies loudly.
+        const inFlight = startingInstancesByThread.get(session.threadId);
+        const matchesInFlightHandoff =
+          inFlight !== undefined &&
+          ((session.providerInstanceId === inFlight.toInstanceId &&
+            overrides.providerInstanceId === inFlight.fromInstanceId) ||
+            (session.providerInstanceId === inFlight.fromInstanceId &&
+              overrides.providerInstanceId === inFlight.toInstanceId));
+        const completedDuringSnapshot =
+          handoffEpochByThread.get(session.threadId) !== handoffEpochBefore;
+        const lastHandoff = completedDuringSnapshot
+          ? lastHandoffByThread.get(session.threadId)
+          : undefined;
+        const matchesCompletedHandoff =
+          lastHandoff !== undefined &&
+          session.providerInstanceId === lastHandoff.fromInstanceId &&
+          overrides.providerInstanceId === lastHandoff.toInstanceId;
+        if (matchesInFlightHandoff || matchesCompletedHandoff) {
+          return undefined;
+        }
+        if (binding.provider !== session.provider) {
+          return yield* Effect.die(
+            new Error(
+              `${operation}: thread '${session.threadId}' is active on provider '${session.provider}' but persisted binding names provider '${binding.provider}'.`,
+            ),
+          );
+        }
+        return yield* Effect.die(
+          new Error(
+            `${operation}: thread '${session.threadId}' is active on provider instance '${session.providerInstanceId}' but persisted binding names '${overrides.providerInstanceId}'.`,
+          ),
+        );
+      }
+      if (session.resumeCursor === undefined && binding.resumeCursor !== undefined) {
+        overrides.resumeCursor = binding.resumeCursor;
+      }
+      if (binding.runtimeMode !== undefined) {
+        overrides.runtimeMode = binding.runtimeMode;
+      }
+      return Object.assign({}, session, overrides);
+    });
+
   const listSessions: ProviderServiceShape["listSessions"] = Effect.fn("listSessions")(
     function* () {
       const handoffEpochBefore = new Map(handoffEpochByThread);
       const currentAdapters = yield* getAdapterEntries;
-      const sessionsByProvider = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
-        adapter.listSessions().pipe(
-          Effect.map((sessions) =>
-            sessions.map((session) => ({
-              ...session,
-              providerInstanceId: instanceId,
-            })),
+      const sessionsByProvider = yield* Effect.forEach(
+        currentAdapters,
+        ([instanceId, adapter]) =>
+          adapter.listSessions().pipe(
+            Effect.map((sessions) =>
+              sessions.map((session) => ({
+                ...session,
+                providerInstanceId: instanceId,
+              })),
+            ),
           ),
-        ),
+        { concurrency: "unbounded" },
       );
       const activeSessions = sessionsByProvider.flatMap((sessions) => sessions);
       if (activeSessions.length === 0) {
@@ -2935,89 +3005,117 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const activeThreadIds = Array.from(
         new Set(activeSessions.map((session) => session.threadId)),
       );
-      const persistedBindings = yield* Effect.forEach(
-        activeThreadIds,
-        (threadId) =>
-          directory
-            .getBinding(threadId)
-            .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
-        { concurrency: "unbounded" },
-      );
       const bindingsByThreadId = new Map<ThreadId, ProviderRuntimeBinding>();
-      for (const bindingOption of persistedBindings) {
-        const binding = Option.getOrUndefined(bindingOption);
-        if (binding) {
-          bindingsByThreadId.set(binding.threadId, binding);
+      let loadedBatched = false;
+      if (activeThreadIds.length > 1 && directory.getBindingsByThreadIds) {
+        const batched = yield* directory
+          .getBindingsByThreadIds(activeThreadIds)
+          .pipe(Effect.option);
+        if (Option.isSome(batched)) {
+          for (const binding of batched.value) {
+            bindingsByThreadId.set(binding.threadId, binding);
+          }
+          loadedBatched = true;
+        }
+      }
+      if (!loadedBatched) {
+        const persistedBindings = yield* Effect.forEach(
+          activeThreadIds,
+          (threadId) =>
+            directory
+              .getBinding(threadId)
+              .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
+          { concurrency: "unbounded" },
+        );
+        for (const bindingOption of persistedBindings) {
+          const binding = Option.getOrUndefined(bindingOption);
+          if (binding) {
+            bindingsByThreadId.set(binding.threadId, binding);
+          }
         }
       }
 
       const sessions: ProviderSession[] = [];
       for (const session of activeSessions) {
-        const binding = bindingsByThreadId.get(session.threadId);
-        if (!binding) {
-          sessions.push(session);
-          continue;
-        }
-
-        const overrides: {
-          resumeCursor?: ProviderSession["resumeCursor"];
-          runtimeMode?: ProviderSession["runtimeMode"];
-          providerInstanceId?: ProviderSession["providerInstanceId"];
-        } = {};
-        overrides.providerInstanceId = dieOnMissingBindingInstanceId(
+        const reconciled = yield* reconcileActiveSession(
           "ProviderService.listSessions",
-          binding,
+          session,
+          bindingsByThreadId.get(session.threadId),
+          handoffEpochBefore.get(session.threadId),
         );
-        if (
-          binding.provider !== session.provider ||
-          overrides.providerInstanceId !== session.providerInstanceId
-        ) {
-          // A replacement start registers the new runtime before stopping the
-          // outgoing session and updating the persisted binding. Omit only the
-          // mismatched half belonging to that transition (in flight, or
-          // completed between our adapter snapshot and binding read) so real
-          // out-of-band binding corruption still dies loudly.
-          const inFlight = startingInstancesByThread.get(session.threadId);
-          const matchesInFlightHandoff =
-            inFlight !== undefined &&
-            ((session.providerInstanceId === inFlight.toInstanceId &&
-              overrides.providerInstanceId === inFlight.fromInstanceId) ||
-              (session.providerInstanceId === inFlight.fromInstanceId &&
-                overrides.providerInstanceId === inFlight.toInstanceId));
-          const completedDuringSnapshot =
-            handoffEpochByThread.get(session.threadId) !== handoffEpochBefore.get(session.threadId);
-          const lastHandoff = completedDuringSnapshot
-            ? lastHandoffByThread.get(session.threadId)
-            : undefined;
-          const matchesCompletedHandoff =
-            lastHandoff !== undefined &&
-            session.providerInstanceId === lastHandoff.fromInstanceId &&
-            overrides.providerInstanceId === lastHandoff.toInstanceId;
-          if (matchesInFlightHandoff || matchesCompletedHandoff) {
-            continue;
-          }
-          if (binding.provider !== session.provider) {
-            return yield* Effect.die(
-              new Error(
-                `ProviderService.listSessions: thread '${session.threadId}' is active on provider '${session.provider}' but persisted binding names provider '${binding.provider}'.`,
-              ),
-            );
-          }
-          return yield* Effect.die(
-            new Error(
-              `ProviderService.listSessions: thread '${session.threadId}' is active on provider instance '${session.providerInstanceId}' but persisted binding names '${overrides.providerInstanceId}'.`,
-            ),
-          );
+        if (reconciled !== undefined) {
+          sessions.push(reconciled);
         }
-        if (session.resumeCursor === undefined && binding.resumeCursor !== undefined) {
-          overrides.resumeCursor = binding.resumeCursor;
-        }
-        if (binding.runtimeMode !== undefined) {
-          overrides.runtimeMode = binding.runtimeMode;
-        }
-        sessions.push(Object.assign({}, session, overrides));
       }
       return sessions;
+    },
+  );
+
+  const getSession: NonNullable<ProviderServiceShape["getSession"]> = Effect.fn("getSession")(
+    function* (threadId: ThreadId) {
+      const handoffEpochBefore = handoffEpochByThread.get(threadId);
+      const bindingOption = yield* directory
+        .getBinding(threadId)
+        .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>()));
+      const binding = Option.getOrUndefined(bindingOption);
+      const inFlight = startingInstancesByThread.get(threadId);
+
+      // Fast path: when a binding names a single provider instance and no
+      // handoff/restart occurred around the lookup, inspect only that adapter.
+      // On a miss or concurrent restart, fall through to cross-adapter
+      // reconciliation so binding/runtime conflicts are still detected.
+      if (binding?.providerInstanceId !== undefined && inFlight === undefined) {
+        const instanceId = binding.providerInstanceId;
+        const adapterOption = yield* registry.getByInstance(instanceId).pipe(Effect.option);
+        if (Option.isSome(adapterOption)) {
+          const adapterSessions = yield* adapterOption.value.listSessions();
+          const matched = adapterSessions.find((session) => session.threadId === threadId);
+          if (
+            matched !== undefined &&
+            startingInstancesByThread.get(threadId) === undefined &&
+            handoffEpochByThread.get(threadId) === handoffEpochBefore
+          ) {
+            return yield* reconcileActiveSession(
+              "ProviderService.getSession",
+              { ...matched, providerInstanceId: instanceId },
+              binding,
+              handoffEpochBefore,
+            );
+          }
+        }
+      }
+
+      const fallbackEpochBefore = handoffEpochByThread.get(threadId);
+      const currentAdapters = yield* getAdapterEntries;
+      const sessionsByProvider = yield* Effect.forEach(
+        currentAdapters,
+        ([instanceId, adapter]) =>
+          adapter.listSessions().pipe(
+            Effect.map((sessions) => {
+              const matched = sessions.find((session) => session.threadId === threadId);
+              return matched ? { ...matched, providerInstanceId: instanceId } : undefined;
+            }),
+          ),
+        { concurrency: "unbounded" },
+      );
+      const latestBinding = Option.getOrUndefined(
+        yield* directory
+          .getBinding(threadId)
+          .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
+      );
+      for (const candidate of sessionsByProvider) {
+        if (candidate === undefined) continue;
+        const reconciled = yield* reconcileActiveSession(
+          "ProviderService.getSession",
+          candidate,
+          latestBinding,
+          fallbackEpochBefore,
+        );
+        if (reconciled !== undefined) {
+          return reconciled;
+        }
+      }
+      return undefined;
     },
   );
 
@@ -3221,7 +3319,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    * callers only know the thread, so subagent operations try each in turn.
    */
   const threadSessionKeys = (threadId: ThreadId) =>
-    directory.listThreadIds().pipe(
+    (directory.listThreadIdsForThread
+      ? directory.listThreadIdsForThread(threadId)
+      : directory.listThreadIds()
+    ).pipe(
       Effect.map((keys) => [
         threadId,
         ...keys.filter((key) => key !== threadId && sessionKeyThreadId(key) === threadId),
@@ -3709,6 +3810,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToUserInput,
     stopSession,
     listSessions,
+    getSession,
     quiesceThread,
     exportNativeSession,
     importNativeSession,

@@ -850,7 +850,9 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
     readonly workflowSizeGuideline?: ClaudeWorkflowSizeGuideline | null;
     readonly env?: Readonly<Record<string, string>> | null;
   }) => Promise<void>;
-  readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+  readonly getContextUsage?: (opts?: {
+    readonly detail?: "summary" | "full";
+  }) => Promise<SDKControlGetContextUsageResponse>;
   /** Optional: absent on CLIs that predate in-session plugin and skill reloads. */
   readonly reloadPlugins?: () => Promise<unknown>;
   readonly reloadSkills?: () => Promise<unknown>;
@@ -4459,6 +4461,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
   };
 
+  const CLAUDE_CONTEXT_USAGE_TIMEOUT = Duration.seconds(2);
+
   const readCurrentClaudeContextUsage = Effect.fn("readCurrentClaudeContextUsage")(function* (
     context: ClaudeSessionContext,
     options?: {
@@ -4470,38 +4474,49 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const queryWithContextUsage = context.query as ClaudeQueryRuntime & {
-      readonly getContextUsage: () => Promise<SDKControlGetContextUsageResponse>;
+      readonly getContextUsage: (opts?: {
+        readonly detail?: "summary" | "full";
+      }) => Promise<SDKControlGetContextUsageResponse>;
     };
 
-    const currentContextUsage = yield* Effect.promise(
-      async (): Promise<ClaudeContextUsageReadResult> => {
-        try {
-          return {
-            ok: true,
-            value: await queryWithContextUsage.getContextUsage(),
-          };
-        } catch (cause) {
-          return {
-            ok: false,
-            cause,
-          };
-        }
-      },
-    ).pipe(
-      Effect.flatMap((result) => {
-        if (result.ok) {
-          return Effect.succeed(result.value);
-        }
-
-        const detail = {
-          threadId: context.session.threadId,
-          cause: result.cause,
+    const timedResult = yield* Effect.promise(async (): Promise<ClaudeContextUsageReadResult> => {
+      try {
+        return {
+          ok: true,
+          // `summary` answers from the last response's usage and local
+          // estimates instead of making per-category token-count API calls.
+          value: await queryWithContextUsage.getContextUsage({ detail: "summary" }),
         };
-        return options?.failureLogLevel === "debug"
-          ? Effect.logDebug("claude.context-usage.failed", detail).pipe(Effect.as(undefined))
-          : Effect.logWarning("claude.context-usage.failed", detail).pipe(Effect.as(undefined));
-      }),
-    );
+      } catch (cause) {
+        return {
+          ok: false,
+          cause,
+        };
+      }
+    }).pipe(Effect.timeoutOption(CLAUDE_CONTEXT_USAGE_TIMEOUT));
+
+    if (Option.isNone(timedResult)) {
+      const detail = {
+        threadId: context.session.threadId,
+        timeoutMs: Duration.toMillis(CLAUDE_CONTEXT_USAGE_TIMEOUT),
+      };
+      yield* options?.failureLogLevel === "debug"
+        ? Effect.logDebug("claude.context-usage.timed-out", detail)
+        : Effect.logWarning("claude.context-usage.timed-out", detail);
+      return undefined;
+    }
+
+    const currentContextUsage = yield* timedResult.value.ok
+      ? Effect.succeed(timedResult.value.value)
+      : (() => {
+          const detail = {
+            threadId: context.session.threadId,
+            cause: timedResult.value.cause,
+          };
+          return options?.failureLogLevel === "debug"
+            ? Effect.logDebug("claude.context-usage.failed", detail).pipe(Effect.as(undefined))
+            : Effect.logWarning("claude.context-usage.failed", detail).pipe(Effect.as(undefined));
+        })();
 
     return normalizeClaudeContextUsage(currentContextUsage);
   });
