@@ -109,6 +109,7 @@ const makeHarness = Effect.gen(function* () {
   const resumes: Array<Parameters<AssistantEventsShape["resumeAfter"]>[0]> = [];
   /** What the record has pruned: a resume below it is truncated. */
   let prunedThroughSeq = 0;
+  const testScope = yield* Effect.scope;
   const recorded = yield* PubSub.unbounded<void>();
   const storage = yield* Layer.build(SqlitePersistenceMemory);
 
@@ -248,9 +249,9 @@ const makeHarness = Effect.gen(function* () {
     Layer.provide(Layer.succeedContext(storage)),
   );
 
-  /** Starts the sender in its own scope; closing it is the process stopping. */
+  /** Starts the sender in a child scope; closing it is the process stopping, and the test scope cleans up any running boot when the test ends. */
   const boot = Effect.gen(function* () {
-    const scope = yield* Scope.make();
+    const scope = yield* Scope.fork(testScope);
     const context = yield* Layer.buildWithScope(layer, scope);
     const alerts = Context.get(context, AssistantAlerts);
     yield* alerts.start().pipe(Scope.provide(scope));
