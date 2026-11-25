@@ -657,6 +657,11 @@ export interface FleetCrossWorkThread {
   readonly workerEnvironmentId: EnvironmentId;
   readonly threadId: string;
   readonly attention: "working" | "needs-you" | null;
+  /**
+   * True when observed directly on a currently connected worker computer.
+   * False when only remembered on the parent computer (stale if the worker is offline).
+   */
+  readonly live?: boolean;
 }
 
 /** Work one computer asked of another, by ordered pair. */
@@ -665,6 +670,8 @@ export interface FleetCrossWork {
   readonly workerEnvironmentId: EnvironmentId;
   readonly working: number;
   readonly needsYou: number;
+  /** At least one active thread in this pair was seen live on a connected worker. */
+  readonly live?: boolean;
 }
 
 /**
@@ -676,7 +683,16 @@ export function collectFleetCrossWork(
   threads: ReadonlyArray<FleetCrossWorkThread>,
 ): FleetCrossWork[] {
   const seen = new Set<string>();
-  const byPair = new Map<string, FleetCrossWork>();
+  const byPair = new Map<
+    string,
+    {
+      readonly askerEnvironmentId: EnvironmentId;
+      readonly workerEnvironmentId: EnvironmentId;
+      readonly working: number;
+      readonly needsYou: number;
+      readonly live: boolean;
+    }
+  >();
   for (const thread of threads) {
     if (thread.askerEnvironmentId === thread.workerEnvironmentId) continue;
     const threadKey = `${thread.workerEnvironmentId}:${thread.threadId}`;
@@ -689,14 +705,25 @@ export function collectFleetCrossWork(
       workerEnvironmentId: thread.workerEnvironmentId,
       working: 0,
       needsYou: 0,
+      live: false,
     };
     byPair.set(pairKey, {
       ...current,
       working: current.working + (thread.attention === "working" ? 1 : 0),
       needsYou: current.needsYou + (thread.attention === "needs-you" ? 1 : 0),
+      live: current.live || thread.live !== false,
     });
   }
-  return [...byPair.values()];
+  return [...byPair.values()].map((entry) =>
+    entry.live
+      ? {
+          askerEnvironmentId: entry.askerEnvironmentId,
+          workerEnvironmentId: entry.workerEnvironmentId,
+          working: entry.working,
+          needsYou: entry.needsYou,
+        }
+      : entry,
+  );
 }
 
 /** How a parent's record of a child on another computer reads as attention. */
@@ -722,8 +749,15 @@ export interface FleetGraphEdge {
   readonly state: FleetLineState;
 }
 
-/** A link line's state from what its asking computers report now; none known reads offline. */
-function linkConnectionState(links: ReadonlyArray<OutboundComputerLink>): FleetLineState {
+/**
+ * Live connection state of a computer link, shared by node dots and graph
+ * edges. Only an open authenticated socket reads as `connected`; an `idle`
+ * link has no open socket (its peer may be off), so it reads as `offline`
+ * rather than pretending it is online.
+ */
+export function resolveOutboundLinkConnection(
+  links: ReadonlyArray<OutboundComputerLink>,
+): "connected" | "reconnecting" | "offline" {
   if (links.length === 0) return "offline";
   if (links.some((link) => link.state === "active" && link.connection === "connected")) {
     return "connected";
@@ -736,9 +770,6 @@ function linkConnectionState(links: ReadonlyArray<OutboundComputerLink>): FleetL
     )
   ) {
     return "reconnecting";
-  }
-  if (links.some((link) => link.state === "active" && link.connection === "idle")) {
-    return "connected";
   }
   return "offline";
 }
@@ -801,11 +832,12 @@ export function buildFleetGraphEdges(input: {
     const works = workByPair.get(key) ?? [];
     const working = works.reduce((sum, work) => sum + work.working, 0);
     const needsYou = works.reduce((sum, work) => sum + work.needsYou, 0);
+    const live = works.some((work) => work.live !== false);
     const lead =
       works.toSorted(
         (left, right) => right.working - left.working || right.needsYou - left.needsYou,
       )[0] ?? null;
-    return { state: working + needsYou > 0 ? lineWork({ working, needsYou }) : null, lead };
+    return { state: working + needsYou > 0 ? lineWork({ working, needsYou }) : null, lead, live };
   };
 
   const edges: FleetGraphEdge[] = [];
@@ -846,7 +878,10 @@ export function buildFleetGraphEdges(input: {
     const [left, right] = key.split("|") as [string, string];
     const halves = linkHalves.get(key);
     const work = workOn(key);
-    const state = work.state ?? linkConnectionState(halves?.outbound ?? []);
+    const linkState = resolveOutboundLinkConnection(halves?.outbound ?? []);
+    // Remembered child activity never animates a link that isn't live; work
+    // observed directly on a connected worker still shows.
+    const state = linkState === "connected" || work.live ? (work.state ?? linkState) : linkState;
     const askerEnvironmentId = work.lead?.askerEnvironmentId ?? left;
     const workerEnvironmentId = askerEnvironmentId === left ? right : left;
     edges.push({

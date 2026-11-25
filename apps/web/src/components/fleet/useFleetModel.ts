@@ -57,6 +57,7 @@ import {
   type FleetGraphEdge,
   type FleetLinkReach,
   type FleetLinksByEnvironment,
+  resolveOutboundLinkConnection,
   trustedOriginEnvironment,
 } from "./fleetLinks.logic";
 
@@ -80,33 +81,39 @@ function glyphForLinkPlatform(platform: string | null): FleetGlyph {
   return "monitor";
 }
 
+/** Newer ISO timestamp of two optional ones. */
+function newerIso(left: string | null, right: string | null): string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return right > left ? right : left;
+}
+
 /**
  * A linked computer this app doesn't connect to, as the graph draws it: its
- * connection is the best any of its links reports.
+ * connection comes from the same shared link-state mapping as its graph edge,
+ * and its last-seen time comes from the newest link contact any holder knows.
  */
 function linkedComputerInput(
   entry: FleetDirectoryEntry,
   links: FleetLinksByEnvironment,
 ): FleetComputerInput {
-  let connection: FleetConnection = "offline";
+  const liveOutbound = [];
   let platform: string | null = null;
+  let lastSeenAt: string | null = null;
   for (const holder of Object.values(links)) {
     for (const link of holder.snapshot.outbound) {
       if (link.remoteEnvironmentId !== entry.environmentId) continue;
       platform ??= link.remotePlatform;
-      if (!holder.live || link.state !== "active") continue;
-      if (link.connection === "connected" || link.connection === "idle") connection = "connected";
-      else if (
-        connection !== "connected" &&
-        (link.connection === "connecting" || link.connection === "reconnecting")
-      ) {
-        connection = "reconnecting";
-      }
+      lastSeenAt = newerIso(lastSeenAt, link.lastConnectedAt);
+      if (holder.live) liveOutbound.push(link);
     }
     for (const link of holder.snapshot.inbound) {
-      if (link.environmentId === entry.environmentId) platform ??= link.platform;
+      if (link.environmentId !== entry.environmentId) continue;
+      platform ??= link.platform;
+      lastSeenAt = newerIso(lastSeenAt, link.lastUsedAt);
     }
   }
+  const connection: FleetConnection = resolveOutboundLinkConnection(liveOutbound);
   return {
     id: entry.key,
     environmentId: entry.environmentId,
@@ -116,7 +123,7 @@ function linkedComputerInput(
     glyph: glyphForLinkPlatform(platform),
     connection,
     route: null,
-    lastSeenAt: null,
+    lastSeenAt,
   };
 }
 
@@ -385,6 +392,7 @@ export function useFleetModel(): FleetData {
           attention:
             attentionByKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))) ??
             null,
+          live: true,
         });
       }
       for (const child of thread.remoteChildren ?? []) {
@@ -393,6 +401,7 @@ export function useFleetModel(): FleetData {
           workerEnvironmentId: child.environmentId,
           threadId: child.threadId,
           attention: crossWorkAttentionOf(child.cachedStatus),
+          live: false,
         });
       }
       for (const start of thread.remoteChildStarts ?? []) {
@@ -401,6 +410,7 @@ export function useFleetModel(): FleetData {
           workerEnvironmentId: start.environmentId,
           threadId: `start:${start.requestId}`,
           attention: start.status === "awaiting_approval" ? "needs-you" : "working",
+          live: false,
         });
       }
     }

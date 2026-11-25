@@ -198,6 +198,13 @@ export class RelayHost extends DurableObject<RelayV2Env> {
   private ledgerBusy = false;
   private ledgerCheckedAt = 0;
   private ledgerRefreshing = false;
+  /**
+   * Running sum of uncommitted socket tallies while this object is awake
+   * (hydrated lazily from socket attachments after hibernation). Avoids
+   * scanning and deserializing every socket attachment on every forwarded frame.
+   */
+  private cachedPendingMessages: number | null = null;
+  private cachedPendingAwakeSeconds: number | null = null;
   /** Alerts this object is sending right now; more than a few waits for the next try. */
   private alertsInFlight = 0;
   /** `deviceId alertKey` of each alert being sent now: a second copy waits for the first. */
@@ -1233,12 +1240,14 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     const state = await this.deviceState(request, deviceId, false);
     if (state === null) return json({ error: "Unknown device." }, 401);
     const now = Date.now();
+    const hostOnline = this.isHostOnline(now);
     const usage = this.core.usage(now, this.pendingUsage());
     return json({
-      hostOnline: this.isHostOnline(now),
+      hostOnline,
       revoked: state === "revoked",
       limited: usage.limited,
-      relayBusy: await this.isRelayBusy(now),
+      // Only check the global ledger when the host is actually online and the device can connect.
+      relayBusy: hostOnline && state !== "revoked" ? await this.isRelayBusy(now) : false,
       ...(usage.limited ? { resetsAt: usage.resetsAt } : {}),
     } satisfies RelayDeviceStatusResult);
   }
@@ -1259,13 +1268,15 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       return upgradeResponse(pair[0], request);
     };
     if (state === "revoked") return refuse(RELAY_CLOSE_CODE_ACCESS_REMOVED, "Access removed.");
+    // Check local host liveness before waking the global ledger singleton:
+    // an offline host has no control socket to cache the ledger answer across hibernation.
+    const control = this.liveControlSocket(now);
+    if (!control) return refuse(RELAY_CLOSE_CODE_HOST_OFFLINE, "The computer is offline.");
     if (this.core.isLimited(now, this.pendingUsage())) {
       return refuse(RELAY_CLOSE_CODE_DAILY_LIMIT, "Daily relay allowance used.");
     }
     if (await this.isRelayBusy(now))
       return refuse(RELAY_CLOSE_CODE_RELAY_BUSY, "The relay is busy.");
-    const control = this.liveControlSocket(now);
-    if (!control) return refuse(RELAY_CLOSE_CODE_HOST_OFFLINE, "The computer is offline.");
 
     // One pending-or-open pipe per device: a newer connect replaces the older one.
     this.reservations.get(deviceId)?.settle("replaced");
@@ -1482,10 +1493,14 @@ export class RelayHost extends DurableObject<RelayV2Env> {
     }
     if (attachment.role === "device" && (attachment.pendingMessages ?? 0) > 0) {
       // This socket's tally would vanish with it; commit it now.
+      const pending = attachment.pendingMessages ?? 0;
       const now = Date.now();
-      this.core.commitUsage(now, { messages: attachment.pendingMessages ?? 0, awakeSeconds: 0 });
+      this.core.commitUsage(now, { messages: pending, awakeSeconds: 0 });
       ws.serializeAttachment({ ...attachment, pendingMessages: 0 } satisfies SocketAttachment);
-      this.ctx.waitUntil(this.reportToLedger(attachment.pendingMessages ?? 0));
+      if (this.cachedPendingMessages !== null) {
+        this.cachedPendingMessages = Math.max(0, this.cachedPendingMessages - pending);
+      }
+      this.ctx.waitUntil(this.reportToLedger(pending));
     }
     if (attachment.role === "device" && attachment.pipeId) {
       for (const pipe of this.socketsForPipe(attachment.pipeId, "host-pipe")) {
@@ -1500,6 +1515,8 @@ export class RelayHost extends DurableObject<RelayV2Env> {
         );
       }
     } else if (attachment.role === "control") {
+      // Recompute pending awake seconds on next read now that this control socket is gone.
+      this.cachedPendingAwakeSeconds = null;
       // A replaced control socket can close after its successor has taken
       // device connections; only the last one going means the host is gone.
       const successor = this.ctx
@@ -1508,6 +1525,18 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       if (!successor) {
         for (const reservation of this.reservations.values()) {
           reservation.settle("host-offline");
+        }
+        // Drop active pipes promptly so connected clients don't wait up to
+        // 150 s for their encrypted keepalive watchdog to notice shutdown.
+        const pipeIds = new Set<string>();
+        for (const socket of this.ctx.getWebSockets()) {
+          const att = readAttachment(socket);
+          if ((att?.role === "device" || att?.role === "host-pipe") && att.pipeId) {
+            pipeIds.add(att.pipeId);
+          }
+        }
+        for (const pipeId of pipeIds) {
+          this.closePipe(pipeId, RELAY_CLOSE_CODE_HOST_OFFLINE, "The computer went offline.");
         }
       }
     }
@@ -1648,22 +1677,35 @@ export class RelayHost extends DurableObject<RelayV2Env> {
           ...deviceAttachment,
           pendingMessages: (deviceAttachment.pendingMessages ?? 0) + 1,
         } satisfies SocketAttachment);
+        if (this.cachedPendingMessages !== null) {
+          this.cachedPendingMessages += 1;
+        }
       }
     }
     const window = Math.floor(now / AWAKE_WINDOW_MS);
     for (const control of this.ctx.getWebSockets("control")) {
       const controlAttachment = readAttachment(control);
       if (!controlAttachment || controlAttachment.lastAwakeWindow === window) continue;
+      const awakeDelta = AWAKE_WINDOW_MS / 1000;
       control.serializeAttachment({
         ...controlAttachment,
         lastAwakeWindow: window,
-        pendingAwakeSeconds: (controlAttachment.pendingAwakeSeconds ?? 0) + AWAKE_WINDOW_MS / 1000,
+        pendingAwakeSeconds: (controlAttachment.pendingAwakeSeconds ?? 0) + awakeDelta,
       } satisfies SocketAttachment);
+      if (this.cachedPendingAwakeSeconds !== null) {
+        this.cachedPendingAwakeSeconds += awakeDelta;
+      }
     }
   }
 
   /** Usage held on live sockets and not yet committed. */
   private pendingUsage(): PendingUsage {
+    if (this.cachedPendingMessages !== null && this.cachedPendingAwakeSeconds !== null) {
+      return {
+        messages: this.cachedPendingMessages,
+        awakeSeconds: this.cachedPendingAwakeSeconds,
+      };
+    }
     let messages = 0;
     let awakeSeconds = 0;
     for (const socket of this.ctx.getWebSockets()) {
@@ -1671,6 +1713,8 @@ export class RelayHost extends DurableObject<RelayV2Env> {
       if (attachment?.role === "device") messages += attachment.pendingMessages ?? 0;
       if (attachment?.role === "control") awakeSeconds += attachment.pendingAwakeSeconds ?? 0;
     }
+    this.cachedPendingMessages = messages;
+    this.cachedPendingAwakeSeconds = awakeSeconds;
     return { messages, awakeSeconds };
   }
 
@@ -1693,6 +1737,8 @@ export class RelayHost extends DurableObject<RelayV2Env> {
         } satisfies SocketAttachment);
       }
     }
+    this.cachedPendingMessages = 0;
+    this.cachedPendingAwakeSeconds = 0;
     if (pending.messages === 0 && pending.awakeSeconds === 0) return false;
     this.core.commitUsage(now, pending);
     if (pending.messages > 0) this.ctx.waitUntil(this.reportToLedger(pending.messages));

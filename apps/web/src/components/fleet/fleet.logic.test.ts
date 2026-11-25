@@ -284,6 +284,69 @@ describe("savedComputerInput", () => {
     // With no name saved, the one it reports stands in.
     expect(savedComputer(WINDOWS, "  ", true).label).toBe("Denys's MacBook Pro");
   });
+
+  it("keeps a held relay computer offline on the graph and hides stale cached threads", () => {
+    const heldRelay = savedComputerInput(
+      {
+        environmentId: WINDOWS,
+        label: "Windows PC",
+        wsBaseUrl: "wss://relay.test/ws",
+        httpBaseUrl: "https://relay.test",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        lastConnectedAt: "2026-10-20T10:00:00.000Z",
+        relay: {
+          version: 2,
+          relayOrigin: "https://relay.test",
+          hostId: "host-1",
+          deviceId: "device-1",
+          hostPublicKey: "pk",
+        },
+      },
+      {
+        connectionState: "disconnected",
+        authState: "authenticated",
+        lastError: "Windows PC is offline.",
+        lastErrorAt: null,
+        role: "owner",
+        descriptor: null,
+        serverConfig: null,
+        connectedAt: null,
+        disconnectedAt: "2026-10-20T10:00:00.000Z",
+        route: null,
+        waitingToReconnect: true,
+        disconnectedByUser: false,
+      },
+    );
+    expect(heldRelay.connection).toBe("offline");
+
+    const model = buildFleetModel({
+      center: computer({ id: MACBOOK, label: "MacBook Pro", kind: "this", route: null }),
+      others: [heldRelay],
+      threads: [thread("stale", WINDOWS, { attention: "working", sessionLive: true })],
+    });
+    expect(model.working).toBe(0);
+    expect(model.others[0]?.threads).toEqual([]);
+    expect(model.others[0]?.providers).toEqual([]);
+  });
+
+  it("formats linked computer recency and reconnecting state when available", () => {
+    const linked = computer({
+      id: WINDOWS,
+      label: "Windows PC",
+      kind: "linked",
+      linkedWith: "MacBook Pro",
+      connection: "offline",
+      route: null,
+      lastSeenAt: "2026-10-20T10:00:00.000Z",
+    });
+    expect(describeComputerLocation(linked, NOW_MS)).toBe("Linked with MacBook Pro · 2h ago");
+    expect(describeComputerLocation({ ...linked, lastSeenAt: null }, NOW_MS)).toBe(
+      "Linked with MacBook Pro",
+    );
+    expect(describeComputerLocation({ ...linked, connection: "reconnecting" }, NOW_MS)).toBe(
+      "Linked with MacBook Pro · Reconnecting",
+    );
+  });
 });
 
 describe("linkedDeviceInputs", () => {

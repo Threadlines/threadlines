@@ -22,11 +22,18 @@ import {
   type PeerRpcError,
   type PeerUnlinkInput,
   RELAY_CLOSE_CODE_ACCESS_REMOVED,
+  RELAY_CLOSE_CODE_DAILY_LIMIT,
+  RELAY_CLOSE_CODE_HOST_OFFLINE,
+  RELAY_CLOSE_CODE_RELAY_BUSY,
   RELAY_TOKEN_PROTOCOL_PREFIX,
   RELAY_WEBSOCKET_PROTOCOL,
 } from "@threadlines/contracts";
 import { relayDeviceSocketUrl } from "@threadlines/shared/relayJoin";
-import { SECURE_OPEN_TIMEOUT_MS, type SecureRoute } from "@threadlines/shared/relaySecureSocket";
+import {
+  SECURE_CLOSE_CODE_NO_ROUTE,
+  SECURE_OPEN_TIMEOUT_MS,
+  type SecureRoute,
+} from "@threadlines/shared/relaySecureSocket";
 import type { StoredKeyPair } from "@threadlines/shared/relaySecure";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -70,6 +77,9 @@ export const LINK_DESCRIBE_TTL_MS = 5 * 60_000;
 export const LINK_REVOKED_PROBE_EVERY_MS = 30_000;
 /** How long telling the other computer about an unlink waits before it is left for later. */
 export const LINK_UNLINK_WAIT_MS = 5_000;
+/** Backoff after the relay confirms the other computer is offline or unreachable. */
+const OFFLINE_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000] as const;
+const LIMIT_RETRY_DELAY_MS = 15 * 60_000;
 const IDLE_SWEEP_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -175,8 +185,22 @@ interface Connection {
   readonly scope: Scope.Closeable;
   readonly client: PeerClient;
   inUse: number;
+  connected: boolean;
   lastUsedAt: number;
 }
+
+interface OfflineHold {
+  readonly environmentId: EnvironmentId;
+  readonly until: number;
+  readonly attempts: number;
+  readonly detail: string;
+}
+
+const isOfflineCloseCode = (code: number) =>
+  code === RELAY_CLOSE_CODE_HOST_OFFLINE ||
+  code === SECURE_CLOSE_CODE_NO_ROUTE ||
+  code === RELAY_CLOSE_CODE_DAILY_LIMIT ||
+  code === RELAY_CLOSE_CODE_RELAY_BUSY;
 
 const isRpcClientError = (error: unknown): error is RpcClientError.RpcClientError =>
   typeof error === "object" &&
@@ -193,6 +217,14 @@ const make = Effect.gen(function* () {
 
   const connections = new Map<string, Connection>();
   const opening = new Map<string, Promise<Connection>>();
+  /**
+   * Links whose far computer recently answered offline or relay-limited.
+   * Holding them closed between retries prevents background watches from
+   * hammering the relay and SQLite every minute while the peer is off.
+   */
+  const offlineHolds = new Map<string, OfflineHold>();
+  /** Last error written to `computer_links`, so repeated offline retries skip redundant writes. */
+  const lastWrittenError = new Map<string, string | null>();
   /** Each computer's last description; `askedAt` orders it against the others and labelNotes. */
   const describeCache = new Map<
     string,
@@ -219,15 +251,31 @@ const make = Effect.gen(function* () {
   ) =>
     SubscriptionRef.update(statusRef, (current) => {
       const previous = current.get(row.linkId);
+      const nextRoute = patch.route !== undefined ? patch.route : (previous?.route ?? null);
+      if (previous?.connection === patch.connection && previous.route === nextRoute) {
+        return current;
+      }
       const next = new Map(current);
       next.set(row.linkId, {
         linkId: row.linkId,
         environmentId: row.remoteEnvironmentId,
         connection: patch.connection,
-        route: patch.route !== undefined ? patch.route : (previous?.route ?? null),
+        route: nextRoute,
       });
       return next;
     });
+
+  const recordLastError = (linkId: ComputerLinkId, error: string | null) => {
+    if (lastWrittenError.get(linkId) === error) return Effect.void;
+    lastWrittenError.set(linkId, error);
+    return repo.update({ linkId, lastError: error }).pipe(Effect.ignore);
+  };
+
+  const clearOfflineHoldsForEnvironment = (environmentId: EnvironmentId) => {
+    for (const [linkId, hold] of offlineHolds) {
+      if (hold.environmentId === environmentId) offlineHolds.delete(linkId);
+    }
+  };
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -320,16 +368,45 @@ const make = Effect.gen(function* () {
   /** When each link's direct routes were last asked whether it was removed. */
   const lastProbeAt = new Map<string, number>();
 
+  const holdOffline = (row: ComputerLinkRow, code: number, reason: string) =>
+    Effect.gen(function* () {
+      const isLimit = code === RELAY_CLOSE_CODE_DAILY_LIMIT || code === RELAY_CLOSE_CODE_RELAY_BUSY;
+      const previous = offlineHolds.get(row.linkId);
+      const attempts = (previous?.attempts ?? 0) + 1;
+      const delayMs = isLimit
+        ? LIMIT_RETRY_DELAY_MS
+        : OFFLINE_RETRY_DELAYS_MS[Math.min(attempts - 1, OFFLINE_RETRY_DELAYS_MS.length - 1)]!;
+      const detail =
+        reason.length > 0
+          ? reason.slice(0, 300)
+          : isLimit
+            ? "The relay is unavailable right now."
+            : `${row.remoteLabel} is offline.`;
+      offlineHolds.set(row.linkId, {
+        environmentId: row.remoteEnvironmentId,
+        until: Date.now() + delayMs,
+        attempts,
+        detail,
+      });
+      yield* closeConnection(row.linkId);
+      yield* setStatus(row, { connection: "offline", route: null });
+      yield* recordLastError(row.linkId, detail);
+    });
+
   /**
    * The relay passes a removal on as its close code. A direct route can't
    * (it refuses before the upgrade), and when the relay is down too the
    * channel only reports the relay's failure; so any connection that ended
    * badly asks the direct routes, at most once per LINK_REVOKED_PROBE_EVERY_MS.
    */
-  const onSocketClose = (row: ComputerLinkRow, code: number) => {
+  const onSocketClose = (row: ComputerLinkRow, code: number, reason: string) => {
     if (code === RELAY_CLOSE_CODE_ACCESS_REMOVED) {
+      offlineHolds.delete(row.linkId);
       runFork(markRevoked(row));
       return;
+    }
+    if (isOfflineCloseCode(code)) {
+      runFork(holdOffline(row, code, reason));
     }
     if (code === 1000 || row.directRoutes.length === 0) return;
     const now = Date.now();
@@ -388,6 +465,13 @@ const make = Effect.gen(function* () {
               const socket = new PeerSocket(`peer://${row.remoteEnvironmentId}`, {
                 resolveTarget,
                 onOpen: (route) => {
+                  offlineHolds.delete(row.linkId);
+                  lastWrittenError.set(row.linkId, null);
+                  const live = connections.get(row.linkId);
+                  if (live !== undefined) {
+                    live.connected = true;
+                    live.lastUsedAt = Date.now();
+                  }
                   runFork(
                     Effect.gen(function* () {
                       yield* setStatus(row, { connection: "connected", route });
@@ -407,17 +491,24 @@ const make = Effect.gen(function* () {
                   );
                 },
                 onClose: (code, reason) => {
+                  const live = connections.get(row.linkId);
+                  if (live !== undefined) live.connected = false;
+                  onSocketClose(row, code, reason);
+                  if (
+                    (code === 1000 && live === undefined) ||
+                    code === RELAY_CLOSE_CODE_ACCESS_REMOVED ||
+                    isOfflineCloseCode(code)
+                  ) {
+                    return;
+                  }
                   runFork(
                     Effect.gen(function* () {
                       yield* setStatus(row, { connection: "reconnecting", route: null });
-                      if (code !== 1000 && reason.length > 0) {
-                        yield* repo
-                          .update({ linkId: row.linkId, lastError: reason.slice(0, 300) })
-                          .pipe(Effect.ignore);
+                      if (reason.length > 0) {
+                        yield* recordLastError(row.linkId, reason.slice(0, 300));
                       }
                     }),
                   );
-                  onSocketClose(row, code);
                 },
               });
               return socket as unknown as globalThis.WebSocket;
@@ -447,6 +538,7 @@ const make = Effect.gen(function* () {
         scope,
         client,
         inUse: 0,
+        connected: false,
         lastUsedAt: Date.now(),
       };
       connections.set(row.linkId, connection);
@@ -462,10 +554,18 @@ const make = Effect.gen(function* () {
     });
 
   /** The link's open connection, or a new one. */
-  const connectionForRow = (row: ComputerLinkRow) =>
+  const connectionForRow = (row: ComputerLinkRow, options?: { readonly bypassHold?: boolean }) =>
     Effect.gen(function* () {
       const existing = connections.get(row.linkId);
       if (existing !== undefined) return existing;
+      const hold = offlineHolds.get(row.linkId);
+      if (hold !== undefined) {
+        if (options?.bypassHold === true) {
+          offlineHolds.delete(row.linkId);
+        } else if (hold.until > Date.now()) {
+          return yield* unavailable(row.remoteEnvironmentId, hold.detail);
+        }
+      }
       // One connection per link, even when two callers race to open it.
       let pending = opening.get(row.linkId);
       if (pending === undefined) {
@@ -484,8 +584,10 @@ const make = Effect.gen(function* () {
       });
     });
 
-  const connectionFor = (environmentId: EnvironmentId) =>
-    Effect.flatMap(linkFor(environmentId), connectionForRow);
+  const connectionFor = (
+    environmentId: EnvironmentId,
+    options?: { readonly bypassHold?: boolean },
+  ) => Effect.flatMap(linkFor(environmentId), (row) => connectionForRow(row, options));
 
   const toUnavailable =
     (environmentId: string) =>
@@ -502,7 +604,7 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<A, PeerRpcError | ComputerLinkUnavailableError> =>
     Effect.suspend(() => {
       connection.inUse += 1;
-      connection.lastUsedAt = Date.now();
+      if (connection.connected) connection.lastUsedAt = Date.now();
       return use(connection.client).pipe(
         Effect.timeoutOrElse({
           duration: Duration.millis(timeoutMs),
@@ -515,7 +617,7 @@ const make = Effect.gen(function* () {
         Effect.ensuring(
           Effect.sync(() => {
             connection.inUse -= 1;
-            connection.lastUsedAt = Date.now();
+            if (connection.connected) connection.lastUsedAt = Date.now();
           }),
         ),
       );
@@ -524,14 +626,16 @@ const make = Effect.gen(function* () {
   const withPeer = <A>(
     environmentId: EnvironmentId,
     use: (client: PeerClient) => Effect.Effect<A, PeerRpcError | RpcClientError.RpcClientError>,
-    options?: { readonly timeout?: Duration.Duration },
+    options?: { readonly timeout?: Duration.Duration; readonly bypassHold?: boolean },
   ): Effect.Effect<A, PeerRpcError | ComputerLinkUnavailableError> =>
-    Effect.flatMap(connectionFor(environmentId), (connection) =>
-      callOn(
-        connection,
-        use,
-        options?.timeout === undefined ? REQUEST_TIMEOUT_MS : Duration.toMillis(options.timeout),
-      ),
+    Effect.flatMap(
+      connectionFor(environmentId, options?.bypassHold === true ? { bypassHold: true } : undefined),
+      (connection) =>
+        callOn(
+          connection,
+          use,
+          options?.timeout === undefined ? REQUEST_TIMEOUT_MS : Duration.toMillis(options.timeout),
+        ),
     );
 
   const peerStream = <A>(
@@ -542,13 +646,13 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const connection = yield* connectionFor(environmentId);
         connection.inUse += 1;
-        connection.lastUsedAt = Date.now();
+        if (connection.connected) connection.lastUsedAt = Date.now();
         return use(connection.client).pipe(
           Stream.mapError(toUnavailable(environmentId)),
           Stream.ensuring(
             Effect.sync(() => {
               connection.inUse -= 1;
-              connection.lastUsedAt = Date.now();
+              if (connection.connected) connection.lastUsedAt = Date.now();
             }),
           ),
         );
@@ -564,10 +668,13 @@ const make = Effect.gen(function* () {
       const row = yield* linkFor(environmentId);
       labelClock += 1;
       const askedAt = labelClock;
-      const answered = yield* withPeer(environmentId, (client) =>
-        client["peer.describe"]({
-          caller: { environmentId: descriptor.environmentId, label: environment.currentLabel() },
-        }),
+      const answered = yield* withPeer(
+        environmentId,
+        (client) =>
+          client["peer.describe"]({
+            caller: { environmentId: descriptor.environmentId, label: environment.currentLabel() },
+          }),
+        options?.fresh === true ? { bypassHold: true } : undefined,
       );
       // A description asked for later already landed: this one may be older.
       const newer = describeCache.get(environmentId);
@@ -597,6 +704,8 @@ const make = Effect.gen(function* () {
     describeCache.get(environmentId)?.value ?? null;
 
   const noteRemoteLabel: ComputerLinkClientShape["noteRemoteLabel"] = (environmentId, label) => {
+    // That computer just contacted us, so any offline backoff for it no longer holds.
+    clearOfflineHoldsForEnvironment(environmentId);
     labelClock += 1;
     labelNotes.set(environmentId, { at: labelClock, label });
     const cached = describeCache.get(environmentId);
@@ -622,7 +731,7 @@ const make = Effect.gen(function* () {
           `This computer unlinked ${row.remoteLabel}.`,
         );
       }
-      const connection = yield* connectionForRow(row);
+      const connection = yield* connectionForRow(row, { bypassHold: true });
       return yield* callOn(
         connection,
         (peer) =>
@@ -635,6 +744,8 @@ const make = Effect.gen(function* () {
 
   const disconnect: ComputerLinkClientShape["disconnect"] = (linkId) =>
     Effect.gen(function* () {
+      offlineHolds.delete(linkId);
+      lastWrittenError.delete(linkId);
       const connection = connections.get(linkId);
       if (connection !== undefined) describeCache.delete(connection.environmentId);
       yield* closeConnection(linkId);
@@ -664,7 +775,7 @@ const make = Effect.gen(function* () {
         );
       }
       const row = found.value;
-      const attempt = yield* connectionForRow(row).pipe(
+      const attempt = yield* connectionForRow(row, { bypassHold: true }).pipe(
         Effect.flatMap((connection) =>
           callOn(connection, (peer) => peer["peer.unlink"](input), LINK_UNLINK_WAIT_MS),
         ),
