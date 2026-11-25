@@ -22,7 +22,11 @@ import {
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 
 import { ProviderGlyph } from "../chat/ProviderInstanceIcon";
-import { describedAwaitedTasks, formatAwaitedTasks, PROVIDER_OPTIONS } from "../../session-logic";
+import {
+  describedAwaitedTasks,
+  formatAwaitedTasks,
+  PROVIDER_OPTIONS,
+} from "../../sessionShellLogic";
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,

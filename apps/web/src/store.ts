@@ -97,7 +97,7 @@ import {
   isWaitingOnBackgroundTasks,
   isBlockingUserInput,
   sumTurnDiffStats,
-} from "./session-logic";
+} from "./sessionShellLogic";
 import { getThreadFromEnvironmentState, invalidateThreadDerivationCache } from "./threadDerivation";
 import { threadMoveStatus } from "./threadMove";
 import {

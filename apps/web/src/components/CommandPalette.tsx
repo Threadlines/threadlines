@@ -14,7 +14,7 @@ import { resolveThreadRouteTarget } from "../threadRoutes";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
 import { AddProjectDialog } from "./addProject/AddProjectDialog";
 import { CodexSessionImportDialog } from "./codexImport/CodexSessionImportDialog";
-import { CommandDialog } from "./ui/command";
+import { CommandDialog } from "./ui/commandDialog";
 
 const loadCommandPaletteDialog = () => import("./CommandPaletteDialog");
 

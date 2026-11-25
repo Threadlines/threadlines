@@ -19,7 +19,7 @@ import {
   useGeneralChatGroups,
   useGeneralChats,
 } from "./chats/useGeneralChats";
-import { PROVIDER_OPTIONS } from "../session-logic";
+import { PROVIDER_OPTIONS } from "../sessionShellLogic";
 import { resolveSeenThreadStatus, type ThreadStatusPill } from "./Sidebar.logic";
 import { ThreadEnvironmentBadge, ThreadStatusText } from "./sidebar/InboxRows";
 import { SwipeableRow, threadRowSwipeAction } from "./sidebar/SwipeableRow";

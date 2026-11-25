@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { removeBufferedSshPasswordPrompt, subscribeSshPasswordPrompt } from "./desktopDialogBridge";
 
 function describeSshTarget(request: DesktopSshPasswordPromptRequest): string {
   return request.username ? `${request.username}@${request.destination}` : request.destination;
@@ -40,13 +41,12 @@ export function SshPasswordPromptDialog() {
   const formId = useId();
 
   useEffect(() => {
-    const bridge = window.desktopBridge;
-    if (!bridge?.onSshPasswordPrompt) {
-      return;
-    }
-
-    return bridge.onSshPasswordPrompt((request) => {
-      setQueue((currentQueue) => [...currentQueue, request]);
+    return subscribeSshPasswordPrompt((request) => {
+      setQueue((currentQueue) =>
+        currentQueue.some((existing) => existing.requestId === request.requestId)
+          ? currentQueue
+          : [...currentQueue, request],
+      );
     });
   }, []);
 
@@ -94,6 +94,7 @@ export function SshPasswordPromptDialog() {
   }, [isExpired]);
 
   const removeCurrentPrompt = (requestId: string) => {
+    removeBufferedSshPasswordPrompt(requestId);
     setQueue((currentQueue) =>
       currentQueue[0]?.requestId === requestId ? currentQueue.slice(1) : currentQueue,
     );

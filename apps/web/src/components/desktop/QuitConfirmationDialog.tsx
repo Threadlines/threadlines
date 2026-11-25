@@ -50,6 +50,7 @@ import {
   describeStoppedScheduledTasks,
 } from "./agentSessionCopy";
 import { BusyTerminalsSentence } from "./BusyTerminalsSentence";
+import { clearBufferedQuitConfirmation, subscribeQuitConfirmation } from "./desktopDialogBridge";
 import { useBusyLocalTerminalCommands } from "./useBusyLocalTerminals";
 import { useRunningAgentWork } from "./useRunningAgentWork";
 
@@ -474,9 +475,7 @@ export function QuitConfirmationDialog() {
   const [moves, setMoves] = useState<QuitMoves | null>(null);
 
   useEffect(() => {
-    const bridge = window.desktopBridge;
-    if (!bridge?.onQuitConfirmationRequested) return;
-    return bridge.onQuitConfirmationRequested((next) => {
+    return subscribeQuitConfirmation((next) => {
       setRequest(next);
       // The app took the question back: nothing waits on these moves now.
       if (next === null) {
@@ -518,6 +517,7 @@ export function QuitConfirmationDialog() {
 
   const respond = (confirmed: boolean) => {
     if (!request) return;
+    clearBufferedQuitConfirmation();
     setRequest(null);
     setMoves(null);
     void window.desktopBridge?.resolveQuitConfirmation?.(confirmed).catch(() => undefined);

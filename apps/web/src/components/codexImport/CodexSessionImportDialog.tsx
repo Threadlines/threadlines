@@ -2,7 +2,7 @@
 
 import { lazy, Suspense, useEffect } from "react";
 
-import { CommandDialog } from "../ui/command";
+import { CommandDialog } from "../ui/commandDialog";
 import { useCodexImportStore } from "./codexImportStore";
 
 const OpenCodexSessionImportDialog = lazy(() =>
