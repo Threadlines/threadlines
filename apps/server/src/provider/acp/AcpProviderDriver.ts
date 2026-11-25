@@ -395,6 +395,7 @@ export function makeAcpProviderDriver<Settings extends AcpProviderSettings, R = 
               catalog,
             }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
           refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
+          shouldScheduleRefresh: (settings) => settings.enabled,
         }).pipe(
           Effect.mapError(
             (cause) =>

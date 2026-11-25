@@ -691,7 +691,7 @@ export const ProviderRegistryLive = Layer.effect(
     const refreshAll = Effect.fn("refreshAll")(function* () {
       const sources = yield* getLiveSources;
       return yield* Effect.forEach(sources, (source) => refreshOneSource(source), {
-        concurrency: "unbounded",
+        concurrency: 3,
         discard: true,
       }).pipe(Effect.andThen(Ref.get(providersRef)));
     });

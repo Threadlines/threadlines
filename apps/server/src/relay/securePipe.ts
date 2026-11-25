@@ -237,7 +237,9 @@ export function openSecurePipe(input: {
     }
     if (!sawHandshake) {
       sawHandshake = true;
-      void handleHandshake(frame);
+      // Copy before crossing the async `responderReady` boundary in case the
+      // underlying transport reuses its receive buffer.
+      void handleHandshake(frame.slice());
       return;
     }
     if (!stream) {

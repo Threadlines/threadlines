@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import * as fsPromises from "node:fs/promises";
 
 import {
   CommandId,
@@ -134,6 +136,8 @@ interface Resting {
   /** What the thread looked like then; a change to any of it ends the rest. */
   readonly stamp: string;
   readonly nextLookAt: number;
+  /** Set when the rest came from a missing worktree; recreating that folder wakes the thread. */
+  readonly missingWorktreePath?: string;
 }
 
 /**
@@ -358,8 +362,13 @@ interface PullRequestWatch {
 interface LookReads {
   /** The status of the checkout at `cwd`; null where it could not be read. */
   readonly statusAt: (cwd: string) => Effect.Effect<VcsStatusRemoteResult | null>;
-  /** The repository's checkouts; null where they could not be listed. */
-  readonly worktrees: Effect.Effect<ReadonlyArray<GitWorktreeEntry> | null>;
+  /** The repository's checkouts (possibly reused from earlier in this sweep); null on error. */
+  readonly worktrees: Effect.Effect<{
+    readonly entries: ReadonlyArray<GitWorktreeEntry> | null;
+    readonly fromSweepCache: boolean;
+  }>;
+  /** Re-reads the repository's checkouts fresh from Git, updating any sweep cache. */
+  readonly freshWorktrees: Effect.Effect<ReadonlyArray<GitWorktreeEntry> | null>;
 }
 
 /** The busier of two looks' findings: a turn started, then something left to watch. */
@@ -396,6 +405,34 @@ function threadWorkingCwd({ thread, project }: SweepCandidate): string {
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
   });
+}
+
+/**
+ * Confirms a thread's worktree folder is gone on disk while its project root
+ * still exists. Returns false for synthetic paths in tests whose project root
+ * does not exist on disk.
+ */
+async function isConfirmedMissingWorktree(workspaceRoot: string, cwd: string): Promise<boolean> {
+  try {
+    await fsPromises.stat(workspaceRoot);
+  } catch {
+    return false;
+  }
+  try {
+    await fsPromises.stat(cwd);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
+  }
+}
+
+async function doesPathExist(targetPath: string): Promise<boolean> {
+  try {
+    await fsPromises.stat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1426,49 +1463,63 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         if (threadStatus?.pr != null && isSamePullRequest(threadStatus.pr.url, detail.url)) {
           return { kind: "thread", status: threadStatus };
         }
-        const worktrees = yield* reads.worktrees;
-        // A repository always lists its main checkout, so an empty list is a
-        // read that failed.
-        if (worktrees === null || worktrees.length === 0) {
-          return null;
+        const searchWorktrees = (worktrees: ReadonlyArray<GitWorktreeEntry> | null) =>
+          Effect.gen(function* (): Effect.fn.Return<BranchCheckout | null> {
+            // A repository always lists its main checkout, so an empty list is a
+            // read that failed.
+            if (worktrees === null || worktrees.length === 0) {
+              return null;
+            }
+            // The checkout the thread works in is the innermost one around its
+            // folder: the main checkout can hold the others.
+            const threadCheckout = worktrees
+              .filter((entry) => isFilesystemPathWithin(threadCwd, entry.path))
+              .reduce<GitWorktreeEntry | null>(
+                (innermost, entry) =>
+                  innermost === null || entry.path.length > innermost.path.length
+                    ? entry
+                    : innermost,
+                null,
+              );
+            // Its own branch name, or the name a pull request from a fork is
+            // checked out under here.
+            const forkPrefix = forkPullRequestBranchPrefix(detail.number);
+            const onBranch = worktrees.filter(
+              (entry) =>
+                entry.branch !== null &&
+                (entry.branch === detail.headBranch || entry.branch.startsWith(forkPrefix)),
+            );
+            let fallback: BranchCheckout = { kind: "unknown", status: null };
+            for (const entry of onBranch) {
+              const isThreadCheckout =
+                threadCheckout !== null && areFilesystemPathsEqual(threadCheckout.path, entry.path);
+              const status = isThreadCheckout ? threadStatus : yield* reads.statusAt(entry.path);
+              if (status === null) {
+                return null;
+              }
+              if (
+                !isThreadCheckout &&
+                status.pr !== null &&
+                isSamePullRequest(status.pr.url, detail.url)
+              ) {
+                return { kind: "folder", path: entry.path, status };
+              }
+              if (fallback.status === null) {
+                fallback = { kind: "unknown", status };
+              }
+            }
+            return fallback;
+          });
+
+        const initial = yield* reads.worktrees;
+        const found = yield* searchWorktrees(initial.entries);
+        // If a sweep-cached worktree list missed this branch, revalidate fresh
+        // before deciding no local checkout (and therefore zero unpushed commits)
+        // exists for an open pull request.
+        if (initial.fromSweepCache && found !== null && found.kind === "unknown") {
+          return yield* searchWorktrees(yield* reads.freshWorktrees);
         }
-        // The checkout the thread works in is the innermost one around its
-        // folder: the main checkout can hold the others.
-        const threadCheckout = worktrees
-          .filter((entry) => isFilesystemPathWithin(threadCwd, entry.path))
-          .reduce<GitWorktreeEntry | null>(
-            (innermost, entry) =>
-              innermost === null || entry.path.length > innermost.path.length ? entry : innermost,
-            null,
-          );
-        // Its own branch name, or the name a pull request from a fork is
-        // checked out under here.
-        const forkPrefix = forkPullRequestBranchPrefix(detail.number);
-        const onBranch = worktrees.filter(
-          (entry) =>
-            entry.branch !== null &&
-            (entry.branch === detail.headBranch || entry.branch.startsWith(forkPrefix)),
-        );
-        let fallback: BranchCheckout = { kind: "unknown", status: null };
-        for (const entry of onBranch) {
-          const isThreadCheckout =
-            threadCheckout !== null && areFilesystemPathsEqual(threadCheckout.path, entry.path);
-          const status = isThreadCheckout ? threadStatus : yield* reads.statusAt(entry.path);
-          if (status === null) {
-            return null;
-          }
-          if (
-            !isThreadCheckout &&
-            status.pr !== null &&
-            isSamePullRequest(status.pr.url, detail.url)
-          ) {
-            return { kind: "folder", path: entry.path, status };
-          }
-          if (fallback.status === null) {
-            fallback = { kind: "unknown", status };
-          }
-        }
-        return fallback;
+        return found;
       });
 
     /**
@@ -1553,6 +1604,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
      */
     const sweepThread = Effect.fn("PullRequestAutomationWatcher.sweepThread")(function* (
       candidate: SweepCandidate,
+      sweepWorktrees?: Map<string, ReadonlyArray<GitWorktreeEntry>>,
     ): Effect.fn.Return<LookOutcome> {
       const { thread, project } = candidate;
       // This look decides the pace again: checks it finds in motion put the
@@ -1563,6 +1615,19 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         return [since, threads];
       });
       const statuses = new Map<string, VcsStatusRemoteResult | null>();
+      const readFreshWorktrees = attempt(
+        "worktree-list",
+        thread.id,
+        gitWorkflow.listWorktrees({ cwd: project.workspaceRoot }),
+      ).pipe(
+        Effect.tap((listed) =>
+          Effect.sync(() => {
+            if (sweepWorktrees && listed !== null) {
+              sweepWorktrees.set(project.workspaceRoot, listed);
+            }
+          }),
+        ),
+      );
       const reads: LookReads = {
         statusAt: (cwd) =>
           Effect.suspend(() =>
@@ -1573,25 +1638,46 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
                 ),
           ),
         worktrees: yield* Effect.cached(
-          attempt(
-            "worktree-list",
-            thread.id,
-            gitWorkflow.listWorktrees({ cwd: project.workspaceRoot }),
-          ),
+          Effect.suspend(() => {
+            const cached = sweepWorktrees?.get(project.workspaceRoot);
+            if (cached !== undefined) {
+              return Effect.succeed({
+                entries: cached as ReadonlyArray<GitWorktreeEntry> | null,
+                fromSweepCache: true,
+              });
+            }
+            return readFreshWorktrees.pipe(
+              Effect.map((entries) => ({ entries, fromSweepCache: false })),
+            );
+          }),
         ),
+        freshWorktrees: yield* Effect.cached(readFreshWorktrees),
       };
       // The thread's own switches are for the pull request on its checkout's
       // branch, so a thread with no branch has only ones held by number.
       const ownArmed =
         thread.branch !== null &&
         (thread.pullRequestAutoFix || thread.pullRequestAutoMerge !== null);
-      const ownStatus = ownArmed ? yield* reads.statusAt(threadWorkingCwd(candidate)) : null;
+      const threadCwd = threadWorkingCwd(candidate);
+      const ownStatus = ownArmed ? yield* reads.statusAt(threadCwd) : null;
       const ownUrl = ownStatus?.pr?.url ?? null;
       const ownHeld =
         ownUrl !== null &&
         thread.linkedPullRequests.some((linked) => isSamePullRequest(linked.url, ownUrl));
+      const missingOwnWorktree =
+        ownArmed &&
+        !ownHeld &&
+        ownStatus === null &&
+        thread.worktreePath !== null &&
+        !areFilesystemPathsEqual(threadCwd, project.workspaceRoot)
+          ? yield* Effect.promise(() =>
+              isConfirmedMissingWorktree(project.workspaceRoot, threadCwd),
+            )
+          : false;
       const own =
-        ownArmed && !ownHeld ? yield* sweepOwnPullRequest(candidate, ownStatus) : "nothing";
+        ownArmed && !ownHeld && !missingOwnWorktree
+          ? yield* sweepOwnPullRequest(candidate, ownStatus)
+          : "nothing";
       const outcome =
         own === "started"
           ? own
@@ -1612,7 +1698,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         const restMs = Number.isFinite(idleMs)
           ? Math.min(Math.max(idleMs / REST_SHARE_OF_IDLE_TIME, sweepIntervalMs), MAX_REST_MS)
           : sweepIntervalMs;
-        return threads.set(thread.id, { stamp: restStamp(thread), nextLookAt: now + restMs });
+        return threads.set(thread.id, {
+          stamp: restStamp(thread),
+          nextLookAt: now + restMs,
+          ...(missingOwnWorktree ? { missingWorktreePath: threadCwd } : {}),
+        });
       });
       return outcome;
     });
@@ -1629,7 +1719,10 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
      * no longer watched or is on a host this cannot read. Run under the look
      * permit.
      */
-    const lookAt = Effect.fn("PullRequestAutomationWatcher.lookAt")(function* (threadId: ThreadId) {
+    const lookAt = Effect.fn("PullRequestAutomationWatcher.lookAt")(function* (
+      threadId: ThreadId,
+      sweepWorktrees?: Map<string, ReadonlyArray<GitWorktreeEntry>>,
+    ) {
       const thread = yield* attempt(
         "thread-read",
         threadId,
@@ -1657,7 +1750,7 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       if (candidate === null) {
         return null;
       }
-      const outcome = yield* sweepThread(candidate);
+      const outcome = yield* sweepThread(candidate, sweepWorktrees);
       return background ? "background" : outcome;
     });
 
@@ -1780,20 +1873,34 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
         return waits;
       });
 
-      return snapshot.threads.flatMap((thread): ThreadId[] => {
+      const selectedThreads: ThreadId[] = [];
+      for (const thread of snapshot.threads) {
         if (
           !lookableThreadIds.has(thread.id) ||
           (scope === "in-motion" && !inMotion.has(thread.id))
         ) {
-          return [];
+          continue;
         }
         const rest = resting.get(thread.id);
         if (rest !== undefined && rest.stamp === restStamp(thread) && now < rest.nextLookAt) {
-          return [];
+          if (rest.missingWorktreePath === undefined) {
+            continue;
+          }
+          const recreated = yield* Effect.promise(() => doesPathExist(rest.missingWorktreePath!));
+          if (!recreated) {
+            continue;
+          }
+          yield* Ref.update(restingRef, (threads) => {
+            threads.delete(thread.id);
+            return threads;
+          });
         }
         const project = projectsById.get(thread.projectId);
-        return project !== undefined && candidateOf(thread, project) !== null ? [thread.id] : [];
-      });
+        if (project !== undefined && candidateOf(thread, project) !== null) {
+          selectedThreads.push(thread.id);
+        }
+      }
+      return selectedThreads;
     });
 
     /**
@@ -1804,10 +1911,11 @@ const makePullRequestAutomationWatcher = (options?: PullRequestAutomationWatcher
       scope: "all" | "in-motion",
     ) {
       const threadIds = yield* lookSemaphore.withPermits(1)(listThreads(scope));
+      const sweepWorktrees = new Map<string, ReadonlyArray<GitWorktreeEntry>>();
       let startedCount = 0;
       for (const threadId of threadIds) {
         yield* noLookAskedFor.await;
-        const outcome = yield* lookSemaphore.withPermits(1)(lookAt(threadId));
+        const outcome = yield* lookSemaphore.withPermits(1)(lookAt(threadId, sweepWorktrees));
         if (outcome === "started") {
           startedCount += 1;
         }

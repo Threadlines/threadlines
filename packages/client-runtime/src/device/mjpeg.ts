@@ -6,7 +6,8 @@
  */
 import { DEVICE_MAX_FRAME_BYTES, DeviceFrameTooLargeError } from "./frameLimit.ts";
 
-const HEADER_END = [13, 10, 13, 10];
+const HEADER_END = [13, 10, 13, 10] as const;
+const JPEG_EOI = [0xff, 0xd9] as const;
 const MAX_HEADER_BYTES = 8 * 1024;
 const latin1 = new TextDecoder("latin1");
 
@@ -28,6 +29,9 @@ export class MultipartJpegParser {
   private length = 0;
   /** Bytes of the current part's body, once its headers are read; null for "until EOI". */
   private expected: number | null | undefined = undefined;
+  /** Offset from the start of the current header/body to resume scanning on the next chunk. */
+  private headerScanFrom = 0;
+  private eoiScanFrom = 2;
 
   push(bytes: Uint8Array): Uint8Array[] {
     // A part at the limit plus the chunk that completes it; more is never a valid stream.
@@ -49,11 +53,14 @@ export class MultipartJpegParser {
     let offset = 0;
     for (;;) {
       if (this.expected === undefined) {
-        const end = indexOfSequence(view, HEADER_END, offset);
+        const end = indexOfSequence(view, HEADER_END, offset + this.headerScanFrom);
         if (end < 0) {
           // A runaway header block is not a stream we can read; keep only a split CRLFCRLF tail.
           if (this.length - offset > MAX_HEADER_BYTES) {
             offset = Math.max(offset, this.length - (HEADER_END.length - 1));
+            this.headerScanFrom = 0;
+          } else {
+            this.headerScanFrom = Math.max(0, this.length - offset - (HEADER_END.length - 1));
           }
           break;
         }
@@ -64,12 +71,17 @@ export class MultipartJpegParser {
           throw new DeviceFrameTooLargeError("still frame", this.expected);
         }
         offset = end + HEADER_END.length;
+        this.headerScanFrom = 0;
+        this.eoiScanFrom = 2;
         continue;
       }
       let frameEnd: number;
       if (this.expected === null) {
-        const eoi = indexOfSequence(view, [0xff, 0xd9], offset + 2);
-        if (eoi < 0) break;
+        const eoi = indexOfSequence(view, JPEG_EOI, offset + this.eoiScanFrom);
+        if (eoi < 0) {
+          this.eoiScanFrom = Math.max(2, this.length - offset - (JPEG_EOI.length - 1));
+          break;
+        }
         frameEnd = eoi + 2;
       } else {
         if (this.length - offset < this.expected) break;
@@ -79,6 +91,8 @@ export class MultipartJpegParser {
       if (frame[0] === 0xff && frame[1] === 0xd8) frames.push(frame);
       offset = frameEnd;
       this.expected = undefined;
+      this.headerScanFrom = 0;
+      this.eoiScanFrom = 2;
     }
     if (offset > 0) {
       this.buffer.copyWithin(0, offset, this.length);

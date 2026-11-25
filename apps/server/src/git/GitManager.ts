@@ -962,7 +962,10 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
         Effect.catchIf(isNotGitRepositoryError, () => Effect.succeed(nonRepositoryStatusDetails)),
       );
     const hosting = details.isRepo
-      ? resolveHostingContext(yield* readConfigSnapshot(cwd), details.branch)
+      ? resolveHostingContext(
+          details.configSnapshot ?? (yield* readConfigSnapshot(cwd)),
+          details.branch,
+        )
       : null;
 
     return {
@@ -1347,12 +1350,13 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       readonly upstreamRef: string | null;
       readonly upstreamHeadSha: string | null;
       readonly isDefaultBranch: boolean;
+      readonly configSnapshot?: GitConfigSnapshot;
     },
     branch: string,
     hostContext: SourceControlProviderContext | null,
     options: RemoteStatusReadOptions | undefined,
   ) {
-    const config = yield* readConfigSnapshot(cwd);
+    const config = details.configSnapshot ?? (yield* readConfigSnapshot(cwd));
     const headContext = yield* resolveBranchHeadContext(
       cwd,
       { branch, upstreamRef: details.upstreamRef },

@@ -1203,8 +1203,8 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(remote?.aheadCount).toBe(1);
       expect(remote?.aheadOfDefaultCount).toBe(1);
       expect({ localProcesses, remoteProcesses }).toEqual({
-        localProcesses: 5,
-        remoteProcesses: 10,
+        localProcesses: 4,
+        remoteProcesses: 9,
       });
     }),
   );

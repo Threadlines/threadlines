@@ -2366,14 +2366,22 @@ function upsertThreadActivity(
     return retainThreadActivities([...activities, nextActivity], MAX_THREAD_ACTIVITIES);
   }
 
-  const nextActivities =
-    existingIndex === -1
-      ? [...activities, nextActivity]
-      : [
-          ...activities.slice(0, existingIndex),
-          nextActivity,
-          ...activities.slice(existingIndex + 1),
-        ];
+  if (existingIndex !== -1) {
+    const previous = existingIndex > 0 ? activities[existingIndex - 1] : undefined;
+    const following =
+      existingIndex + 1 < activities.length ? activities[existingIndex + 1] : undefined;
+    const inOrder =
+      (previous === undefined || compareActivities(previous, nextActivity) <= 0) &&
+      (following === undefined || compareActivities(nextActivity, following) <= 0);
+    const nextActivities = activities.slice();
+    nextActivities[existingIndex] = nextActivity;
+    return retainThreadActivities(
+      inOrder ? nextActivities : nextActivities.toSorted(compareActivities),
+      MAX_THREAD_ACTIVITIES,
+    );
+  }
+
+  const nextActivities = [...activities, nextActivity];
   return retainThreadActivities(nextActivities.toSorted(compareActivities), MAX_THREAD_ACTIVITIES);
 }
 

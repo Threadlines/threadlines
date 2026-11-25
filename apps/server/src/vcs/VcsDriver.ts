@@ -217,6 +217,13 @@ export interface VcsDriverShape {
   readonly listWorkspaceFiles: (
     cwd: string,
   ) => Effect.Effect<VcsListWorkspaceFilesResult, VcsError>;
+  /**
+   * Tracked paths that still match ignore rules (optional fast path for drivers
+   * whose `listWorkspaceFiles` already excludes ignored untracked files).
+   */
+  readonly listIgnoredTrackedPaths?: (
+    cwd: string,
+  ) => Effect.Effect<ReadonlyArray<string>, VcsError>;
   readonly listRemotes: (cwd: string) => Effect.Effect<VcsListRemotesResult, VcsError>;
   readonly filterIgnoredPaths: (
     cwd: string,

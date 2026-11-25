@@ -1006,7 +1006,12 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
     const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
 
-    const logNative = (threadId: ThreadId, method: string, payload: unknown) =>
+    const logNative = (
+      threadId: ThreadId,
+      method: string,
+      payload: unknown,
+      logOptions?: { readonly streamFragment?: boolean },
+    ) =>
       Effect.gen(function* () {
         if (!nativeEventLogger) return;
         const observedAt = yield* nowIso;
@@ -1024,6 +1029,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             },
           },
           threadId,
+          logOptions,
         );
       });
 
@@ -2917,7 +2923,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                     return;
                   }
                   case "ReasoningDelta":
-                    yield* logNative(ctx.threadId, "session/update", event.rawPayload);
+                    yield* logNative(ctx.threadId, "session/update", event.rawPayload, {
+                      streamFragment: true,
+                    });
                     yield* turnForOutput(ctx);
                     yield* appendReasoning(ctx, event.text, event.rawPayload);
                     return;
@@ -3009,7 +3017,9 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
                       event.text,
                       PROMPT_SUGGESTION_MAX_CHARS_PER_MESSAGE,
                     );
-                    yield* logNative(ctx.threadId, "session/update", event.rawPayload);
+                    yield* logNative(ctx.threadId, "session/update", event.rawPayload, {
+                      streamFragment: true,
+                    });
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
                         stamp: yield* makeEventStamp(),

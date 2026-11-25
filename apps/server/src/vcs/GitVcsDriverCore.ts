@@ -2275,6 +2275,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             )
         : 0;
 
+    const configSnapshot = yield* reads.config.pipe(Effect.orElseSucceed(() => undefined));
+
     return {
       isRepo: true,
       isDefaultBranch,
@@ -2285,6 +2287,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       aheadCount,
       behindCount,
       aheadOfDefaultCount,
+      ...(configSnapshot ? { configSnapshot } : {}),
     } satisfies GitVcsDriver.GitRemoteStatusDetails;
   });
 
@@ -2324,6 +2327,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     let behindCount = 0;
     let aheadOfDefaultCount = 0;
     let hasWorkingTreeChanges = false;
+    let sawStatusEntry = false;
     const changedFilesByPath = new Map<string, ParsedPorcelainChange>();
 
     for (const line of statusStdout.split(/\r?\n/g)) {
@@ -2350,6 +2354,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         continue;
       }
       if (line.trim().length > 0 && !line.startsWith("#")) {
+        sawStatusEntry = true;
         const change = parsePorcelainChange(line);
         if (change) {
           hasWorkingTreeChanges = true;
@@ -2373,8 +2378,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       parseNumstatEntries(stdout).filter(
         (entry) => !entry.binary || changedFilesByPath.has(entry.path),
       );
-    const numstatDetails =
-      headSha !== null && !hasMixedIndexAndWorktreeChanges
+    const numstatDetails = !sawStatusEntry
+      ? Effect.succeed({ mode: "combined", entries: [] as ReadonlyArray<NumstatEntry> } as const)
+      : headSha !== null && !hasMixedIndexAndWorktreeChanges
         ? runGitStdout("GitVcsDriver.statusDetails.combinedNumstat", cwd, [
             ...DIFF_WITHOUT_INDEX_REFRESH,
             "HEAD",
@@ -2412,11 +2418,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             ),
           );
     const reads = yield* makeStatusReads(cwd);
-    const [workingTreeNumstat, defaultBranch, hasPrimaryRemote] = yield* Effect.all(
+    const [workingTreeNumstat, defaultBranch, hasPrimaryRemote, configSnapshot] = yield* Effect.all(
       [
         numstatDetails,
         reads.defaultBranch("origin").pipe(Effect.catch(() => Effect.succeed(null))),
         reads.hasOriginRemote,
+        reads.config.pipe(Effect.orElseSucceed(() => undefined)),
       ],
       { concurrency: "unbounded" },
     );
@@ -2613,6 +2620,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       aheadCount,
       behindCount,
       aheadOfDefaultCount,
+      ...(configSnapshot ? { configSnapshot } : {}),
     };
   });
 

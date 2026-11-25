@@ -475,12 +475,18 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           : {}),
       }));
 
+    const OPENCODE_STREAM_FRAGMENT_EVENT_TYPES = new Set<string>([
+      "session.text.delta",
+      "session.reasoning.delta",
+    ]);
+
     const logNative = (ctx: SessionContext, event: OpenCodeEvent) =>
       nativeEventLogger
         ? Effect.flatMap(nowIso, (observedAt) =>
             nativeEventLogger.write(
               { observedAt, event: { provider: PROVIDER, method: event.type, payload: event } },
               ctx.threadId,
+              { streamFragment: OPENCODE_STREAM_FRAGMENT_EVENT_TYPES.has(event.type) },
             ),
           ).pipe(Effect.ignore)
         : Effect.void;

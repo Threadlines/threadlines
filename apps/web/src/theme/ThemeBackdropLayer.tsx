@@ -118,14 +118,17 @@ export function ThemeBackdropLayer(props: {
     phone,
   });
 
+  const liveArtActive = conditions.motion === "live" && conditions.visible;
   useEffect(() => {
     const bridge = window.desktopBridge;
     if (!bridge?.setBackdropActive) return;
-    void bridge.setBackdropActive(true).catch(() => {});
+    void bridge.setBackdropActive(liveArtActive).catch(() => {});
     return () => {
-      void bridge.setBackdropActive?.(false).catch(() => {});
+      if (liveArtActive) {
+        void bridge.setBackdropActive?.(false).catch(() => {});
+      }
     };
-  }, []);
+  }, [liveArtActive]);
 
   const hostRef = useRef<ThemeBackdropHostHandle | null>(null);
   useEffect(() => {

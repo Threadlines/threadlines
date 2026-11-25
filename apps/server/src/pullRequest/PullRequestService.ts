@@ -77,7 +77,7 @@ const LIST_CACHE_TTL = Duration.seconds(30);
 const LIST_CACHE_CAPACITY = 32;
 /** The signed-in account changes far more rarely than the listings do. */
 const VIEWER_CACHE_TTL = Duration.minutes(10);
-const VIEWER_CACHE_CAPACITY = 4;
+const VIEWER_CACHE_CAPACITY = 64;
 /** One open pull request is read far more often than it changes. */
 const DETAIL_CACHE_TTL = Duration.seconds(15);
 const ACTIVITY_CACHE_TTL = Duration.seconds(15);
@@ -86,7 +86,7 @@ const DIFF_CACHE_TTL = Duration.seconds(60);
 const PULL_REQUEST_CACHE_CAPACITY = 32;
 /** Repository settings and access change far more rarely than a pull request. */
 const REPOSITORY_CACHE_TTL = Duration.minutes(10);
-const REPOSITORY_CACHE_CAPACITY = 16;
+const REPOSITORY_CACHE_CAPACITY = 64;
 /**
  * How long a lookup answer serves every surface that asks at once. A merged
  * pull request never changes again and is kept until room runs out; anything
@@ -786,23 +786,34 @@ export const make = Effect.fn("makePullRequestService")(function* () {
         );
     });
 
+  interface RawAuthoredRead {
+    readonly anchor: PullRequestProject;
+    readonly viewer: string | null;
+    readonly rows: ReadonlyArray<ProviderAuthoredChangeRequest>;
+    readonly observedAt?: string;
+    readonly error: PullRequestListProjectError | null;
+  }
+
   /**
    * The viewer's own pull requests anywhere on one host, whether or not the
    * workspace points at the repository they are on. The anchor project is only
    * the checkout the host's tool runs in; a row it finds keeps that project so
    * a later read has somewhere to run, and names its own repository.
    *
-   * Anything the workspace already read is dropped: the same pull request twice
-   * would be two rows of one thing, one of them without its project.
+   * Anything the workspace already read is filtered out by the caller once
+   * workspace rows arrive, so both reads can run in parallel.
    */
-  const readAuthored = (input: {
+  const fetchAuthored = (input: {
     readonly anchor: PullRequestProject;
     readonly state: PullRequestListState;
-    readonly covered: ReadonlySet<string>;
-    readonly seen: ReadonlySet<string>;
-  }) =>
+  }): Effect.Effect<RawAuthoredRead> =>
     Effect.suspend(() => {
-      const empty: PullRequestProjectRead = { entries: [], error: null };
+      const empty: RawAuthoredRead = {
+        anchor: input.anchor,
+        viewer: null,
+        rows: [],
+        error: null,
+      };
       const host = registry.get(input.anchor.provider);
       const search = host?.listAuthoredChangeRequests;
       if (search === undefined) {
@@ -826,34 +837,18 @@ export const make = Effect.fn("makePullRequestService")(function* () {
               (rows) => rows.map((row) => rowRead(input.anchor.provider, row.repository, row)),
             )
             .pipe(
-              Effect.map(({ result: rows, observedAt }): PullRequestProjectRead => ({
-                entries: rows.flatMap((row) =>
-                  keepAuthoredRow({
-                    row,
-                    anchor: input.anchor,
-                    covered: input.covered,
-                    seen: input.seen,
-                  })
-                    ? [
-                        toEntry({
-                          project: input.anchor,
-                          row,
-                          viewer,
-                          origin: "authored",
-                          repository: row.repository,
-                          ...(row.viewerCanWrite === undefined
-                            ? {}
-                            : { viewerCanWrite: row.viewerCanWrite }),
-                          observedAt,
-                        }),
-                      ]
-                    : [],
-                ),
+              Effect.map(({ result: rows, observedAt }): RawAuthoredRead => ({
+                anchor: input.anchor,
+                viewer,
+                rows,
+                observedAt,
                 error: null,
               })),
               Effect.catch((error) =>
-                Effect.succeed<PullRequestProjectRead>({
-                  entries: [],
+                Effect.succeed<RawAuthoredRead>({
+                  anchor: input.anchor,
+                  viewer,
+                  rows: [],
                   error: {
                     projectId: input.anchor.projectId,
                     projectTitle: input.anchor.title,
@@ -972,15 +967,12 @@ export const make = Effect.fn("makePullRequestService")(function* () {
       return { viewer: null, entries: [], errors: [] } satisfies PullRequestListResult;
     }
 
-    // The viewer is read per project, because each host signs in on its own and
-    // a workspace can hold projects on several. The cache is keyed by host and
-    // checkout, so projects that share one share the read.
-    const viewer = yield* readViewer(first);
-    // The rows and what the viewer may do with them are asked for at once: the
-    // access read is per repository, not per row, and waiting for the rows
-    // first would only make the listing slower.
-    const [results, writeAccess] = yield* Effect.all(
+    // The rows, write access, and account-wide authored search run together:
+    // the viewer cache deduplicates the login lookup across all three.
+    const authoredAnchors = key.includeAuthored ? firstProjectPerProvider(projects) : [];
+    const [viewer, results, writeAccess, rawAuthored] = yield* Effect.all(
       [
+        readViewer(first),
         Effect.forEach(
           projects,
           (project) =>
@@ -992,8 +984,15 @@ export const make = Effect.fn("makePullRequestService")(function* () {
           { concurrency: PROJECT_CONCURRENCY },
         ),
         readWorkspaceWriteAccess(projects),
+        authoredAnchors.length === 0
+          ? Effect.succeed<ReadonlyArray<RawAuthoredRead>>([])
+          : Effect.forEach(
+              authoredAnchors,
+              (anchor) => fetchAuthored({ anchor, state: key.state }),
+              { concurrency: PROJECT_CONCURRENCY },
+            ),
       ],
-      { concurrency: 2 },
+      { concurrency: 4 },
     );
 
     const entries = results.flatMap((result) =>
@@ -1010,18 +1009,35 @@ export const make = Effect.fn("makePullRequestService")(function* () {
     const seen = new Set(
       entries.map((entry) => listRowKey(entry.provider, entry.repository, entry.number)),
     );
-    const authored = yield* Effect.forEach(
-      firstProjectPerProvider(projects),
-      (anchor) => readAuthored({ anchor, state: key.state, covered, seen }),
-      { concurrency: PROJECT_CONCURRENCY },
+    const authoredEntries = rawAuthored.flatMap((result) =>
+      result.rows.flatMap((row) =>
+        keepAuthoredRow({
+          row,
+          anchor: result.anchor,
+          covered,
+          seen,
+        })
+          ? [
+              toEntry({
+                project: result.anchor,
+                row,
+                viewer: result.viewer,
+                origin: "authored",
+                repository: row.repository,
+                ...(row.viewerCanWrite === undefined ? {} : { viewerCanWrite: row.viewerCanWrite }),
+                ...(result.observedAt === undefined ? {} : { observedAt: result.observedAt }),
+              }),
+            ]
+          : [],
+      ),
     );
 
     return {
       viewer,
-      entries: [...entries, ...authored.flatMap((result) => result.entries)],
+      entries: [...entries, ...authoredEntries],
       errors: [
         ...errors,
-        ...authored.flatMap((result) => (result.error === null ? [] : [result.error])),
+        ...rawAuthored.flatMap((result) => (result.error === null ? [] : [result.error])),
       ],
     } satisfies PullRequestListResult;
   });

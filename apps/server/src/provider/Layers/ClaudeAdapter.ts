@@ -6363,10 +6363,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    if (context.turnState) {
-      context.turnState.items.push(message.message);
-    }
-
     const toolResults = toolResultBlocksFromUserMessage(message);
     // SDKUserMessage.tool_use_result describes the matching Agent/Task output
     // but does not carry its tool_use_id. Current SDK messages contain one
@@ -7080,7 +7076,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (context.turnState) {
-      context.turnState.items.push(message.message);
       if (isApiError) {
         // Kept out of the transcript: it would read as Claude's answer. If the
         // turn ends here, the result reports it as the turn's error.

@@ -272,6 +272,10 @@ interface AttachedTab {
    * numbers are given.
    */
   framesByOrdinal: Map<number, InjectedFrame>;
+  /** True once `Page.enable` has succeeded on this debugger attachment. */
+  pageDomainEnabled: boolean;
+  /** Cached top-level frame id for this debugger attachment; updated on navigation. */
+  mainFrameId: string | undefined;
   dispose: () => void;
 }
 
@@ -1059,23 +1063,81 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     timeout?: Duration.Input,
   ) {
     const sessionId = frame?.sessionId;
+    const tab = frame?.frameId === undefined ? attached.get(contents.id) : undefined;
+    const startedAt = Date.now();
+    const totalBudgetMs = Duration.toMillis(
+      Duration.fromInputUnsafe(timeout ?? CDP_COMMAND_TIMEOUT),
+    );
+    const remainingTimeout = (): Duration.Input | undefined => {
+      const remainingMs = totalBudgetMs - (Date.now() - startedAt);
+      return remainingMs > 0 ? Duration.millis(remainingMs) : undefined;
+    };
+    const readMainFrameId = (stepTimeout?: Duration.Input) =>
+      Effect.gen(function* () {
+        if (!tab?.pageDomainEnabled) {
+          yield* sendCommand(contents, "Page.enable", {}, { timeout: stepTimeout });
+          if (tab) {
+            tab.pageDomainEnabled = true;
+          }
+        }
+        const tree = (yield* sendCommand(
+          contents,
+          "Page.getFrameTree",
+          {},
+          { timeout: stepTimeout },
+        )) as {
+          frameTree?: { frame?: { id?: string } };
+        };
+        const resolved = tree.frameTree?.frame?.id;
+        if (resolved === undefined) {
+          return yield* failCommand(contents, "Page.getFrameTree", "the page has no main frame");
+        }
+        if (tab) {
+          tab.mainFrameId = resolved;
+        }
+        return resolved;
+      });
+
+    const createWorld = (targetFrameId: string, stepTimeout?: Duration.Input) =>
+      sendCommand(
+        contents,
+        "Page.createIsolatedWorld",
+        { frameId: targetFrameId, worldName: INJECTED_WORLD_NAME, grantUniveralAccess: false },
+        { sessionId, timeout: stepTimeout },
+      ) as Effect.Effect<{ executionContextId?: number }, PreviewCommandError>;
+
     let frameId = frame?.frameId;
+    let usedCachedMainFrame = false;
     if (frameId === undefined) {
-      yield* sendCommand(contents, "Page.enable", {});
-      const tree = (yield* sendCommand(contents, "Page.getFrameTree", {})) as {
-        frameTree?: { frame?: { id?: string } };
-      };
-      frameId = tree.frameTree?.frame?.id;
-      if (frameId === undefined) {
-        return yield* failCommand(contents, "Page.getFrameTree", "the page has no main frame");
+      if (tab?.mainFrameId !== undefined) {
+        frameId = tab.mainFrameId;
+        usedCachedMainFrame = true;
+      } else {
+        frameId = yield* readMainFrameId(timeout);
       }
     }
-    const world = (yield* sendCommand(
-      contents,
-      "Page.createIsolatedWorld",
-      { frameId, worldName: INJECTED_WORLD_NAME, grantUniveralAccess: false },
-      { sessionId, timeout },
-    )) as { executionContextId?: number };
+    const world = usedCachedMainFrame
+      ? yield* createWorld(frameId, timeout).pipe(
+          Effect.catch((error) => {
+            const retryTimeout = remainingTimeout();
+            // Do not re-probe a hung page after its timeout expired.
+            if (error.cause === PAGE_DID_NOT_ANSWER || retryTimeout === undefined) {
+              return Effect.fail(error);
+            }
+            return Effect.gen(function* () {
+              if (tab) {
+                tab.mainFrameId = undefined;
+              }
+              const refreshedFrameId = yield* readMainFrameId(retryTimeout);
+              const createTimeout = remainingTimeout();
+              if (createTimeout === undefined) {
+                return yield* Effect.fail(error);
+              }
+              return yield* createWorld(refreshedFrameId, createTimeout);
+            });
+          }),
+        )
+      : yield* createWorld(frameId, timeout);
     const contextId = world.executionContextId;
     if (contextId === undefined) {
       return yield* failCommand(
@@ -1823,6 +1885,8 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
       frameSessions: new Map(),
       sessionOwners: new Map(),
       framesByOrdinal: new Map(),
+      pageDomainEnabled: false,
+      mainFrameId: undefined,
       dispose: () => {},
     };
 
@@ -1992,10 +2056,11 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
         return;
       }
       if (method === "Page.frameNavigated") {
-        const frame = params.frame as { parentId?: string } | undefined;
+        const frame = params.frame as { id?: string; parentId?: string } | undefined;
         // Only the main frame: an iframe navigating is not a new page, and
         // clearing on it would discard the diagnostics being asked about.
         if (frame?.parentId === undefined) {
+          tab.mainFrameId = typeof frame?.id === "string" ? frame.id : undefined;
           tab.console.length = 0;
           tab.networkFailures.length = 0;
           tab.requestUrls.clear();
@@ -2035,6 +2100,7 @@ export const make = Effect.gen(function* PreviewAutomationMake() {
     );
 
     yield* sendCommand(contents, "Page.enable");
+    tab.pageDomainEnabled = true;
     // We only record request URLs and failures and never call
     // `Network.getResponseBody`, so tell Chromium not to buffer response bodies.
     yield* sendCommand(contents, "Network.enable", {

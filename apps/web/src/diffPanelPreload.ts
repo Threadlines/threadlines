@@ -10,6 +10,7 @@ export function preloadDiffPanel(): void {
     return;
   }
   diffPanelPreloadRequested = true;
+  void import("./components/DiffWorkerPoolProvider");
   void import("./components/DiffPanel");
 }
 

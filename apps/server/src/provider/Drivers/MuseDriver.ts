@@ -242,6 +242,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
             yield* updateSnapshot((now) => ({ ...now, versionAdvisory }));
           }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient)),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
+        shouldScheduleRefresh: (current) => current.enabled,
       }).pipe(
         Effect.mapError(
           (cause) =>

@@ -1,4 +1,7 @@
+import * as Cache from "effect/Cache";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -7,6 +10,10 @@ import {
   ProjectFaviconResolver,
   type ProjectFaviconResolverShape,
 } from "../Services/ProjectFaviconResolver.ts";
+
+const FAVICON_CACHE_CAPACITY = 64;
+const FAVICON_FOUND_TTL = Duration.seconds(30);
+const FAVICON_MISSING_TTL = Duration.seconds(15);
 
 // Well-known favicon paths checked in order.
 const FAVICON_CANDIDATES = [
@@ -102,9 +109,9 @@ export const makeProjectFaviconResolver = Effect.gen(function* () {
     return null;
   });
 
-  const resolvePath: ProjectFaviconResolverShape["resolvePath"] = Effect.fn(
-    "ProjectFaviconResolver.resolvePath",
-  )(function* (cwd: string): Effect.fn.Return<string | null> {
+  const resolvePathUncached = Effect.fn("ProjectFaviconResolver.resolvePathUncached")(function* (
+    cwd: string,
+  ): Effect.fn.Return<string | null> {
     for (const candidate of FAVICON_CANDIDATES) {
       const resolved = path.join(cwd, candidate);
       const existing = yield* findExistingFile(cwd, [resolved]);
@@ -132,6 +139,27 @@ export const makeProjectFaviconResolver = Effect.gen(function* () {
     }
 
     return null;
+  });
+
+  const resolvedPathCache = yield* Cache.makeWith(resolvePathUncached, {
+    capacity: FAVICON_CACHE_CAPACITY,
+    timeToLive: (exit) =>
+      Exit.isSuccess(exit) && exit.value !== null ? FAVICON_FOUND_TTL : FAVICON_MISSING_TTL,
+  });
+
+  const resolvePath: ProjectFaviconResolverShape["resolvePath"] = Effect.fn(
+    "ProjectFaviconResolver.resolvePath",
+  )(function* (cwd: string): Effect.fn.Return<string | null> {
+    const cached = yield* Cache.get(resolvedPathCache, cwd);
+    if (cached === null) {
+      return null;
+    }
+    const stats = yield* fileSystem.stat(cached).pipe(Effect.catch(() => Effect.succeed(null)));
+    if (stats?.type === "File") {
+      return cached;
+    }
+    yield* Cache.invalidate(resolvedPathCache, cwd);
+    return yield* Cache.get(resolvedPathCache, cwd);
   });
 
   return {

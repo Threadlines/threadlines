@@ -260,6 +260,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
               );
         },
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
+        shouldScheduleRefresh: (current) => current.enabled,
       }).pipe(
         Effect.mapError(
           (cause) =>

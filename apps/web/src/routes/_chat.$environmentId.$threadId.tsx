@@ -13,7 +13,6 @@ import {
   HostedStaticLinkNotPairedState,
   HostedStaticLoadingState,
 } from "../components/ConnectionStatusStates";
-import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
   DiffPanelLoadingState,
   DiffPanelShell,
@@ -153,7 +152,21 @@ interface ThreadPullRequestTarget {
   readonly own: boolean;
 }
 
-const DiffPanel = lazy(() => import("../components/DiffPanel"));
+const DiffPanelWithWorkers = lazy(async () => {
+  const [{ DiffWorkerPoolProvider }, { default: DiffPanelComponent }] = await Promise.all([
+    import("../components/DiffWorkerPoolProvider"),
+    import("../components/DiffPanel"),
+  ]);
+  return {
+    default: function LazyDiffPanelWithWorkers(props: { mode: DiffPanelMode }) {
+      return (
+        <DiffWorkerPoolProvider>
+          <DiffPanelComponent mode={props.mode} embedded />
+        </DiffWorkerPoolProvider>
+      );
+    },
+  };
+});
 const MediaPanel = lazy(() =>
   import("../components/media/MediaPanel").then((module) => ({ default: module.MediaPanel })),
 );
@@ -193,11 +206,9 @@ const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
 
 const LazyDiffPanel = (props: { mode: DiffPanelMode }) => {
   return (
-    <DiffWorkerPoolProvider>
-      <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <DiffPanel mode={props.mode} embedded />
-      </Suspense>
-    </DiffWorkerPoolProvider>
+    <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
+      <DiffPanelWithWorkers mode={props.mode} />
+    </Suspense>
   );
 };
 

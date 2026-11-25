@@ -61,6 +61,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     ) => Effect.Effect<void>;
   }) => Effect.Effect<void>;
   readonly refreshInterval?: Duration.Input;
+  /** Skip periodic background refreshes while false (e.g. disabled providers). */
+  readonly shouldScheduleRefresh?: (settings: Settings) => boolean;
   /** Retry one transient snapshot sooner than the normal maintenance cadence. */
   readonly shouldRetrySnapshot?: (snapshot: ServerProvider) => boolean;
   readonly retryDelay?: Duration.Input;
@@ -283,9 +285,28 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     Effect.asVoid(applySnapshot(nextSettings)),
   ).pipe(Effect.forkScoped);
 
+  const DISABLED_SCHEDULED_TICK_STRIDE = 6;
+  let skippedDisabledTicks = 0;
+
   yield* Effect.forever(
     Effect.sleep(input.refreshInterval ?? "60 seconds").pipe(
-      Effect.flatMap(() => refreshSnapshot({ scheduled: true })),
+      Effect.flatMap(() =>
+        Effect.gen(function* () {
+          if (input.shouldScheduleRefresh) {
+            const currentSettings = yield* Ref.get(settingsRef);
+            if (!input.shouldScheduleRefresh(currentSettings)) {
+              skippedDisabledTicks += 1;
+              if (skippedDisabledTicks < DISABLED_SCHEDULED_TICK_STRIDE) {
+                return;
+              }
+              skippedDisabledTicks = 0;
+            } else {
+              skippedDisabledTicks = 0;
+            }
+          }
+          yield* refreshSnapshot({ scheduled: true });
+        }),
+      ),
       Effect.ignoreCause({ log: true }),
     ),
   ).pipe(Effect.forkScoped);

@@ -35,10 +35,7 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
 export function utf8(text: string): Bytes {
-  const encoded = textEncoder.encode(text);
-  const bytes = new Uint8Array(encoded.length);
-  bytes.set(encoded);
-  return bytes;
+  return asOwnedBytes(textEncoder.encode(text));
 }
 
 export function fromUtf8(bytes: Uint8Array): string {
@@ -46,12 +43,21 @@ export function fromUtf8(bytes: Uint8Array): string {
 }
 
 export function concatBytes(...parts: ReadonlyArray<Uint8Array>): Bytes {
-  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let total = 0;
+  for (const part of parts) total += part.length;
+  const out = new Uint8Array(total);
   let offset = 0;
   for (const part of parts) {
     out.set(part, offset);
     offset += part.length;
   }
+  return out;
+}
+
+function prependByte(byte: number, body: Uint8Array): Bytes {
+  const out = new Uint8Array(1 + body.length);
+  out[0] = byte;
+  out.set(body, 1);
   return out;
 }
 
@@ -70,6 +76,29 @@ function copyBytes(view: Uint8Array): Bytes {
   const out = new Uint8Array(view.length);
   out.set(view);
   return out;
+}
+
+function isFixedArrayBuffer(buffer: ArrayBufferLike): buffer is ArrayBuffer {
+  return (
+    buffer instanceof ArrayBuffer && (buffer as { readonly resizable?: boolean }).resizable !== true
+  );
+}
+
+/** Avoids copying when the view already owns its entire non-resizable ArrayBuffer. */
+function asOwnedBytes(view: Uint8Array): Bytes {
+  if (
+    isFixedArrayBuffer(view.buffer) &&
+    view.byteOffset === 0 &&
+    view.byteLength === view.buffer.byteLength
+  ) {
+    return view as Bytes;
+  }
+  return copyBytes(view);
+}
+
+/** WebCrypto accepts non-resizable ArrayBuffer-backed views directly; resizable/SharedArrayBuffer views need a copy. */
+function asBufferSource(view: Uint8Array): Bytes {
+  return isFixedArrayBuffer(view.buffer) ? (view as Bytes) : copyBytes(view);
 }
 
 export function randomBytes(length: number): Bytes {
@@ -110,18 +139,18 @@ export function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 // ----- primitives ---------------------------------------------------------------
 
 export async function sha256(data: Uint8Array): Promise<Bytes> {
-  return new Uint8Array(await subtle().digest("SHA-256", copyBytes(data)));
+  return new Uint8Array(await subtle().digest("SHA-256", asBufferSource(data)));
 }
 
 export async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Bytes> {
   const imported = await subtle().importKey(
     "raw",
-    copyBytes(key),
+    asBufferSource(key),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
   );
-  return new Uint8Array(await subtle().sign("HMAC", imported, copyBytes(data)));
+  return new Uint8Array(await subtle().sign("HMAC", imported, asBufferSource(data)));
 }
 
 /** Noise's HKDF: two outputs keyed by the chaining key. */
@@ -166,7 +195,7 @@ function makeDh(input: {
     if (raw.length !== input.publicKeyLength || !input.isValidRawPublicKey(raw)) {
       throw new Error("Invalid public key.");
     }
-    return subtle().importKey("raw", copyBytes(raw), algorithm, true, []);
+    return subtle().importKey("raw", asBufferSource(raw), algorithm, true, []);
   };
   return {
     name: input.name,
@@ -185,7 +214,7 @@ function makeDh(input: {
       await importPublicKey(publicKey);
       const privateKey = await subtle().importKey(
         "pkcs8",
-        copyBytes(privatePkcs8),
+        asBufferSource(privatePkcs8),
         algorithm,
         true,
         ["deriveBits"],
@@ -236,7 +265,7 @@ export class CipherState {
   }
 
   async initializeKey(raw: Uint8Array): Promise<void> {
-    this.key = await subtle().importKey("raw", copyBytes(raw), "AES-GCM", false, [
+    this.key = await subtle().importKey("raw", asBufferSource(raw), "AES-GCM", false, [
       "encrypt",
       "decrypt",
     ]);
@@ -260,9 +289,9 @@ export class CipherState {
     if (!this.key) return copyBytes(plaintext);
     const ciphertext = new Uint8Array(
       await subtle().encrypt(
-        { name: "AES-GCM", iv: this.iv(), additionalData: copyBytes(ad), tagLength: 128 },
+        { name: "AES-GCM", iv: this.iv(), additionalData: asBufferSource(ad), tagLength: 128 },
         this.key,
-        copyBytes(plaintext),
+        asBufferSource(plaintext),
       ),
     );
     this.nonce += 1;
@@ -273,9 +302,9 @@ export class CipherState {
     if (!this.key) return copyBytes(ciphertext);
     const plaintext = new Uint8Array(
       await subtle().decrypt(
-        { name: "AES-GCM", iv: this.iv(), additionalData: copyBytes(ad), tagLength: 128 },
+        { name: "AES-GCM", iv: this.iv(), additionalData: asBufferSource(ad), tagLength: 128 },
         this.key,
-        copyBytes(ciphertext),
+        asBufferSource(ciphertext),
       ),
     );
     this.nonce += 1;
@@ -461,7 +490,7 @@ export const SECURE_CONFIRM_SESSION = 0x01;
 export const SECURE_CONFIRM_PROBE = 0x02;
 
 export function handshakeFrame(message: Uint8Array): Bytes {
-  return concatBytes(new Uint8Array([SECURE_FRAME_HANDSHAKE]), message);
+  return prependByte(SECURE_FRAME_HANDSHAKE, message);
 }
 
 /** The handshake message in a frame, or null unless it's exactly the expected size. */
@@ -472,7 +501,12 @@ export function readHandshakeFrame(frame: Uint8Array, expectedLength: number): B
 
 /** Turns WebSocket message data into bytes; null for text frames. */
 export function binaryFrameBytes(data: unknown): Bytes | null {
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (data instanceof ArrayBuffer) {
+    return isFixedArrayBuffer(data) ? new Uint8Array(data) : copyBytes(new Uint8Array(data));
+  }
+  if (data instanceof Uint8Array) {
+    return asOwnedBytes(data);
+  }
   if (ArrayBuffer.isView(data)) {
     return copyBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
   }
@@ -539,7 +573,7 @@ export class SecureStream {
   }
 
   sendRecord(type: number, body: Uint8Array = EMPTY): void {
-    const record = concatBytes(new Uint8Array([type]), body);
+    const record = prependByte(type, body);
     this.sendQueue = this.sendQueue.then(async () => {
       if (this.stopped) return;
       let ciphertext: Bytes;
@@ -552,8 +586,9 @@ export class SecureStream {
       if (this.stopped) return;
       for (let offset = 0; offset < ciphertext.length; offset += SECURE_PART_BYTES) {
         const end = Math.min(offset + SECURE_PART_BYTES, ciphertext.length);
-        const type = end === ciphertext.length ? SECURE_FRAME_DATA_FINAL : SECURE_FRAME_DATA_PART;
-        this.sendFrame(concatBytes(new Uint8Array([type]), ciphertext.subarray(offset, end)));
+        const frameType =
+          end === ciphertext.length ? SECURE_FRAME_DATA_FINAL : SECURE_FRAME_DATA_PART;
+        this.sendFrame(prependByte(frameType, ciphertext.subarray(offset, end)));
       }
     });
   }
@@ -599,9 +634,13 @@ export class SecureStream {
       this.fail("Message too large.");
       return;
     }
-    this.parts.push(copyBytes(frame.subarray(1)));
-    if (type === SECURE_FRAME_DATA_PART) return;
-    const ciphertext = concatBytes(...this.parts);
+    if (type === SECURE_FRAME_DATA_PART) {
+      this.parts.push(copyBytes(frame.subarray(1)));
+      return;
+    }
+    const payload = frame.subarray(1);
+    const ciphertext =
+      this.parts.length === 0 ? copyBytes(payload) : concatBytes(...this.parts, payload);
     this.parts = [];
     this.partBytes = 0;
     this.messagesAssembled += 1;
