@@ -397,7 +397,7 @@ function makeHarness(config?: {
   readonly workflowSize?: ClaudeAdapterLiveOptions["workflowSize"];
   readonly installedCliVersion?: string;
   readonly readLaunchVersion?: ClaudeAdapterLiveOptions["readLaunchVersion"];
-  readonly suggestionsWhenUsageRunsFast?: ClaudeAdapterLiveOptions["suggestionsWhenUsageRunsFast"];
+  readonly promptSuggestions?: ClaudeAdapterLiveOptions["promptSuggestions"];
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -433,9 +433,7 @@ function makeHarness(config?: {
       ? { installedCliVersion: Effect.succeed(config.installedCliVersion) }
       : {}),
     ...(config?.readLaunchVersion ? { readLaunchVersion: config.readLaunchVersion } : {}),
-    ...(config?.suggestionsWhenUsageRunsFast
-      ? { suggestionsWhenUsageRunsFast: config.suggestionsWhenUsageRunsFast }
-      : {}),
+    ...(config?.promptSuggestions ? { promptSuggestions: config.promptSuggestions } : {}),
   };
 
   return {
@@ -1517,11 +1515,11 @@ describe("ClaudeAdapterLive", () => {
   );
 
   it.effect(
-    "keeps suggestions while usage runs fast as Settings says, from the next message both ways",
+    "toggles Claude prompt suggestions live as Settings says and respects session suppression",
     () => {
-      let keepSuggestions = true;
+      let claudeSuggestions: boolean | undefined = true;
       const harness = makeHarness({
-        suggestionsWhenUsageRunsFast: Effect.sync(() => keepSuggestions),
+        promptSuggestions: Effect.sync(() => claudeSuggestions),
       });
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;
@@ -1541,23 +1539,58 @@ describe("ClaudeAdapterLive", () => {
           env: { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true" },
         });
 
-        // Claude keeps a flag `env` value after the key is cleared, so off
-        // writes an empty value (read as unset), then clears the key so a
-        // value from Claude's settings files comes back.
-        keepSuggestions = false;
+        claudeSuggestions = false;
         yield* adapter.sendTurn({ threadId: session.threadId, input: "one", attachments: [] });
-        keepSuggestions = true;
+        claudeSuggestions = true;
         yield* adapter.sendTurn({ threadId: session.threadId, input: "two", attachments: [] });
         // Unchanged: the env is left alone.
         yield* adapter.sendTurn({ threadId: session.threadId, input: "three", attachments: [] });
+        // Unreadable settings fall back to Claude's own rule (restore then clear).
+        claudeSuggestions = undefined;
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "four", attachments: [] });
         assert.deepEqual(
           harness.query.applyFlagSettingsCalls.map((call) => call.env),
           [
+            { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false" },
+            { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true" },
             { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "" },
             null,
-            { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true" },
           ],
         );
+
+        // Automated sessions with promptSuggestions: false leave the env unset
+        // and report promptSuggestions: false on session.configured.
+        claudeSuggestions = true;
+        const suppressedThreadId = ThreadId.make("thread-claude-suppressed-suggestions");
+        const configuredFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) => event.threadId === suppressedThreadId && event.type === "session.configured",
+          ),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: suppressedThreadId,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-opus-5-5",
+            [],
+          ),
+          runtimeMode: "full-access",
+          promptSuggestions: false,
+        });
+        assert.equal(harness.getLastCreateQueryInput()?.options.promptSuggestions, false);
+        assert.deepEqual(
+          harness.getLastCreateQueryInput()?.options.settings,
+          hostSettings(attachmentsDir),
+        );
+        const [configured] = Array.from(yield* Fiber.join(configuredFiber));
+        assert.equal(configured?.type, "session.configured");
+        if (configured?.type === "session.configured") {
+          assert.equal(configured.payload.config.promptSuggestions, false);
+        }
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),

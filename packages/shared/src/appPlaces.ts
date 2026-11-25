@@ -723,7 +723,7 @@ const SECTIONS = [
     parent: "settings.providers",
     title: "Suggestions",
     about:
-      "Suggested next messages in the composer after a reply, for each agent you have turned on.",
+      "Suggested next messages in the composer after a reply, in each enabled agent's Configuration tab.",
     keywords: ["autocomplete", "prompt suggestions", "tab"],
   },
   {
@@ -1663,11 +1663,11 @@ const ROWS = [
     id: "providers.claudeSuggestions",
     kind: "row",
     parent: "providers.suggestions",
-    title: "Keep Claude's suggestions when you're using a lot",
+    title: "Claude suggestions",
     about:
-      "Keep Claude suggesting your next message even when you're on track to run out of usage early.",
+      "In Claude's Configuration tab. After a reply to your message, Claude suggests what you might send next until a usage limit is reached.",
     keywords: ["autocomplete", "prompt suggestions", "claude"],
-    ...editableServerSwitch("claudeSuggestionsWhenUsageRunsFast"),
+    ...editableServerSwitch("claudeSuggestions"),
   },
   {
     id: "providers.codexSuggestions",
@@ -1675,7 +1675,7 @@ const ROWS = [
     parent: "providers.suggestions",
     title: "Codex suggestions",
     about:
-      "After a reply to your message, Codex suggests what you might send next. Each suggestion uses a little Codex usage.",
+      "In Codex's Configuration tab. After a reply to your message, Codex suggests what you might send next until a usage limit is reached.",
     keywords: ["autocomplete", "prompt suggestions", "codex"],
     ...editableServerSwitch("codexSuggestions"),
   },
@@ -1685,7 +1685,7 @@ const ROWS = [
     parent: "providers.suggestions",
     title: "Antigravity suggestions",
     about:
-      "After a reply to your message, Antigravity suggests what you might send next using a fast Gemini model. Each suggestion uses a little Antigravity usage.",
+      "In Antigravity's Configuration tab. After a reply to your message, Antigravity suggests what you might send next using a fast Gemini model until its quota is reached.",
     keywords: ["autocomplete", "prompt suggestions", "antigravity", "gemini"],
     ...editableServerSwitch("antigravitySuggestions"),
   },

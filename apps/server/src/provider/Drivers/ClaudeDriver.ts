@@ -767,9 +767,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             return yield* Cache.get(launchVersionCache, stat.key);
           }),
         // Read live as well. Unreadable settings leave Claude's own rule.
-        suggestionsWhenUsageRunsFast: serverSettings.readStored.pipe(
-          Effect.map((settings) => settings.claudeSuggestionsWhenUsageRunsFast),
-          Effect.orElseSucceed(() => false),
+        promptSuggestions: serverSettings.readStored.pipe(
+          Effect.map((settings): boolean | undefined => settings.claudeSuggestions),
+          Effect.orElseSucceed(() => undefined),
         ),
         readUsageLimit: Effect.gen(function* () {
           const current = yield* snapshot.getSnapshot;

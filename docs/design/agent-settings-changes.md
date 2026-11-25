@@ -124,32 +124,32 @@ Three kinds of row came later, after the first list (Nov 2026):
 
 The first list:
 
-| Place                                             | Lands on | Control                                              | Setting (the only leaves its patch may touch)                                          |
-| ------------------------------------------------- | -------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Stream replies                                    | computer | switch                                               | `enableAssistantStreaming`                                                             |
-| Keep awake during turns                           | computer | switch                                               | `preventSleepDuringActiveTurns`                                                        |
-| Start in                                          | computer | choice: Local, New worktree                          | `defaultThreadEnvMode`                                                                 |
-| Keep Claude's suggestions when you're using a lot | computer | switch                                               | `claudeSuggestionsWhenUsageRunsFast`                                                   |
-| Fetch interval                                    | computer | whole seconds: 0 (off) or 30 to 3600                 | `automaticGitFetchInterval`                                                            |
-| Source control writing style                      | computer | choice: Repository conventions, Conventional Commits | `sourceControlWritingStyle.mode`                                                       |
-| Follow PR templates                               | computer | switch                                               | `sourceControlWritingStyle.followPrTemplates`                                          |
-| Theme                                             | device   | choice: System, Light, Dark                          | theme store                                                                            |
-| Time format                                       | device   | choice: System default, 12-hour, 24-hour             | `timestampFormat`                                                                      |
-| Changed files in chat                             | device   | switch                                               | `chatChangedFilesDefaultExpanded`                                                      |
-| Agents panel                                      | device   | switch                                               | `autoOpenAgentsPanel`                                                                  |
-| Wrap diff lines                                   | device   | switch                                               | `diffWordWrap`                                                                         |
-| Hide whitespace changes                           | device   | switch                                               | `diffIgnoreWhitespace`                                                                 |
-| Text size (terminal)                              | device   | whole px, 9 to 24                                    | `terminalFontSize`                                                                     |
-| Screen reader support                             | device   | switch                                               | `terminalScreenReaderMode`                                                             |
-| Hold to record                                    | device   | switch                                               | `dictationHoldToRecord`                                                                |
-| Wrap up idle / merged / finished child threads    | device   | switch                                               | `wrapUpIdleThreads`, `wrapUpThreadsOnPullRequestSettled`, `wrapUpChildThreadsOnFinish` |
-| Open panel by default (source control)            | device   | switch                                               | `sourceControlPanelDefaultOpen`                                                        |
-| Agent, Writing model, Backup, Writer model        | computer | model, or none (not Writing model)                   | `newThreadModelSelection`, `textGeneration*ModelSelection`, `sourceControlWriter*`     |
-| New worktrees from                                | computer | choice: Default branch, Current branch               | `newWorktreeBase.from`                                                                 |
-| Alerts: Needs you, Finished, Failed, Quiet        | device   | switch                                               | alert store                                                                            |
-| Open links in                                     | device   | choice: Built-in browser, External browser           | `openLinksIn`                                                                          |
-| Browser page size                                 | device   | choice: Responsive, Phone, Tablet, Laptop, Desktop   | `browserNewTabSize`                                                                    |
-| Browser search engine                             | device   | choice: Google, DuckDuckGo, Bing, Brave, Kagi        | `browserSearchEngine`                                                                  |
+| Place                                          | Lands on | Control                                              | Setting (the only leaves its patch may touch)                                          |
+| ---------------------------------------------- | -------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Stream replies                                 | computer | switch                                               | `enableAssistantStreaming`                                                             |
+| Keep awake during turns                        | computer | switch                                               | `preventSleepDuringActiveTurns`                                                        |
+| Start in                                       | computer | choice: Local, New worktree                          | `defaultThreadEnvMode`                                                                 |
+| Claude suggestions                             | computer | switch                                               | `claudeSuggestions`                                                                    |
+| Fetch interval                                 | computer | whole seconds: 0 (off) or 30 to 3600                 | `automaticGitFetchInterval`                                                            |
+| Source control writing style                   | computer | choice: Repository conventions, Conventional Commits | `sourceControlWritingStyle.mode`                                                       |
+| Follow PR templates                            | computer | switch                                               | `sourceControlWritingStyle.followPrTemplates`                                          |
+| Theme                                          | device   | choice: System, Light, Dark                          | theme store                                                                            |
+| Time format                                    | device   | choice: System default, 12-hour, 24-hour             | `timestampFormat`                                                                      |
+| Changed files in chat                          | device   | switch                                               | `chatChangedFilesDefaultExpanded`                                                      |
+| Agents panel                                   | device   | switch                                               | `autoOpenAgentsPanel`                                                                  |
+| Wrap diff lines                                | device   | switch                                               | `diffWordWrap`                                                                         |
+| Hide whitespace changes                        | device   | switch                                               | `diffIgnoreWhitespace`                                                                 |
+| Text size (terminal)                           | device   | whole px, 9 to 24                                    | `terminalFontSize`                                                                     |
+| Screen reader support                          | device   | switch                                               | `terminalScreenReaderMode`                                                             |
+| Hold to record                                 | device   | switch                                               | `dictationHoldToRecord`                                                                |
+| Wrap up idle / merged / finished child threads | device   | switch                                               | `wrapUpIdleThreads`, `wrapUpThreadsOnPullRequestSettled`, `wrapUpChildThreadsOnFinish` |
+| Open panel by default (source control)         | device   | switch                                               | `sourceControlPanelDefaultOpen`                                                        |
+| Agent, Writing model, Backup, Writer model     | computer | model, or none (not Writing model)                   | `newThreadModelSelection`, `textGeneration*ModelSelection`, `sourceControlWriter*`     |
+| New worktrees from                             | computer | choice: Default branch, Current branch               | `newWorktreeBase.from`                                                                 |
+| Alerts: Needs you, Finished, Failed, Quiet     | device   | switch                                               | alert store                                                                            |
+| Open links in                                  | device   | choice: Built-in browser, External browser           | `openLinksIn`                                                                          |
+| Browser page size                              | device   | choice: Responsive, Phone, Tablet, Laptop, Desktop   | `browserNewTabSize`                                                                    |
+| Browser search engine                          | device   | choice: Google, DuckDuckGo, Bing, Brave, Kagi        | `browserSearchEngine`                                                                  |
 
 The wrap-up switches only change how each app files its own thread lists
 (Wrapped is reversible filing, not archiving).

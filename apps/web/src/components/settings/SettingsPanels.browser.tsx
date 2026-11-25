@@ -167,7 +167,7 @@ function TestAppProviders({ children }: { children: ReactNode }) {
   );
 }
 
-function renderWithTestRouter(children: ReactNode) {
+function renderWithTestRouter(children: ReactNode, initialEntry = "/") {
   const rootRoute = createRootRoute({
     component: () => children,
   });
@@ -177,7 +177,7 @@ function renderWithTestRouter(children: ReactNode) {
   });
   const router = createRouter({
     routeTree: rootRoute.addChildren([indexRoute]),
-    history: createMemoryHistory({ initialEntries: ["/"] }),
+    history: createMemoryHistory({ initialEntries: [initialEntry] }),
   });
   return render(<RouterProvider router={router} />);
 }
@@ -7962,7 +7962,7 @@ describe("ProviderSettingsPanel suggestions", () => {
     await __resetLocalApiForTests();
   });
 
-  it("shows suggestion switches only for enabled providers and updates Antigravity suggestions", async () => {
+  it("places suggestion switches in Claude, Codex, and Antigravity Configuration tabs and opens them on place arrival", async () => {
     const updateSettings = vi.fn(async (patch: Record<string, unknown>) => ({
       ...DEFAULT_SERVER_SETTINGS,
       providers: {
@@ -7982,22 +7982,6 @@ describe("ProviderSettingsPanel suggestions", () => {
       },
     } as unknown as LocalApi;
 
-    // Default settings have Claude and Codex on, Antigravity off.
-    setServerConfigSnapshot(createBaseServerConfig());
-
-    await renderWithTestRouter(
-      <TestAppProviders>
-        <ProviderSettingsPanel />
-      </TestAppProviders>,
-    );
-
-    await expect.element(page.getByText("Codex suggestions")).toBeInTheDocument();
-    await expect
-      .element(page.getByText("Keep Claude's suggestions when you're using a lot"))
-      .toBeInTheDocument();
-    await expect.element(page.getByText("Antigravity suggestions")).not.toBeInTheDocument();
-
-    // Turning Antigravity on surfaces its suggestion toggle.
     const baseConfig = createBaseServerConfig();
     setServerConfigSnapshot({
       ...baseConfig,
@@ -8010,12 +7994,63 @@ describe("ProviderSettingsPanel suggestions", () => {
       },
     });
 
-    const antigravitySwitch = page.getByRole("switch", { name: "Antigravity suggestions" });
+    await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    // No standalone Suggestions section on the page before expanding a provider.
+    await expect
+      .element(page.getByRole("switch", { name: "Claude suggestions" }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("switch", { name: "Codex suggestions" }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("switch", { name: "Antigravity suggestions" }))
+      .not.toBeInTheDocument();
+
+    // Expanding Claude -> Configuration exposes the Claude suggestions switch.
+    await openProviderDetails("Claude");
+    await page.getByRole("button", { name: "Configuration" }).click();
+
+    const claudeSwitch = page.getByRole("switch", { name: "Claude suggestions" });
+    await expect.element(claudeSwitch).toBeInTheDocument();
+    await expect.element(claudeSwitch).toBeChecked();
+    await claudeSwitch.click();
+    await vi.waitFor(() =>
+      expect(updateSettings).toHaveBeenCalledWith({ claudeSuggestions: false }),
+    );
+    await page.getByLabelText("Toggle Claude details").click();
+
+    // Expanding Antigravity -> Configuration exposes the Antigravity suggestions switch.
+    await openProviderDetails("Antigravity");
+    await page.getByRole("button", { name: "Configuration" }).click();
+
+    const antigravitySwitch = page.getByRole("switch", {
+      name: "Antigravity suggestions",
+    });
     await expect.element(antigravitySwitch).toBeInTheDocument();
     await antigravitySwitch.click();
     await vi.waitFor(() =>
       expect(updateSettings).toHaveBeenCalledWith({ antigravitySuggestions: false }),
     );
+  });
+
+  it("auto-opens a provider row to Configuration when arriving via a suggestion place link", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+      "/#place=providers.codexSuggestions&n=1",
+    );
+
+    const codexSwitch = page.getByRole("switch", { name: "Codex suggestions" });
+    await expect.element(codexSwitch).toBeInTheDocument();
+    await expect.element(codexSwitch).toBeChecked();
   });
 });
 

@@ -19,7 +19,7 @@ import {
 /** What the hidden copy is asked (Codex takes at most 4,000 bytes). */
 export const CODEX_SUGGESTION_PROMPT = PROMPT_SUGGESTION_INSTRUCTIONS;
 
-/** No suggestions while any plan-wide usage window is this far used. */
+/** No suggestions once a plan-wide usage window is spent (100% used). */
 export const CODEX_SUGGESTION_USAGE_CEILING_PERCENT = PROMPT_SUGGESTION_USAGE_CEILING_PERCENT;
 
 export const codexSuggestionFromSample = sanitizePromptSuggestion;

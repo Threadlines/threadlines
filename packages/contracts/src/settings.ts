@@ -1119,19 +1119,17 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("default" as const)),
   ),
   /**
-   * Claude suggests the user's next message after a turn, but skips it while
-   * it warns that usage runs fast (ahead of pace for the week, or close to
-   * the five-hour limit). On keeps them coming then, at a little usage each,
-   * for every Claude account. Read when a Claude session starts and before
-   * each turn, so a change applies from the next message. Never chosen: off.
+   * After a turn a person started, Claude suggests their next message. On
+   * keeps suggestions coming until a usage limit is reached; off turns them
+   * off for every Claude account. Read when a Claude session starts and before
+   * each turn, so a change applies from the next message, and the composer
+   * hides Claude suggestions while it is off. Never chosen: on.
    */
-  claudeSuggestionsWhenUsageRunsFast: Schema.Boolean.pipe(
-    Schema.withDecodingDefault(Effect.succeed(false)),
-  ),
+  claudeSuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /**
    * After a turn a person started, Codex suggests their next message: one
    * extra model answer from the thread's cached context, on the account's
-   * usage. Skipped while a usage window is 90% used. Read before each
+   * usage. Paused once a usage window is spent (100% used). Read before each
    * suggestion, and the composer hides Codex suggestions while it is off.
    * Never chosen: on.
    */
@@ -1139,8 +1137,8 @@ export const ServerSettings = Schema.Struct({
   /**
    * After a turn a person started, Antigravity suggests their next message:
    * one short isolated answer (preferring Gemini Hydrogen, then Flash, at low
-   * thinking) on the account's usage. Skipped while that model's usage window
-   * is 90% used. Read before each suggestion, and the composer hides
+   * thinking) on the account's usage. Paused once that model's usage window is
+   * spent (100% used). Read before each suggestion, and the composer hides
    * Antigravity suggestions while it is off. Never chosen: on.
    */
   antigravitySuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -1374,7 +1372,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableDevices: Schema.optionalKey(Schema.Boolean),
   agentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   claudeWorkflowSize: Schema.optionalKey(ClaudeWorkflowSize),
-  claudeSuggestionsWhenUsageRunsFast: Schema.optionalKey(Schema.Boolean),
+  claudeSuggestions: Schema.optionalKey(Schema.Boolean),
   codexSuggestions: Schema.optionalKey(Schema.Boolean),
   antigravitySuggestions: Schema.optionalKey(Schema.Boolean),
   continueAfterUsageLimits: Schema.optionalKey(Schema.Boolean),

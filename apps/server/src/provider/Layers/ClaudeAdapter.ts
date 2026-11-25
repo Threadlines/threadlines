@@ -966,11 +966,12 @@ export interface ClaudeAdapterLiveOptions {
    */
   readonly readLaunchVersion?: (launch: ClaudeLaunchTarget) => Effect.Effect<string | undefined>;
   /**
-   * Whether Claude keeps suggesting the next message while it warns that
-   * usage runs fast (Settings › Threads). Read like the workflow size.
-   * Absent: Claude's own rule, which skips them then.
+   * Whether Claude suggests the user's next message (Settings › Providers ›
+   * Suggestions). Read when a session starts and before each turn, so a change
+   * applies from the next message without a restart. Absent or undefined: leave
+   * Claude's own environment and settings untouched.
    */
-  readonly suggestionsWhenUsageRunsFast?: Effect.Effect<boolean>;
+  readonly promptSuggestions?: Effect.Effect<boolean | undefined>;
 }
 
 /**
@@ -1352,23 +1353,25 @@ interface ClaudeFlagSettingsSnapshot {
   readonly workflowSizeSupported: boolean;
   /** Null: Claude's own default (and a size set in its settings files) stands. */
   readonly workflowSizeGuideline: ClaudeWorkflowSizeGuideline | null;
-  /** Keep suggesting the next message while Claude warns usage runs fast. */
-  readonly suggestionsWhenUsageRunsFast: boolean;
+  /** Whether this session is allowed to emit next-message suggestions at all. */
+  readonly promptSuggestionsSupported: boolean;
+  /** Settings override for `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION`, or inherit. */
+  readonly promptSuggestions: ClaudePromptSuggestionsMode;
 }
 
 type ClaudeWorkflowSizeGuideline = Exclude<ClaudeWorkflowSize, "default">;
+type ClaudePromptSuggestionsMode = "on" | "off" | "inherit";
 
-/** What Settings › Threads chooses for every Claude session. */
+/** What Settings chooses for every Claude session. */
 interface ClaudeSettingsChoices {
   readonly workflowSize: ClaudeWorkflowSize;
-  readonly suggestionsWhenUsageRunsFast: boolean;
+  readonly promptSuggestions: ClaudePromptSuggestionsMode;
 }
 
 /**
- * Claude skips its next-message suggestion while its usage status is a
- * warning (ahead of pace for the week, or close to the five-hour limit)
- * unless this variable is true. Set through the flag layer's `env`, which a
- * running session takes without a restart.
+ * Controls Claude's next-message suggestions through the flag layer's `env`,
+ * which a running session takes without a restart. `"true"` keeps suggestions
+ * on until a usage limit is reached; `"false"` turns them off.
  */
 const CLAUDE_PROMPT_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION";
 
@@ -1383,29 +1386,29 @@ function withSettingsChoices(
       snapshot.workflowSizeSupported && choices.workflowSize !== "default"
         ? choices.workflowSize
         : null,
-    suggestionsWhenUsageRunsFast: choices.suggestionsWhenUsageRunsFast,
+    promptSuggestions: snapshot.promptSuggestionsSupported ? choices.promptSuggestions : "inherit",
   };
 }
 
 /**
  * The flag layer's `env` values to send, in order, when the suggestions choice
- * changed; none when it did not. Claude copies flag `env` into its own
- * environment and keeps a copied value after the key is cleared, though
- * clearing it lays the `env` of Claude's settings files back on top. So off
- * first writes back the value the session started with (empty reads as
- * unset), then clears the key to bring back a value the user's settings
- * files set.
+ * changed; none when it did not. `"on"` sets `"true"`, `"off"` sets `"false"`,
+ * and `"inherit"` restores the session's starting value before clearing the key
+ * so Claude's settings files take over again.
  */
 function suggestionsEnvSteps(
   current: ClaudeFlagSettingsSnapshot,
   desired: ClaudeFlagSettingsSnapshot,
   sessionEnvironment: NodeJS.ProcessEnv,
 ): ReadonlyArray<Readonly<Record<string, string>> | null> {
-  if (desired.suggestionsWhenUsageRunsFast === current.suggestionsWhenUsageRunsFast) {
+  if (desired.promptSuggestions === current.promptSuggestions) {
     return [];
   }
-  if (desired.suggestionsWhenUsageRunsFast) {
+  if (desired.promptSuggestions === "on") {
     return [{ [CLAUDE_PROMPT_SUGGESTION_ENV]: "true" }];
+  }
+  if (desired.promptSuggestions === "off") {
+    return [{ [CLAUDE_PROMPT_SUGGESTION_ENV]: "false" }];
   }
   return [
     { [CLAUDE_PROMPT_SUGGESTION_ENV]: sessionEnvironment[CLAUDE_PROMPT_SUGGESTION_ENV] ?? "" },
@@ -1417,6 +1420,7 @@ function deriveClaudeFlagSettings(
   modelSelection: ModelSelection | undefined,
   capabilities: ModelCapabilities,
   choices: ClaudeSettingsChoices,
+  promptSuggestionsSupported: boolean,
 ): ClaudeFlagSettingsSnapshot {
   // Resolving every option together lets a selection saved with the old
   // "ultracode" effort level land as Extra High plus the Ultracode switch.
@@ -1437,7 +1441,8 @@ function deriveClaudeFlagSettings(
       ultracode: isClaudeUltracodeEffort(effort) || currentValue("ultracode") === true,
       workflowSizeSupported: descriptors.some((descriptor) => descriptor.id === "ultracode"),
       workflowSizeGuideline: null,
-      suggestionsWhenUsageRunsFast: false,
+      promptSuggestionsSupported,
+      promptSuggestions: "inherit",
     },
     choices,
   );
@@ -1454,7 +1459,8 @@ function claudeFlagSettingsEqual(
     left.ultracode === right.ultracode &&
     left.workflowSizeSupported === right.workflowSizeSupported &&
     left.workflowSizeGuideline === right.workflowSizeGuideline &&
-    left.suggestionsWhenUsageRunsFast === right.suggestionsWhenUsageRunsFast
+    left.promptSuggestionsSupported === right.promptSuggestionsSupported &&
+    left.promptSuggestions === right.promptSuggestions
   );
 }
 
@@ -4377,7 +4383,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("claudeAgent");
   const currentSettingsChoices = Effect.all({
     workflowSize: options?.workflowSize ?? Effect.succeed<ClaudeWorkflowSize>("default"),
-    suggestionsWhenUsageRunsFast: options?.suggestionsWhenUsageRunsFast ?? Effect.succeed(false),
+    promptSuggestions: (options?.promptSuggestions ?? Effect.succeed(undefined)).pipe(
+      Effect.map((value): ClaudePromptSuggestionsMode =>
+        value === true ? "on" : value === false ? "off" : "inherit",
+      ),
+    ),
   });
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -7346,7 +7356,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const suggestion = nonEmptyString(message.suggestion);
     const turnId = context.lastCompletedTurnId;
     context.lastCompletedTurnId = undefined;
-    if (!suggestion || !turnId) {
+    if (!suggestion || !turnId || !context.currentFlagSettings.promptSuggestionsSupported) {
+      return;
+    }
+    const livePromptSuggestions = options?.promptSuggestions
+      ? yield* options.promptSuggestions
+      : undefined;
+    if (livePromptSuggestions === false) {
       return;
     }
 
@@ -9722,10 +9738,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         apiModelId,
       ]);
       const fallbackModelIds = splitClaudeFallbackModelOption(fallbackModel);
+      const promptSuggestionsSupported = input.promptSuggestions !== false && !lockdown;
       const flagSettings = deriveClaudeFlagSettings(
         modelSelection,
         modelCapabilities,
         settingsChoices,
+        promptSuggestionsSupported,
       );
       const effectiveEffort = flagSettings.effortLevel;
       const permissionMode = claudePermissionModeFor(
@@ -9743,8 +9761,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(flagSettings.workflowSizeGuideline !== null
           ? { workflowSizeGuideline: flagSettings.workflowSizeGuideline }
           : {}),
-        ...(flagSettings.suggestionsWhenUsageRunsFast
-          ? { env: { [CLAUDE_PROMPT_SUGGESTION_ENV]: "true" } }
+        ...(flagSettings.promptSuggestions !== "inherit"
+          ? {
+              env: {
+                [CLAUDE_PROMPT_SUGGESTION_ENV]:
+                  flagSettings.promptSuggestions === "on" ? "true" : "false",
+              },
+            }
           : {}),
         // Staged attachments sit outside the project. A user who blocks reads
         // outside the working directories would have Claude refuse them before
@@ -10017,7 +10040,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.session_id": newSessionId ?? "",
         "claude.query.include_partial_messages": true,
         "claude.query.enable_file_checkpointing": true,
-        "claude.query.prompt_suggestions": true,
+        "claude.query.prompt_suggestions": queryOptions.promptSuggestions === true,
         "claude.query.additional_directories": input.cwd ? [input.cwd] : [],
         "claude.query.setting_sources": [...CLAUDE_SETTING_SOURCES],
         "claude.query.settings_json": encodeJsonStringForDiagnostics(settings) ?? "",
@@ -10245,7 +10268,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             permissionMode,
             ...(flagSettings.fastMode ? { fastMode: true } : {}),
             fileCheckpointing: true,
-            promptSuggestions: true,
+            promptSuggestions:
+              queryOptions.promptSuggestions === true && flagSettings.promptSuggestions !== "off",
           },
         },
         providerRefs: {},
@@ -10353,7 +10377,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const choices = yield* currentSettingsChoices;
       const desiredFlagSettings =
         modelSelection !== undefined
-          ? deriveClaudeFlagSettings(modelSelection, modelCapabilities, choices)
+          ? deriveClaudeFlagSettings(
+              modelSelection,
+              modelCapabilities,
+              choices,
+              context.currentFlagSettings.promptSuggestionsSupported,
+            )
           : withSettingsChoices(context.currentFlagSettings, choices);
       if (!claudeFlagSettingsEqual(desiredFlagSettings, context.currentFlagSettings)) {
         const [suggestionsEnv, ...laterSuggestionsEnvs] = suggestionsEnvSteps(
