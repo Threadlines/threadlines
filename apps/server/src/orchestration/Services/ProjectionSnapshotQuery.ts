@@ -356,6 +356,16 @@ export interface ProjectionSnapshotQueryShape {
   >;
 
   /**
+   * List thread ids whose projected session is not stopped or that still carry
+   * non-empty check-backs, so startup session reconciliation can skip
+   * historical stopped threads.
+   */
+  readonly listThreadIdsNeedingStartupReconciliation?: () => Effect.Effect<
+    ReadonlyArray<ThreadId>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Whether any non-deleted thread currently uses `path` as its worktree or
    * effective working directory.
    */

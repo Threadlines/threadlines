@@ -4645,10 +4645,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     Effect.succeed(Boolean(sessions.get(threadId) && !sessions.get(threadId)?.stopped));
 
   const stopAll: CodexAdapterShape["stopAll"] = () =>
-    Effect.forEach(Array.from(sessions.values()), (session) => stopSessionInternal(session), {
-      concurrency: 1,
-      discard: true,
-    }).pipe(Effect.asVoid);
+    Effect.gen(function* () {
+      const exits = yield* Effect.forEach(
+        Array.from(sessions.values()),
+        (session) => Effect.exit(stopSessionInternal(session)),
+        { concurrency: "unbounded" },
+      );
+      const firstFailure = exits.find(Exit.isFailure);
+      if (firstFailure) {
+        return yield* Effect.failCause(firstFailure.cause);
+      }
+    });
 
   yield* Effect.acquireRelease(Effect.void, () =>
     stopAll().pipe(

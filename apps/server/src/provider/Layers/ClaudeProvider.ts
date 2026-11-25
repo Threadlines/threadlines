@@ -18,6 +18,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -2032,182 +2033,204 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
 
   const versionedBuiltInModels = getBuiltInClaudeModelsForVersion(parsedVersion);
 
-  const capabilities = resolveCapabilities
-    ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
-    : undefined;
-  const lastReported = lastReportedModels ? yield* lastReportedModels.get : undefined;
-  const discoveredCatalog = capabilities
-    ? mergeClaudeDiscoveredModels(capabilities.models, versionedBuiltInModels, parsedVersion)
-    : withLastReportedClaudeModels(versionedBuiltInModels, lastReported);
-  // What Claude Code listed once and no longer does stays, hidden from new
-  // picks, for the threads and settings already on it.
-  const droppedModels = capabilities
-    ? claudeModelsDroppedByAnswer(lastReported, discoveredCatalog.models)
-    : (lastReported?.dropped ?? []);
-  if (capabilities && lastReportedModels) {
-    // An answer replaces the last one, also when it lists no models.
-    const reported = discoveredCatalog.models.filter((model) =>
-      discoveredCatalog.reportedSlugs.has(model.slug),
-    );
-    yield* lastReportedModels.set(
-      reported.length > 0 || droppedModels.length > 0
-        ? { models: reported, dropped: droppedModels }
-        : undefined,
-    );
-  }
-  const upgradeMessage = formatClaudeUpgradeMessage(parsedVersion, discoveredCatalog.reportedSlugs);
-  const models = withClaudeModelsKeptForPicks(
-    providerModelsFromSettings(
-      discoveredCatalog.models,
-      PROVIDER,
-      claudeSettings.customModels,
-      DEFAULT_CLAUDE_MODEL_CAPABILITIES,
-    ),
-    droppedModels,
-  );
-  // "live" is Claude Code's answer, now or as last kept, and replaces what
-  // clients listed before, also when it names no models of its own. Only a
-  // check with no answer to go on is a fallback, which keeps their last list.
-  const modelCatalogSource = capabilities || lastReported ? "live" : "fallback";
-  const slashCommands = capabilities?.slashCommands ?? [];
-  const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
-  const tokenUsageEffect = resolveTokenUsage
-    ? resolveTokenUsage(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
-    : Effect.succeed(undefined);
-
-  // SDK initialization also succeeds when signed out. Only account credential
-  // fields establish configured auth; a model catalog alone does not.
-  const credentialFields = [
-    capabilities?.email,
-    capabilities?.subscriptionType,
-    capabilities?.tokenSource,
-    environment[CLAUDE_CODE_OAUTH_TOKEN_ENV],
-    environment.ANTHROPIC_AUTH_TOKEN,
-    environment.ANTHROPIC_API_KEY,
-  ];
-  let authenticated: boolean | undefined = credentialFields.some(
-    (value) => typeof value === "string" && value.trim().length > 0 && value.trim() !== "none",
-  )
-    ? true
-    : undefined;
-  const renewalDue =
-    authenticated === undefined && isSignInRenewalDue
-      ? yield* isSignInRenewalDue(claudeSettings).pipe(Effect.orElseSucceed(() => true))
-      : false;
-  if (authenticated === undefined && !renewalDue) {
-    const authProbe = yield* runClaudeCommand(claudeSettings, ["auth", "status"], environment).pipe(
-      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-      Effect.result,
-    );
-    if (Result.isSuccess(authProbe) && Option.isSome(authProbe.success)) {
-      try {
-        // A signed-out CLI returns exit code 1 with a valid loggedIn:false result.
-        authenticated = extractAuthBoolean(JSON.parse(authProbe.success.value.stdout));
-      } catch {
-        // Older CLIs and failed probes may not return structured auth status.
-      }
-    }
-  }
-
-  if (!capabilities || authenticated !== true) {
-    const tokenUsage = yield* tokenUsageEffect;
-    const localTokenAccountUsage = tokenUsage
-      ? {
-          source: "claude-oauth-usage" as const,
-          checkedAt: tokenUsage.checkedAt,
-          limits: [],
-          tokenUsage,
-        }
-      : undefined;
-    return buildServerProvider({
-      presentation: CLAUDE_PRESENTATION,
-      enabled: claudeSettings.enabled,
-      checkedAt,
-      modelCatalogSource,
-      models,
-      slashCommands: dedupedSlashCommands,
-      probe: {
-        installed: true,
-        version: parsedVersion,
-        status: "warning",
-        auth: { status: authenticated === false ? "unauthenticated" : "unknown" },
-        ...(localTokenAccountUsage ? { accountUsage: localTokenAccountUsage } : {}),
-        message:
-          authenticated === false
-            ? "Claude is not signed in. Run `claude auth login` to sign in."
-            : "Could not verify Claude authentication status from initialization result.",
-      },
-    });
-  }
-
-  const authMetadata = claudeAuthMetadata({
-    subscriptionType: capabilities.subscriptionType,
-    authMethod: capabilities.tokenSource,
-    hasLongLivedOAuthToken:
-      typeof environment[CLAUDE_CODE_OAUTH_TOKEN_ENV] === "string" &&
-      environment[CLAUDE_CODE_OAUTH_TOKEN_ENV]!.trim().length > 0,
-  });
-  const isApiKeyAuth = authMetadata?.type === "apiKey";
-  const isLongLivedOAuthAuth = authMetadata?.type === "longLivedOAuthToken";
-  // Subscription usage comes from the Claude Code OAuth credential, which
-  // does not exist for API-key auth — skip the lookup entirely there.
-  const [usageCheck, tokenUsage] = yield* Effect.all(
-    [
-      resolveAccountUsage && !isApiKeyAuth
-        ? resolveAccountUsage(claudeSettings).pipe(
-            Effect.orElseSucceed((): ClaudeUsageCheck | undefined => undefined),
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      // Overlap local token-history transcript scanning with the Claude
+      // capabilities / auth / usage probes so disk I/O runs off the critical path.
+      const tokenUsageFiber = resolveTokenUsage
+        ? yield* resolveTokenUsage(claudeSettings).pipe(
+            Effect.orElseSucceed(() => undefined),
+            Effect.forkScoped,
           )
-        : Effect.succeed(undefined),
-      tokenUsageEffect,
-    ],
-    { concurrency: "unbounded" },
-  );
-  // A check without numbers leaves them out here; the driver folds the last
-  // reading back in when it publishes (`carryClaudeUsageAcrossChecks`).
-  const accountUsage = usageCheck?._tag === "Fresh" ? usageCheck.usage : undefined;
-  const localTokenAccountUsage = tokenUsage
-    ? {
-        source: "claude-oauth-usage" as const,
-        checkedAt: tokenUsage.checkedAt,
-        limits: [],
-        tokenUsage,
+        : undefined;
+      const tokenUsageEffect = tokenUsageFiber
+        ? Fiber.join(tokenUsageFiber)
+        : Effect.succeed(undefined);
+
+      const capabilities = resolveCapabilities
+        ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
+        : undefined;
+      const lastReported = lastReportedModels ? yield* lastReportedModels.get : undefined;
+      const discoveredCatalog = capabilities
+        ? mergeClaudeDiscoveredModels(capabilities.models, versionedBuiltInModels, parsedVersion)
+        : withLastReportedClaudeModels(versionedBuiltInModels, lastReported);
+      // What Claude Code listed once and no longer does stays, hidden from new
+      // picks, for the threads and settings already on it.
+      const droppedModels = capabilities
+        ? claudeModelsDroppedByAnswer(lastReported, discoveredCatalog.models)
+        : (lastReported?.dropped ?? []);
+      if (capabilities && lastReportedModels) {
+        // An answer replaces the last one, also when it lists no models.
+        const reported = discoveredCatalog.models.filter((model) =>
+          discoveredCatalog.reportedSlugs.has(model.slug),
+        );
+        yield* lastReportedModels.set(
+          reported.length > 0 || droppedModels.length > 0
+            ? { models: reported, dropped: droppedModels }
+            : undefined,
+        );
       }
-    : undefined;
-  const combinedAccountUsage = accountUsage
-    ? { ...accountUsage, ...(tokenUsage ? { tokenUsage } : {}) }
-    : localTokenAccountUsage;
-  // The usage account only matters while a normal sign-in exists to read it for.
-  const normalSignInGone = usageCheck?._tag === "Unavailable" && usageCheck.reason === "signed_out";
-  const resolvedUsageEmail =
-    resolveUsageAuthEmail && isLongLivedOAuthAuth && !normalSignInGone
-      ? yield* resolveUsageAuthEmail(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
-      : undefined;
-  const usageEmail =
-    resolvedUsageEmail && resolvedUsageEmail !== capabilities.email
-      ? resolvedUsageEmail
-      : undefined;
-  return buildServerProvider({
-    presentation: CLAUDE_PRESENTATION,
-    enabled: claudeSettings.enabled,
-    checkedAt,
-    modelCatalogSource,
-    models,
-    slashCommands: dedupedSlashCommands,
-    probe: {
-      installed: true,
-      version: parsedVersion,
-      status: "ready",
-      auth: {
-        status: "authenticated",
-        ...(capabilities.email ? { email: capabilities.email } : {}),
-        ...(authMetadata ? authMetadata : {}),
-        ...(usageEmail ? { usageEmail } : {}),
-        capabilities: claudeAuthCapabilities({ isApiKeyAuth, isLongLivedOAuthAuth, usageCheck }),
-      },
-      ...(combinedAccountUsage ? { accountUsage: combinedAccountUsage } : {}),
-      ...(upgradeMessage ? { message: upgradeMessage } : {}),
-    },
-  });
+      const upgradeMessage = formatClaudeUpgradeMessage(
+        parsedVersion,
+        discoveredCatalog.reportedSlugs,
+      );
+      const models = withClaudeModelsKeptForPicks(
+        providerModelsFromSettings(
+          discoveredCatalog.models,
+          PROVIDER,
+          claudeSettings.customModels,
+          DEFAULT_CLAUDE_MODEL_CAPABILITIES,
+        ),
+        droppedModels,
+      );
+      // "live" is Claude Code's answer, now or as last kept, and replaces what
+      // clients listed before, also when it names no models of its own. Only a
+      // check with no answer to go on is a fallback, which keeps their last list.
+      const modelCatalogSource = capabilities || lastReported ? "live" : "fallback";
+      const slashCommands = capabilities?.slashCommands ?? [];
+      const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
+
+      // SDK initialization also succeeds when signed out. Only account credential
+      // fields establish configured auth; a model catalog alone does not.
+      const credentialFields = [
+        capabilities?.email,
+        capabilities?.subscriptionType,
+        capabilities?.tokenSource,
+        environment[CLAUDE_CODE_OAUTH_TOKEN_ENV],
+        environment.ANTHROPIC_AUTH_TOKEN,
+        environment.ANTHROPIC_API_KEY,
+      ];
+      let authenticated: boolean | undefined = credentialFields.some(
+        (value) => typeof value === "string" && value.trim().length > 0 && value.trim() !== "none",
+      )
+        ? true
+        : undefined;
+      const renewalDue =
+        authenticated === undefined && isSignInRenewalDue
+          ? yield* isSignInRenewalDue(claudeSettings).pipe(Effect.orElseSucceed(() => true))
+          : false;
+      if (authenticated === undefined && !renewalDue) {
+        const authProbe = yield* runClaudeCommand(
+          claudeSettings,
+          ["auth", "status"],
+          environment,
+        ).pipe(Effect.timeoutOption(DEFAULT_TIMEOUT_MS), Effect.result);
+        if (Result.isSuccess(authProbe) && Option.isSome(authProbe.success)) {
+          try {
+            // A signed-out CLI returns exit code 1 with a valid loggedIn:false result.
+            authenticated = extractAuthBoolean(JSON.parse(authProbe.success.value.stdout));
+          } catch {
+            // Older CLIs and failed probes may not return structured auth status.
+          }
+        }
+      }
+
+      if (!capabilities || authenticated !== true) {
+        const tokenUsage = yield* tokenUsageEffect;
+        const localTokenAccountUsage = tokenUsage
+          ? {
+              source: "claude-oauth-usage" as const,
+              checkedAt: tokenUsage.checkedAt,
+              limits: [],
+              tokenUsage,
+            }
+          : undefined;
+        return buildServerProvider({
+          presentation: CLAUDE_PRESENTATION,
+          enabled: claudeSettings.enabled,
+          checkedAt,
+          modelCatalogSource,
+          models,
+          slashCommands: dedupedSlashCommands,
+          probe: {
+            installed: true,
+            version: parsedVersion,
+            status: "warning",
+            auth: { status: authenticated === false ? "unauthenticated" : "unknown" },
+            ...(localTokenAccountUsage ? { accountUsage: localTokenAccountUsage } : {}),
+            message:
+              authenticated === false
+                ? "Claude is not signed in. Run `claude auth login` to sign in."
+                : "Could not verify Claude authentication status from initialization result.",
+          },
+        });
+      }
+
+      const authMetadata = claudeAuthMetadata({
+        subscriptionType: capabilities.subscriptionType,
+        authMethod: capabilities.tokenSource,
+        hasLongLivedOAuthToken:
+          typeof environment[CLAUDE_CODE_OAUTH_TOKEN_ENV] === "string" &&
+          environment[CLAUDE_CODE_OAUTH_TOKEN_ENV]!.trim().length > 0,
+      });
+      const isApiKeyAuth = authMetadata?.type === "apiKey";
+      const isLongLivedOAuthAuth = authMetadata?.type === "longLivedOAuthToken";
+      // Subscription usage comes from the Claude Code OAuth credential, which
+      // does not exist for API-key auth — skip the lookup entirely there.
+      const [usageCheck, tokenUsage] = yield* Effect.all(
+        [
+          resolveAccountUsage && !isApiKeyAuth
+            ? resolveAccountUsage(claudeSettings).pipe(
+                Effect.orElseSucceed((): ClaudeUsageCheck | undefined => undefined),
+              )
+            : Effect.succeed(undefined),
+          tokenUsageEffect,
+        ],
+        { concurrency: "unbounded" },
+      );
+      // A check without numbers leaves them out here; the driver folds the last
+      // reading back in when it publishes (`carryClaudeUsageAcrossChecks`).
+      const accountUsage = usageCheck?._tag === "Fresh" ? usageCheck.usage : undefined;
+      const localTokenAccountUsage = tokenUsage
+        ? {
+            source: "claude-oauth-usage" as const,
+            checkedAt: tokenUsage.checkedAt,
+            limits: [],
+            tokenUsage,
+          }
+        : undefined;
+      const combinedAccountUsage = accountUsage
+        ? { ...accountUsage, ...(tokenUsage ? { tokenUsage } : {}) }
+        : localTokenAccountUsage;
+      // The usage account only matters while a normal sign-in exists to read it for.
+      const normalSignInGone =
+        usageCheck?._tag === "Unavailable" && usageCheck.reason === "signed_out";
+      const resolvedUsageEmail =
+        resolveUsageAuthEmail && isLongLivedOAuthAuth && !normalSignInGone
+          ? yield* resolveUsageAuthEmail(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
+          : undefined;
+      const usageEmail =
+        resolvedUsageEmail && resolvedUsageEmail !== capabilities.email
+          ? resolvedUsageEmail
+          : undefined;
+      return buildServerProvider({
+        presentation: CLAUDE_PRESENTATION,
+        enabled: claudeSettings.enabled,
+        checkedAt,
+        modelCatalogSource,
+        models,
+        slashCommands: dedupedSlashCommands,
+        probe: {
+          installed: true,
+          version: parsedVersion,
+          status: "ready",
+          auth: {
+            status: "authenticated",
+            ...(capabilities.email ? { email: capabilities.email } : {}),
+            ...(authMetadata ? authMetadata : {}),
+            ...(usageEmail ? { usageEmail } : {}),
+            capabilities: claudeAuthCapabilities({
+              isApiKeyAuth,
+              isLongLivedOAuthAuth,
+              usageCheck,
+            }),
+          },
+          ...(combinedAccountUsage ? { accountUsage: combinedAccountUsage } : {}),
+          ...(upgradeMessage ? { message: upgradeMessage } : {}),
+        },
+      });
+    }),
+  );
 });
 
 /**

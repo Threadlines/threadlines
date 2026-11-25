@@ -104,6 +104,8 @@ const FILE_SIGN_IN_STORAGE_ENV = {
   AGY_ACP_FORCE_FILE_STORAGE: "1",
 } as const;
 
+const noopBrowserCache = new Map<string, string>();
+
 /**
  * A `BROWSER` that opens nothing: the agent prints its sign-in URL, and the
  * Threadlines client (which may be another machine) opens it. Python splits
@@ -111,7 +113,13 @@ const FILE_SIGN_IN_STORAGE_ENV = {
  */
 function noopBrowser(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
   if (platform === "win32") return "cmd.exe /d /c exit 0 %s";
-  return resolveCommandPath("true", { platform, env }) ?? "/usr/bin/true";
+  const pathKey = `${platform}\0${env.PATH ?? ""}`;
+  const cached = noopBrowserCache.get(pathKey);
+  if (cached !== undefined && existsSync(cached)) return cached;
+  const resolved = resolveCommandPath("true", { platform, env }) ?? "/usr/bin/true";
+  if (noopBrowserCache.size >= 16) noopBrowserCache.clear();
+  noopBrowserCache.set(pathKey, resolved);
+  return resolved;
 }
 
 /**

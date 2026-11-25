@@ -907,6 +907,13 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    */
   readonly resolveMaintenance?: (
     settings: Settings,
+    options?: { readonly allowNetworkWait?: boolean },
   ) => Effect.Effect<ProviderMaintenanceCapabilities>;
+  /**
+   * Optional background latest-version lookup for CLIs not published on npm
+   * (e.g. GitHub releases). Runs during background snapshot enrichment rather
+   * than blocking the initial status probe.
+   */
+  readonly resolveLatestVersion?: () => Effect.Effect<string | null, never, HttpClient.HttpClient>;
   readonly extensions?: AcpProviderExtensions;
 }

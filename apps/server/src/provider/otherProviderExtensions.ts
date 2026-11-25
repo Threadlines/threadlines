@@ -435,14 +435,60 @@ function dedupeSkillsByPriority(
   return [...byName.values()].toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
-const isDirectChildUnderWritableRoots = Effect.fn(
-  "otherProviderExtensions.isDirectChildUnderWritableRoots",
-)(function* (input: {
-  readonly skillPath: string;
-  readonly userWritableRoots: ReadonlyArray<string>;
-  readonly projectWritableRoots: ReadonlyArray<string>;
+interface ResolvedWritableRoots {
+  readonly userRootKeys: ReadonlySet<string>;
+  readonly projectRootKeys: ReadonlySet<string>;
   readonly projectBoundary?: string | undefined;
-}) {
+}
+
+const resolveWritableRootKeys = Effect.fn("otherProviderExtensions.resolveWritableRootKeys")(
+  function* (
+    roots: OtherProviderSkillRoots,
+  ): Effect.fn.Return<ResolvedWritableRoots, never, FileSystem.FileSystem | Path.Path> {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const [realUserRoots, realProjectRoots] = yield* Effect.all(
+      [
+        Effect.forEach(
+          roots.userWritableRoots,
+          (userRoot) =>
+            fileSystem.realPath(userRoot).pipe(Effect.catch(() => Effect.succeed(null))),
+          { concurrency: 8 },
+        ),
+        roots.projectBoundary
+          ? Effect.forEach(
+              roots.projectWritableRoots,
+              (projectRoot) =>
+                fileSystem.realPath(projectRoot).pipe(Effect.catch(() => Effect.succeed(null))),
+              { concurrency: 8 },
+            )
+          : Effect.succeed<Array<string | null>>([]),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const userRootKeys = new Set<string>();
+    for (const realRoot of realUserRoots) {
+      if (realRoot) userRootKeys.add(normalizedPathKey(realRoot));
+    }
+    const projectRootKeys = new Set<string>();
+    if (roots.projectBoundary) {
+      for (const realRoot of realProjectRoots) {
+        if (realRoot && isPathWithinBoundary(path, roots.projectBoundary, realRoot)) {
+          projectRootKeys.add(normalizedPathKey(realRoot));
+        }
+      }
+    }
+    return {
+      userRootKeys,
+      projectRootKeys,
+      ...(roots.projectBoundary ? { projectBoundary: roots.projectBoundary } : {}),
+    };
+  },
+);
+
+const isDirectChildUnderResolvedWritableRoots = Effect.fn(
+  "otherProviderExtensions.isDirectChildUnderResolvedWritableRoots",
+)(function* (input: { readonly skillPath: string; readonly resolvedRoots: ResolvedWritableRoots }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const resolvedSkillPath = path.resolve(input.skillPath);
@@ -459,27 +505,14 @@ const isDirectChildUnderWritableRoots = Effect.fn(
   if (!realDir) return false;
   const parentKey = normalizedPathKey(path.dirname(realDir));
 
-  for (const userRoot of input.userWritableRoots) {
-    const realRoot = yield* fileSystem
-      .realPath(userRoot)
-      .pipe(Effect.catch(() => Effect.succeed(null)));
-    if (realRoot && normalizedPathKey(realRoot) === parentKey) return true;
-  }
+  if (input.resolvedRoots.userRootKeys.has(parentKey)) return true;
 
-  if (input.projectBoundary) {
-    for (const projectRoot of input.projectWritableRoots) {
-      const realRoot = yield* fileSystem
-        .realPath(projectRoot)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
-      if (
-        realRoot &&
-        isPathWithinBoundary(path, input.projectBoundary, realRoot) &&
-        isPathWithinBoundary(path, input.projectBoundary, realDir) &&
-        normalizedPathKey(realRoot) === parentKey
-      ) {
-        return true;
-      }
-    }
+  if (
+    input.resolvedRoots.projectBoundary &&
+    input.resolvedRoots.projectRootKeys.has(parentKey) &&
+    isPathWithinBoundary(path, input.resolvedRoots.projectBoundary, realDir)
+  ) {
+    return true;
   }
 
   return false;
@@ -487,7 +520,10 @@ const isDirectChildUnderWritableRoots = Effect.fn(
 
 const annotateDeletableSkills = Effect.fn("otherProviderExtensions.annotateDeletableSkills")(
   function* (skills: ReadonlyArray<ProviderExtensionSkill>, roots: OtherProviderSkillRoots | null) {
-    if (!roots) return [...skills];
+    if (!roots || skills.length === 0) return [...skills];
+    // Resolve writable root realPaths once per inventory instead of repeating
+    // them inside the per-skill loop.
+    const resolvedRoots = yield* resolveWritableRootKeys(roots);
     return yield* Effect.forEach(
       skills,
       (skill) =>
@@ -495,11 +531,9 @@ const annotateDeletableSkills = Effect.fn("otherProviderExtensions.annotateDelet
           if (skill.bundleId !== undefined || skill.scope === "system" || skill.canRead === false) {
             return skill;
           }
-          const canDelete = yield* isDirectChildUnderWritableRoots({
+          const canDelete = yield* isDirectChildUnderResolvedWritableRoots({
             skillPath: skill.path,
-            userWritableRoots: roots.userWritableRoots,
-            projectWritableRoots: roots.projectWritableRoots,
-            projectBoundary: roots.projectBoundary,
+            resolvedRoots,
           });
           return canDelete ? { ...skill, canDelete: true } : skill;
         }),
@@ -534,6 +568,8 @@ export const resolveOtherProviderSkillRoots = Effect.fn(
   readonly processEnv: NodeJS.ProcessEnv;
   readonly projectCwd?: string | undefined;
   readonly stateDir?: string | undefined;
+  readonly repoRoot?: string | undefined;
+  readonly projectBoundary?: string | undefined;
 }): Effect.fn.Return<OtherProviderSkillRoots | null, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -542,9 +578,12 @@ export const resolveOtherProviderSkillRoots = Effect.fn(
   }
 
   const projectCwd = optionalText(input.projectCwd);
-  const repoRoot = projectCwd ? yield* findRepositoryRoot(projectCwd) : undefined;
+  const repoRoot = projectCwd
+    ? (input.repoRoot ?? (yield* findRepositoryRoot(projectCwd)))
+    : undefined;
   const projectBoundary = repoRoot
-    ? yield* fileSystem.realPath(repoRoot).pipe(Effect.catch(() => Effect.succeed(repoRoot)))
+    ? (input.projectBoundary ??
+      (yield* fileSystem.realPath(repoRoot).pipe(Effect.catch(() => Effect.succeed(repoRoot)))))
     : undefined;
 
   if (input.config.driver === ANTIGRAVITY_DRIVER) {
@@ -831,6 +870,8 @@ export const readOtherProviderInventory = Effect.fn(
   readonly processEnv: NodeJS.ProcessEnv;
   readonly projectCwd?: string | undefined;
   readonly stateDir?: string | undefined;
+  readonly repoRoot?: string | undefined;
+  readonly projectBoundary?: string | undefined;
 }): Effect.fn.Return<ProviderExtensionProviderInventory, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -873,9 +914,12 @@ export const readOtherProviderInventory = Effect.fn(
   }
 
   const projectCwd = optionalText(input.projectCwd);
-  const repoRoot = projectCwd ? yield* findRepositoryRoot(projectCwd) : undefined;
+  const repoRoot = projectCwd
+    ? (input.repoRoot ?? (yield* findRepositoryRoot(projectCwd)))
+    : undefined;
   const projectBoundary = repoRoot
-    ? yield* fileSystem.realPath(repoRoot).pipe(Effect.catch(() => Effect.succeed(repoRoot)))
+    ? (input.projectBoundary ??
+      (yield* fileSystem.realPath(repoRoot).pipe(Effect.catch(() => Effect.succeed(repoRoot)))))
     : undefined;
   const writableRoots = yield* resolveOtherProviderSkillRoots({
     instanceId: input.instanceId,
@@ -883,6 +927,8 @@ export const readOtherProviderInventory = Effect.fn(
     processEnv: input.processEnv,
     projectCwd,
     stateDir: input.stateDir,
+    ...(repoRoot !== undefined ? { repoRoot } : {}),
+    ...(projectBoundary !== undefined ? { projectBoundary } : {}),
   });
 
   if (input.config.driver === ANTIGRAVITY_DRIVER) {

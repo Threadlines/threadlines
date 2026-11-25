@@ -1,5 +1,6 @@
 import { DEFAULT_CODEX_SERVICE_TIER_SELECTION } from "../../codexServiceTier.ts";
 import { parseSessionKey } from "@threadlines/shared/threadParticipants";
+import * as Fiber from "effect/Fiber";
 import {
   BROWSER_MCP_SERVER_NAME,
   mcpCommandsEndpointUrl,
@@ -2084,21 +2085,26 @@ const makeCodexSessionRuntimeIn = (
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const fileSystem = yield* FileSystem.FileSystem;
-    // Resolved once per session: the checkout cannot change kind underneath a
-    // running runtime, and every turn asks the same question.
-    const runsInManagedWorktree = yield* isLinkedWorktreeCheckout(options.cwd).pipe(
+    // Resolved once per session in the background while `codex app-server`
+    // spawns and initializes, since neither is needed until the first turn.
+    const runsInManagedWorktreeFiber = yield* isLinkedWorktreeCheckout(options.cwd).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.cached,
+      Effect.forkIn(runtimeScope),
     );
+    const runsInManagedWorktree = Fiber.join(runsInManagedWorktreeFiber);
     // The page tools' image folder, made once; workspace-write sandboxes can
     // write there because it sits in the system temp folder.
-    const agentPageAssetsDir =
+    const agentPageAssetsDirFiber =
       options.agentPages === true && options.lockdown === undefined
         ? yield* ensurePageAssetsDir(parseSessionKey(options.threadId).threadId).pipe(
             Effect.map((dir): string | undefined => dir),
             Effect.orElseSucceed(() => undefined),
+            Effect.forkIn(runtimeScope),
           )
         : undefined;
+    const resolveAgentPageAssetsDir = agentPageAssetsDirFiber
+      ? Fiber.join(agentPageAssetsDirFiber)
+      : Effect.succeed<string | undefined>(undefined);
     const events = yield* Queue.unbounded<ProviderEvent>();
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
@@ -3159,6 +3165,10 @@ const makeCodexSessionRuntimeIn = (
               : isNonDefaultServiceTier(currentServiceTier)
                 ? null
                 : undefined;
+          const [managedWorktree, agentPageAssetsDir] = yield* Effect.all(
+            [runsInManagedWorktree, resolveAgentPageAssetsDir],
+            { concurrency: "unbounded" },
+          );
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
@@ -3172,7 +3182,7 @@ const makeCodexSessionRuntimeIn = (
             ...(effectiveServiceTier !== undefined ? { serviceTier: effectiveServiceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
-            ...((yield* runsInManagedWorktree) ? { managedWorktree: true } : {}),
+            ...(managedWorktree ? { managedWorktree: true } : {}),
             ...(agentPageAssetsDir !== undefined ? { agentPageAssetsDir } : {}),
             ...(commandRequests ? { commandRequests: true } : {}),
             ...(deviceTools ? { deviceTools: true } : {}),

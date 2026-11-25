@@ -1,4 +1,5 @@
 import type { ServerProvider } from "@threadlines/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -13,9 +14,44 @@ import * as Semaphore from "effect/Semaphore";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
 import { ServerSettingsError } from "@threadlines/contracts";
 
+/**
+ * How often an unchanged scheduled check still re-runs `enrichSnapshot`
+ * (for version-advisory polling when the app stays open for hours/days).
+ */
+const SCHEDULED_ENRICHMENT_INTERVAL_MS = 60 * 60 * 1000;
+
 interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
+  /** Last reconciled base snapshot before `enrichSnapshot` folded extras on. */
+  readonly lastBaseSnapshot: ServerProvider | null;
   readonly enrichmentGeneration: number;
+  readonly lastEnrichedAtMs: number;
+}
+
+function stripCheckedAt(snapshot: ServerProvider): ServerProvider {
+  const accountUsage = snapshot.accountUsage
+    ? {
+        ...snapshot.accountUsage,
+        checkedAt: "",
+        limits: snapshot.accountUsage.limits.map((limit) => ({
+          ...limit,
+          ...(limit.primary ? { primary: { ...limit.primary, checkedAt: "" } } : {}),
+          ...(limit.secondary ? { secondary: { ...limit.secondary, checkedAt: "" } } : {}),
+        })),
+        ...(snapshot.accountUsage.tokenUsage
+          ? { tokenUsage: { ...snapshot.accountUsage.tokenUsage, checkedAt: "" } }
+          : {}),
+      }
+    : undefined;
+  return {
+    ...snapshot,
+    checkedAt: "",
+    ...(accountUsage ? { accountUsage } : {}),
+  };
+}
+
+function sameBaseSnapshot(previous: ServerProvider, next: ServerProvider): boolean {
+  return Equal.equals(stripCheckedAt(previous), stripCheckedAt(next));
 }
 
 /** `now`, or a millisecond past `base` when the clock hasn't moved past it. */
@@ -80,7 +116,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const initialSnapshot = yield* input.initialSnapshot(initialSettings);
   const snapshotStateRef = yield* Ref.make<ProviderSnapshotState>({
     snapshot: initialSnapshot,
+    lastBaseSnapshot: null,
     enrichmentGeneration: 0,
+    lastEnrichedAtMs: 0,
   });
   const settingsRef = yield* Ref.make(initialSettings);
   const enrichmentFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
@@ -162,38 +200,74 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     },
   ) {
     const forceRefresh = options?.forceRefresh === true;
+    const isScheduled = options?.scheduled === true;
     const previousSettings = yield* Ref.get(settingsRef);
-    if (!forceRefresh && !input.haveSettingsChanged(previousSettings, nextSettings)) {
+    const settingsChanged = input.haveSettingsChanged(previousSettings, nextSettings);
+    if (!forceRefresh && !settingsChanged) {
       yield* Ref.set(settingsRef, nextSettings);
       return yield* Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
     }
 
-    const checkedSnapshot = yield* options?.scheduled === true && input.scheduledCheckProvider
+    const checkedSnapshot = yield* isScheduled && input.scheduledCheckProvider
       ? input.scheduledCheckProvider
       : input.checkProvider;
-    const [nextSnapshot, nextGeneration] = yield* publishLock.withPermits(1)(
+    const nowMs = yield* Clock.currentTimeMillis;
+    const [nextSnapshot, nextGeneration, shouldEnrich] = yield* publishLock.withPermits(1)(
       Effect.gen(function* () {
-        const changed = yield* Ref.modify(snapshotStateRef, (state) => {
-          const generation = input.enrichSnapshot
-            ? state.enrichmentGeneration + 1
-            : state.enrichmentGeneration;
-          const snapshot = input.reconcileSnapshot
-            ? input.reconcileSnapshot(state.snapshot, checkedSnapshot)
-            : checkedSnapshot;
-          return [
-            [snapshot, generation] as const,
-            {
-              snapshot,
-              enrichmentGeneration: generation,
-            },
-          ] as const;
-        });
-        yield* PubSub.publish(changesPubSub, changed[0]);
-        return changed;
+        const outcome = yield* Ref.modify(
+          snapshotStateRef,
+          (
+            state,
+          ): readonly [
+            readonly [ServerProvider, number, boolean, boolean],
+            ProviderSnapshotState,
+          ] => {
+            const reconciled = input.reconcileSnapshot
+              ? input.reconcileSnapshot(state.snapshot, checkedSnapshot)
+              : checkedSnapshot;
+            // On a scheduled refresh whose base state didn't change (only
+            // `checkedAt` advanced), keep the current enriched snapshot so
+            // unchanged ticks don't wipe enrichments, rewrite caches, or
+            // broadcast full provider snapshots. Still re-run enrichment hourly
+            // so version advisories pick up new releases.
+            if (
+              isScheduled &&
+              !settingsChanged &&
+              state.lastBaseSnapshot !== null &&
+              sameBaseSnapshot(state.lastBaseSnapshot, reconciled)
+            ) {
+              const enrichmentDue =
+                input.enrichSnapshot !== undefined &&
+                nowMs - state.lastEnrichedAtMs >= SCHEDULED_ENRICHMENT_INTERVAL_MS;
+              return [
+                [state.snapshot, state.enrichmentGeneration, enrichmentDue, false],
+                enrichmentDue ? { ...state, lastEnrichedAtMs: nowMs } : state,
+              ];
+            }
+            const generation = input.enrichSnapshot
+              ? state.enrichmentGeneration + 1
+              : state.enrichmentGeneration;
+            return [
+              [reconciled, generation, input.enrichSnapshot !== undefined, true],
+              {
+                snapshot: reconciled,
+                lastBaseSnapshot: reconciled,
+                enrichmentGeneration: generation,
+                lastEnrichedAtMs: input.enrichSnapshot ? nowMs : state.lastEnrichedAtMs,
+              },
+            ];
+          },
+        );
+        if (outcome[3]) {
+          yield* PubSub.publish(changesPubSub, outcome[0]);
+        }
+        return [outcome[0], outcome[1], outcome[2]] as const;
       }),
     );
     yield* Ref.set(settingsRef, nextSettings);
-    yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
+    if (shouldEnrich) {
+      yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
+    }
     return nextSnapshot;
   });
   const applySnapshot = (
@@ -261,11 +335,14 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           if (nextSnapshot === null || nextSnapshot === state.snapshot) {
             return [null, state] as const;
           }
+          const nextLastBase =
+            state.lastBaseSnapshot !== null ? patch(state.lastBaseSnapshot) : null;
           return [
             nextSnapshot,
             {
               ...state,
               snapshot: nextSnapshot,
+              lastBaseSnapshot: nextLastBase,
             },
           ] as const;
         });

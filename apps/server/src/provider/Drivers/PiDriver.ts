@@ -14,6 +14,7 @@
  *
  * @module provider/Drivers/PiDriver
  */
+import { homedir } from "node:os";
 import * as NodePath from "node:path";
 
 import {
@@ -22,17 +23,21 @@ import {
   type ServerProvider,
   type ServerProviderModel,
 } from "@threadlines/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
+import { resolveCommandPath } from "@threadlines/shared/shell";
 import { ServerConfig } from "../../config.ts";
 import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
@@ -45,6 +50,7 @@ import {
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
+  findUserPi,
   isDefaultPiCommand,
   PI_PACKAGE_NAME,
   PI_UPDATE_LOCK,
@@ -141,17 +147,32 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       const lookupEnvironment = () => mergeProviderInstanceEnvironment(environment);
 
       // Which Pi runs, from the last check; looked up now when there was none.
+      // Never cleared before a refresh completes so concurrent session starts
+      // keep using the valid installation instead of spawning duplicate probes.
       let installation: PiInstallation | undefined;
-      const currentInstallation = Effect.suspend(() =>
-        installation
-          ? Effect.succeed(installation)
-          : findPiInstallation({
-              binaryPath: settings.binaryPath,
-              environment: lookupEnvironment(),
-              cwd: serverConfig.cwd,
-              managed,
-            }).pipe(Effect.tap((found) => Effect.sync(() => (installation = found)))),
-      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+      const installationLock = yield* Semaphore.make(1);
+      const resolveInstallation = (force: boolean) =>
+        Effect.suspend(() => {
+          if (!force && installation) return Effect.succeed(installation);
+          return installationLock.withPermit(
+            Effect.suspend(() => {
+              if (!force && installation) return Effect.succeed(installation);
+              return findPiInstallation({
+                binaryPath: settings.binaryPath,
+                environment: lookupEnvironment(),
+                cwd: serverConfig.cwd,
+                managed,
+              }).pipe(
+                Effect.tap((found) =>
+                  Effect.sync(() => {
+                    installation = found;
+                  }),
+                ),
+              );
+            }),
+          );
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+      const currentInstallation = resolveInstallation(false);
       const launch: PiLaunch = currentInstallation.pipe(
         Effect.flatMap((current) => piLaunchFor(current, managed)),
       );
@@ -253,6 +274,145 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         instanceEnvironment: environment,
       });
 
+      const statSig = (targetPath: string | undefined) =>
+        targetPath
+          ? fileSystem.stat(targetPath).pipe(
+              Effect.map((info) => {
+                const mtimeMs = Option.match(info.mtime, {
+                  onNone: () => "",
+                  onSome: (date) => String(date.getTime()),
+                });
+                return `${targetPath}\u0000${Number(info.size)}\u0000${mtimeMs}`;
+              }),
+              Effect.orElseSucceed(() => `missing:${targetPath}`),
+            )
+          : Effect.succeed("none");
+
+      const extensionsSigEffect = (extensionsDir: string): Effect.Effect<string> =>
+        Effect.gen(function* () {
+          const rootSig = yield* statSig(extensionsDir);
+          if (rootSig.startsWith("missing:")) return rootSig;
+          const entries = yield* fileSystem
+            .readDirectory(extensionsDir)
+            .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
+          const sorted = entries.toSorted().slice(0, 64);
+          const childSigs = yield* Effect.forEach(
+            sorted,
+            (name) => {
+              const childPath = NodePath.join(extensionsDir, name);
+              return fileSystem.stat(childPath).pipe(
+                Effect.flatMap((info) => {
+                  const mtimeMs = Option.match(info.mtime, {
+                    onNone: () => "",
+                    onSome: (date) => String(date.getTime()),
+                  });
+                  const selfSig = `${name}\u0000${Number(info.size)}\u0000${mtimeMs}`;
+                  if (info.type !== "Directory") return Effect.succeed(selfSig);
+                  return fileSystem.readDirectory(childPath).pipe(
+                    Effect.flatMap((subEntries) =>
+                      Effect.forEach(
+                        subEntries.toSorted().slice(0, 32),
+                        (sub) => statSig(NodePath.join(childPath, sub)),
+                        { concurrency: 8 },
+                      ),
+                    ),
+                    Effect.map((subSigs) => [selfSig, ...subSigs].join("\u0002")),
+                    Effect.orElseSucceed(() => selfSig),
+                  );
+                }),
+                Effect.orElseSucceed(() => `missing:${name}`),
+              );
+            },
+            { concurrency: 8 },
+          );
+          return [rootSig, ...childSigs].join("\u0003");
+        });
+
+      const probeSignature = Effect.gen(function* () {
+        const env = lookupEnvironment();
+        const userCommand = findUserPi(settings.binaryPath, env);
+        const nodeCommand = userCommand
+          ? resolveCommandPath("node", { platform: process.platform, env })
+          : undefined;
+        const standIn = isDefaultPiCommand(settings.binaryPath) ? managed : undefined;
+        const piAgentDir =
+          env.PI_CODING_AGENT_DIR?.trim() ||
+          NodePath.join(env.HOME?.trim() || homedir(), ".pi", "agent");
+        const [userSig, nodeSig, managedVersion, authSig, settingsSig, modelsSig, extensionsSig] =
+          yield* Effect.all(
+            [
+              statSig(userCommand),
+              statSig(nodeCommand ?? undefined),
+              standIn ? standIn.installed : Effect.succeed(undefined),
+              statSig(NodePath.join(piAgentDir, "auth.json")),
+              statSig(NodePath.join(piAgentDir, "settings.json")),
+              statSig(NodePath.join(piAgentDir, "models.json")),
+              extensionsSigEffect(NodePath.join(piAgentDir, "extensions")),
+            ],
+            { concurrency: "unbounded" },
+          );
+        return [
+          userSig,
+          nodeSig,
+          managedVersion ?? "",
+          authSig,
+          settingsSig,
+          modelsSig,
+          extensionsSig,
+        ].join("\u0001");
+      });
+
+      let cachedProbe:
+        | {
+            readonly signature: string;
+            readonly snapshot: ServerProvider;
+          }
+        | undefined;
+
+      const runFullCheck = Effect.gen(function* () {
+        if (!settings.enabled) {
+          return stampIdentity(yield* makePendingPiProvider(settings, lookupEnvironment()));
+        }
+        const signature = yield* probeSignature;
+        // Looked up afresh on every full check without clearing the existing
+        // installation while the probe is in flight.
+        const current = yield* resolveInstallation(true);
+        yield* refreshMaintenance(current);
+        const draft = yield* checkPiProviderStatus({
+          settings,
+          installation: current,
+          launch: piLaunchFor(current, managed),
+          launchArgs,
+          cwd: serverConfig.cwd,
+          instanceEnvironment: environment,
+          onFacts: (facts) =>
+            Effect.sync(() => {
+              liveModels = facts.models;
+              defaultModel = facts.defaultModel;
+            }),
+        });
+        const checked = stampIdentity(draft);
+        cachedProbe =
+          checked.status !== "error" || !checked.installed
+            ? { signature, snapshot: checked }
+            : undefined;
+        return checked;
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+
+      const scheduledCheck = Effect.gen(function* () {
+        if (!settings.enabled) {
+          return stampIdentity(yield* makePendingPiProvider(settings, lookupEnvironment()));
+        }
+        const signature = yield* probeSignature;
+        if (cachedProbe && cachedProbe.signature === signature) {
+          return {
+            ...cachedProbe.snapshot,
+            checkedAt: DateTime.formatIso(yield* DateTime.now),
+          };
+        }
+        return yield* runFullCheck;
+      });
+
       const snapshot = yield* makeManagedServerProvider<PiSettings>({
         get maintenanceCapabilities() {
           return maintenance;
@@ -262,30 +422,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         haveSettingsChanged: () => false,
         initialSnapshot: (current) =>
           makePendingPiProvider(current, lookupEnvironment()).pipe(Effect.map(stampIdentity)),
-        checkProvider: Effect.gen(function* () {
-          if (!settings.enabled) {
-            return stampIdentity(yield* makePendingPiProvider(settings, lookupEnvironment()));
-          }
-          // Looked up afresh on every check: Pi may have been installed,
-          // updated or removed since.
-          installation = undefined;
-          const current = yield* currentInstallation;
-          yield* refreshMaintenance(current);
-          const draft = yield* checkPiProviderStatus({
-            settings,
-            installation: current,
-            launch: piLaunchFor(current, managed),
-            launchArgs,
-            cwd: serverConfig.cwd,
-            instanceEnvironment: environment,
-            onFacts: (facts) =>
-              Effect.sync(() => {
-                liveModels = facts.models;
-                defaultModel = facts.defaultModel;
-              }),
-          });
-          return stampIdentity(draft);
-        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+        checkProvider: runFullCheck,
+        scheduledCheckProvider: scheduledCheck,
         enrichSnapshot: ({ snapshot: current, publishSnapshot }) =>
           enrichProviderSnapshotWithVersionAdvisory(current, maintenance).pipe(
             Effect.provideService(HttpClient.HttpClient, httpClient),

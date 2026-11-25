@@ -74,6 +74,16 @@ export interface ProviderSessionDirectoryShape {
     ProviderSessionDirectoryPersistenceError
   >;
 
+  readonly listActiveBindings?: () => Effect.Effect<
+    ReadonlyArray<ProviderRuntimeBindingWithMetadata>,
+    ProviderSessionDirectoryPersistenceError
+  >;
+
+  readonly markAllStopped?: (input: {
+    readonly lastRuntimeEvent: string;
+    readonly lastRuntimeEventAt: string;
+  }) => Effect.Effect<void, ProviderSessionDirectoryPersistenceError>;
+
   readonly deleteBinding: (
     threadId: ThreadId,
   ) => Effect.Effect<void, ProviderSessionDirectoryPersistenceError>;

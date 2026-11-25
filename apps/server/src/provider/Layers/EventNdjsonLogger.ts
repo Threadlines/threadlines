@@ -14,6 +14,7 @@ import { RotatingFileSink } from "@threadlines/shared/logging";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
@@ -51,6 +52,8 @@ export interface EventNdjsonLogger {
   readonly filePath: string;
   /** False when records tagged `streamFragment: true` are discarded without writing. */
   readonly keepsStreamFragments?: boolean;
+  /** True when this logger currently holds an open writer for `filePath` (or its rotations). */
+  readonly hasActivePath?: (filePath: string) => boolean;
   write: (
     event: unknown,
     threadId: ThreadId | null,
@@ -81,6 +84,8 @@ export interface ProviderEventLogCleanupOptions {
   readonly maxAgeMs?: number;
   readonly maxTotalBytes?: number;
   readonly protectRecentMs?: number;
+  /** Returns true when a live logger owns `filePath` and cleanup must leave it alone. */
+  readonly isFileActive?: (filePath: string) => boolean;
 }
 
 export interface ProviderEventLogCleanupResult {
@@ -119,15 +124,20 @@ interface LogCleanupCandidate {
   readonly filePath: string;
   readonly size: number;
   readonly mtimeMs: number;
+  readonly ino: number;
 }
 
 function isFileNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { readonly code?: unknown }).code === "ENOENT"
-  );
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  if ("code" in error && (error as { readonly code?: unknown }).code === "ENOENT") {
+    return true;
+  }
+  if ("cause" in error) {
+    return isFileNotFoundError((error as { readonly cause?: unknown }).cause);
+  }
+  return false;
 }
 
 function isProviderLogFileName(fileName: string): boolean {
@@ -144,98 +154,147 @@ export function cleanupProviderEventLogDirectory(
     const maxAgeMs = options.maxAgeMs ?? DEFAULT_LOG_CLEANUP_MAX_AGE_MS;
     const maxTotalBytes = options.maxTotalBytes ?? DEFAULT_LOG_CLEANUP_MAX_TOTAL_BYTES;
     const protectRecentMs = options.protectRecentMs ?? DEFAULT_LOG_CLEANUP_PROTECT_RECENT_MS;
-    return yield* Effect.sync(() => {
-      let scannedFiles = 0;
-      let deletedFiles = 0;
-      let deletedBytes = 0;
-      let errorCount = 0;
-      let entries: fs.Dirent[];
 
-      try {
-        entries = fs.readdirSync(directory, { withFileTypes: true });
-      } catch (error) {
-        return {
-          scannedFiles: 0,
-          deletedFiles: 0,
-          deletedBytes: 0,
-          retainedBytes: 0,
-          errorCount: isFileNotFoundError(error) ? 0 : 1,
-        } satisfies ProviderEventLogCleanupResult;
-      }
+    const entriesResult = yield* Effect.tryPromise(() =>
+      fs.promises.readdir(directory, { withFileTypes: true }),
+    ).pipe(Effect.result);
+    if (Result.isFailure(entriesResult)) {
+      return {
+        scannedFiles: 0,
+        deletedFiles: 0,
+        deletedBytes: 0,
+        retainedBytes: 0,
+        errorCount: isFileNotFoundError(entriesResult.failure) ? 0 : 1,
+      } satisfies ProviderEventLogCleanupResult;
+    }
 
-      const remaining: LogCleanupCandidate[] = [];
-      const deleteCandidate = (candidate: LogCleanupCandidate): boolean => {
-        try {
-          fs.unlinkSync(candidate.filePath);
-          deletedFiles += 1;
-          deletedBytes += candidate.size;
-          return true;
-        } catch {
-          errorCount += 1;
+    const matchingPaths = entriesResult.success
+      .filter((entry) => entry.isFile() && isProviderLogFileName(entry.name))
+      .map((entry) => path.join(directory, entry.name));
+
+    let scannedFiles = 0;
+    let deletedFiles = 0;
+    let deletedBytes = 0;
+    let errorCount = 0;
+
+    const deleteCandidate = (candidate: LogCleanupCandidate): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        if (options.isFileActive?.(candidate.filePath)) {
           return false;
         }
-      };
-
-      for (const entry of entries) {
-        if (!entry.isFile() || !isProviderLogFileName(entry.name)) {
-          continue;
-        }
-
-        const filePath = path.join(directory, entry.name);
-        let stat: fs.Stats;
-        try {
-          stat = fs.statSync(filePath);
-        } catch {
-          errorCount += 1;
-          continue;
-        }
-
-        if (!stat.isFile()) {
-          continue;
-        }
-
-        scannedFiles += 1;
-        const candidate = {
-          filePath,
-          size: stat.size,
-          mtimeMs: stat.mtimeMs,
-        } satisfies LogCleanupCandidate;
-
-        if (maxAgeMs >= 0 && nowMs - candidate.mtimeMs > maxAgeMs) {
-          if (!deleteCandidate(candidate)) {
-            remaining.push(candidate);
+        // Re-check file identity and mtime immediately before unlink so a
+        // resumed thread that wrote to or rotated this file after the initial
+        // scan never loses newly written events.
+        const freshResult = yield* Effect.tryPromise(() =>
+          fs.promises.stat(candidate.filePath),
+        ).pipe(Effect.result);
+        if (Result.isFailure(freshResult)) {
+          if (!isFileNotFoundError(freshResult.failure)) {
+            errorCount += 1;
           }
-          continue;
+          return false;
         }
+        const fresh = freshResult.success;
+        if (
+          !fresh.isFile() ||
+          fresh.ino !== candidate.ino ||
+          fresh.size !== candidate.size ||
+          fresh.mtimeMs !== candidate.mtimeMs
+        ) {
+          return false;
+        }
+        const unlinkResult = yield* Effect.tryPromise(() =>
+          fs.promises.unlink(candidate.filePath),
+        ).pipe(Effect.result);
+        if (Result.isFailure(unlinkResult)) {
+          if (!isFileNotFoundError(unlinkResult.failure)) {
+            errorCount += 1;
+          }
+          return false;
+        }
+        deletedFiles += 1;
+        deletedBytes += candidate.size;
+        return true;
+      });
 
+    const statResults = yield* Effect.forEach(
+      matchingPaths,
+      (filePath) =>
+        Effect.tryPromise(() => fs.promises.stat(filePath)).pipe(
+          Effect.map((stat): LogCleanupCandidate | null => {
+            if (!stat.isFile()) {
+              return null;
+            }
+            scannedFiles += 1;
+            return {
+              filePath,
+              size: stat.size,
+              mtimeMs: stat.mtimeMs,
+              ino: stat.ino,
+            } satisfies LogCleanupCandidate;
+          }),
+          Effect.catch((error) => {
+            if (!isFileNotFoundError(error)) {
+              errorCount += 1;
+            }
+            return Effect.succeed<LogCleanupCandidate | null>(null);
+          }),
+        ),
+      { concurrency: 16 },
+    );
+
+    const expired: LogCleanupCandidate[] = [];
+    const remaining: LogCleanupCandidate[] = [];
+    for (const candidate of statResults) {
+      if (candidate === null) {
+        continue;
+      }
+      if (maxAgeMs >= 0 && nowMs - candidate.mtimeMs > maxAgeMs) {
+        expired.push(candidate);
+      } else {
         remaining.push(candidate);
       }
+    }
 
-      let retainedBytes = remaining.reduce((total, candidate) => total + candidate.size, 0);
-      if (retainedBytes > maxTotalBytes) {
-        const protectedAfterMs = nowMs - protectRecentMs;
-        const sizeCleanupCandidates = remaining
-          .filter((candidate) => candidate.mtimeMs < protectedAfterMs)
-          .toSorted((left, right) => left.mtimeMs - right.mtimeMs);
+    yield* Effect.forEach(
+      expired,
+      (candidate) =>
+        deleteCandidate(candidate).pipe(
+          Effect.tap((deleted) =>
+            Effect.sync(() => {
+              if (!deleted) {
+                remaining.push(candidate);
+              }
+            }),
+          ),
+        ),
+      { concurrency: 16, discard: true },
+    );
 
-        for (const candidate of sizeCleanupCandidates) {
-          if (retainedBytes <= maxTotalBytes) {
-            break;
-          }
-          if (deleteCandidate(candidate)) {
-            retainedBytes -= candidate.size;
-          }
+    let retainedBytes = remaining.reduce((total, candidate) => total + candidate.size, 0);
+    if (retainedBytes > maxTotalBytes) {
+      const protectedAfterMs = nowMs - protectRecentMs;
+      const sizeCleanupCandidates = remaining
+        .filter((candidate) => candidate.mtimeMs < protectedAfterMs)
+        .toSorted((left, right) => left.mtimeMs - right.mtimeMs);
+
+      for (const candidate of sizeCleanupCandidates) {
+        if (retainedBytes <= maxTotalBytes) {
+          break;
+        }
+        if (yield* deleteCandidate(candidate)) {
+          retainedBytes -= candidate.size;
         }
       }
+    }
 
-      return {
-        scannedFiles,
-        deletedFiles,
-        deletedBytes,
-        retainedBytes,
-        errorCount,
-      } satisfies ProviderEventLogCleanupResult;
-    });
+    return {
+      scannedFiles,
+      deletedFiles,
+      deletedBytes,
+      retainedBytes,
+      errorCount,
+    } satisfies ProviderEventLogCleanupResult;
   });
 }
 
@@ -756,10 +815,20 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
   });
 
   const keepStreamFragments = options.keepStreamFragments === true;
+  const logDirectory = path.dirname(filePath);
+  const hasActivePath = (candidatePath: string): boolean => {
+    if (path.dirname(candidatePath) !== logDirectory) {
+      return false;
+    }
+    const baseName = path.basename(candidatePath);
+    const segment = baseName.replace(PROVIDER_LOG_FILE_NAME_PATTERN, "");
+    return segment.length > 0 && threadWritersFastPath.has(segment);
+  };
 
   return {
     filePath,
     keepsStreamFragments: keepStreamFragments,
+    hasActivePath,
     write: (event, threadId, writeOptions) =>
       writeOptions?.streamFragment === true && !keepStreamFragments
         ? Effect.void
