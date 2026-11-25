@@ -262,6 +262,69 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       ),
     );
 
+  const listActiveBindings: NonNullable<ProviderSessionDirectoryShape["listActiveBindings"]> = () =>
+    (repository.listActive
+      ? repository
+          .listActive()
+          .pipe(
+            Effect.mapError(
+              toPersistenceError("ProviderSessionDirectory.listActiveBindings:listActive"),
+            ),
+          )
+      : repository.list().pipe(
+          Effect.mapError(toPersistenceError("ProviderSessionDirectory.listActiveBindings:list")),
+          Effect.map((rows) => rows.filter((row) => row.status !== "stopped")),
+        )
+    ).pipe(
+      Effect.flatMap((rows) =>
+        Effect.forEach(
+          rows,
+          (row) => toRuntimeBinding(row, "ProviderSessionDirectory.listActiveBindings"),
+          { concurrency: "unbounded" },
+        ),
+      ),
+    );
+
+  const markAllStopped: NonNullable<ProviderSessionDirectoryShape["markAllStopped"]> = (input) =>
+    Effect.gen(function* () {
+      const lastSeenAt = DateTime.formatIso(yield* DateTime.now);
+      if (repository.markAllStopped) {
+        yield* repository
+          .markAllStopped({
+            lastSeenAt,
+            lastRuntimeEvent: input.lastRuntimeEvent,
+            lastRuntimeEventAt: input.lastRuntimeEventAt,
+          })
+          .pipe(
+            Effect.mapError(
+              toPersistenceError("ProviderSessionDirectory.markAllStopped:markAllStopped"),
+            ),
+          );
+        return;
+      }
+      const active = yield* listActiveBindings();
+      yield* Effect.forEach(
+        active,
+        (binding) =>
+          upsert({
+            threadId: binding.threadId,
+            provider: binding.provider,
+            ...(binding.providerInstanceId !== undefined
+              ? { providerInstanceId: binding.providerInstanceId }
+              : {}),
+            status: "stopped",
+            runtimePayload: {
+              activeTurnId: null,
+              lastRuntimeEvent: input.lastRuntimeEvent,
+              lastRuntimeEventAt: input.lastRuntimeEventAt,
+            },
+          }).pipe(
+            Effect.mapError(toPersistenceError("ProviderSessionDirectory.markAllStopped:upsert")),
+          ),
+        { discard: true },
+      );
+    });
+
   const deleteBinding: ProviderSessionDirectoryShape["deleteBinding"] = (threadId) =>
     repository
       .deleteByThreadId({ threadId })
@@ -275,6 +338,8 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
     listThreadIds,
     listThreadIdsForThread,
     listBindings,
+    listActiveBindings,
+    markAllStopped,
     deleteBinding,
     patchIfSession,
   } satisfies ProviderSessionDirectoryShape;

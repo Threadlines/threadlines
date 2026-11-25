@@ -2524,6 +2524,23 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listThreadIdsNeedingStartupReconciliationRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: () =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_thread_sessions
+        WHERE status != 'stopped'
+        UNION
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND check_backs IS NOT NULL
+          AND check_backs != '[]'
+      `,
+  });
+
   const listThreadSubagentRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadSubagentDbRowSchema,
@@ -4210,6 +4227,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const listThreadIdsNeedingStartupReconciliation: NonNullable<
+    ProjectionSnapshotQueryShape["listThreadIdsNeedingStartupReconciliation"]
+  > = () =>
+    listThreadIdsNeedingStartupReconciliationRows(undefined).pipe(
+      Effect.map((rows) => rows.map((row) => row.threadId)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listThreadIdsNeedingStartupReconciliation:query",
+          "ProjectionSnapshotQuery.listThreadIdsNeedingStartupReconciliation:decodeRows",
+        ),
+      ),
+    );
+
   const isThreadWorkspacePathInUse: ProjectionSnapshotQueryShape["isThreadWorkspacePathInUse"] = (
     path,
   ) =>
@@ -4481,6 +4511,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadShellById,
     getThreadIngestionContext,
     listThreadsWithMove,
+    listThreadIdsNeedingStartupReconciliation,
     isThreadWorkspacePathInUse,
     getThreadDetailById,
     getTurnActivities,

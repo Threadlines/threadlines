@@ -132,15 +132,9 @@ export interface ClaudeSubagentLookupInput {
   readonly agentId: string;
 }
 
-/**
- * Every directory that can hold this session's subagent files, in the order
- * they should be searched: the project slug the session's cwd maps to first,
- * then the other slugs a resumed session may still be writing under, and
- * inside each, the flat subagent root before the nested workflow directories.
- */
-const subagentSearchDirectories = Effect.fn("subagentSearchDirectories")(function* (input: {
-  readonly environment: NodeJS.ProcessEnv;
-  readonly cwd: string;
+const subagentDirectoriesForProject = Effect.fn("subagentDirectoriesForProject")(function* (input: {
+  readonly projectsDir: string;
+  readonly projectDirectory: string;
   readonly sessionId: string;
 }): Effect.fn.Return<
   ReadonlyArray<string>,
@@ -149,32 +143,84 @@ const subagentSearchDirectories = Effect.fn("subagentSearchDirectories")(functio
 > {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const projectsDir = path.join(resolveClaudeConfigDir(input.environment, path), "projects");
-  const expectedProject = claudeProjectDirectoryName(input.cwd);
-  const projectEntries = yield* fileSystem
-    .readDirectory(projectsDir)
+  const searchRoot = path.join(
+    input.projectsDir,
+    input.projectDirectory,
+    input.sessionId,
+    "subagents",
+  );
+  if (!(yield* fileExists(fileSystem, searchRoot))) {
+    return [];
+  }
+  const directories: Array<string> = [searchRoot];
+  const workflowsRoot = path.join(searchRoot, "workflows");
+  const workflowEntries = yield* fileSystem
+    .readDirectory(workflowsRoot)
     .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
-  const projectDirectories = [
-    expectedProject,
-    ...projectEntries.filter((entry) => entry !== expectedProject).sort(),
-  ];
-
-  const directories: Array<string> = [];
-  for (const projectDirectory of projectDirectories) {
-    const searchRoot = path.join(projectsDir, projectDirectory, input.sessionId, "subagents");
-    if (!(yield* fileExists(fileSystem, searchRoot))) {
-      continue;
-    }
-    directories.push(searchRoot);
-    const workflowsRoot = path.join(searchRoot, "workflows");
-    const workflowEntries = yield* fileSystem
-      .readDirectory(workflowsRoot)
-      .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
-    for (const entry of workflowEntries.sort()) {
-      directories.push(path.join(workflowsRoot, entry));
-    }
+  for (const entry of workflowEntries.sort()) {
+    directories.push(path.join(workflowsRoot, entry));
   }
   return directories;
+});
+
+const searchDirectoriesForSubagent = Effect.fn("searchDirectoriesForSubagent")(function* (
+  searchedDirectories: ReadonlyArray<string>,
+  agentId: string,
+): Effect.fn.Return<
+  ClaudeSubagentTranscriptLocation | null,
+  PlatformError.PlatformError,
+  FileSystem.FileSystem | Path.Path
+> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const searchedDirectory of searchedDirectories) {
+    const directTranscriptPath = path.join(searchedDirectory, `agent-${agentId}.jsonl`);
+    if (yield* fileExists(fileSystem, directTranscriptPath)) {
+      const meta = yield* readMetaFile(
+        fileSystem,
+        path.join(searchedDirectory, `agent-${agentId}.meta.json`),
+      );
+      return {
+        transcriptPath: directTranscriptPath,
+        agentId,
+        ...(meta ? { meta } : {}),
+      };
+    }
+
+    const entries = yield* fileSystem
+      .readDirectory(searchedDirectory)
+      .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
+    const metaFiles = entries.sort().flatMap((entry) => {
+      const match = /^agent-(.+)\.meta\.json$/u.exec(entry);
+      return match?.[1] ? [{ entry, resolvedAgentId: match[1] }] : [];
+    });
+    const metas = yield* Effect.forEach(
+      metaFiles,
+      (candidate) =>
+        readMetaFile(fileSystem, path.join(searchedDirectory, candidate.entry)).pipe(
+          Effect.map((meta) => ({ ...candidate, meta })),
+        ),
+      { concurrency: 16 },
+    );
+    for (const candidate of metas) {
+      if (candidate.meta?.toolUseId !== agentId) {
+        continue;
+      }
+      const transcriptPath = path.join(
+        searchedDirectory,
+        `agent-${candidate.resolvedAgentId}.jsonl`,
+      );
+      if (!(yield* fileExists(fileSystem, transcriptPath))) {
+        continue;
+      }
+      return {
+        transcriptPath,
+        agentId: candidate.resolvedAgentId,
+        meta: candidate.meta,
+      };
+    }
+  }
+  return null;
 });
 
 /**
@@ -200,48 +246,39 @@ export const locateClaudeSubagentTranscript = Effect.fn("locateClaudeSubagentTra
       resolutionCache.delete(cacheKey);
     }
 
-    const searchedDirectories = yield* subagentSearchDirectories(input);
+    const projectsDir = path.join(resolveClaudeConfigDir(input.environment, path), "projects");
+    const expectedProject = claudeProjectDirectoryName(input.cwd);
+    // Probe the cwd's own project directory first before listing or stat'ing
+    // every historical project slug under `~/.claude/projects`.
+    const expectedDirs = yield* subagentDirectoriesForProject({
+      projectsDir,
+      projectDirectory: expectedProject,
+      sessionId: input.sessionId,
+    });
+    const directHit = yield* searchDirectoriesForSubagent(expectedDirs, input.agentId);
+    if (directHit) {
+      setCappedMapEntry(resolutionCache, cacheKey, directHit, RESOLUTION_CACHE_MAX_ENTRIES);
+      return directHit;
+    }
 
-    for (const searchedDirectory of searchedDirectories) {
-      const directTranscriptPath = path.join(searchedDirectory, `agent-${input.agentId}.jsonl`);
-      if (yield* fileExists(fileSystem, directTranscriptPath)) {
-        const meta = yield* readMetaFile(
-          fileSystem,
-          path.join(searchedDirectory, `agent-${input.agentId}.meta.json`),
-        );
-        const location = {
-          transcriptPath: directTranscriptPath,
-          agentId: input.agentId,
-          ...(meta ? { meta } : {}),
-        };
-        setCappedMapEntry(resolutionCache, cacheKey, location, RESOLUTION_CACHE_MAX_ENTRIES);
-        return location;
-      }
-
-      const entries = yield* fileSystem
-        .readDirectory(searchedDirectory)
-        .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
-      for (const entry of entries.sort()) {
-        const match = /^agent-(.+)\.meta\.json$/u.exec(entry);
-        if (!match?.[1]) {
-          continue;
-        }
-        const meta = yield* readMetaFile(fileSystem, path.join(searchedDirectory, entry));
-        if (meta?.toolUseId !== input.agentId) {
-          continue;
-        }
-        const transcriptPath = path.join(searchedDirectory, `agent-${match[1]}.jsonl`);
-        if (!(yield* fileExists(fileSystem, transcriptPath))) {
-          continue;
-        }
-        const location = {
-          transcriptPath,
-          agentId: match[1],
-          meta,
-        };
-        setCappedMapEntry(resolutionCache, cacheKey, location, RESOLUTION_CACHE_MAX_ENTRIES);
-        return location;
-      }
+    const projectEntries = yield* fileSystem
+      .readDirectory(projectsDir)
+      .pipe(Effect.catch(() => Effect.succeed<Array<string>>([])));
+    const otherProjects = projectEntries.filter((entry) => entry !== expectedProject).sort();
+    const otherDirGroups = yield* Effect.forEach(
+      otherProjects,
+      (projectDirectory) =>
+        subagentDirectoriesForProject({
+          projectsDir,
+          projectDirectory,
+          sessionId: input.sessionId,
+        }),
+      { concurrency: 16 },
+    );
+    const fallbackHit = yield* searchDirectoriesForSubagent(otherDirGroups.flat(), input.agentId);
+    if (fallbackHit) {
+      setCappedMapEntry(resolutionCache, cacheKey, fallbackHit, RESOLUTION_CACHE_MAX_ENTRIES);
+      return fallbackHit;
     }
 
     return null;

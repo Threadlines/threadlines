@@ -126,6 +126,27 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
       `,
   });
 
+  const listActiveRuntimeRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProviderSessionRuntimeDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          provider_name AS "providerName",
+          provider_instance_id AS "providerInstanceId",
+          adapter_key AS "adapterKey",
+          runtime_mode AS "runtimeMode",
+          status,
+          last_seen_at AS "lastSeenAt",
+          resume_cursor_json AS "resumeCursor",
+          runtime_payload_json AS "runtimePayload"
+        FROM provider_session_runtime
+        WHERE status != 'stopped'
+        ORDER BY last_seen_at ASC, thread_id ASC
+      `,
+  });
+
   const listRuntimeThreadIdRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ThreadIdRowSchema,
@@ -141,16 +162,20 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
     Request: GetRuntimeRequestSchema,
     Result: ThreadIdRowSchema,
     execute: ({ threadId }) => {
-      // Room participant keys are `<threadId>__agent__<participantId>`.
-      // Bound with `[prefix, prefixEnd)` where '`' (0x60) immediately follows '_' (0x5f)
-      // so SQLite uses the primary-key index without LIKE wildcard escaping bugs.
-      const prefix = `${threadId}__agent__`;
-      const prefixEnd = `${threadId}__agent_\``;
+      // Room participant keys are `<threadId>__agent__<participantId>` and side
+      // keys are `<threadId>__side__...`. Bound each with `[prefix, prefixEnd)`
+      // where '`' (0x60) immediately follows '_' (0x5f) so SQLite uses the
+      // primary-key index without LIKE wildcard escaping bugs.
+      const agentPrefix = `${threadId}__agent__`;
+      const agentPrefixEnd = `${threadId}__agent_\``;
+      const sidePrefix = `${threadId}__side__`;
+      const sidePrefixEnd = `${threadId}__side_\``;
       return sql`
         SELECT thread_id AS "threadId"
         FROM provider_session_runtime
         WHERE thread_id = ${threadId}
-           OR (thread_id >= ${prefix} AND thread_id < ${prefixEnd})
+           OR (thread_id >= ${agentPrefix} AND thread_id < ${agentPrefixEnd})
+           OR (thread_id >= ${sidePrefix} AND thread_id < ${sidePrefixEnd})
         ORDER BY last_seen_at ASC, thread_id ASC
       `;
     },
@@ -264,6 +289,59 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
       ),
     );
 
+  const listActive: NonNullable<ProviderSessionRuntimeRepositoryShape["listActive"]> = () =>
+    listActiveRuntimeRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProviderSessionRuntimeRepository.listActive:query",
+          "ProviderSessionRuntimeRepository.listActive:decodeRows",
+        ),
+      ),
+      Effect.flatMap((rows) =>
+        Effect.forEach(
+          rows,
+          (row) =>
+            decodeRuntime(row).pipe(
+              Effect.mapError(
+                toPersistenceDecodeError(
+                  "ProviderSessionRuntimeRepository.listActive:rowToRuntime",
+                ),
+              ),
+            ),
+          { concurrency: "unbounded" },
+        ),
+      ),
+    );
+
+  const markAllStopped: NonNullable<ProviderSessionRuntimeRepositoryShape["markAllStopped"]> = (
+    input,
+  ) =>
+    sql`
+      UPDATE provider_session_runtime
+      SET
+        status = 'stopped',
+        last_seen_at = ${input.lastSeenAt},
+        runtime_payload_json = CASE
+          WHEN json_type(runtime_payload_json) = 'object' THEN json_set(
+            runtime_payload_json,
+            '$.activeTurnId', json('null'),
+            '$.lastRuntimeEvent', ${input.lastRuntimeEvent},
+            '$.lastRuntimeEventAt', ${input.lastRuntimeEventAt}
+          )
+          ELSE json_object(
+            'activeTurnId', NULL,
+            'lastRuntimeEvent', ${input.lastRuntimeEvent},
+            'lastRuntimeEventAt', ${input.lastRuntimeEventAt}
+          )
+        END
+      WHERE status != 'stopped'
+    `.pipe(
+      Effect.asVoid,
+      Effect.mapError(
+        toPersistenceSqlError("ProviderSessionRuntimeRepository.markAllStopped:query"),
+      ),
+    );
+
   const listThreadIds: NonNullable<ProviderSessionRuntimeRepositoryShape["listThreadIds"]> = () =>
     listRuntimeThreadIdRows(undefined).pipe(
       Effect.mapError(
@@ -288,33 +366,45 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
       Effect.map((rows) => rows.map((row) => row.threadId)),
     );
 
+  const GET_BY_THREAD_IDS_CHUNK_SIZE = 500;
   const getByThreadIds: NonNullable<ProviderSessionRuntimeRepositoryShape["getByThreadIds"]> = (
     threadIds,
   ) =>
-    threadIds.length === 0
-      ? Effect.succeed([])
-      : getRuntimeRowsByThreadIds(threadIds).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProviderSessionRuntimeRepository.getByThreadIds:query",
-              "ProviderSessionRuntimeRepository.getByThreadIds:decodeRows",
+    Effect.gen(function* () {
+      if (threadIds.length === 0) {
+        return [];
+      }
+      const chunks: Array<ReadonlyArray<ThreadId>> = [];
+      for (let i = 0; i < threadIds.length; i += GET_BY_THREAD_IDS_CHUNK_SIZE) {
+        chunks.push(threadIds.slice(i, i + GET_BY_THREAD_IDS_CHUNK_SIZE));
+      }
+      const rowChunks = yield* Effect.forEach(
+        chunks,
+        (chunk) =>
+          getRuntimeRowsByThreadIds(chunk).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProviderSessionRuntimeRepository.getByThreadIds:query",
+                "ProviderSessionRuntimeRepository.getByThreadIds:decodeRows",
+              ),
             ),
           ),
-          Effect.flatMap((rows) =>
-            Effect.forEach(
-              rows,
-              (row) =>
-                decodeRuntime(row).pipe(
-                  Effect.mapError(
-                    toPersistenceDecodeError(
-                      "ProviderSessionRuntimeRepository.getByThreadIds:rowToRuntime",
-                    ),
-                  ),
-                ),
-              { concurrency: "unbounded" },
+        { concurrency: 1 },
+      );
+      const rows = rowChunks.flat();
+      return yield* Effect.forEach(
+        rows,
+        (row) =>
+          decodeRuntime(row).pipe(
+            Effect.mapError(
+              toPersistenceDecodeError(
+                "ProviderSessionRuntimeRepository.getByThreadIds:rowToRuntime",
+              ),
             ),
           ),
-        );
+        { concurrency: "unbounded" },
+      );
+    });
 
   const deleteByThreadId: ProviderSessionRuntimeRepositoryShape["deleteByThreadId"] = (input) =>
     deleteRuntimeByThreadId(input).pipe(
@@ -329,6 +419,8 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
     getByThreadId,
     getByThreadIds,
     list,
+    listActive,
+    markAllStopped,
     listThreadIds,
     listThreadIdsForThread,
     deleteByThreadId,

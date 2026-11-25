@@ -840,14 +840,17 @@ async function shareOnce(
   mutateDisabled?: (disabled: Record<string, Array<string>>) => void,
 ): Promise<ReadonlyArray<{ readonly path: string; readonly error: string }>> {
   await fs.mkdir(input.profileDir, { recursive: true, mode: 0o700 });
-  const realProfile = await fs.realpath(input.profileDir);
   const userGemini = antigravityUserGeminiDir(input.userHome);
-  const threadlinesDir = input.threadlinesDir ? await realpathOf(input.threadlinesDir) : undefined;
+  const [realProfile, threadlinesDir, realGemini, before] = await Promise.all([
+    fs.realpath(input.profileDir),
+    input.threadlinesDir ? realpathOf(input.threadlinesDir) : Promise.resolve(undefined),
+    realpathOf(userGemini),
+    readRecord(input.profileDir),
+  ]);
   const rules: SourceRules = {
-    realGemini: await realpathOf(userGemini),
+    realGemini,
     forbidden: [realProfile, ...(threadlinesDir ? [threadlinesDir] : [])],
   };
-  const before = await readRecord(input.profileDir);
   const disabledSkills: Record<string, Array<string>> = {};
   for (const [rel, entries] of Object.entries(before.disabledSkills ?? {})) {
     disabledSkills[rel] = [...entries];
@@ -882,19 +885,25 @@ async function shareOnce(
   ];
   for (const { rel, kind } of entries) {
     const path = join(input.profileDir, ...rel.split("/"));
+    const source = join(userGemini, ...rel.split("/"));
+    const parent = { profileDir: input.profileDir, realProfile, rel };
     try {
-      const parent = { profileDir: input.profileDir, realProfile, rel };
-      if (!(await realParentInProfile({ ...parent, create: false }))) {
+      // Probe parent containment and source safety in parallel right before
+      // mutating this entry so each entry checks live filesystem state.
+      const [parentOk, allowed] = await Promise.all([
+        realParentInProfile({ ...parent, create: false }),
+        sourceAllowed(source, kind, rules),
+      ]);
+      if (!parentOk) {
         problems.push({ path, error: "A folder on the way is a link; left alone." });
         continue;
       }
-      const source = join(userGemini, ...rel.split("/"));
       const entry: EntryContext = {
         rel,
         path,
         source,
         kind,
-        allowed: await sourceAllowed(source, kind, rules),
+        allowed,
         platform: input.platform,
         record,
         claim: save,

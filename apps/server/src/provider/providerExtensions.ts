@@ -3569,30 +3569,30 @@ const claudeWritableSkillRoots = Effect.fn("providerExtensions.claudeWritableSki
   function* (
     claudeConfigDir: string,
     cwd: string,
+    options?: { readonly includeProjectRoots?: boolean },
   ): Effect.fn.Return<ClaudeSkillRoot[], never, FileSystem.FileSystem | Path.Path> {
     const path = yield* Path.Path;
-    const nestedProjectRoots = yield* discoverNestedClaudeSkillRoots(cwd);
+    const userRoot: ClaudeSkillRoot = {
+      root: claudeUserSkillsRoot(path, claudeConfigDir),
+      scope: "user",
+      source: "Claude user",
+      priority: 0,
+    };
+    // On machine scope (`projectCwd === undefined`), never recursively scan
+    // hundreds of subdirectories under `homedir()` for unrelated project roots.
+    if (options?.includeProjectRoots === false) {
+      return [userRoot];
+    }
+    const isHomeDirectory =
+      normalizedPathKey(path.resolve(cwd)) === normalizedPathKey(path.resolve(homedir()));
+    const nestedProjectRoots = isHomeDirectory ? [] : yield* discoverNestedClaudeSkillRoots(cwd);
     // A project under the home directory walks its ancestors up through ~/.claude/skills, which
     // would re-file every personal skill as a project skill. The user root keeps its own identity.
-    const userRootKey = normalizedPathKey(
-      path.resolve(claudeUserSkillsRoot(path, claudeConfigDir)),
-    );
+    const userRootKey = normalizedPathKey(path.resolve(userRoot.root));
     const ancestorRoots = claudeAncestorSkillRoots(path, cwd).filter(
       (root) => normalizedPathKey(path.resolve(root.root)) !== userRootKey,
     );
-    return uniqueClaudeSkillRoots(
-      [
-        ...nestedProjectRoots,
-        ...ancestorRoots,
-        {
-          root: claudeUserSkillsRoot(path, claudeConfigDir),
-          scope: "user",
-          source: "Claude user",
-          priority: 0,
-        },
-      ],
-      path,
-    );
+    return uniqueClaudeSkillRoots([...nestedProjectRoots, ...ancestorRoots, userRoot], path);
   },
 );
 
@@ -3894,6 +3894,7 @@ function enrichClaudePluginsFromMarketplaceManifests(
 const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(function* (input: {
   readonly config: ClaudeSettings;
   readonly cwd: string;
+  readonly includeProjectRoots?: boolean | undefined;
   readonly environment: NodeJS.ProcessEnv;
   readonly includeMcpServers?: boolean | undefined;
   readonly includePluginCatalog?: boolean | undefined;
@@ -3961,7 +3962,9 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
               env: claudeEnvironment,
             }).pipe(Effect.result)
           : Effect.succeed(undefined),
-        claudeWritableSkillRoots(claudeConfigDir, input.cwd),
+        claudeWritableSkillRoots(claudeConfigDir, input.cwd, {
+          includeProjectRoots: input.includeProjectRoots ?? true,
+        }),
         readClaudeEnabledPlugins(claudeConfigDir),
       ],
       { concurrency: "unbounded" },
@@ -4097,6 +4100,10 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
     readonly snapshot: ServerProvider | undefined;
     readonly cwd: string;
     readonly projectCwd?: string | undefined;
+    readonly resolveProjectBoundary?: Effect.Effect<{
+      readonly repoRoot: string | undefined;
+      readonly projectBoundary: string | undefined;
+    }>;
     readonly stateDir?: string | undefined;
     readonly providerThreadId?: string | undefined;
     readonly includeMcpServers?: boolean | undefined;
@@ -4186,6 +4193,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
       const inventory = yield* readClaudeInventory({
         config: { ...decoded, enabled },
         cwd: input.cwd,
+        includeProjectRoots: input.projectCwd !== undefined,
         environment: processEnv,
         ...(input.includeMcpServers !== undefined
           ? { includeMcpServers: input.includeMcpServers }
@@ -4201,12 +4209,19 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
       } satisfies ProviderExtensionProviderInventory;
     }
 
+    const resolvedProject = input.resolveProjectBoundary
+      ? yield* input.resolveProjectBoundary
+      : undefined;
     return yield* readOtherProviderInventory({
       instanceId: input.instanceId,
       config: input.config,
       snapshot: input.snapshot,
       processEnv,
       ...(input.projectCwd !== undefined ? { projectCwd: input.projectCwd } : {}),
+      ...(resolvedProject?.repoRoot !== undefined ? { repoRoot: resolvedProject.repoRoot } : {}),
+      ...(resolvedProject?.projectBoundary !== undefined
+        ? { projectBoundary: resolvedProject.projectBoundary }
+        : {}),
       ...(input.stateDir !== undefined ? { stateDir: input.stateDir } : {}),
     });
   },
@@ -4532,7 +4547,9 @@ const resolveProviderSkillRoots = Effect.fn("providerExtensions.resolveProviderS
         decoded,
         claudeInstanceEnvironmentFor(decoded, providerConfig.environment),
       );
-      const roots = yield* claudeWritableSkillRoots(claudeConfigDir, cwd);
+      const roots = yield* claudeWritableSkillRoots(claudeConfigDir, cwd, {
+        includeProjectRoots: projectCwd !== undefined,
+      });
       return {
         driver: providerConfig.driver,
         userSkillsRoot: claudeUserSkillsRoot(path, claudeConfigDir),
@@ -5590,6 +5607,27 @@ export const readProviderExtensionsInventory = Effect.fn(
       return true;
     });
 
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  // Lazily resolve repository root and canonical boundary once per inventory
+  // so Codex/Claude starts immediately without waiting on `.git` walks while
+  // every non-Codex/Claude provider and the final path recorder reuse one read.
+  const resolveProjectBoundary = yield* Effect.cached(
+    Effect.gen(function* () {
+      if (!projectCwd) {
+        return { repoRoot: undefined, projectBoundary: undefined };
+      }
+      const repoRoot = yield* findRepositoryRoot(projectCwd).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      const projectBoundary = yield* fileSystem
+        .realPath(repoRoot)
+        .pipe(Effect.catch(() => Effect.succeed(repoRoot)));
+      return { repoRoot, projectBoundary };
+    }),
+  );
+
   const [providers, instructionFiles] = yield* Effect.all(
     [
       Effect.forEach(
@@ -5606,6 +5644,7 @@ export const readProviderExtensionsInventory = Effect.fn(
             snapshot: snapshotsByInstanceId.get(entry.instanceId),
             cwd,
             projectCwd,
+            resolveProjectBoundary,
             stateDir: input.stateDir,
             providerThreadId: scopedProviderThreadId,
             includeMcpServers: input.request.includeMcpServers,
@@ -5638,11 +5677,7 @@ export const readProviderExtensionsInventory = Effect.fn(
     { concurrency: "unbounded" },
   );
 
-  const fileSystem = yield* FileSystem.FileSystem;
-  const repoRoot = projectCwd ? yield* findRepositoryRoot(projectCwd) : undefined;
-  const projectBoundary = repoRoot
-    ? yield* fileSystem.realPath(repoRoot).pipe(Effect.catch(() => Effect.succeed(repoRoot)))
-    : undefined;
+  const { projectBoundary } = yield* resolveProjectBoundary;
 
   recordReportedExtensionPaths(
     // A store load reports icons an installed-only load does not, so they keep separate entries.

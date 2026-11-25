@@ -98,16 +98,6 @@ export const ProviderEventLoggersLive = Layer.effect(
   ProviderEventLoggers,
   Effect.gen(function* () {
     const { providerEventLogPath } = yield* ServerConfig;
-    const cleanup = yield* cleanupProviderEventLogDirectory(path.dirname(providerEventLogPath));
-    if (cleanup.deletedFiles > 0 || cleanup.errorCount > 0) {
-      const logCleanupResult = cleanup.errorCount > 0 ? Effect.logWarning : Effect.logInfo;
-      yield* logCleanupResult("provider event log cleanup completed", {
-        deletedFiles: cleanup.deletedFiles,
-        deletedBytes: cleanup.deletedBytes,
-        retainedBytes: cleanup.retainedBytes,
-        errorCount: cleanup.errorCount,
-      });
-    }
     // Token-sized stream pieces are left out of both logs unless this is set
     // (see EventLogWriteOptions.streamFragment).
     const keepStreamFragments = yield* Config.Boolean(
@@ -129,6 +119,26 @@ export const ProviderEventLoggersLive = Layer.effect(
       stream: "canonical",
       keepStreamFragments,
     });
+    yield* cleanupProviderEventLogDirectory(path.dirname(providerEventLogPath), {
+      isFileActive: (candidatePath) =>
+        (native?.hasActivePath?.(candidatePath) ?? false) ||
+        (canonical?.hasActivePath?.(candidatePath) ?? false),
+    }).pipe(
+      Effect.flatMap((cleanup) => {
+        if (cleanup.deletedFiles > 0 || cleanup.errorCount > 0) {
+          const logCleanupResult = cleanup.errorCount > 0 ? Effect.logWarning : Effect.logInfo;
+          return logCleanupResult("provider event log cleanup completed", {
+            deletedFiles: cleanup.deletedFiles,
+            deletedBytes: cleanup.deletedBytes,
+            retainedBytes: cleanup.retainedBytes,
+            errorCount: cleanup.errorCount,
+          });
+        }
+        return Effect.void;
+      }),
+      Effect.ignoreCause({ log: true }),
+      Effect.forkScoped,
+    );
     yield* Effect.addFinalizer(() =>
       Effect.all([native?.close() ?? Effect.void, canonical?.close() ?? Effect.void], {
         discard: true,

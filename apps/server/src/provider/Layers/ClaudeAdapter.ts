@@ -9650,9 +9650,59 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
       const modelSelection =
         input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
-      const modelMetadata = modelSelection
-        ? yield* resolveModelMetadata(modelSelection.model)
-        : undefined;
+      // The room endpoint, with every room tool its kind allows or the app
+      // guide alone (roomEndpointGrant).
+      const roomGrant = roomEndpointGrant(input, sideKind);
+      // Agent pages: `show_page` and `preview_page`, with a folder of its own
+      // for the page's images that Claude may write to like its workspace.
+      const agentPages = input.agentPages === true && !lockdown;
+      // Claude's own Artifact tool, which uploads a page to claude.ai. Only
+      // beside agent pages: the chat shows the local copy of each publish.
+      const artifacts = input.artifacts === true && agentPages;
+      // The setting decides, whatever the environment Threadlines was
+      // started in says: on asks for the tool, off refuses it.
+      // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
+      const sdkEnvironment = {
+        ...withUsualCommandLookup(claudeEnvironment),
+        ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
+        ...CLAUDE_STARTUP_FAILURE_RESULTS_ENVIRONMENT,
+      };
+      // Overlap independent pre-spawn reads (model metadata, settings, git
+      // worktree check, page assets folder, and CLI version check) before
+      // minting MCP credentials or spawning Claude.
+      const { modelMetadata, settingsChoices, runsInManagedWorktree, pageAssets, launchVersion } =
+        yield* Effect.all(
+          {
+            modelMetadata: modelSelection
+              ? resolveModelMetadata(modelSelection.model)
+              : Effect.succeed(undefined),
+            settingsChoices: currentSettingsChoices,
+            // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
+            // it deletes the session's own working directory, so a session running in
+            // a Threadlines-managed worktree is told once, up front, not to.
+            runsInManagedWorktree: input.cwd
+              ? isLinkedWorktreeCheckout(input.cwd).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                )
+              : Effect.succeed(false),
+            pageAssets: agentPages
+              ? ensurePageAssetsDir(parseSessionKey(threadId).threadId).pipe(
+                  Effect.map((dir): string | undefined => dir),
+                  Effect.orElseSucceed(() => undefined),
+                )
+              : Effect.succeed<string | undefined>(undefined),
+            // Asked of the very binary, folder and environment the SDK gets below.
+            launchVersion:
+              options?.readLaunchVersion !== undefined
+                ? options.readLaunchVersion({
+                    executable: claudeBinaryPath,
+                    cwd: input.cwd,
+                    environment: sdkEnvironment,
+                  })
+                : Effect.succeed(undefined),
+          },
+          { concurrency: "unbounded" },
+        );
       const modelCapabilities =
         modelMetadata?.capabilities ?? getClaudeModelCapabilities(modelSelection?.model);
       const apiModelId = modelSelection
@@ -9666,7 +9716,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const flagSettings = deriveClaudeFlagSettings(
         modelSelection,
         modelCapabilities,
-        yield* currentSettingsChoices,
+        settingsChoices,
       );
       const effectiveEffort = flagSettings.effortLevel;
       const permissionMode = claudePermissionModeFor(
@@ -9693,14 +9743,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // canUseTool still decides each read.
         permissions: { blockReadsExemptPaths: [serverConfig.attachmentsDir] },
       };
-      // Agents treat `git worktree remove` as ordinary post-merge tidying. Here
-      // it deletes the session's own working directory, so a session running in
-      // a Threadlines-managed worktree is told once, up front, not to.
-      const runsInManagedWorktree = input.cwd
-        ? yield* isLinkedWorktreeCheckout(input.cwd).pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-          )
-        : false;
       // The browser the user has open, offered as tools. Over HTTP rather than
       // as an in-process server so Claude and Codex reach the same endpoint,
       // and with a credential that names the thread, because the tools take no
@@ -9709,39 +9751,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // credential only for the room's read tools. It dies with the runtime,
       // and is minted only once nothing is left to wait on before the query
       // starts, so a start that is cancelled cannot strand it.
-      // The room endpoint, with every room tool its kind allows or the app
-      // guide alone (roomEndpointGrant).
-      const roomGrant = roomEndpointGrant(input, sideKind);
-      // Agent pages: `show_page` and `preview_page`, with a folder of its own
-      // for the page's images that Claude may write to like its workspace.
-      const agentPages = input.agentPages === true && !lockdown;
-      const pageAssets = agentPages
-        ? yield* ensurePageAssetsDir(parseSessionKey(threadId).threadId).pipe(
-            Effect.map((dir): string | undefined => dir),
-            Effect.orElseSucceed(() => undefined),
-          )
-        : undefined;
-      // Claude's own Artifact tool, which uploads a page to claude.ai. Only
-      // beside agent pages: the chat shows the local copy of each publish.
-      const artifacts = input.artifacts === true && agentPages;
-      // The setting decides, whatever the environment Threadlines was
-      // started in says: on asks for the tool, off refuses it.
-      // The SDK starts Claude directly; it looks up commands as it would outside Threadlines.
-      const sdkEnvironment = {
-        ...withUsualCommandLookup(claudeEnvironment),
-        ...(artifacts ? CLAUDE_ARTIFACT_ENVIRONMENT : CLAUDE_ARTIFACT_OFF_ENVIRONMENT),
-        ...CLAUDE_STARTUP_FAILURE_RESULTS_ENVIRONMENT,
-      };
-      // Asked of the very binary, folder and environment the SDK gets below.
-      const guardFailure = claudeGuardFailure(
-        options?.readLaunchVersion !== undefined
-          ? yield* options.readLaunchVersion({
-              executable: claudeBinaryPath,
-              cwd: input.cwd,
-              environment: sdkEnvironment,
-            })
-          : undefined,
-      );
+      const guardFailure = claudeGuardFailure(launchVersion);
       // `ask_user_to_run`: a command card the user runs from the chat.
       const commandRequests = input.commandRequests === true && !lockdown;
       // The device tools: simulators and emulators on this computer.
@@ -11160,23 +11170,35 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
 
   const stopAll: ClaudeAdapterShape["stopAll"] = () =>
-    Effect.forEach(
-      sessions,
-      ([, context]) =>
-        stopSessionInternal(context, {
-          emitExitEvent: true,
-        }),
-      { discard: true },
-    );
+    Effect.gen(function* () {
+      const exits = yield* Effect.forEach(
+        Array.from(sessions.values()),
+        (context) =>
+          Effect.exit(
+            stopSessionInternal(context, {
+              emitExitEvent: true,
+            }),
+          ),
+        { concurrency: "unbounded" },
+      );
+      const firstFailure = exits.find(Exit.isFailure);
+      if (firstFailure) {
+        return yield* Effect.failCause(firstFailure.cause);
+      }
+    });
 
   yield* Effect.addFinalizer(() =>
-    Effect.forEach(
-      sessions,
-      ([, context]) =>
-        stopSessionInternal(context, {
-          emitExitEvent: false,
-        }),
-      { discard: true },
+    Effect.suspend(() =>
+      Effect.forEach(
+        Array.from(sessions.values()),
+        (context) =>
+          Effect.exit(
+            stopSessionInternal(context, {
+              emitExitEvent: false,
+            }),
+          ),
+        { concurrency: "unbounded", discard: true },
+      ),
     ).pipe(Effect.tap(() => Queue.shutdown(runtimeEventQueue))),
   );
 

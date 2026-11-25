@@ -4827,12 +4827,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       });
 
     // A snapshot per run: stopping a session removes it from the map.
+    // Collect exits so one failing stop never interrupts sibling teardowns.
     const stopAll: AcpAdapterShape["stopAll"] = () =>
-      Effect.suspend(() =>
-        Effect.forEach(Array.from(sessions.values()), (ctx) => stopSessionInternal(ctx), {
-          discard: true,
-        }),
-      );
+      Effect.gen(function* () {
+        const exits = yield* Effect.forEach(
+          Array.from(sessions.values()),
+          (ctx) => Effect.exit(stopSessionInternal(ctx)),
+          { concurrency: "unbounded" },
+        );
+        const firstFailure = exits.find(Exit.isFailure);
+        if (firstFailure) {
+          return yield* Effect.failCause(firstFailure.cause);
+        }
+      });
 
     /**
      * A launched subagent's steps, read from the agent's own records
@@ -4875,7 +4882,11 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
         })) satisfies NonNullable<AcpAdapterShape["readSubagentTranscript"]>;
 
     yield* Effect.addFinalizer(() =>
-      Effect.forEach(sessions.values(), (ctx) => stopSessionInternal(ctx), { discard: true }).pipe(
+      Effect.forEach(
+        Array.from(sessions.values()),
+        (ctx) => Effect.exit(stopSessionInternal(ctx)),
+        { concurrency: "unbounded", discard: true },
+      ).pipe(
         Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
         Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
       ),

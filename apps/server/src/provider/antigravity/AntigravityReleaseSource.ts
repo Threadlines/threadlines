@@ -15,6 +15,7 @@ import { compareSemverVersions } from "@threadlines/shared/semver";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import { makeHttpsFetch } from "../managedRuntime/HttpsFetch.ts";
 import type { DownloadFetch } from "../managedRuntime/VerifiedDownload.ts";
@@ -33,13 +34,18 @@ export interface AntigravityReleaseSource {
    * next call.
    */
   readonly newest: Effect.Effect<AntigravityPlatformRelease>;
+  /**
+   * Returns the last fetched release (or built-in) immediately without
+   * waiting on the network, kicking off a background fetch when stale.
+   */
+  readonly cachedOrBuiltIn: Effect.Effect<AntigravityPlatformRelease>;
 }
 
 /** Like the other providers' newest-version checks (`providerMaintenance`). */
 const ASK_EVERY_MS = 60 * 60 * 1000;
 /** After the feed couldn't be read, the last answer (or the built-in release) is used until then. */
 const RETRY_AFTER_FAILURE_MS = 10 * 60 * 1000;
-const WAIT_AT_MOST = Duration.seconds(4);
+const WAIT_AT_MOST_MS = 4_000;
 const READ_TIMEOUT_MS = 30_000;
 /** A manifest is three short fields. */
 const MAX_MANIFEST_BYTES = 16 * 1024;
@@ -99,12 +105,14 @@ export function makeAntigravityReleaseSource(input: {
   let failedAtMs: number | undefined;
   /** One read at a time: a slow one is shared, and its answer kept for the next call. */
   let inFlight: Promise<void> | undefined;
+  let inFlightStartedAtMs: number | undefined;
   const within = (sinceMs: number | undefined, nowMs: number, spanMs: number) =>
     sinceMs !== undefined && nowMs - sinceMs >= 0 && nowMs - sinceMs < spanMs;
 
-  const refresh = (nowMs: number) =>
-    Effect.promise(() => {
-      inFlight ??= ask()
+  const startRefresh = (nowMs: number): Promise<void> => {
+    if (!inFlight) {
+      inFlightStartedAtMs = nowMs;
+      inFlight = ask()
         .then(
           (offer) => {
             last = { offer, askedAtMs: nowMs };
@@ -116,19 +124,50 @@ export function makeAntigravityReleaseSource(input: {
         )
         .finally(() => {
           inFlight = undefined;
+          inFlightStartedAtMs = undefined;
         });
-      return inFlight;
-    });
+    }
+    return inFlight;
+  };
+
+  const refresh = (nowMs: number) => Effect.promise(() => startRefresh(nowMs));
 
   const newest = Effect.gen(function* () {
     const nowMs = yield* Clock.currentTimeMillis;
     const fresh = last && within(last.askedAtMs, nowMs, ASK_EVERY_MS);
     // While the feed is down, every refresh would ask again: wait a while.
     if (!fresh && !within(failedAtMs, nowMs, RETRY_AFTER_FAILURE_MS)) {
-      yield* refresh(nowMs).pipe(Effect.timeoutOption(WAIT_AT_MOST));
+      const startedAtMs = inFlightStartedAtMs ?? nowMs;
+      const elapsedMs = Math.max(0, nowMs - startedAtMs);
+      const remainingWaitMs = Math.max(0, WAIT_AT_MOST_MS - elapsedMs);
+      if (remainingWaitMs > 0) {
+        const settled = yield* refresh(nowMs).pipe(
+          Effect.timeoutOption(Duration.millis(remainingWaitMs)),
+        );
+        if (Option.isNone(settled) && inFlight !== undefined) {
+          // Back off so callers arriving after the shared deadline do not wait
+          // again while a slow fetch is still hanging; if it resolves later,
+          // its handler updates `last` and clears `failedAtMs`.
+          failedAtMs = nowMs;
+        }
+      } else {
+        startRefresh(nowMs);
+        if (inFlight !== undefined) {
+          failedAtMs = nowMs;
+        }
+      }
     }
     return last?.offer ?? builtIn;
   });
 
-  return { newest };
+  const cachedOrBuiltIn = Effect.gen(function* () {
+    const nowMs = yield* Clock.currentTimeMillis;
+    const fresh = last && within(last.askedAtMs, nowMs, ASK_EVERY_MS);
+    if (!fresh && !within(failedAtMs, nowMs, RETRY_AFTER_FAILURE_MS)) {
+      startRefresh(nowMs);
+    }
+    return last?.offer ?? builtIn;
+  });
+
+  return { newest, cachedOrBuiltIn };
 }

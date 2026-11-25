@@ -60,6 +60,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -336,6 +337,10 @@ interface SessionContext {
   readonly dialogs: Map<ApprovalRequestId, PendingDialog>;
   readonly dialogIds: Map<string, ApprovalRequestId>;
   readonly turns: Array<{ readonly id: TurnId }>;
+  /** True once `ctx.turns` has been hydrated from Pi's history (or started fresh). */
+  turnsSeeded: boolean;
+  /** Background hydration fiber for resumed/forked sessions, joined before reading/rolling back. */
+  seedFiber: Fiber.Fiber<void, never> | undefined;
   readonly lifecycle: Semaphore.Semaphore;
   stopped: boolean;
 }
@@ -675,7 +680,9 @@ export function makePiAdapter(options: PiAdapterOptions) {
         yield* Effect.uninterruptible(
           Effect.gen(function* () {
             ctx.activeTurn = undefined;
-            ctx.turns.push({ id: turn.turnId });
+            if (!ctx.turns.some((existing) => existing.id === turn.turnId)) {
+              ctx.turns.push({ id: turn.turnId });
+            }
             const { activeTurnId: _active, ...session } = ctx.session;
             ctx.session = { ...session, status: "ready", updatedAt: yield* nowIso };
             if (turn.plan && terminal.kind === "completed" && turn.finalText?.trim()) {
@@ -1529,18 +1536,39 @@ export function makePiAdapter(options: PiAdapterOptions) {
     /** The turns the session's history already holds, in order, from their markers. */
     const seedTurns = (ctx: SessionContext) =>
       Effect.gen(function* () {
+        if (ctx.turnsSeeded) return;
         const entries = decodePi(PiEntries)(
           yield* piRequest(ctx, { type: "get_entries" }).pipe(
             Effect.orElseSucceed(() => undefined),
           ),
         );
-        if (Option.isNone(entries)) return;
+        if (Option.isNone(entries) || ctx.turnsSeeded) return;
         const boundaries = piTurnBoundaries(entries.value.entries, entries.value.leafId);
-        ctx.turns.splice(
-          0,
-          ctx.turns.length,
-          ...boundaries.map((boundary) => ({ id: TurnId.make(boundary.turnId) })),
-        );
+        const tombstoned = new Set<TurnId>(ctx.pendingTombstones);
+        const activeTurnId = ctx.activeTurn?.turnId;
+        const localIds = new Set(ctx.turns.map((turn) => turn.id));
+        // Resumed history turns strictly precede turns completed in this live
+        // session; exclude locally tracked turns and the currently active turn
+        // so completion order is preserved and no duplicate IDs are inserted.
+        const priorSeeded = boundaries
+          .map((boundary) => ({ id: TurnId.make(boundary.turnId) }))
+          .filter(
+            (turn) =>
+              !tombstoned.has(turn.id) && !localIds.has(turn.id) && turn.id !== activeTurnId,
+          );
+        const localTurns = ctx.turns.filter((turn) => !tombstoned.has(turn.id));
+        ctx.turns.splice(0, ctx.turns.length, ...priorSeeded, ...localTurns);
+        ctx.turnsSeeded = true;
+      });
+
+    const ensureTurnsSeeded = (ctx: SessionContext) =>
+      Effect.gen(function* () {
+        if (ctx.turnsSeeded) return;
+        if (ctx.seedFiber) {
+          yield* Fiber.await(ctx.seedFiber).pipe(Effect.ignore);
+          if (ctx.turnsSeeded) return;
+        }
+        yield* seedTurns(ctx);
       });
 
     /**
@@ -1866,6 +1894,8 @@ export function makePiAdapter(options: PiAdapterOptions) {
             dialogs: new Map(),
             dialogIds: new Map(),
             turns: [],
+            turnsSeeded: true,
+            seedFiber: undefined,
             defaultModel: undefined,
             lifecycle: yield* Semaphore.make(1),
             stopped: false,
@@ -1901,30 +1931,61 @@ export function makePiAdapter(options: PiAdapterOptions) {
             );
           }
           if (!opened && input.forkFrom) {
-            const forked = yield* forkInto(directory, input.forkFrom).pipe(
-              Effect.mapError(
-                (error) =>
-                  new ProviderAdapterValidationError({
-                    provider: PROVIDER,
-                    operation: "startSession",
-                    issue: `Pi could not fork the conversation: ${errorText(error)}`,
-                  }),
-              ),
-            );
-            if (!forked) {
-              return yield* new ProviderAdapterValidationError({
-                provider: PROVIDER,
-                operation: "startSession",
-                issue: "Pi has no exact place to fork this conversation.",
+            if (
+              input.forkFrom.beforeTurnId === undefined &&
+              input.forkFrom.lastTurnId === undefined
+            ) {
+              // Whole-thread fork: `planPiFork` always clones the entire branch,
+              // so launch the chat process directly with `--fork` in one spawn
+              // instead of spawning a separate helper process first.
+              yield* launchProcess(ctx, {
+                kind: "fork",
+                sessionFile: input.forkFrom.providerThreadId,
+              }).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ProviderAdapterValidationError({
+                      provider: PROVIDER,
+                      operation: "startSession",
+                      issue: `Pi could not fork the conversation: ${errorText(error)}`,
+                    }),
+                ),
+              );
+              if (!ctx.sessionFile) {
+                yield* closeProcess(ctx);
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "startSession",
+                  issue: "Pi could not fork the conversation: forked session has no session file.",
+                });
+              }
+              opened = true;
+            } else {
+              const forked = yield* forkInto(directory, input.forkFrom).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ProviderAdapterValidationError({
+                      provider: PROVIDER,
+                      operation: "startSession",
+                      issue: `Pi could not fork the conversation: ${errorText(error)}`,
+                    }),
+                ),
+              );
+              if (!forked) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "startSession",
+                  issue: "Pi has no exact place to fork this conversation.",
+                });
+              }
+              const proc = yield* launchProcess(ctx, {
+                kind: "resume",
+                sessionFile: forked.sessionFile,
               });
+              // The cut kept the next turn's start marker.
+              if (forked.droppedTurnId) yield* markDropped(ctx, proc, forked.droppedTurnId);
+              opened = true;
             }
-            const proc = yield* launchProcess(ctx, {
-              kind: "resume",
-              sessionFile: forked.sessionFile,
-            });
-            // The cut kept the next turn's start marker.
-            if (forked.droppedTurnId) yield* markDropped(ctx, proc, forked.droppedTurnId);
-            opened = true;
           }
           if (!opened) {
             const proc = yield* launchProcess(ctx, { kind: "new" });
@@ -1934,11 +1995,19 @@ export function makePiAdapter(options: PiAdapterOptions) {
               ctx.pendingSeed = renderThreadContextSeed(input.contextSeed);
             }
           }
-          // A session with history: revert counts back through the turns its markers name.
-          if (opened) yield* seedTurns(ctx);
+          ctx.turnsSeeded = !opened;
           if (boundSelection) yield* applyModel(ctx, boundSelection);
           updateCursor(ctx);
           sessions.set(input.threadId, ctx);
+          // Hydrate prior turn markers in the background so startup doesn't
+          // block on `get_entries`, while history is ready even if a later
+          // turn times out and closes the process.
+          if (opened) {
+            ctx.seedFiber = yield* seedTurns(ctx).pipe(
+              Effect.ignoreCause({ log: true }),
+              Effect.forkIn(ctx.scope),
+            );
+          }
           yield* emit({
             type: "session.started",
             ...(yield* eventBase(ctx, undefined)),
@@ -2370,6 +2439,7 @@ export function makePiAdapter(options: PiAdapterOptions) {
         }
         return yield* ctx.lifecycle.withPermit(
           Effect.gen(function* () {
+            yield* ensureTurnsSeeded(ctx);
             const keep = Math.max(0, ctx.turns.length - numTurns);
             // Turns from before the session's first marker (a recap's) can't be cut at.
             const target = numTurns <= ctx.turns.length ? ctx.turns[keep] : undefined;
@@ -2417,15 +2487,28 @@ export function makePiAdapter(options: PiAdapterOptions) {
         );
       });
 
+    const stopSessionContext = (ctx: SessionContext) =>
+      ctx.lifecycle.withPermit(stopContext(ctx, undefined));
+
     const stopSession: PiAdapterShape["stopSession"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = sessions.get(threadId);
         if (!ctx) return;
-        yield* ctx.lifecycle.withPermit(stopContext(ctx, undefined));
+        yield* stopSessionContext(ctx);
       });
 
     const stopAll: PiAdapterShape["stopAll"] = () =>
-      Effect.forEach([...sessions.keys()], stopSession, { discard: true });
+      Effect.gen(function* () {
+        const exits = yield* Effect.forEach(
+          Array.from(sessions.values()),
+          (ctx) => Effect.exit(stopSessionContext(ctx)),
+          { concurrency: "unbounded" },
+        );
+        const firstFailure = exits.find(Exit.isFailure);
+        if (firstFailure) {
+          return yield* Effect.failCause(firstFailure.cause);
+        }
+      });
 
     yield* Effect.addFinalizer(() =>
       stopAll().pipe(Effect.ignore, Effect.andThen(PubSub.shutdown(runtimeEvents))),
@@ -2451,10 +2534,14 @@ export function makePiAdapter(options: PiAdapterOptions) {
       listSessions: () => Effect.sync(() => [...sessions.values()].map((ctx) => ctx.session)),
       hasSession: (threadId) => Effect.sync(() => sessions.has(threadId)),
       readThread: (threadId) =>
-        Effect.map(requireSession(threadId), (ctx) => ({
-          threadId,
-          turns: ctx.turns.map((turn) => ({ id: turn.id, items: [] })),
-        })),
+        Effect.gen(function* () {
+          const ctx = yield* requireSession(threadId);
+          yield* ensureTurnsSeeded(ctx);
+          return {
+            threadId,
+            turns: ctx.turns.map((turn) => ({ id: turn.id, items: [] })),
+          };
+        }),
       rollbackThread,
       stopAll,
       // Pi's own folder for this instance, as its processes find it.

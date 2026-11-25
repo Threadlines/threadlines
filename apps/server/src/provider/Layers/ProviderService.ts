@@ -3735,14 +3735,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }
       // Each driver proves its processes, and what they started, are gone,
       // with what the directory keeps of the sessions it ran for the thread.
-      const bindings = (yield* directory.listBindings().pipe(
+      const bindings = yield* (
+        directory.listThreadIdsForThread && directory.getBindingsByThreadIds
+          ? directory.listThreadIdsForThread(threadId).pipe(
+              Effect.flatMap((keys) => directory.getBindingsByThreadIds!(keys)),
+              Effect.map((rows) => rows.filter((binding) => ofThread(binding.threadId))),
+            )
+          : directory
+              .listBindings()
+              .pipe(Effect.map((rows) => rows.filter((binding) => ofThread(binding.threadId))))
+      ).pipe(
         Effect.catch(() =>
           Effect.sync(() => {
             problems.push("its sessions' records couldn't be read");
             return [];
           }),
         ),
-      )).filter((binding) => ofThread(binding.threadId));
+      );
       for (const [instanceId, adapter] of yield* getAdapterEntries) {
         if (adapter.confirmThreadStopped === undefined) {
           if (ran.has(instanceId)) problems.push(`${adapter.provider} can't confirm it stopped`);
@@ -3768,49 +3777,113 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const currentAdapters = yield* getAdapterEntries;
-    const activeSessions = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
-      adapter.listSessions().pipe(
-        Effect.map((sessions) =>
-          sessions.map((session) => ({
-            ...session,
-            providerInstanceId: instanceId,
-          })),
-        ),
-      ),
-    ).pipe(Effect.map((sessionsByAdapter) => sessionsByAdapter.flatMap((sessions) => sessions)));
-    yield* Effect.forEach(activeSessions, (session) =>
-      Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
-        upsertSessionBinding(session, session.threadId, {
-          lastRuntimeEvent: "provider.stopAll",
-          lastRuntimeEventAt,
-        }),
-      ),
-    ).pipe(Effect.asVoid);
-    yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll()).pipe(Effect.asVoid);
-    const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
-    yield* Effect.forEach(bindings, (binding) =>
+    let hadFailure = false;
+    const recordFailure = (label: string, cause: Cause.Cause<unknown>) =>
       Effect.gen(function* () {
-        const providerInstanceId = dieOnMissingBindingInstanceId(
-          "ProviderService.stopAll",
-          binding,
-        );
-        return yield* directory.upsert({
-          threadId: binding.threadId,
-          provider: binding.provider,
-          providerInstanceId,
-          status: "stopped",
-          runtimePayload: {
-            activeTurnId: null,
+        hadFailure = true;
+        yield* Effect.logWarning(label, { cause: Cause.pretty(cause) });
+      });
+
+    const sessionLists = yield* Effect.forEach(
+      currentAdapters,
+      ([instanceId, adapter]) =>
+        adapter.listSessions().pipe(
+          Effect.map((sessions) =>
+            sessions.map((session) => ({
+              ...session,
+              providerInstanceId: instanceId,
+            })),
+          ),
+          Effect.catchCause((cause) =>
+            recordFailure("provider service stopAll failed to list sessions", cause).pipe(
+              Effect.as([]),
+            ),
+          ),
+        ),
+      { concurrency: "unbounded" },
+    );
+    const activeSessions = sessionLists.flatMap((sessions) => sessions);
+
+    yield* Effect.forEach(
+      activeSessions,
+      (session) =>
+        Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
+          upsertSessionBinding(session, session.threadId, {
             lastRuntimeEvent: "provider.stopAll",
-            lastRuntimeEventAt: yield* nowIso,
-          },
+            lastRuntimeEventAt,
+          }),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            recordFailure("provider service stopAll failed to persist session binding", cause),
+          ),
+        ),
+      { discard: true },
+    );
+
+    const failedInstances = new Set<ProviderInstanceId>();
+    yield* Effect.forEach(
+      currentAdapters,
+      ([instanceId, adapter]) =>
+        adapter.stopAll().pipe(
+          Effect.catchCause((cause) => {
+            failedInstances.add(instanceId);
+            return recordFailure("provider service stopAll failed to stop adapter", cause);
+          }),
+        ),
+      { concurrency: "unbounded", discard: true },
+    );
+
+    const persistStopped = Effect.gen(function* () {
+      if (failedInstances.size === 0 && directory.markAllStopped) {
+        yield* directory.markAllStopped({
+          lastRuntimeEvent: "provider.stopAll",
+          lastRuntimeEventAt: yield* nowIso,
         });
-      }),
-    ).pipe(Effect.asVoid);
-    yield* analytics.record("provider.sessions.stopped_all", {
-      sessionCount: activeSessions.length,
+      } else {
+        const bindings = yield* directory.listActiveBindings
+          ? directory.listActiveBindings()
+          : directory.listBindings();
+        yield* Effect.forEach(
+          bindings.filter(
+            (binding) =>
+              binding.status !== "stopped" &&
+              (binding.providerInstanceId === undefined ||
+                !failedInstances.has(binding.providerInstanceId)),
+          ),
+          (binding) =>
+            Effect.gen(function* () {
+              const providerInstanceId = dieOnMissingBindingInstanceId(
+                "ProviderService.stopAll",
+                binding,
+              );
+              return yield* directory.upsert({
+                threadId: binding.threadId,
+                provider: binding.provider,
+                providerInstanceId,
+                status: "stopped",
+                runtimePayload: {
+                  activeTurnId: null,
+                  lastRuntimeEvent: "provider.stopAll",
+                  lastRuntimeEventAt: yield* nowIso,
+                },
+              });
+            }),
+          { discard: true },
+        );
+      }
     });
-    yield* analytics.flush;
+    yield* persistStopped.pipe(
+      Effect.catchCause((cause) =>
+        recordFailure("provider service stopAll failed to mark bindings stopped", cause),
+      ),
+    );
+
+    if (!hadFailure) {
+      yield* analytics.record("provider.sessions.stopped_all", {
+        sessionCount: activeSessions.length,
+      });
+      yield* analytics.flush;
+    }
   });
 
   yield* Effect.addFinalizer(() =>
