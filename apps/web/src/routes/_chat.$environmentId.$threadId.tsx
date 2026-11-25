@@ -1314,7 +1314,7 @@ function ChatThreadRouteView() {
   if (!shouldUseDiffSheet) {
     return (
       <>
-        <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
+        <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
           <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
             <PullRequestHoverCardProvider
               environmentId={threadRef.environmentId}
@@ -1346,7 +1346,7 @@ function ChatThreadRouteView() {
 
   return (
     <>
-      <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
+      <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
         <ThreadPullRequestLinkContext.Provider value={threadPullRequestLinks}>
           <PullRequestHoverCardProvider
             environmentId={threadRef.environmentId}

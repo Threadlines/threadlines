@@ -324,7 +324,7 @@ function DraftChatThreadRouteView() {
 
   if (canonicalThreadRef) {
     return (
-      <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
+      <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
         <ChatView
           environmentId={canonicalThreadRef.environmentId}
           threadId={canonicalThreadRef.threadId}
@@ -380,7 +380,7 @@ function DraftChatThreadRouteView() {
   if (!shouldUseSourceControlSheet) {
     return (
       <>
-        <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
+        <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
           <ChatView
             draftId={draftId}
             environmentId={draftSession.environmentId}
@@ -402,7 +402,7 @@ function DraftChatThreadRouteView() {
 
   return (
     <>
-      <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
+      <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground desktop:h-auto">
         <ChatView
           draftId={draftId}
           environmentId={draftSession.environmentId}

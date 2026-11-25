@@ -957,7 +957,7 @@ export function AgentSetupScreen({ routeStep }: { readonly routeStep: SetupStep 
 
   return (
     <div
-      className="flex h-dvh min-h-0 flex-col bg-background text-foreground"
+      className="flex h-[calc(100dvh-var(--safe-area-top))] min-h-0 flex-col bg-background text-foreground"
       data-testid="agent-setup"
     >
       <header className="drag-region relative flex h-[var(--workspace-topbar-height)] shrink-0 items-center gap-3 border-b border-border/60 pr-[var(--workspace-controls-right)] pl-[var(--workspace-controls-left)]">

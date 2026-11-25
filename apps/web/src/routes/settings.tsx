@@ -159,7 +159,7 @@ function SettingsContentLayout() {
   const searchHost = useSettingsStoreSearchHost();
   return (
     <SettingsAvailabilityProvider surface={isHostedStatic ? "phone" : "full"} host={searchHost}>
-      <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate desktop:h-auto">
+      <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate desktop:h-auto">
         {/* Clear under a theme with art: the page's column is glass (index.css). */}
         <div
           {...glassPage.shell}
@@ -169,7 +169,7 @@ function SettingsContentLayout() {
             <header
               {...glassPage.header}
               className={cn(
-                "border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 desktop:hidden",
+                "page-gutters border-b border-border py-2 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)] desktop:hidden",
               )}
             >
               <div className="flex min-h-7 items-center gap-2 sm:min-h-6">

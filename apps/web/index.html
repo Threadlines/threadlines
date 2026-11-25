@@ -45,7 +45,19 @@
       (() => {
         const LIGHT_BACKGROUND = "#ffffff";
         const DARK_BACKGROUND = "#161616";
-        const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+        const setThemeColor = (color) => {
+          const metas = document.querySelectorAll('meta[name="theme-color"]');
+          let active = metas[0];
+          if (!active) {
+            active = document.createElement("meta");
+            active.name = "theme-color";
+            document.head.append(active);
+          }
+          for (let i = 1; i < metas.length; i += 1) metas[i].remove();
+          active.removeAttribute("media");
+          active.setAttribute("data-dynamic-theme-color", "true");
+          active.setAttribute("content", color);
+        };
         const prefersDark = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
         const paintCustomTheme = (raw) => {
           if (!raw || raw.charAt(0) !== "{") return false;
@@ -99,7 +111,7 @@
           root.setAttribute("data-theme-version", record.hash || "pending");
           root.classList.toggle("dark", record.base === "dark");
           root.style.backgroundColor = record.surface;
-          themeColorMeta?.setAttribute("content", record.surface);
+          setThemeColor(record.surface);
           return true;
         };
         try {
@@ -127,11 +139,11 @@
           document.documentElement.classList.toggle("dark", isDark);
           const chromeColor = isDark ? DARK_BACKGROUND : LIGHT_BACKGROUND;
           document.documentElement.style.backgroundColor = chromeColor;
-          themeColorMeta?.setAttribute("content", chromeColor);
+          setThemeColor(chromeColor);
         } catch {
           document.documentElement.classList.add("dark");
           document.documentElement.style.backgroundColor = DARK_BACKGROUND;
-          themeColorMeta?.setAttribute("content", DARK_BACKGROUND);
+          setThemeColor(DARK_BACKGROUND);
         }
       })();
     </script>

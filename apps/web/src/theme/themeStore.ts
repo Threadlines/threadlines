@@ -267,15 +267,22 @@ function startDocumentSync(store: ThemeStoreCore): void {
 // Browser chrome (theme-color meta, the page behind overscroll)
 
 const THEME_COLOR_META_NAME = "theme-color";
-const DYNAMIC_THEME_COLOR_SELECTOR = `meta[name="${THEME_COLOR_META_NAME}"][data-dynamic-theme-color="true"]`;
 
 function ensureThemeColorMetaTag(): HTMLMetaElement {
-  let element = document.querySelector<HTMLMetaElement>(DYNAMIC_THEME_COLOR_SELECTOR);
-  if (element) return element;
-  element = document.createElement("meta");
+  const existing = [
+    ...document.querySelectorAll<HTMLMetaElement>(`meta[name="${THEME_COLOR_META_NAME}"]`),
+  ];
+  const dynamic = existing.find((el) => el.getAttribute("data-dynamic-theme-color") === "true");
+  const element = dynamic ?? existing[0] ?? document.createElement("meta");
+  for (const other of existing) {
+    if (other !== element) other.remove();
+  }
   element.name = THEME_COLOR_META_NAME;
+  element.removeAttribute("media");
   element.setAttribute("data-dynamic-theme-color", "true");
-  document.head.append(element);
+  if (!element.isConnected) {
+    document.head.prepend(element);
+  }
   return element;
 }
 
@@ -318,6 +325,10 @@ export function syncBrowserChromeColor(): void {
     ensureThemeColorMetaTag().setAttribute("content", surface);
     return;
   }
+  // Clear prior inline fills before reading CSS tokens so a built-in light/dark
+  // switch on routes with no sidebar surface doesn't echo its own previous color.
+  root.style.backgroundColor = "";
+  document.body.style.backgroundColor = "";
   const surfaceColor = normalizeThemeColor(
     getComputedStyle(resolveBrowserChromeSurface()).backgroundColor,
   );

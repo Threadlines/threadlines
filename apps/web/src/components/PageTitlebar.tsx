@@ -86,7 +86,7 @@ function NarrowPageStrip({
       <div
         {...glassPage.header}
         className={cn(
-          "drag-region relative flex shrink-0 items-center gap-2 px-5",
+          "drag-region page-gutters relative flex shrink-0 items-center gap-2 [--side-gutter:--spacing(5)]",
           ELECTRON_HEADER_HEIGHT_CLASS,
         )}
       >
@@ -101,7 +101,7 @@ function NarrowPageStrip({
   return (
     <header
       {...glassPage.header}
-      className="relative z-10 flex shrink-0 items-center gap-2 pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] desktop:hidden"
+      className="page-gutters relative z-10 flex shrink-0 items-center gap-2 py-2 [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)] desktop:hidden"
     >
       <SidebarOpenTrigger className="size-7 shrink-0" />
       {label ? (

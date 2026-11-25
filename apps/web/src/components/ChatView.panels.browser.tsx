@@ -517,6 +517,124 @@ describe("ChatView (full app): right panel and header actions", () => {
     }
   });
 
+  it("keeps the conversation, family tabs, composer, and scroll button clear of the right strip", async () => {
+    // An iPhone Duo, folded: its status dock hangs down the right edge.
+    const strip = 85;
+    document.documentElement.style.setProperty("--safe-area-right", `${strip}px`);
+    const childThreadId = "thread-duo-strip-child" as ThreadId;
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-duo-strip" as MessageId,
+      targetText: "Make sure long chat lines stay clear of the folded iPhone Duo status dock.",
+    });
+    const withChild = addThreadToSnapshot(baseSnapshot, childThreadId);
+    const snapshot = {
+      ...withChild,
+      threads: withChild.threads.map((thread) => {
+        if (thread.id === childThreadId) {
+          const runningTurnId = "turn-duo-strip-child" as TurnId;
+          return {
+            ...thread,
+            title: "Audit CI speed",
+            parentThreadId: THREAD_ID,
+            attachedToParent: true,
+            latestTurn: {
+              turnId: runningTurnId,
+              state: "running" as const,
+              requestedAt: NOW_ISO,
+              startedAt: NOW_ISO,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            session: thread.session
+              ? { ...thread.session, status: "running" as const, activeTurnId: runningTurnId }
+              : thread.session,
+          };
+        }
+        if (thread.id === THREAD_ID) {
+          return {
+            ...thread,
+            messages: [
+              ...thread.messages,
+              ...Array.from({ length: 12 }, (_, index) => ({
+                id: `msg-duo-filler-${index}` as MessageId,
+                role: "assistant" as const,
+                text: `Line ${index + 1}: verifying that wrapped assistant messages keep clear of the right-hand dock on a folded iPhone Duo screen.`,
+                turnId: null,
+                streaming: false,
+                createdAt: NOW_ISO,
+                updatedAt: NOW_ISO,
+              })),
+            ],
+          };
+        }
+        return thread;
+      }),
+    };
+    const mounted = await mountChatView({
+      viewport: { ...PHONE_VIEWPORT, width: 466, height: 678 },
+      snapshot,
+    });
+
+    try {
+      const stopButton = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="family-tabs-stop"]'),
+        "The family tabs Stop button never appeared.",
+      );
+      const composerForm = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-composer-form="true"]'),
+        "The composer form never appeared.",
+      );
+      const list = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-list="true"]'),
+        "The messages list never appeared.",
+      );
+
+      await vi.waitFor(
+        () => {
+          const rows = [...document.querySelectorAll<HTMLElement>('[data-timeline-root="true"]')];
+          expect(rows.length).toBeGreaterThan(0);
+          const safeRight = window.innerWidth - strip;
+          expect(stopButton.getBoundingClientRect().right).toBeLessThanOrEqual(safeRight);
+          expect(composerForm.getBoundingClientRect().right).toBeLessThanOrEqual(safeRight);
+          for (const row of rows) {
+            expect(row.getBoundingClientRect().right).toBeLessThanOrEqual(safeRight);
+          }
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      // Wait for initialScrollAtEnd to settle, then scroll up to reveal the
+      // scroll-to-bottom button and confirm it centers with the composer inside
+      // the safe area, not on the full screen width.
+      await vi.waitFor(
+        () => {
+          expect(list.scrollTop).toBeGreaterThan(0);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      list.dispatchEvent(new WheelEvent("wheel", { deltaY: -200, bubbles: true }));
+      list.scrollTop = 0;
+      list.dispatchEvent(new Event("scroll"));
+      const scrollToBottom = await waitForElement(
+        () => document.querySelector<HTMLElement>('button[aria-label="Scroll to bottom"]'),
+        "The scroll-to-bottom button never appeared after scrolling up.",
+      );
+      await vi.waitFor(
+        () => {
+          const composerRect = composerForm.getBoundingClientRect();
+          const buttonRect = scrollToBottom.getBoundingClientRect();
+          const composerCenter = (composerRect.left + composerRect.right) / 2;
+          const buttonCenter = (buttonRect.left + buttonRect.right) / 2;
+          expect(Math.abs(buttonCenter - composerCenter)).toBeLessThanOrEqual(2);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      document.documentElement.style.removeProperty("--safe-area-right");
+      await mounted.cleanup();
+    }
+  });
+
   it("puts the overlay panel away on a press on the page beside it", async () => {
     const mounted = await mountChatView({
       viewport: { ...PHONE_VIEWPORT, width: 466, height: 678 },

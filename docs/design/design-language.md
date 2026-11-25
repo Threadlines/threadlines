@@ -93,14 +93,13 @@ The elevation ladder in `index.css` (deepest to highest; dark / light):
   or open. The strip runs the screen's whole height (`--safe-area-left` and
   `--safe-area-right` in `index.css`, 0 everywhere else), though the dock only
   hangs from the top of it. A surface that touches that side of the window
-  carries its fill into the strip and keeps its controls out: headers, the
-  composer, a page's body (`page-gutters`), the right panel's sheet, a
+  carries its fill into the strip and keeps its content and controls out:
+  headers, family tabs, the conversation, the scroll-to-bottom button, the
+  composer, a page's body (`page-gutters`), the right panel's sheet, and a
   phone's bottom sheets.
   A layer fixed to the window (a dialog, a toast, the command palette) stays
   off it, and so does a menu or popover opening beside its button
-  (`sideStrips.ts`). The conversation is the one thing that runs
-  full width: messages scroll under the dock, the way a page scrolls under a
-  phone's status bar.
+  (`sideStrips.ts`).
 - **Each destination brings its own list** (`destinationLists.tsx`): the
   thread inbox on Threads, your chats on General Chats, computers on Fleet,
   the sections on Settings. Pull Requests and Usage have none and take the

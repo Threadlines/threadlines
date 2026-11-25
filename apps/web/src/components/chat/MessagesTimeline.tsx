@@ -2238,14 +2238,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         // In the new-thread hero the chat column scrolls as one, so this stops
         // filling and scrolling on its own and takes the height of its content.
         <div className="h-full overflow-x-hidden overflow-y-auto overscroll-y-contain draft-hero:h-auto draft-hero:overflow-visible">
-          <div className="flex min-h-full flex-col items-center justify-center px-4 py-8 draft-hero:min-h-0 draft-hero:pb-5">
+          <div className="page-gutters flex min-h-full flex-col items-center justify-center py-8 [--side-gutter:--spacing(4)] draft-hero:min-h-0 draft-hero:pb-5">
             {emptyState}
           </div>
         </div>
       );
     }
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="page-gutters flex h-full items-center justify-center [--side-gutter:--spacing(4)]">
         <p className="text-sm text-muted-foreground/30">
           Send a message to start the conversation.
         </p>
@@ -2306,7 +2306,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     onTouchCancelCapture={handleTouchEndCapture}
                     onKeyDownCapture={handleKeyDownCapture}
                     data-chat-messages-list="true"
-                    className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5 [scrollbar-gutter:stable_both-edges]"
+                    className="page-gutters h-full overflow-x-hidden overscroll-y-contain [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)] [scrollbar-gutter:stable_both-edges]"
                     ListHeaderComponent={TIMELINE_LIST_HEADER}
                     ListFooterComponent={TIMELINE_LIST_FOOTER}
                   />
@@ -2372,7 +2372,7 @@ function PendingThreadDetailState(props: { savedEnvironmentConnected: boolean | 
   const connected = props.savedEnvironmentConnected ?? appConnection.phase === "connected";
   if (!connected) {
     return (
-      <div className="flex h-full items-center justify-center px-4">
+      <div className="page-gutters flex h-full items-center justify-center [--side-gutter:--spacing(4)]">
         <p className="loading-reveal text-center text-sm text-muted-foreground" role="status">
           This conversation loads when the connection is back.
         </p>
@@ -2381,7 +2381,7 @@ function PendingThreadDetailState(props: { savedEnvironmentConnected: boolean | 
   }
   return (
     <div
-      className="loading-reveal h-full overflow-hidden px-3 sm:px-5"
+      className="page-gutters loading-reveal h-full overflow-hidden [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)]"
       role="status"
       aria-label="Loading conversation"
       data-testid="thread-loading-skeleton"

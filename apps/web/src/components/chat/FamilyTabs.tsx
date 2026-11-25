@@ -300,7 +300,7 @@ const FamilyTabRow = memo(function FamilyTabRow({
       <div
         data-testid="family-tabs"
         data-family-key={family.familyKey}
-        className="relative flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border px-3 py-1 sm:px-5"
+        className="page-gutters relative flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border py-1 [--side-gutter:--spacing(3)] sm:[--side-gutter:--spacing(5)]"
       >
         {isMobile ? null : (
           // Every tab and "+N" at full width, unseen, for useRowMeasure.
