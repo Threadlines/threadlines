@@ -618,6 +618,23 @@ export const BackdropHostMessage = Schema.Union([
     ).check(Schema.isMaxLength(32)),
     clarity: BackdropClarity,
   }),
+  /** Pointer input from the host window: clicks always, hover moves only when the art opted in. */
+  Schema.Struct({
+    type: Schema.Literal("pointer"),
+    kind: Schema.Literal("click"),
+    x: Schema.Number,
+    y: Schema.Number,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("pointer"),
+    kind: Schema.Literal("move"),
+    x: Schema.Number,
+    y: Schema.Number,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("pointer"),
+    kind: Schema.Literal("leave"),
+  }),
   /** Asks for a still; the frame answers with `still`. */
   Schema.Struct({
     type: Schema.Literal("capture-still"),
@@ -644,6 +661,8 @@ export type BackdropFailureReason = typeof BackdropFailureReason.Type;
 
 export const BackdropFrameMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("ready") }),
+  /** What optional input the art asked for, reported once its script calls `threadlines.backdrop`. */
+  Schema.Struct({ type: Schema.Literal("capabilities"), hover: Schema.Boolean }),
   /** Sent at least every second; `frame` is the last frame drawn, so a stalled frame shows. */
   Schema.Struct({ type: Schema.Literal("heartbeat"), frame: NonNegativeInt }),
   Schema.Struct({
@@ -654,6 +673,8 @@ export const BackdropFrameMessage = Schema.Union([
     energy: BackdropEnergy,
     /** The frame stepped the rate down, or went still, to stay in budget. */
     throttled: Schema.Boolean,
+    /** Canvas mode only: the validated context (`2d` or `webgl2`). */
+    canvasContext: Schema.optional(Schema.Literals(["2d", "webgl2"])),
   }),
   Schema.Struct({
     type: Schema.Literal("still"),

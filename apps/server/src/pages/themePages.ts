@@ -57,8 +57,17 @@ export function themePreviewText(input: {
     );
   } else {
     const { stats } = report;
+    const cappedFps = Math.min(backdrop.maxFps, THEME_MAX_FPS);
+    const modeLabel =
+      backdrop.mode === "canvas" && stats.canvasContext !== undefined
+        ? `canvas (${stats.canvasContext})`
+        : backdrop.mode;
+    const canvas2dWarning =
+      backdrop.mode === "canvas" && stats.canvasContext === "2d" && cappedFps > 12
+        ? ' Canvas 2d uploads a full-window bitmap every frame and adds Retina GPU work that headless preview does not measure: switch to context: "webgl2" (or grid/pixels) for smooth motion, or lower maxFps to 12 or less.'
+        : "";
     lines.push(
-      `Art: ${backdrop.mode} mode, up to ${Math.min(backdrop.maxFps, THEME_MAX_FPS)} fps. Measured ${round(stats.fps, 1)} fps and ${round(stats.msPerSecond, 1)} ms of work a second: ${stats.energy}.${stats.throttled ? " The runtime slowed it down to keep it in budget; make each frame cheaper." : ""}${stats.energy === "light" ? "" : " Aim for light: heavy art steps itself down and then goes still."}`,
+      `Art: ${modeLabel} mode, up to ${cappedFps} fps. Measured ${round(stats.fps, 1)} fps and ${round(stats.msPerSecond, 1)} ms of work a second: ${stats.energy}.${stats.throttled ? " The runtime slowed it down to keep it in budget; make each frame cheaper." : ""}${stats.energy === "light" ? "" : " Aim for light: heavy art steps itself down and then goes still."}${canvas2dWarning}`,
     );
   }
   lines.push(

@@ -60,6 +60,7 @@ const ArtStats = Schema.Struct({
   msPerSecond: Schema.Number,
   energy: BackdropEnergy,
   throttled: Schema.Boolean,
+  canvasContext: Schema.optional(Schema.Literals(["2d", "webgl2"])),
 });
 export type ThemeArtStats = typeof ArtStats.Type;
 const ArtFailure = Schema.Struct({
