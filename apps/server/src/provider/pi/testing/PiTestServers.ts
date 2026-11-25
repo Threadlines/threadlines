@@ -162,12 +162,15 @@ export async function startTestModelServer(): Promise<TestServer> {
 export interface TestMcpTool {
   readonly name: string;
   readonly readOnly: boolean;
+  readonly description?: string;
+  readonly deferred?: boolean;
 }
 
 /** A streamable-HTTP MCP server with the given tools; each call answers `<tool>:<args>`. */
 export async function startTestMcpServer(input: {
   readonly token: string;
   readonly tools: ReadonlyArray<TestMcpTool>;
+  readonly instructions?: string;
   readonly listToolsDelayMs?: number;
 }): Promise<TestServer & { readonly calls: Array<{ name: string; args: unknown }> }> {
   const requests: Array<Record<string, unknown>> = [];
@@ -199,6 +202,7 @@ export async function startTestMcpServer(input: {
           protocolVersion: "2025-06-18",
           capabilities: { tools: {} },
           serverInfo: { name: "test", version: "1" },
+          ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
         });
         return;
       case "tools/list":
@@ -208,9 +212,10 @@ export async function startTestMcpServer(input: {
         reply({
           tools: input.tools.map((tool) => ({
             name: tool.name,
-            description: `Test tool ${tool.name}`,
+            description: tool.description ?? `Test tool ${tool.name}`,
             inputSchema: { type: "object", properties: { text: { type: "string" } } },
             annotations: { readOnlyHint: tool.readOnly },
+            ...(tool.deferred === true ? { _meta: { "anthropic/alwaysLoad": false } } : {}),
           })),
         });
         return;

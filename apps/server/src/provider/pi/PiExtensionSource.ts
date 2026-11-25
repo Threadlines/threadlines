@@ -32,6 +32,7 @@
  */
 import { createHash } from "node:crypto";
 
+import { CLAUDE_ALWAYS_LOAD_META_KEY } from "../../mcp/toolLoading.ts";
 import { PI_TURN_MARKER_TYPE } from "./PiCursor.ts";
 import { PI_EXTENSION_ENV } from "./PiLaunch.ts";
 
@@ -84,6 +85,7 @@ const TURN_COMMAND = ${JSON.stringify(PI_TURN_COMMAND)};
 const TURN_MARKER = ${JSON.stringify(PI_TURN_MARKER_TYPE)};
 const PLAN_REASON = ${JSON.stringify(PI_PLAN_MODE_REASON)};
 const PLAN_INSTRUCTION = ${JSON.stringify(PI_PLAN_MODE_INSTRUCTION)};
+const ALWAYS_LOAD_META_KEY = ${JSON.stringify(CLAUDE_ALWAYS_LOAD_META_KEY)};
 const PROTOCOL = "2025-06-18";
 const ACCESS_LEVELS = new Set(["approval-required", "auto-accept-edits", "full-access"]);
 // Tools that only read. codemode's own calls are checked one by one.
@@ -91,12 +93,33 @@ const READ_TOOLS = new Set(["read", "grep", "find", "ls", "codemode"]);
 const EDIT_TOOLS = new Set(["edit", "write"]);
 
 type ToolServer = { name: string; url: string };
+type McpToolAnnotations = {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+};
 type McpTool = {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
-  annotations?: { readOnlyHint?: boolean };
+  annotations?: McpToolAnnotations;
+  _meta?: Record<string, unknown>;
 };
+
+function pickToolAnnotations(raw: McpToolAnnotations | undefined): McpToolAnnotations | undefined {
+  if (!raw) return undefined;
+  const annotations: McpToolAnnotations = {};
+  if (typeof raw.readOnlyHint === "boolean") annotations.readOnlyHint = raw.readOnlyHint;
+  if (typeof raw.destructiveHint === "boolean") annotations.destructiveHint = raw.destructiveHint;
+  if (typeof raw.idempotentHint === "boolean") annotations.idempotentHint = raw.idempotentHint;
+  if (typeof raw.openWorldHint === "boolean") annotations.openWorldHint = raw.openWorldHint;
+  return Object.keys(annotations).length > 0 ? annotations : undefined;
+}
+
+function isDeferredMcpTool(tool: McpTool): boolean {
+  return tool._meta?.[ALWAYS_LOAD_META_KEY] === false;
+}
 
 function takeEnv(name: string): string | undefined {
   const value = process.env[name];
@@ -191,9 +214,11 @@ function createClient(url: string, token: string) {
     return parsed.result;
   };
   return {
-    async connect(signal?: AbortSignal) {
-      await request("initialize", { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "threadlines-pi", version: "1" } }, signal);
+    async connect(signal?: AbortSignal): Promise<{ readonly instructions?: string }> {
+      const init: any = await request("initialize", { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "threadlines-pi", version: "1" } }, signal);
       await post({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, signal).catch(() => undefined);
+      const instructions = typeof init?.instructions === "string" && init.instructions.trim().length > 0 ? init.instructions.trim() : undefined;
+      return instructions ? { instructions } : {};
     },
     async listTools(signal?: AbortSignal): Promise<McpTool[]> {
       const tools: McpTool[] = [];
@@ -233,6 +258,16 @@ export default async function threadlines(pi: ExtensionAPI) {
   const grants = new Set<string>();
   const readOnlyTools = new Set<string>();
   const ownTools = new Set<string>();
+  const deferredEntries = new Map<
+    string,
+    {
+      readonly server: ToolServer;
+      readonly client: ReturnType<typeof createClient>;
+      readonly tool: McpTool;
+      readonly instructions?: string;
+    }
+  >();
+  const serverInstructions = new Map<string, string>();
 
   pi.on("session_start", () => {
     grants.clear();
@@ -263,16 +298,64 @@ export default async function threadlines(pi: ExtensionAPI) {
     },
   });
 
+  const hasReachingTool = (allTools: ReturnType<ExtensionAPI["getAllTools"]>, name: string) =>
+    allTools.some((t) => t.name === name && typeof t.reachesTools === "function");
+
   pi.on("before_agent_start", (event) => {
     if (plan) event.systemPromptOptions.sections.threadlines_plan_mode = PLAN_INSTRUCTION;
     else delete event.systemPromptOptions.sections.threadlines_plan_mode;
+    const allTools = pi.getAllTools();
+    const active = pi.getActiveTools();
+    const toolSearchActive =
+      hasReachingTool(allTools, "tool_search") && active.includes("tool_search");
+    const codemodeActive = hasReachingTool(allTools, "codemode") && active.includes("codemode");
+    if (deferredEntries.size > 0 && (toolSearchActive || codemodeActive)) {
+      const liveDeferredNames = new Set(
+        allTools
+          .filter((t) => deferredEntries.has(t.name) && t.exposure === "deferred")
+          .map((t) => t.name),
+      );
+      const lines: string[] = [];
+      for (const server of servers) {
+        const prefix = "mcp__" + server.name + "__";
+        let hasLive = false;
+        for (const name of liveDeferredNames) {
+          if (name.startsWith(prefix)) {
+            hasLive = true;
+            break;
+          }
+        }
+        if (!hasLive) continue;
+        const instructions = serverInstructions.get(server.name);
+        lines.push(
+          instructions ? "- mcp__" + server.name + ": " + instructions : "- mcp__" + server.name,
+        );
+      }
+      if (lines.length > 0) {
+        const header = toolSearchActive
+          ? "Some Threadlines tools are deferred to save context. Call \`tool_search\` to load them before calling:"
+          : "Some Threadlines tools are deferred to save context. Find them from \`codemode\` with \`searchTools()\`:";
+        event.systemPromptOptions.sections.threadlines_deferred_tools =
+          header + "\\n" + lines.join("\\n");
+      } else {
+        delete event.systemPromptOptions.sections.threadlines_deferred_tools;
+      }
+    } else {
+      delete event.systemPromptOptions.sections.threadlines_deferred_tools;
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {
     const name = event.toolName;
     const reads =
       READ_TOOLS.has(name) ||
-      (name === "tool_search" && pi.getAllTools().some((t) => t.name === name && t.sourceInfo?.path === "builtin:tool-search")) ||
+      (name === "tool_search" &&
+        pi.getAllTools().some(
+          (t) =>
+            t.name === name &&
+            (t.sourceInfo?.path === "builtin:tool-search" ||
+              (t.sourceInfo?.source === "builtin" && typeof t.reachesTools === "function")),
+        )) ||
       (ownTools.has(name) && readOnlyTools.has(name));
     if (plan && !reads) return { block: true, reason: PLAN_REASON };
     if (access === "full-access" || reads) return;
@@ -297,33 +380,73 @@ export default async function threadlines(pi: ExtensionAPI) {
 
   if (!token || servers.length === 0) return;
 
-  const register = (server: ToolServer, client: ReturnType<typeof createClient>, tools: McpTool[]) => {
+  const registerToolEntry = (
+    entry: {
+      readonly server: ToolServer;
+      readonly client: ReturnType<typeof createClient>;
+      readonly tool: McpTool;
+      readonly instructions?: string;
+    },
+    exposure: "direct" | "deferred",
+  ) => {
+    const { server, client, tool, instructions } = entry;
+    const name = "mcp__" + server.name + "__" + tool.name;
+    ownTools.add(name);
+    if (tool.annotations?.readOnlyHint === true) readOnlyTools.add(name);
+    else readOnlyTools.delete(name);
+    const annotations = pickToolAnnotations(tool.annotations);
+    pi.registerTool({
+      name,
+      label: tool.name,
+      description: tool.description ?? tool.name,
+      parameters: (tool.inputSchema ?? { type: "object", properties: {} }) as never,
+      exposure,
+      namespace: {
+        name: "mcp__" + server.name,
+        aliases: [server.name],
+        ...(instructions ? { description: instructions, instructions } : {}),
+      },
+      ...(annotations ? { annotations } : {}),
+      async execute(_toolCallId, params, signal) {
+        const result: any = await client.callTool(tool.name, params, signal);
+        const content = modelContent(result);
+        return {
+          content,
+          details: { server: server.name, tool: tool.name },
+          ...(result?.isError === true ? { isError: true } : {}),
+        };
+      },
+    });
+    return name;
+  };
+
+  const register = (
+    server: ToolServer,
+    client: ReturnType<typeof createClient>,
+    tools: McpTool[],
+    instructions?: string,
+  ) => {
     for (const tool of tools) {
-      const name = "mcp__" + server.name + "__" + tool.name;
-      ownTools.add(name);
-      if (tool.annotations?.readOnlyHint === true) readOnlyTools.add(name);
-      else readOnlyTools.delete(name);
-      pi.registerTool({
-        name,
-        label: tool.name,
-        description: tool.description ?? tool.name,
-        parameters: (tool.inputSchema ?? { type: "object", properties: {} }) as never,
-        async execute(_toolCallId, params, signal) {
-          const result: any = await client.callTool(tool.name, params, signal);
-          const content = modelContent(result);
-          return {
-            content,
-            details: { server: server.name, tool: tool.name },
-            ...(result?.isError === true ? { isError: true } : {}),
-          };
-        },
-      });
+      const deferred = isDeferredMcpTool(tool);
+      const entry = { server, client, tool, ...(instructions ? { instructions } : {}) };
+      const name = registerToolEntry(entry, deferred ? "deferred" : "direct");
+      if (deferred) {
+        deferredEntries.set(name, entry);
+      } else {
+        deferredEntries.delete(name);
+      }
     }
+    if (instructions) serverInstructions.set(server.name, instructions);
+    else serverInstructions.delete(server.name);
   };
 
   const connected = new Map<
     string,
-    Promise<{ readonly client: ReturnType<typeof createClient>; readonly tools: McpTool[] }>
+    Promise<{
+      readonly client: ReturnType<typeof createClient>;
+      readonly tools: McpTool[];
+      readonly instructions?: string;
+    }>
   >();
   const registered = new Set<string>();
   const connect = (server: ToolServer) => {
@@ -332,8 +455,12 @@ export default async function threadlines(pi: ExtensionAPI) {
     const attempt = (async () => {
       const client = createClient(server.url, token);
       const signal = AbortSignal.timeout(10000);
-      await client.connect(signal);
-      return { client, tools: await client.listTools(signal) };
+      const { instructions } = await client.connect(signal);
+      return {
+        client,
+        tools: await client.listTools(signal),
+        ...(instructions ? { instructions } : {}),
+      };
     })();
     connected.set(server.name, attempt);
     void attempt.catch(() => {
@@ -355,7 +482,7 @@ export default async function threadlines(pi: ExtensionAPI) {
       }
       if (registered.has(server.name)) continue;
       try {
-        register(server, result.value.client, result.value.tools);
+        register(server, result.value.client, result.value.tools, result.value.instructions);
         registered.add(server.name);
       } catch {
         connected.delete(server.name);
@@ -365,10 +492,50 @@ export default async function threadlines(pi: ExtensionAPI) {
     return failed;
   };
 
+  // Activate Pi's built-in tool_search when any deferred Threadlines tool survived
+  // Pi's tool filters. If neither a real tool_search nor codemode is active (for
+  // example --exclude-tools tool_search or a replacement without reachesTools),
+  // promote those tools to direct so they stay reachable while respecting --tools.
+  const syncDeferredDiscovery = () => {
+    if (deferredEntries.size === 0) return;
+    const allTools = pi.getAllTools();
+    const liveDeferred = allTools.filter(
+      (t) => deferredEntries.has(t.name) && t.exposure === "deferred",
+    );
+    if (liveDeferred.length === 0) return;
+    const hasToolSearch = hasReachingTool(allTools, "tool_search");
+    const hasCodemode = hasReachingTool(allTools, "codemode");
+    const active = pi.getActiveTools();
+    if (hasToolSearch && !active.includes("tool_search")) {
+      pi.setActiveTools([...active, "tool_search"]);
+    }
+    const nowActive = pi.getActiveTools();
+    if (
+      (hasToolSearch && nowActive.includes("tool_search")) ||
+      (hasCodemode && nowActive.includes("codemode"))
+    ) {
+      return;
+    }
+    if (!hasToolSearch) {
+      const fallbackNames: string[] = [];
+      for (const tool of liveDeferred) {
+        const entry = deferredEntries.get(tool.name);
+        if (!entry) continue;
+        registerToolEntry(entry, "direct");
+        deferredEntries.delete(tool.name);
+        fallbackNames.push(tool.name);
+      }
+      if (fallbackNames.length > 0) {
+        pi.setActiveTools([...nowActive, ...fallbackNames]);
+      }
+    }
+  };
+
   // Registered at load, so Threadlines owns these names before other extensions.
   await connectAndRegisterAll();
   pi.on("session_start", async (_event, ctx) => {
     const failed = await connectAndRegisterAll();
+    syncDeferredDiscovery();
     if (failed > 0) ctx.ui.notify("Some Threadlines tools are unavailable in this Pi session.", "warning");
   });
 }

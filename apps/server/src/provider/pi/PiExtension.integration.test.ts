@@ -353,4 +353,250 @@ describe.skipIf(!piCli)("Threadlines extension in a real Pi", () => {
       ).pipe(Effect.provide(NodeServices.layer)),
     60_000,
   );
+
+  it.live(
+    "defers non-core MCP tools behind Pi tool_search, loads them on demand, and still enforces approvals",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const model = yield* Effect.acquireRelease(
+            Effect.promise(() => startTestModelServer()),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const tools = yield* Effect.acquireRelease(
+            Effect.promise(() =>
+              startTestMcpServer({
+                token: TOKEN,
+                instructions: "Test workspace utilities for widgets.",
+                tools: [
+                  { name: "eager_read", readOnly: true },
+                  {
+                    name: "deferred_write",
+                    readOnly: false,
+                    deferred: true,
+                    description: "Create a secret widget on demand.",
+                  },
+                ],
+              }),
+            ),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const home = makeTestPiHome(model.url);
+          const extensionDir = mkdtempSync(join(tmpdir(), "threadlines-pi-ext-defer-"));
+          const extensionPath = join(extensionDir, piExtensionFileName());
+          writeFileSync(extensionPath, PI_EXTENSION_SOURCE, { mode: 0o600 });
+          const secretsFile = yield* Effect.promise(() =>
+            writePiSecretsFile(join(extensionDir, "run"), { token: TOKEN, nonce: NONCE }),
+          );
+          const rpc = yield* startPiRpc({
+            command: process.execPath,
+            args: piProcessArgs(
+              { command: process.execPath, prefixArgs: [piCli!] },
+              {
+                purpose: "chat",
+                session: { kind: "new" },
+                launchArgs: [],
+                extensionPath,
+                instructionsPath: undefined,
+              },
+            ),
+            cwd: home.projectDir,
+            environment: piProcessEnvironment({
+              instanceEnvironment: undefined,
+              baseEnv: testPiEnvironment(home.agentDir),
+              extension: {
+                access: "approval-required",
+                plan: false,
+                toolServers: [{ name: "threadlines_test", url: tools.url }],
+                secretsFile,
+              },
+            }),
+          });
+          const log = yield* collectPiRecords(rpc);
+          const toolNamesOf = (request: Record<string, unknown> | undefined) =>
+            (
+              (request?.tools ?? []) as ReadonlyArray<{
+                readonly function?: { readonly name?: string };
+              }>
+            )
+              .map((tool) => tool.function?.name)
+              .filter((name): name is string => typeof name === "string");
+
+          // Turn 1: call tool_search for the deferred tool; must run without approval.
+          let from = log.mark();
+          yield* prompt(rpc, 'TOOL tool_search {"query":"deferred_write"}');
+          const searchEnd = yield* toolEnd(log, from);
+          expect(searchEnd.isError).toBe(false);
+          expect(resultText(searchEnd)).toContain("mcp__threadlines_test__deferred_write");
+          yield* settled(log, from);
+          expect(log.all.slice(from).some((record) => record.type === "extension_ui_request")).toBe(
+            false,
+          );
+
+          // Before tool_search ran, only the eager tool and tool_search were declared,
+          // and the system prompt noted the deferred server namespace and instructions.
+          const firstRequest = model.requests[0];
+          const initialTools = toolNamesOf(firstRequest);
+          expect(initialTools).toContain("mcp__threadlines_test__eager_read");
+          expect(initialTools).toContain("tool_search");
+          expect(initialTools).not.toContain("mcp__threadlines_test__deferred_write");
+          expect(JSON.stringify(firstRequest)).toContain("Test workspace utilities for widgets.");
+
+          // After tool_search ran, the deferred tool is declared to the model.
+          const afterSearchTools = toolNamesOf(model.requests[1]);
+          expect(afterSearchTools).toContain("mcp__threadlines_test__deferred_write");
+
+          // Calling the newly loaded write tool still asks for approval.
+          from = log.mark();
+          yield* prompt(rpc, 'TOOL mcp__threadlines_test__deferred_write {"text":"go"}');
+          const dialog = yield* log.waitFor((record) => record.type === "extension_ui_request", {
+            from,
+          });
+          const approval = parsePiApprovalTitle(String(dialog.title), NONCE);
+          expect(approval?.toolName).toBe("mcp__threadlines_test__deferred_write");
+          yield* rpc.send({
+            type: "extension_ui_response",
+            id: dialog.id,
+            value: PI_APPROVAL_OPTIONS.allow,
+          });
+          expect(resultText(yield* toolEnd(log, from))).toContain("deferred_write:");
+          yield* settled(log, from);
+          expect(tools.calls.map((call) => call.name)).toEqual(["deferred_write"]);
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    60_000,
+  );
+
+  it.live(
+    "falls back to direct exposure when Pi excludes tool_search so deferred tools stay reachable",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const model = yield* Effect.acquireRelease(
+            Effect.promise(() => startTestModelServer()),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const tools = yield* Effect.acquireRelease(
+            Effect.promise(() =>
+              startTestMcpServer({
+                token: TOKEN,
+                tools: [{ name: "deferred_read", readOnly: true, deferred: true }],
+              }),
+            ),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const home = makeTestPiHome(model.url);
+          const extensionDir = mkdtempSync(join(tmpdir(), "threadlines-pi-ext-fallback-"));
+          const extensionPath = join(extensionDir, piExtensionFileName());
+          writeFileSync(extensionPath, PI_EXTENSION_SOURCE, { mode: 0o600 });
+          const secretsFile = yield* Effect.promise(() =>
+            writePiSecretsFile(join(extensionDir, "run"), { token: TOKEN, nonce: NONCE }),
+          );
+          const rpc = yield* startPiRpc({
+            command: process.execPath,
+            args: piProcessArgs(
+              { command: process.execPath, prefixArgs: [piCli!] },
+              {
+                purpose: "chat",
+                session: { kind: "new" },
+                launchArgs: ["--exclude-tools", "tool_search"],
+                extensionPath,
+                instructionsPath: undefined,
+              },
+            ),
+            cwd: home.projectDir,
+            environment: piProcessEnvironment({
+              instanceEnvironment: undefined,
+              baseEnv: testPiEnvironment(home.agentDir),
+              extension: {
+                access: "full-access",
+                plan: false,
+                toolServers: [{ name: "threadlines_test", url: tools.url }],
+                secretsFile,
+              },
+            }),
+          });
+          const log = yield* collectPiRecords(rpc);
+          const from = log.mark();
+          yield* prompt(rpc, 'TOOL mcp__threadlines_test__deferred_read {"text":"ok"}');
+          expect(resultText(yield* toolEnd(log, from))).toContain("deferred_read:");
+          yield* settled(log, from);
+          const declared = (
+            (model.requests[0]?.tools ?? []) as ReadonlyArray<{
+              readonly function?: { readonly name?: string };
+            }>
+          ).map((tool) => tool.function?.name);
+          expect(declared).toContain("mcp__threadlines_test__deferred_read");
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    60_000,
+  );
+
+  it.live(
+    "does not activate tool_search or advertise deferred namespaces when Pi excludes all MCP tools",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const model = yield* Effect.acquireRelease(
+            Effect.promise(() => startTestModelServer()),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const tools = yield* Effect.acquireRelease(
+            Effect.promise(() =>
+              startTestMcpServer({
+                token: TOKEN,
+                instructions: "Should not be advertised when excluded.",
+                tools: [{ name: "deferred_read", readOnly: true, deferred: true }],
+              }),
+            ),
+            (server) => Effect.promise(() => server.close()),
+          );
+          const home = makeTestPiHome(model.url);
+          const extensionDir = mkdtempSync(join(tmpdir(), "threadlines-pi-ext-excl-"));
+          const extensionPath = join(extensionDir, piExtensionFileName());
+          writeFileSync(extensionPath, PI_EXTENSION_SOURCE, { mode: 0o600 });
+          const secretsFile = yield* Effect.promise(() =>
+            writePiSecretsFile(join(extensionDir, "run"), { token: TOKEN, nonce: NONCE }),
+          );
+          const rpc = yield* startPiRpc({
+            command: process.execPath,
+            args: piProcessArgs(
+              { command: process.execPath, prefixArgs: [piCli!] },
+              {
+                purpose: "chat",
+                session: { kind: "new" },
+                launchArgs: ["--exclude-tools", "mcp__*"],
+                extensionPath,
+                instructionsPath: undefined,
+              },
+            ),
+            cwd: home.projectDir,
+            environment: piProcessEnvironment({
+              instanceEnvironment: undefined,
+              baseEnv: testPiEnvironment(home.agentDir),
+              extension: {
+                access: "full-access",
+                plan: false,
+                toolServers: [{ name: "threadlines_test", url: tools.url }],
+                secretsFile,
+              },
+            }),
+          });
+          const log = yield* collectPiRecords(rpc);
+          const from = log.mark();
+          yield* prompt(rpc, "REPLY ok");
+          yield* settled(log, from);
+          const declared = (
+            (model.requests[0]?.tools ?? []) as ReadonlyArray<{
+              readonly function?: { readonly name?: string };
+            }>
+          ).map((tool) => tool.function?.name);
+          expect(declared).not.toContain("tool_search");
+          expect(JSON.stringify(model.requests[0])).not.toContain(
+            "Should not be advertised when excluded.",
+          );
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    60_000,
+  );
 });

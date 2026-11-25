@@ -1,8 +1,8 @@
 /**
  * What agents are told about making themes (docs/design/custom-themes.md):
- * the file format, the art's draw contract and the rules for art. The theme
- * tools' descriptions and the app guide's `themes` topic both use these, so
- * the two never disagree.
+ * the file format, the art's draw contract, the rules for art, and design
+ * guidance. Served on demand by `preview_theme({ guide: true })` and the app
+ * guide's `themes` topic so the full guide stays out of the tool schema.
  */
 import { THEME_FILE_EXTENSION, THEME_FILE_FORMAT, THEME_MAX_FPS } from "@threadlines/contracts";
 
@@ -20,3 +20,11 @@ export const THEME_ART_RULES_GUIDE = `Art rules: keep the middle calm, since tex
  * rules: the readability checks and the art's budget are the only limits.
  */
 export const THEME_DESIGN_GUIDE = `Making it beautiful: commit to one specific idea from the user's words (a place, a time of day, a material, a memory) rather than a safe gradient, and let every part serve it. Pick base from the mood, then a small palette: a background that sets the whole canvas, one or two accents that carry the identity, mutedForeground and border close to the background's hue, and success, warning, danger and info tuned to the palette instead of left stock. Give code and terminal colors from the same palette, so code blocks belong, and a UI font that fits the mood when one does (a cheap, strong signature; keep mono a clear coding font). Where art is seen: crisp beside the reading column in a thread, around the heading and composer on the new-thread and home screens, beside the column of Settings and every other page, and frosted through the title row, rail and thread list. Put the striking details there (sides, corners, bottom) and keep the middle quieter; layers moving at different speeds read as depth, and rare small events (a fish crossing, a falling star) keep it from feeling like a loop. Draw from the theme's own colors so the glass and the art agree. glass sets the least tint each surface keeps: lower shows more art, and readability raises any patch that needs it, so be generous where the art is calm. When the user wants the art front and center (the vibe matters more than long reading), set "readability": "relaxed" with low floors and a lighter blur (around 8 to 12), so the animation reads through the chat; keep "standard" for themes meant for long working days. These are defaults, not limits: when the user asks for something loud, dense or strange, build that, since text stays readable whatever the art does. Readable isn't the same as pleasant, though: big bright shapes behind text still read as noise once frosted, and nothing should flash or strobe through a long day. Judge each preview as the user will see it (the blurred shapes behind the text, what draws the eye first), fix what looks muddy, off-palette or noisy, and keep the art's cost light.`;
+
+/** Full theme authoring guide returned on demand by `preview_theme({ guide: true })`. */
+export const THEME_AUTHORING_GUIDE = [
+  THEME_FORMAT_GUIDE,
+  THEME_ART_CONTRACT_GUIDE,
+  THEME_ART_RULES_GUIDE,
+  THEME_DESIGN_GUIDE,
+].join("\n\n");

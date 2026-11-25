@@ -118,6 +118,9 @@ const registerCommandTools = Effect.fn("McpCommandsServer.registerCommandTools")
   });
 });
 
+export const COMMANDS_MCP_SERVER_INSTRUCTIONS =
+  "Ask the user to run a shell command in their Threadlines terminal on a card (ask_user_to_run).";
+
 export const layer = Layer.fresh(
   Layer.effectDiscard(registerCommandTools()).pipe(
     Layer.provideMerge(
@@ -125,6 +128,7 @@ export const layer = Layer.fresh(
         name: "threadlines-commands",
         version: "1",
         path: MCP_COMMANDS_ROUTE_PATH,
+        instructions: COMMANDS_MCP_SERVER_INSTRUCTIONS,
         protocols: [McpProtocol.v2025_06_18],
       }).pipe(Layer.provide(AuthenticationLive)),
     ),

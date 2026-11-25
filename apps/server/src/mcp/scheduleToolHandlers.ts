@@ -17,11 +17,16 @@ import type {
   ThreadId,
 } from "@threadlines/contracts";
 import { placeMarkdownLink } from "@threadlines/shared/appPlaces";
-import { ProviderInstanceId, ScheduledTaskId } from "@threadlines/contracts";
+import {
+  ProviderInstanceId,
+  ScheduledTaskClockCadence,
+  ScheduledTaskId,
+} from "@threadlines/contracts";
 import { describeCadence, formatWallTime } from "@threadlines/shared/scheduledTasks";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 
 import { derivedUuid } from "../orchestration/childRequestIds.ts";
 import { isLinkFenced, linkFenceRefusal } from "../orchestration/linkFence.ts";
@@ -38,6 +43,7 @@ import { callerModelSelection, reasoningSources } from "./threadToolHandlers.ts"
 import type { McpInvocationScope } from "./McpSessionRegistry.ts";
 import type { RoomToolName } from "./roomToolAccess.ts";
 import type {
+  AgentScheduleCadenceInput,
   AgentScheduledTask,
   ScheduleChangeResult,
   ScheduledRunFinishResult,
@@ -102,6 +108,59 @@ const forAgent = (task: ScheduledTask, callerThreadId: ThreadId): AgentScheduled
   },
   prompt: task.prompt,
 });
+
+const decodeClockCadence = Schema.decodeUnknownResult(ScheduledTaskClockCadence);
+
+const CADENCE_SHAPE_HINT: Record<AgentScheduleCadenceInput["kind"], string> = {
+  manual: '{ kind: "manual" }',
+  once: '{ kind: "once", date: "YYYY-MM-DD", time: { hour: 0-23, minute: 0-59 } }',
+  hourly: '{ kind: "hourly", minute: 0-59 }',
+  daily: '{ kind: "daily", time: { hour: 0-23, minute: 0-59 } }',
+  weekdays: '{ kind: "weekdays", time: { hour: 0-23, minute: 0-59 } }',
+  weekly: '{ kind: "weekly", weekday: 0-6, time: { hour: 0-23, minute: 0-59 } }',
+  custom: '{ kind: "custom", cron: "<5-field cron>" }',
+};
+
+/**
+ * Turns the flat MCP schedule input into a validated ScheduledTaskCadence.
+ * Event (webhook) cadences passed directly by internal callers pass through
+ * untouched so ScheduledTasks' refusal rule remains the single authority.
+ */
+function parseScheduleCadence(
+  input: AgentScheduleCadenceInput | ScheduledTask["cadence"],
+):
+  | { readonly ok: true; readonly cadence: ScheduledTask["cadence"] }
+  | { readonly ok: false; readonly detail: string } {
+  if (input.kind === "webhook") {
+    return { ok: true, cadence: input };
+  }
+  const candidate = (() => {
+    switch (input.kind) {
+      case "manual":
+        return { kind: "manual" };
+      case "once":
+        return { kind: "once", date: input.date, time: input.time };
+      case "hourly":
+        return { kind: "hourly", minute: input.minute };
+      case "daily":
+        return { kind: "daily", time: input.time };
+      case "weekdays":
+        return { kind: "weekdays", time: input.time };
+      case "weekly":
+        return { kind: "weekly", weekday: input.weekday, time: input.time };
+      case "custom":
+        return { kind: "custom", cron: input.cron };
+    }
+  })();
+  const decoded = decodeClockCadence(candidate);
+  if (Result.isFailure(decoded)) {
+    return {
+      ok: false,
+      detail: `Invalid schedule for kind "${input.kind}". Expected ${CADENCE_SHAPE_HINT[input.kind]}.`,
+    };
+  }
+  return { ok: true, cadence: decoded.success };
+}
 
 export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
   type Gate =
@@ -238,7 +297,7 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
     input: {
       readonly name: string;
       readonly prompt: string;
-      readonly schedule: ScheduledTask["cadence"];
+      readonly schedule: AgentScheduleCadenceInput | ScheduledTask["cadence"];
       readonly time_zone?: string | undefined;
       readonly each_run?: "new_thread" | "this_thread" | undefined;
       readonly runs_in?: "local" | "worktree" | undefined;
@@ -259,6 +318,10 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
       const prompt = input.prompt.trim();
       if (name.length === 0 || prompt.length === 0) {
         return { outcome: "refused" as const, detail: "A task needs a name and a prompt." };
+      }
+      const parsedSchedule = parseScheduleCadence(input.schedule);
+      if (!parsedSchedule.ok) {
+        return { outcome: "refused" as const, detail: parsedSchedule.detail };
       }
       // In a room, the calling agent's own model, not the thread's.
       let modelSelection = callerModelSelection(thread, scope.participantId);
@@ -304,7 +367,7 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
           // Never more access than the thread asking for it has.
           runtimeMode: thread.runtimeMode,
           interactionMode: "default",
-          cadence: input.schedule,
+          cadence: parsedSchedule.cadence,
           timeZone: input.time_zone ?? deps.localTimeZone,
           // In a room, each run's message is for the agent that set it up.
           target:
@@ -325,7 +388,7 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
       readonly id: string;
       readonly name?: string | undefined;
       readonly prompt?: string | undefined;
-      readonly schedule?: ScheduledTask["cadence"] | undefined;
+      readonly schedule?: AgentScheduleCadenceInput | ScheduledTask["cadence"] | undefined;
       readonly time_zone?: string | undefined;
       readonly runs_in?: "local" | "worktree" | undefined;
       readonly paused?: boolean | undefined;
@@ -344,13 +407,21 @@ export function makeScheduleToolHandlers(deps: ScheduleToolDeps) {
           detail: "No scheduled task with that id is in this project. schedule_list shows them.",
         };
       }
+      let parsedCadence: ScheduledTask["cadence"] | undefined;
+      if (input.schedule !== undefined) {
+        const parsedSchedule = parseScheduleCadence(input.schedule);
+        if (!parsedSchedule.ok) {
+          return { outcome: "refused" as const, detail: parsedSchedule.detail };
+        }
+        parsedCadence = parsedSchedule.cadence;
+      }
       const name = input.name?.trim();
       const prompt = input.prompt?.trim();
       const patch: ScheduledTaskUpdateInput = {
         id: ScheduledTaskId.make(task.id),
         ...(name !== undefined && name.length > 0 ? { name } : {}),
         ...(prompt !== undefined && prompt.length > 0 ? { prompt } : {}),
-        ...(input.schedule !== undefined ? { cadence: input.schedule } : {}),
+        ...(parsedCadence !== undefined ? { cadence: parsedCadence } : {}),
         ...(input.time_zone !== undefined ? { timeZone: input.time_zone } : {}),
         ...(input.runs_in !== undefined ? { checkout: input.runs_in } : {}),
         ...(input.paused !== undefined ? { status: input.paused ? "paused" : "active" } : {}),

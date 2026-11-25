@@ -69,6 +69,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadPageRepository } from "../persistence/Services/ProjectionThreadPages.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { THEME_AUTHORING_GUIDE } from "../themes/themeGuide.ts";
 import { ThemeVsCode } from "../themes/ThemeVsCode.ts";
 import { themeProblems, ThemeWorkshop } from "../themes/ThemeWorkshop.ts";
 import { themeAnalyticsProperties } from "../telemetry/AnalyticsProperties.ts";
@@ -141,6 +142,10 @@ export interface ThemeToolInput {
   readonly path?: string | undefined;
 }
 
+export interface PreviewThemeInput extends ThemeToolInput {
+  readonly guide?: boolean | undefined;
+}
+
 export interface ShowThemeInput extends ThemeToolInput {
   readonly pageId?: string | undefined;
 }
@@ -190,10 +195,10 @@ export interface AgentPagesShape {
     scope: McpInvocationScope,
     input: ShowThemeInput,
   ) => Effect.Effect<ShowPageOutcome>;
-  /** `preview_theme`: the specimen's screenshots and a report. */
+  /** `preview_theme`: the specimen's screenshots and a report (or the guide when `guide: true`). */
   readonly previewTheme: (
     scope: McpInvocationScope,
-    input: ThemeToolInput,
+    input: PreviewThemeInput,
   ) => Effect.Effect<PreviewThemeOutcome>;
   /**
    * `find_vscode_theme`: VS Code themes on the Open VSX store matching the
@@ -733,6 +738,9 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (!(yield* enabled)) return { outcome: "off" as const, detail: OFF_DETAIL };
       if (scope.side !== undefined) return { outcome: "not_allowed" as const, detail: SIDE_DETAIL };
+      if (input.guide === true) {
+        return { outcome: "previewed" as const, text: THEME_AUTHORING_GUIDE, shots: [] };
+      }
       const argument = yield* themeArgument(scope, input);
       if ("refused" in argument) return { outcome: "refused" as const, detail: argument.refused };
       const check = checkThemeManifest(argument.value, { authoring: true });
@@ -742,7 +750,7 @@ const make = Effect.gen(function* () {
       if (Option.isNone(decoded)) {
         return {
           outcome: "refused" as const,
-          detail: themeProblems(check.ok ? [] : check.errors).detail,
+          detail: `${themeProblems(check.ok ? [] : check.errors).detail}\nCall preview_theme({ guide: true }) for the full theme format and backdrop art API.`,
         };
       }
       const embedded = yield* workshop.embedFonts(decoded.value).pipe(Effect.result);

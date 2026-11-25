@@ -12,6 +12,8 @@ import type * as NetAddress from "effect/net/NetAddress";
 import * as NodeHttp from "node:http";
 import { describe, expect, it } from "vite-plus/test";
 
+import { CommandRuns } from "../commandRuns/CommandRuns.ts";
+import { DeviceService } from "../device/DeviceService.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as PreviewAutomationBroker from "../preview/PreviewAutomationBroker.ts";
@@ -25,6 +27,8 @@ import {
 } from "../secrets/SecretScrubber.ts";
 import { AgentSecretRequests } from "../secrets/AgentSecretRequests.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import * as McpCommandsServer from "./McpCommandsServer.ts";
+import * as McpDeviceServer from "./McpDeviceServer.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import { normalizeMcpHttpResponse } from "./McpHttpServer.ts";
 import * as McpRoomServer from "./McpRoomServer.ts";
@@ -254,7 +258,7 @@ const post = (url: string, token: string, body: unknown, session?: string, signa
     ...(signal !== undefined ? { signal } : {}),
   });
 
-/** Initialize an MCP session; its id, or the refusal's status. */
+/** Initialize an MCP session; its id and server instructions, or the refusal's status. */
 const openSession = async (url: string, token: string) => {
   const response = await post(url, token, {
     jsonrpc: "2.0",
@@ -269,9 +273,12 @@ const openSession = async (url: string, token: string) => {
   if (response.status !== 200) {
     return { status: response.status } as const;
   }
+  const body = (await response.json()) as {
+    result?: { instructions?: string };
+  };
   const session = response.headers.get("mcp-session-id") ?? "";
   await post(url, token, { jsonrpc: "2.0", method: "notifications/initialized" }, session);
-  return { status: 200, session } as const;
+  return { status: 200, session, instructions: body.result?.instructions } as const;
 };
 
 const listTools = async (url: string, token: string) => {
@@ -799,6 +806,101 @@ describe("MCP endpoints", () => {
 
     expect(started).toBe(true);
     expect(interrupted).toBe(true);
+  });
+
+  it("returns crisp one-line server instructions on initialize across all five endpoints", async () => {
+    const initialized = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = yield* serve(
+            Layer.mergeAll(
+              McpHttpServer.layer,
+              McpCommandsServer.layer,
+              McpDeviceServer.layer,
+              McpPagesServer.layer,
+              McpRoomServer.layer,
+            ).pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  RoomServerStubs,
+                  Layer.mock(CommandRuns)({}),
+                  Layer.mock(DeviceService)({}),
+                  Layer.mock(AgentPages)({ assetsDirOf: () => null }),
+                ),
+              ),
+            ),
+          );
+          const credential = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: THREAD,
+            browser: true,
+            room: true,
+            pages: true,
+            commands: true,
+            device: true,
+          });
+          const guideOnly = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: RUN_THREAD,
+            browser: false,
+            room: true,
+            guideOnly: true,
+          });
+          const reviewer = yield* mcpSessionRegistry.credentialFor({
+            sessionKey: sideSessionKey(THREAD, SIDE_TURN, AGENT),
+            browser: false,
+            room: true,
+            sideKind: "review",
+          });
+          const result = yield* Effect.promise(async () => ({
+            browser: await openSession(`${base}/mcp`, credential.token),
+            commands: await openSession(`${base}/mcp/commands`, credential.token),
+            device: await openSession(`${base}/mcp/device`, credential.token),
+            pages: await openSession(`${base}/mcp/pages`, credential.token),
+            room: await openSession(`${base}/mcp/room`, credential.token),
+            roomGuideOnly: await openSession(`${base}/mcp/room`, guideOnly.token),
+            roomReviewer: await openSession(`${base}/mcp/room`, reviewer.token),
+          }));
+          yield* mcpSessionRegistry.revoke(THREAD, credential.generation);
+          yield* mcpSessionRegistry.revoke(RUN_THREAD, guideOnly.generation);
+          yield* mcpSessionRegistry.revoke(
+            sideSessionKey(THREAD, SIDE_TURN, AGENT),
+            reviewer.generation,
+          );
+          return result;
+        }),
+      ).pipe(onLoopback),
+    );
+
+    expect(initialized.browser).toMatchObject({
+      status: 200,
+      instructions: McpHttpServer.BROWSER_MCP_SERVER_INSTRUCTIONS,
+    });
+    expect(initialized.commands).toMatchObject({
+      status: 200,
+      instructions: McpCommandsServer.COMMANDS_MCP_SERVER_INSTRUCTIONS,
+    });
+    expect(initialized.device).toMatchObject({
+      status: 200,
+      instructions: McpDeviceServer.DEVICE_MCP_SERVER_INSTRUCTIONS,
+    });
+    expect(initialized.pages).toMatchObject({
+      status: 200,
+      instructions: McpPagesServer.PAGES_MCP_SERVER_INSTRUCTIONS,
+    });
+    expect(initialized.room).toMatchObject({
+      status: 200,
+      instructions: expect.stringContaining("room coordination"),
+    });
+    expect(initialized.roomGuideOnly).toMatchObject({
+      status: 200,
+      instructions: expect.stringContaining("app guide"),
+    });
+    expect(
+      "instructions" in initialized.roomGuideOnly ? initialized.roomGuideOnly.instructions : "",
+    ).not.toContain("room coordination");
+    expect(initialized.roomReviewer).toMatchObject({
+      status: 200,
+      instructions: "Threadlines workspace tools for this session: checkout git diff.",
+    });
   });
 });
 

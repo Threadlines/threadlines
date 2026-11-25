@@ -1500,6 +1500,21 @@ it.layer(NodeServices.layer)("schedule tools", (it) => {
         assert.equal(paused.outcome, "updated");
         assert.equal(paused.task?.status, "paused");
 
+        // Incomplete flat cadence payloads are refused with the expected shape.
+        const badCreate = yield* tools.schedule_create(scope, {
+          name: "Missing date",
+          prompt: "Check once.",
+          schedule: { kind: "once", time: { hour: 8, minute: 0 } },
+        });
+        assert.equal(badCreate.outcome, "refused");
+        assert.include(badCreate.detail ?? "", 'Invalid schedule for kind "once"');
+        const badUpdate = yield* tools.schedule_update(scope, {
+          id: created!.id,
+          schedule: { kind: "hourly" },
+        });
+        assert.equal(badUpdate.outcome, "refused");
+        assert.include(badUpdate.detail ?? "", 'Invalid schedule for kind "hourly"');
+
         // A task with more access than this agent's: it may pause it, but
         // any other change waits for the user even with agents on auto.
         const stronger = yield* service.create(

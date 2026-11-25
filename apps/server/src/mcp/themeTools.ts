@@ -4,15 +4,10 @@
  * at `/mcp/pages` by McpPagesServer. A theme an agent shows is a page of kind
  * `theme`: the chat draws it as a theme row with Try it.
  */
+import { THEME_FILE_EXTENSION, THEME_FILE_FORMAT } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
-import {
-  THEME_ART_CONTRACT_GUIDE,
-  THEME_ART_RULES_GUIDE,
-  THEME_DESIGN_GUIDE,
-  THEME_FORMAT_GUIDE,
-} from "../themes/themeGuide.ts";
 import { loadedOnDemand } from "./toolLoading.ts";
 
 export const THEME_PREVIEW_TOOL_NAME = "preview_theme";
@@ -20,7 +15,8 @@ export const THEME_SHOW_TOOL_NAME = "show_theme";
 export const THEME_FIND_VSCODE_TOOL_NAME = "find_vscode_theme";
 
 const Theme = Schema.Record(Schema.String, Schema.Unknown).annotate({
-  description: "The theme: one JSON object in the format this tool's description gives.",
+  description:
+    "The theme as one JSON object. Call preview_theme({ guide: true }) for the full schema, backdrop art API, and design rules.",
 });
 const ThemePath = Schema.String.annotate({
   description:
@@ -30,6 +26,12 @@ const ThemePath = Schema.String.annotate({
 export const PreviewThemeParameters = Schema.Struct({
   theme: Schema.optional(Theme),
   path: Schema.optional(ThemePath),
+  guide: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        "Set true to return the full theme format, threadlines.backdrop art API, performance rules, and design guide without rendering.",
+    }),
+  ),
 });
 
 export const ShowThemeParameters = Schema.Struct({
@@ -54,13 +56,10 @@ export const ShowThemeResult = Schema.Struct({
 export const PreviewThemeTool = loadedOnDemand(
   Tool.make(THEME_PREVIEW_TOOL_NAME, {
     description: [
-      "Render a Threadlines theme (how the whole app looks: colors, fonts, glass and optional live art behind it) in a mock of the app at 1440×900: in a thread, on the new-thread screen and on a Settings page (every page that isn't a chat looks like it), and in a thread on a phone held upright (390×844). You get the screenshots and a report: the readability checks, what the art costs (frames and milliseconds of work a second, and an energy label), and console errors. Use it until the theme looks right and passes, then offer it with show_theme.",
-      "Give the theme as theme (the object) or path (a file).",
-      THEME_FORMAT_GUIDE,
-      THEME_ART_CONTRACT_GUIDE,
-      THEME_ART_RULES_GUIDE,
-      THEME_DESIGN_GUIDE,
-      "The app guide's themes topic says more. The first preview on a machine can report that Threadlines is still installing its preview browser; try again a minute later.",
+      "Render a Threadlines theme (colors, fonts, glass and optional live backdrop art) in a mock of the app at 1440×900 (thread, new-thread, and Settings layouts) and on a phone (390×844). Returns screenshots, readability checks, art cost/energy, and console errors. Iterate until it passes, then offer it with show_theme.",
+      `Give theme (a JSON object) or path (a ${THEME_FILE_EXTENSION} file). Minimal shape: {"format":"${THEME_FILE_FORMAT}","name":"...","base":"dark"|"light","colors":{"background":"#rrggbb","foreground":"#rrggbb","mutedForeground":"#rrggbb","accent":"#rrggbb","accentForeground":"#rrggbb"}}; optional: extra color seeds, code, terminal, fonts, glass, backdrop, prompt (omit credits).`,
+      "Before writing a theme (especially fonts, glass, or live backdrop art), call preview_theme({ guide: true }) for the full format, threadlines.backdrop draw API, art performance rules, and design guidance.",
+      "The first preview on a machine can report that Threadlines is still installing its preview browser; try again a minute later.",
     ].join(" "),
     parameters: PreviewThemeParameters,
     success: Schema.Struct({}),
@@ -78,7 +77,7 @@ export const ShowThemeTool = loadedOnDemand(
   Tool.make(THEME_SHOW_TOOL_NAME, {
     description: [
       "Offer the user a Threadlines theme: a row in this thread above your reply, with a still of it, its name and Try it, which lets the user try the theme and keep it. Check it with preview_theme first: a theme that fails the readability checks is refused.",
-      "Give the same theme object, or path, you previewed (the format is in preview_theme's description). Threadlines embeds its fonts and captures a still of its art.",
+      "Give the same theme object, or path, you previewed (call preview_theme({ guide: true }) for the full format). Threadlines embeds its fonts and captures a still of its art.",
       "The user sees the row, so don't describe the theme again in your reply.",
     ].join(" "),
     parameters: ShowThemeParameters,

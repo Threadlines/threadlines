@@ -244,6 +244,9 @@ const registerDeviceTools = Effect.fn("McpDeviceServer.registerDeviceTools")(fun
   }
 });
 
+export const DEVICE_MCP_SERVER_INSTRUCTIONS =
+  "Manage iOS Simulators and Android Emulators in Threadlines' Device tab (list, open, screenshot, close).";
+
 export const layer = Layer.fresh(
   Layer.effectDiscard(registerDeviceTools()).pipe(
     Layer.provideMerge(
@@ -251,6 +254,7 @@ export const layer = Layer.fresh(
         name: "threadlines-device",
         version: "1",
         path: MCP_DEVICE_ROUTE_PATH,
+        instructions: DEVICE_MCP_SERVER_INSTRUCTIONS,
         protocols: [McpProtocol.v2025_06_18],
       }).pipe(Layer.provide(AuthenticationLive)),
     ),

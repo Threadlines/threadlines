@@ -342,6 +342,9 @@ const screenshotFailure = <E>(cause: Cause.Cause<E>) => {
   );
 };
 
+export const BROWSER_MCP_SERVER_INSTRUCTIONS =
+  "Threadlines' in-app browser panel: read accessibility snapshots, take screenshots, navigate, click, type, manage tabs, and inspect pages.";
+
 /**
  * The browser endpoint with the given tool handlers: production's below; the
  * tool-use evals (apps/server/evals) serve the same tools and listing with
@@ -361,6 +364,7 @@ export const makeLayer = <E1, R1, E2, R2>(handlers: {
         name: "threadlines-browser",
         version: "1",
         path: MCP_ROUTE_PATH,
+        instructions: BROWSER_MCP_SERVER_INSTRUCTIONS,
         protocols: [McpProtocol.v2025_06_18],
       }).pipe(Layer.provide(AuthenticationLive)),
     ),
