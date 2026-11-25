@@ -786,9 +786,15 @@ describe("ChatView (full app): agent browser tabs and rooms", () => {
       // The promoted main agent can't be removed or made main again.
       openMenu(astraId);
       await waitForElement(() => menuItem("Rename…"), "Promoted main menu should open.");
+      // Wait for the menu popup to take focus before pressing Escape, or the
+      // outer model-picker popover catches Escape and closes the picker.
+      await vi.waitFor(() =>
+        expect(document.activeElement?.closest('[data-slot="menu-popup"]')).not.toBeNull(),
+      );
       expect(menuItem("Make main agent")).toBeNull();
       expect(menuItem("Remove from thread")).toBeNull();
       await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => expect(menuItem("Rename…")).toBeNull());
 
       // The original thread agent can be switched back to main (no one-way door).
       openMenu("primary");
