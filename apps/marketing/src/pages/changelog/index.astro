@@ -1,14 +1,18 @@
 ---
 import { getPublishedChangelog } from "../../lib/publishedChangelog";
 
+import KitFrame from "../../components/kit/KitFrame.astro";
+import KitTimeline from "../../components/kit/KitTimeline.astro";
 import Layout from "../../layouts/Layout.astro";
-import {
-  changelogEntryPath,
-  formatReleaseDate,
-  sortChangelogEntries,
-} from "../../lib/changelog";
+import { agentJoins, AGENTS } from "../../lib/agents";
+import { sortChangelogEntries } from "../../lib/changelog";
 
 const entries = sortChangelogEntries(await getPublishedChangelog());
+// Each agent's thread taps into the trunk at the release that added it; only published releases count.
+const { joins, roots } = agentJoins(
+  AGENTS,
+  entries.map((entry) => entry.data.version),
+);
 ---
 
 <Layout
@@ -16,127 +20,14 @@ const entries = sortChangelogEntries(await getPublishedChangelog());
   description="Stable Threadlines release highlights, improvements, and technical release links."
   canonicalPath="/changelog"
 >
-  <section class="changelog-index">
-    <div class="container changelog-wrap">
-      <header class="changelog-header">
-        <p class="eyebrow">Stable releases</p>
-        <h1 class="display">Changelog</h1>
-        <p>
-          The meaningful changes in each stable Threadlines release. Nightly builds stay on GitHub;
-          this page is the concise, human-reviewed record.
-        </p>
-      </header>
-
-      <div class="release-list">
-        {
-          entries.map((entry) => (
-            <article class="release-entry">
-              <a href={changelogEntryPath(entry)}>
-                <div class="release-meta">
-                  <span>v{entry.data.version}</span>
-                  <time datetime={entry.data.date.toISOString()}>
-                    {formatReleaseDate(entry.data.date)}
-                  </time>
-                </div>
-                <h2>
-                  {entry.data.title} <span class="release-arrow" aria-hidden="true">→</span>
-                </h2>
-                <p>{entry.data.summary}</p>
-              </a>
-            </article>
-          ))
-        }
-      </div>
-    </div>
-  </section>
+  <KitFrame line="ink" region={false} as="section">
+    <header class="k-head" data-k-region="ink">
+      <h1 class="k-h1 k-rise" data-k-node data-k-start>Changelog</h1>
+      <p class="k-lede k-rise" style="--d: 80ms">
+        The meaningful changes in each stable Threadlines release. Nightly builds stay on GitHub;
+        this page is the concise, human-reviewed record.
+      </p>
+    </header>
+    <KitTimeline entries={entries} joins={joins} roots={roots} />
+  </KitFrame>
 </Layout>
-
-<style>
-  .changelog-index {
-    padding: 72px 0 96px;
-  }
-
-  .changelog-wrap {
-    max-width: 860px;
-  }
-
-  .changelog-header {
-    max-width: 680px;
-    margin-bottom: 36px;
-  }
-
-  .changelog-header h1 {
-    margin: 12px 0 18px;
-    font-size: clamp(42px, 7vw, 72px);
-  }
-
-  .changelog-header > p:last-child {
-    color: var(--fg-muted);
-    font-size: 18px;
-    line-height: 1.65;
-    text-wrap: pretty;
-  }
-
-  .release-entry {
-    border-top: 1px solid var(--border);
-  }
-
-  .release-entry:last-child {
-    border-bottom: 1px solid var(--border);
-  }
-
-  .release-entry a {
-    display: block;
-    padding: 20px 0;
-  }
-
-  .release-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
-    color: var(--fg-dim);
-    font-family: var(--font-mono);
-    font-size: 12px;
-  }
-
-  .release-meta span {
-    color: var(--accent-bright);
-  }
-
-  .release-entry h2 {
-    margin: 8px 0 4px;
-    font-size: clamp(18px, 2.4vw, 21px);
-    line-height: 1.25;
-    letter-spacing: -0.015em;
-  }
-
-  .release-arrow {
-    color: var(--fg-dim);
-    transition: color 0.2s ease, transform 0.2s ease;
-  }
-
-  .release-entry a:hover .release-arrow {
-    color: var(--accent-bright);
-  }
-
-  .release-entry p {
-    max-width: 64ch;
-    color: var(--fg-muted);
-    font-size: 15px;
-    line-height: 1.55;
-  }
-
-  @media (max-width: 620px) {
-    .changelog-index {
-      padding: 56px 0 80px;
-    }
-
-    .changelog-header {
-      margin-bottom: 28px;
-    }
-
-    .release-entry a {
-      padding: 20px 0;
-    }
-  }
-</style>

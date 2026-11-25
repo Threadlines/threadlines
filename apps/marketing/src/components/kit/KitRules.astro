@@ -1,0 +1,23 @@
+---
+/** A ruled list: a hairline above each item, a plain glyph, a name and one line. Two columns from 640px. */
+import Icon from "../Icon.astro";
+import type { IconName } from "../../lib/icons";
+
+interface Props {
+  items: ReadonlyArray<{ icon: IconName; title: string; description: string }>;
+}
+
+const { items } = Astro.props;
+---
+
+<ul class="k-rules">
+  {
+    items.map((item) => (
+      <li>
+        <Icon name={item.icon} />
+        <h3>{item.title}</h3>
+        <p>{item.description}</p>
+      </li>
+    ))
+  }
+</ul>

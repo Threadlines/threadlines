@@ -778,3 +778,39 @@ export const AGENTS: readonly Agent[] = [
     ],
   },
 ];
+
+/**
+ * An agent's thread color, `var(--t<n>)`: its place in the full AGENTS list, the homepage's
+ * order, so a page that leaves agents out never moves another agent onto their color.
+ */
+export function agentThreadIndex(agent: Pick<Agent, "slug">): number {
+  const index = AGENTS.findIndex((candidate) => candidate.slug === agent.slug);
+  if (index < 0) throw new Error(`Unknown agent: ${agent.slug}`);
+  return index;
+}
+
+export function agentThreadColor(agent: Pick<Agent, "slug">): string {
+  return `var(--t${agentThreadIndex(agent)})`;
+}
+
+/**
+ * Where each agent joins the changelog's timeline: at the published release whose version is its
+ * `since`, keyed by that version. An agent whose `since` has no published entry (a release still
+ * to come, or a version with no notes) joins nowhere; agents with no `since` were there from the
+ * start and come back as `roots`.
+ */
+export function agentJoins(
+  agents: ReadonlyArray<Agent>,
+  publishedVersions: ReadonlyArray<string>,
+): { joins: ReadonlyMap<string, ReadonlyArray<Agent>>; roots: ReadonlyArray<Agent> } {
+  const published = new Set(publishedVersions);
+  const joins = new Map<string, Agent[]>();
+  const roots: Agent[] = [];
+  for (const agent of agents) {
+    if (agent.since === undefined) roots.push(agent);
+    else if (published.has(agent.since)) {
+      joins.set(agent.since, [...(joins.get(agent.since) ?? []), agent]);
+    }
+  }
+  return { joins, roots };
+}

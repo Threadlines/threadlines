@@ -2,8 +2,12 @@
 import type { CollectionEntry } from "astro:content";
 import { getPublishedChangelog } from "../../lib/publishedChangelog";
 
+import Icon from "../../components/Icon.astro";
+import KitFrame from "../../components/kit/KitFrame.astro";
+import KitHeading from "../../components/kit/KitHeading.astro";
+import KitTimeline from "../../components/kit/KitTimeline.astro";
 import Layout from "../../layouts/Layout.astro";
-import { formatReleaseDate } from "../../lib/changelog";
+import { formatReleaseDate, sortChangelogEntries } from "../../lib/changelog";
 import { absoluteSiteUrl } from "../../lib/site";
 
 export async function getStaticPaths() {
@@ -16,6 +20,10 @@ interface Props {
 }
 
 const { entry } = Astro.props;
+// The newer and older releases, from the same published, sorted list that makes the pages.
+const published = sortChangelogEntries(await getPublishedChangelog());
+const at = published.findIndex((other) => other.id === entry.id);
+const neighbours = [published[at - 1], published[at + 1]].filter((other) => other !== undefined);
 const { version, date, title, summary, githubRelease, highlights, alsoImproved, video } =
   entry.data;
 const canonicalPath = `/changelog/${entry.id}`;
@@ -36,49 +44,45 @@ const structuredData = {
   canonicalPath={canonicalPath}
   structuredData={[structuredData]}
 >
-  <article class="release-detail">
-    <div class="container release-wrap">
-      <a class="back-link" href="/changelog"><span aria-hidden="true">←</span> All releases</a>
-
-      <header class="release-header">
-        <div class="release-meta">
+  <KitFrame line="ink" region={false}>
+    <div data-k-region="ink">
+      <header class="k-head">
+        <a class="k-back k-rise" href="/changelog"><span aria-hidden="true">←</span> All releases</a>
+        <div class="k-meta release-meta k-rise" style="--d: 40ms">
           <span>v{version}</span>
           <time datetime={date.toISOString()}>{formatReleaseDate(date)}</time>
         </div>
-        <h1 class="display">{title}</h1>
-        <p>{summary}</p>
+        <h1 class="k-h1 k-rise" style="--d: 60ms" data-k-node data-k-start>{title}</h1>
+        <p class="k-lede k-rise" style="--d: 120ms">{summary}</p>
       </header>
 
       {
         video && (
-          <figure class="release-video">
-            <video
-              controls
-              muted
-              playsinline
-              preload="metadata"
-              poster={video.poster}
-              width="1920"
-              height="1080"
-            >
-              <source src={video.src} type="video/mp4" />
-            </video>
-            <figcaption>{video.caption}</figcaption>
+          <figure class="k-shot k-rise" style="--d: 180ms">
+            <div class="k-still">
+              <video
+                controls
+                muted
+                playsinline
+                preload="metadata"
+                poster={video.poster}
+                width="1920"
+                height="1080"
+              >
+                <source src={video.src} type="video/mp4" />
+              </video>
+            </div>
+            <figcaption class="k-cap">{video.caption}</figcaption>
           </figure>
         )
       }
 
       <div class="highlights">
         {
-          highlights.map((highlight, index) => (
+          highlights.map((highlight) => (
             <section class="highlight">
-              <span class="highlight-number" aria-hidden="true">
-                {String(index + 1).padStart(2, "0")}
-              </span>
-              <div>
-                <h2>{highlight.title}</h2>
-                <p>{highlight.description}</p>
-              </div>
+              <KitHeading>{highlight.title}</KitHeading>
+              <p>{highlight.description}</p>
             </section>
           ))
         }
@@ -86,8 +90,8 @@ const structuredData = {
 
       {
         alsoImproved.length > 0 && (
-          <section class="also-improved">
-            <p class="eyebrow">Also improved</p>
+          <section class="also" data-k-node="small">
+            <p class="also-title">Also improved</p>
             <ul>
               {alsoImproved.map((improvement) => (
                 <li>{improvement.description}</li>
@@ -97,184 +101,71 @@ const structuredData = {
         )
       }
 
-      <footer class="release-actions">
-        <a class="primary-action" href="/download">Download Threadlines</a>
-        <a href={githubRelease} target="_blank" rel="noopener noreferrer">
+      <div class="k-actions release-actions">
+        <a class="btn" href="/download"><Icon name="download" /> Download Threadlines</a>
+        <a class="k-link" href={githubRelease} target="_blank" rel="noopener noreferrer">
           Complete technical notes on GitHub <span aria-hidden="true">↗</span>
         </a>
-      </footer>
+      </div>
     </div>
-  </article>
+
+    {
+      neighbours.length > 0 && (
+        <KitTimeline entries={neighbours} title="p" fillFirst={false} />
+      )
+    }
+  </KitFrame>
 </Layout>
 
 <style>
-  .release-detail {
-    padding: 48px 0 96px;
-  }
-
-  .release-wrap {
-    max-width: 860px;
-  }
-
-  .back-link {
-    display: inline-flex;
-    gap: 8px;
-    color: var(--fg-dim);
-    font-size: 14px;
-    transition: color 0.2s ease;
-  }
-
-  .back-link:hover {
-    color: var(--fg);
-  }
-
-  .release-header {
-    padding: 28px 0 30px;
-    border-bottom: 1px solid var(--border);
-  }
-
   .release-meta {
-    display: flex;
-    gap: 16px;
-    color: var(--fg-dim);
-    font-family: var(--font-mono);
-    font-size: 12px;
+    margin-top: 28px;
   }
 
-  .release-meta span {
-    color: var(--accent-bright);
-  }
-
-  .release-header h1 {
-    max-width: 780px;
-    margin: 12px 0 10px;
-    font-size: clamp(28px, 4.5vw, 40px);
-    text-wrap: balance;
-  }
-
-  .release-header > p {
-    max-width: 640px;
-    color: var(--fg-muted);
-    font-size: 16px;
-    line-height: 1.6;
-    text-wrap: pretty;
-  }
-
-  .release-video {
-    margin: 24px 0 0;
-  }
-
-  .release-video video {
-    display: block;
-    width: 100%;
-    height: auto;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: var(--surface);
-  }
-
-  .release-video figcaption {
-    margin-top: 10px;
-    color: var(--fg-dim);
-    font-size: 13px;
-    line-height: 1.5;
+  .release-meta + :global(.k-h1) {
+    margin-top: 12px;
   }
 
   .highlights {
-    display: grid;
+    margin-top: clamp(56px, 7vw, 88px);
   }
 
-  .highlight {
-    display: grid;
-    grid-template-columns: 40px minmax(0, 1fr);
-    gap: 14px;
-    padding: 18px 0;
-    border-bottom: 1px solid var(--border);
+  .highlight + .highlight {
+    margin-top: clamp(40px, 5vw, 56px);
   }
 
-  .highlight-number {
-    padding-top: 4px;
-    color: var(--accent-bright);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
-  .highlight h2 {
-    margin-bottom: 4px;
-    font-size: 19px;
-    letter-spacing: -0.015em;
-  }
-
-  .highlight p {
+  .highlight > p {
     max-width: 64ch;
+    margin-top: 12px;
     color: var(--fg-muted);
-    font-size: 15px;
-    line-height: 1.6;
+    text-wrap: pretty;
   }
 
-  .also-improved {
-    padding: 20px 0 0;
+  /* Its words stay, in ordinary type: the one label on the page. */
+  .also {
+    margin-top: clamp(48px, 6vw, 64px);
+    max-width: 64ch;
   }
 
-  .also-improved ul {
-    display: grid;
-    gap: 6px;
+  .also-title {
+    font-weight: 600;
+  }
+
+  .also ul {
     margin-top: 12px;
     padding-left: 20px;
     color: var(--fg-muted);
-    font-size: 15px;
-    line-height: 1.55;
   }
 
-  .also-improved li::marker {
-    color: var(--accent-bright);
+  .also li + li {
+    margin-top: 6px;
+  }
+
+  .also li::marker {
+    color: var(--fg-faint);
   }
 
   .release-actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 20px 28px;
-    margin-top: 32px;
-  }
-
-  .release-actions a {
-    color: var(--fg-muted);
-    font-size: 14px;
-    transition: color 0.2s ease;
-  }
-
-  .release-actions a:hover {
-    color: var(--fg);
-  }
-
-  .release-actions .primary-action {
-    padding: 10px 16px;
-    border-radius: 8px;
-    background: var(--btn-bg);
-    color: var(--btn-fg);
-    font-weight: 600;
-    transition: background-color 180ms var(--ease);
-  }
-
-  .release-actions .primary-action:hover {
-    background: var(--btn-bg-hover);
-    color: var(--btn-fg);
-  }
-
-  @media (max-width: 620px) {
-    .release-detail {
-      padding: 36px 0 80px;
-    }
-
-    .release-header {
-      padding: 26px 0 30px;
-    }
-
-    .highlight {
-      grid-template-columns: 34px minmax(0, 1fr);
-      gap: 10px;
-      padding: 20px 0;
-    }
+    margin-top: clamp(48px, 6vw, 64px);
   }
 </style>

@@ -1,0 +1,33 @@
+---
+/**
+ * Where the page's line runs into its last button: pass it to KitFrame's `end` slot. The slot
+ * here is the small print under the button.
+ */
+import Icon from "../Icon.astro";
+
+interface Props {
+  href: string;
+  label: string;
+  /** Opens another site in a new tab (GitHub Releases for a nightly agent). */
+  external?: boolean;
+}
+
+const { href, label, external = false } = Astro.props;
+---
+
+<div class="k-end" data-k-region="ink">
+  <a
+    class="btn"
+    href={href}
+    data-k-end
+    target={external ? "_blank" : undefined}
+    rel={external ? "noopener noreferrer" : undefined}><Icon name="download" /> {label}</a
+  >
+  {
+    Astro.slots.has("default") && (
+      <p class="k-small">
+        <slot />
+      </p>
+    )
+  }
+</div>

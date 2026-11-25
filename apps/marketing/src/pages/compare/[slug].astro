@@ -1,5 +1,7 @@
 ---
 import Faq from "../../components/Faq.astro";
+import KitFrame from "../../components/kit/KitFrame.astro";
+import KitHeading from "../../components/kit/KitHeading.astro";
 import Icon from "../../components/Icon.astro";
 import ThreadlinesGlyph from "../../components/ThreadlinesGlyph.astro";
 import Layout from "../../layouts/Layout.astro";
@@ -91,37 +93,36 @@ const structuredData = [
   canonicalPath={canonicalPath}
   structuredData={structuredData}
 >
-  <article class="compare">
-    <div class="container compare-wrap">
-      <a class="back-link" href="/compare"><span aria-hidden="true">←</span> All comparisons</a>
+  <KitFrame line="ink">
+    <header class="k-head">
+      <a class="k-back k-rise" href="/compare"><span aria-hidden="true">←</span> All comparisons</a>
+      <p class="lockup k-rise" style="--d: 40ms">
+        <ThreadlinesGlyph class="lockup-glyph" />
+        <span>Threadlines</span>
+        <span class="lockup-vs">vs</span>
+        <span>{comparison.name}</span>
+      </p>
+      <h1 class="k-h1 k-rise" style="--d: 60ms" data-k-node data-k-start>{comparison.headline}</h1>
+      <p class="k-lede k-rise" style="--d: 120ms">{comparison.intro}</p>
+      <div class="k-actions k-rise" style="--d: 180ms">
+        <a class="btn" href="/download">
+          <Icon name="download" /> Download Threadlines
+        </a>
+        {
+          switching && (
+            <a class="k-link" href="#switching">
+              How to move from {comparison.name} <span aria-hidden="true">↓</span>
+            </a>
+          )
+        }
+        <a class="k-link" href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer">
+          View the source on GitHub <span aria-hidden="true">↗</span>
+        </a>
+      </div>
+    </header>
 
-      <header class="compare-header">
-        <p class="compare-lockup">
-          <ThreadlinesGlyph class="compare-lockup-glyph" />
-          <span>Threadlines</span>
-          <span class="compare-lockup-vs">vs</span>
-          <span>{comparison.name}</span>
-        </p>
-        <h1 class="display">{comparison.headline}</h1>
-        <p class="compare-intro">{comparison.intro}</p>
-        <div class="compare-actions">
-          <a class="primary-action" href="/download">
-            <Icon name="download" /> Download Threadlines
-          </a>
-          {
-            switching && (
-              <a href="#switching">
-                How to move from {comparison.name} <span aria-hidden="true">↓</span>
-              </a>
-            )
-          }
-          <a href={SITE_GITHUB_URL} target="_blank" rel="noopener noreferrer">
-            View the source on GitHub <span aria-hidden="true">↗</span>
-          </a>
-        </div>
-      </header>
-
-      <figure class="compare-shot">
+    <figure class="k-shot k-rise" style="--d: 240ms">
+      <div class="k-still">
         <img
           src="/Screenshots/app/two-agents.webp"
           alt="Threadlines with a full sidebar of projects and threads, and two agents working on the same bug in one thread"
@@ -129,608 +130,361 @@ const structuredData = [
           height="1401"
           decoding="async"
         />
-        <figcaption>
-          Claude's Opus keeps working while Codex's GPT-6.1-Sol answers a question on the side.
-        </figcaption>
-      </figure>
+      </div>
+      <figcaption class="k-cap">
+        Claude's Opus keeps working while Codex's GPT-6.1-Sol answers a question on the side.
+      </figcaption>
+    </figure>
 
-      {
-        status && (
-          <section class="compare-section compare-status">
-            <h2>{status.heading}</h2>
-            <p class="compare-status-text">{status.text}</p>
-            <ol class="compare-timeline">
-              {status.timeline.map((item) => (
-                <li>
-                  <span class="compare-timeline-date">{item.date}</span>
-                  <span>{item.text}</span>
-                </li>
-              ))}
-            </ol>
-            <a
-              class="compare-status-link"
-              href={status.announcement.url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {status.announcement.label} <span aria-hidden="true">↗</span>
-            </a>
-          </section>
-        )
-      }
+    {
+      status && (
+        <section class="k-sec">
+          <KitHeading>{status.heading}</KitHeading>
+          <p class="status-text">{status.text}</p>
+          <ol class="dates">
+            {status.timeline.map((item) => (
+              <li>
+                <span class="dates-when">{item.date}</span>
+                <span>{item.text}</span>
+              </li>
+            ))}
+          </ol>
+          <a
+            class="k-link status-link"
+            href={status.announcement.url}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {status.announcement.label} <span aria-hidden="true">↗</span>
+          </a>
+        </section>
+      )
+    }
 
-      <section class="compare-section">
-        <h2>Feature by feature</h2>
-        <div class="compare-table-wrap">
-          <table class="compare-table">
-            <thead>
-              <tr>
-                <th scope="col"><span class="visually-hidden">Feature</span></th>
-                <th scope="col">
-                  <span class="compare-column-brand">
-                    <ThreadlinesGlyph class="compare-column-glyph" />
-                    Threadlines
-                  </span>
-                </th>
-                <th scope="col">{comparison.name}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {
-                comparison.rows.map((row) => (
-                  <tr>
-                    <th scope="row">
-                      <span class="compare-label">
-                        <Icon name={row.icon} class="compare-label-icon" />
-                        {row.label}
+    <section class="k-sec">
+      <KitHeading>Feature by feature</KitHeading>
+      <div class="k-table-wrap">
+        <table class="k-table">
+          <thead>
+            <tr>
+              <th scope="col"><span class="sr-only">Feature</span></th>
+              <th scope="col">
+                <span class="column-brand">
+                  <ThreadlinesGlyph class="column-glyph" />
+                  Threadlines
+                </span>
+              </th>
+              <th scope="col">{comparison.name}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {
+              comparison.rows.map((row) => (
+                <tr>
+                  <th scope="row">
+                    <span class="label">
+                      <Icon name={row.icon} class="label-icon" />
+                      {row.label}
+                    </span>
+                  </th>
+                  {cells(row).map((cell) => (
+                    <td>
+                      <span class="cell">
+                        {cell.mark && (
+                          <span class={`mark mark-${cell.mark}`}>
+                            <Icon name={markIcon[cell.mark]} />
+                            <span class="sr-only">{markLabel[cell.mark]}:</span>
+                          </span>
+                        )}
+                        <span>{cell.text}</span>
                       </span>
-                    </th>
-                    {cells(row).map((cell) => (
-                      <td>
-                        <span class="compare-cell">
-                          {cell.mark && (
-                            <span class={`compare-mark compare-mark-${cell.mark}`}>
-                              <Icon name={markIcon[cell.mark]} />
-                              <span class="visually-hidden">{markLabel[cell.mark]}:</span>
-                            </span>
-                          )}
-                          <span>{cell.text}</span>
-                        </span>
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              }
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="compare-section compare-picks">
-        <div>
-          <h2>Pick Threadlines if</h2>
-          <ul>
-            {
-              comparison.pickThreadlines.map((reason) => (
-                <li>
-                  <Icon name="check" class="compare-pick-icon" />
-                  {reason}
-                </li>
+                    </td>
+                  ))}
+                </tr>
               ))
             }
-          </ul>
-        </div>
-        <div>
-          <h2>Pick {comparison.name} if</h2>
-          <ul>
-            {
-              comparison.pickOther.map((reason) => (
-                <li>
-                  <Icon name="check" class="compare-pick-icon compare-pick-icon-other" />
-                  {reason}
-                </li>
-              ))
-            }
-          </ul>
-        </div>
-      </section>
+          </tbody>
+        </table>
+      </div>
+    </section>
 
-      {
-        switching && (
-          <section class="compare-section compare-switching" id="switching">
-            <h2>{switching.heading}</h2>
-            <ol class="compare-steps">
-              {switching.steps.map((step) => (
-                <li>
-                  <h3>{step.title}</h3>
-                  <p>
-                    {codeSpans(step.text).map((span) => (span.code ? <code>{span.text}</code> : span.text))}
-                  </p>
-                </li>
-              ))}
-            </ol>
-            <h3 class="compare-left-heading">{switching.leftBehindHeading}</h3>
-            <ul class="compare-left">
-              {switching.leftBehind.map((item) => (
-                <li>
-                  <Icon name="minus" class="compare-left-icon" />
-                  <span>
-                    {codeSpans(item).map((span) => (span.code ? <code>{span.text}</code> : span.text))}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )
-      }
-
-      <section class="compare-section">
-        <h2>Questions</h2>
-        <Faq items={comparison.faq} />
-      </section>
-
-      <section class="compare-section compare-sources">
-        <p>
-          We checked these facts about {comparison.name} on {checkedOn}, against{" "}
+    <!-- The two lists stand side by side from 820px: one stop on the line for the pair. -->
+    <section class="k-sec k-pair">
+      <div>
+        <KitHeading>Pick Threadlines if</KitHeading>
+        <ul class="k-ticks">
           {
-            comparison.sources.map((source, index) => (
-              <>
-                {index > 0 && (index === comparison.sources.length - 1 ? " and " : ", ")}
-                <a href={source.url} target="_blank" rel="noopener noreferrer">
-                  {source.label}
-                </a>
-              </>
+            comparison.pickThreadlines.map((reason) => (
+              <li>
+                <Icon name="check" class="pick-ours" />
+                {reason}
+              </li>
             ))
           }
-          . Something out of date?{" "}
-          <a href={`${SITE_GITHUB_URL}/issues`} target="_blank" rel="noopener noreferrer">
-            Open an issue
-          </a>{" "}
-          and we'll fix it.
-        </p>
-        <p>
-          See every <a href="/agents">agent Threadlines runs</a>
+        </ul>
+      </div>
+      <div>
+        <KitHeading node={false}>Pick {comparison.name} if</KitHeading>
+        <ul class="k-ticks">
           {
-            others.map((other) => (
-              <>
-                {", or "}
-                <a href={comparisonPath(other)}>Threadlines vs {other.name}</a>
-              </>
+            comparison.pickOther.map((reason) => (
+              <li>
+                <Icon name="check" />
+                {reason}
+              </li>
             ))
           }
-          .
-        </p>
-        <p class="compare-disclaimer">
-          {comparison.name} is made by {comparison.maker}. Threadlines is an independent open-source
-          project and isn't affiliated with or endorsed by {comparison.maker}.
-        </p>
-      </section>
-    </div>
-  </article>
+        </ul>
+      </div>
+    </section>
+
+    {
+      switching && (
+        <section class="k-sec switching" id="switching">
+          <KitHeading>{switching.heading}</KitHeading>
+          <ol class="moves">
+            {switching.steps.map((step) => (
+              <li>
+                <h3 class="k-h3">{step.title}</h3>
+                <p>
+                  {codeSpans(step.text).map((span) =>
+                    span.code ? <code class="k-code">{span.text}</code> : span.text,
+                  )}
+                </p>
+              </li>
+            ))}
+          </ol>
+          <h3 class="k-h3 left-heading">{switching.leftBehindHeading}</h3>
+          <ul class="k-ticks left">
+            {switching.leftBehind.map((item) => (
+              <li>
+                <Icon name="minus" />
+                <span>
+                  {codeSpans(item).map((span) =>
+                    span.code ? <code class="k-code">{span.text}</code> : span.text,
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )
+    }
+
+    <section class="k-sec">
+      <KitHeading>Questions</KitHeading>
+      <Faq items={comparison.faq} />
+    </section>
+
+    <section class="k-sec sources">
+      <p class="k-small">
+        We checked these facts about {comparison.name} on {checkedOn}, against{" "}
+        {
+          comparison.sources.map((source, index) => (
+            <>
+              {index > 0 && (index === comparison.sources.length - 1 ? " and " : ", ")}
+              <a href={source.url} target="_blank" rel="noopener noreferrer">
+                {source.label}
+              </a>
+            </>
+          ))
+        }
+        . Something out of date?{" "}
+        <a href={`${SITE_GITHUB_URL}/issues`} target="_blank" rel="noopener noreferrer">
+          Open an issue
+        </a>{" "}
+        and we'll fix it.
+      </p>
+      <p class="k-small">
+        See every <a href="/agents">agent Threadlines runs</a>
+        {
+          others.map((other) => (
+            <>
+              {", or "}
+              <a href={comparisonPath(other)}>Threadlines vs {other.name}</a>
+            </>
+          ))
+        }
+        .
+      </p>
+      <p class="k-small">
+        {comparison.name} is made by {comparison.maker}. Threadlines is an independent open-source
+        project and isn't affiliated with or endorsed by {comparison.maker}.
+      </p>
+    </section>
+  </KitFrame>
 </Layout>
 
 <style>
-  .compare {
-    padding: 40px 0 96px;
-  }
-
-  .compare-wrap {
-    max-width: 960px;
-  }
-
-  .back-link {
-    display: inline-flex;
-    gap: 8px;
-    color: var(--fg-dim);
-    font-size: 14px;
-    transition: color 0.2s ease;
-  }
-
-  .back-link:hover {
-    color: var(--fg);
-  }
-
-  .compare-header {
-    padding: 28px 0 30px;
-  }
-
-  .compare-lockup {
+  .lockup {
     display: flex;
     align-items: center;
     gap: 10px;
-    color: var(--fg);
-    font-size: 15px;
+    margin-top: 28px;
     font-weight: 600;
     letter-spacing: -0.01em;
   }
 
-  .compare-lockup :global(.compare-lockup-glyph) {
+  .lockup + :global(.k-h1) {
+    margin-top: 16px;
+  }
+
+  .lockup :global(.lockup-glyph) {
     width: auto;
     height: 18px;
   }
 
-  .compare-lockup-vs {
-    color: var(--fg-dim);
+  .lockup-vs {
+    color: var(--fg-muted);
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--k-s);
     font-weight: 400;
   }
 
-  .compare-column-brand {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .compare-table :global(.compare-column-glyph) {
-    width: auto;
-    height: 12px;
-  }
-
-  .compare-header h1 {
-    max-width: 780px;
-    margin: 12px 0 10px;
-    font-size: clamp(28px, 4.5vw, 40px);
-    text-wrap: balance;
-  }
-
-  .compare-intro {
-    max-width: 620px;
+  .status-text {
+    max-width: 64ch;
     color: var(--fg-muted);
-    font-size: 16px;
-    line-height: 1.6;
     text-wrap: pretty;
   }
 
-  .compare-actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 16px 24px;
-    margin-top: 22px;
-  }
-
-  .compare-actions a {
-    color: var(--fg-muted);
-    font-size: 14px;
-    transition: color 0.2s ease;
-  }
-
-  .compare-actions a:hover {
-    color: var(--fg);
-  }
-
-  .compare-actions .primary-action {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 16px;
-    border-radius: 8px;
-    background: var(--btn-bg);
-    color: var(--btn-fg);
-    font-weight: 600;
-    transition: background-color 180ms var(--ease);
-  }
-
-  .compare-actions .primary-action:hover {
-    background: var(--btn-bg-hover);
-    color: var(--btn-fg);
-  }
-
-  .compare-section {
-    padding: 26px 0 28px;
-    border-top: 1px solid var(--border);
-  }
-
-  .compare-section h2 {
-    margin-bottom: 14px;
-    font-size: 19px;
-    letter-spacing: -0.015em;
-  }
-
-  .compare-status-text {
-    max-width: 640px;
-    color: var(--fg-muted);
-    font-size: 15px;
-    line-height: 1.55;
-    text-wrap: pretty;
-  }
-
-  .compare-timeline {
-    max-width: 640px;
-    margin: 14px 0 16px;
+  .dates {
+    max-width: 64ch;
+    margin: 20px 0 18px;
     list-style: none;
-  }
-
-  .compare-timeline li {
-    display: grid;
-    grid-template-columns: 96px minmax(0, 1fr);
-    gap: 12px;
-    padding: 9px 0;
     border-bottom: 1px solid var(--border);
-    color: var(--fg-muted);
-    font-size: 14px;
-    line-height: 1.45;
   }
 
-  .compare-timeline li:first-child {
+  .dates li {
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    gap: 16px;
+    padding: 12px 0;
     border-top: 1px solid var(--border);
-  }
-
-  .compare-timeline-date {
-    padding-top: 1px;
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 12px;
-  }
-
-  .compare-status-link {
     color: var(--fg-muted);
-    font-size: 14px;
-    text-decoration: underline;
-    text-decoration-color: var(--underline);
-    text-underline-offset: 3px;
-    transition: color 0.2s ease;
+    font-size: var(--k-s);
+    line-height: 1.55;
   }
 
-  .compare-status-link:hover {
-    color: var(--fg);
-  }
-
-  .compare-steps {
-    display: grid;
-    gap: 14px;
-    max-width: 680px;
-    list-style: none;
-    counter-reset: step;
-  }
-
-  .compare-steps li {
-    display: grid;
-    grid-template-columns: 26px minmax(0, 1fr);
-    counter-increment: step;
-  }
-
-  .compare-steps li::before {
-    grid-row: span 2;
-    padding-top: 2px;
-    color: var(--fg-dim);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    content: counter(step);
-  }
-
-  .compare-steps h3 {
-    margin-bottom: 3px;
-    font-size: 15px;
-    font-weight: 600;
-  }
-
-  .compare-steps p,
-  .compare-left li {
-    color: var(--fg-muted);
-    font-size: 15px;
-    line-height: 1.5;
-    text-wrap: pretty;
-  }
-
-  /* The hero's jump link lands here; keep the heading clear of the sticky nav. */
-  .compare-switching {
-    scroll-margin-top: 72px;
-  }
-
-  .compare-switching code {
-    padding: 1px 5px;
-    border-radius: 4px;
-    background: var(--surface-hover);
+  .dates-when {
     color: var(--fg);
     font-family: var(--font-mono);
-    font-size: 0.84em;
-    overflow-wrap: anywhere;
   }
 
-  .compare-left-heading {
-    margin: 24px 0 10px;
-    font-size: 15px;
-    font-weight: 600;
+  .status-link {
+    font-size: var(--k-s);
   }
 
-  .compare-left {
-    display: grid;
+  .column-brand {
+    display: inline-flex;
+    align-items: center;
     gap: 8px;
-    max-width: 680px;
-    list-style: none;
   }
 
-  .compare-left li {
-    display: flex;
+  .k-table :global(.column-glyph) {
+    width: auto;
+    height: 13px;
+  }
+
+  .label {
+    display: inline-flex;
+    align-items: flex-start;
     gap: 10px;
   }
 
-  .compare-left :global(.compare-left-icon) {
+  .k-table :global(.label-icon) {
     flex: none;
-    margin-top: 3px;
-    color: var(--fg-faint);
+    margin-top: 2px;
+    color: var(--fg-muted);
     font-size: 17px;
   }
 
-  .compare-table-wrap {
-    overflow-x: auto;
-  }
-
-  .compare-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 14px;
-    line-height: 1.4;
-  }
-
-  .compare-table th,
-  .compare-table td {
-    padding: 11px 14px 11px 0;
-    border-bottom: 1px solid var(--border);
-    text-align: left;
-    vertical-align: top;
-  }
-
-  .compare-table thead th {
-    padding-top: 0;
-    color: var(--fg);
-    font-size: 15px;
-    font-weight: 600;
-  }
-
-  .compare-table tbody th {
-    width: 28%;
-    color: var(--fg-muted);
-    font-weight: 500;
-  }
-
-  .compare-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 9px;
-  }
-
-  .compare-table :global(.compare-label-icon) {
-    flex: none;
-    color: var(--fg-dim);
-    font-size: 17px;
-  }
-
-  .compare-table td {
-    width: 36%;
-    color: var(--fg-muted);
-  }
-
-  .compare-cell {
+  .cell {
     display: flex;
     align-items: flex-start;
     gap: 8px;
   }
 
-  .compare-mark {
+  .mark {
     display: inline-flex;
     flex: none;
-    margin-top: 1px;
+    margin-top: 2px;
     font-size: 16px;
   }
 
-  .compare-mark-yes {
+  .mark-yes {
     color: var(--ok);
   }
 
-  .compare-mark-partial {
+  .mark-partial {
     color: var(--warn);
   }
 
-  .compare-mark-no {
+  .mark-no {
     color: var(--fg-faint);
   }
 
-  .compare-table tbody tr:last-child th,
-  .compare-table tbody tr:last-child td {
-    border-bottom: none;
+  /* Our reasons carry the accent; theirs stay muted, so the two lists read apart. */
+  .k-pair :global(.pick-ours) {
+    color: var(--accent);
   }
 
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
+  /* The hero's jump link lands here; keep the heading clear of the nav. */
+  .switching {
+    scroll-margin-top: 24px;
   }
 
-  .compare-picks {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0 32px;
-  }
-
-  .compare-picks ul {
-    display: grid;
-    gap: 10px;
+  .moves {
+    max-width: 68ch;
     list-style: none;
+    counter-reset: move;
+    border-bottom: 1px solid var(--border);
   }
 
-  .compare-picks li {
-    display: flex;
-    gap: 10px;
-    color: var(--fg-muted);
-    font-size: 15px;
-    line-height: 1.45;
-  }
-
-  .compare-picks :global(.compare-pick-icon) {
-    flex: none;
-    margin-top: 2px;
-    color: var(--accent-bright);
-    font-size: 17px;
-  }
-
-  .compare-picks :global(.compare-pick-icon-other) {
-    color: var(--fg-dim);
-  }
-
-  .compare-shot {
-    margin: 0 0 28px;
-  }
-
-  .compare-shot img {
-    width: 100%;
-    height: auto;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: var(--surface);
-  }
-
-  .compare-shot figcaption {
-    margin-top: 8px;
-    color: var(--fg-dim);
-    font-size: 13px;
-  }
-
-  .compare-sources {
+  .moves li {
     display: grid;
-    gap: 10px;
-    color: var(--fg-dim);
-    font-size: 13px;
-    line-height: 1.55;
+    grid-template-columns: 28px minmax(0, 1fr);
+    padding: 16px 0 18px;
+    border-top: 1px solid var(--border);
+    counter-increment: move;
   }
 
-  .compare-sources a {
+  .moves li::before {
+    grid-row: span 2;
     color: var(--fg-muted);
-    text-decoration: underline;
-    text-decoration-color: var(--underline);
-    text-underline-offset: 3px;
-    transition: color 0.2s ease;
+    font-family: var(--font-mono);
+    font-size: var(--k-s);
+    line-height: 1.7;
+    content: counter(move);
   }
 
-  .compare-sources a:hover {
-    color: var(--fg);
+  .moves p {
+    margin-top: 2px;
+    color: var(--fg-muted);
+    text-wrap: pretty;
   }
 
-  @media (max-width: 620px) {
-    .compare {
-      padding: 36px 0 80px;
-    }
+  .left-heading {
+    margin-top: 40px;
+  }
 
-    .compare-picks {
-      grid-template-columns: minmax(0, 1fr);
-      gap: 22px;
-    }
+  .left {
+    max-width: 68ch;
+    margin-top: 14px;
+  }
 
-    .compare-table tbody th {
-      width: 30%;
-    }
+  .sources {
+    display: grid;
+    gap: 12px;
+    max-width: 72ch;
+  }
 
-    .compare-table :global(.compare-label-icon) {
+  @media (width <= 640px) {
+    .k-table :global(.label-icon) {
       display: none;
     }
 
-    .compare-timeline li {
-      grid-template-columns: 80px minmax(0, 1fr);
+    .dates li {
+      grid-template-columns: 5.5rem minmax(0, 1fr);
     }
   }
 </style>

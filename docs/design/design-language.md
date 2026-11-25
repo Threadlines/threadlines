@@ -404,9 +404,8 @@ a switch's off track and a field's edge must stay visible against the group
 ## Marketing site
 
 The marketing site (`apps/marketing`) is quieter than the app and flatter:
-structure from type, spacing and hairlines; no cards except clickable tiles.
-The homepage has no eyebrow labels, pills or chips above its headings; the
-other pages still carry their small labels until they are redone.
+structure from type, spacing and hairlines, and no cards. No page has
+eyebrow labels, pills or chips above its headings.
 
 - **Light and dark follow the computer.** Every site token in
   `layouts/Layout.astro` (`--bg`, `--fg-*`, `--border`, `--surface`, ...) has a
@@ -505,6 +504,33 @@ other pages still carry their small labels until they are redone.
   a light page. Pick the capture that shows what the text says.
 - **No video until a click.** Demos open in a dialog and tool clips replace
   their still in place, both built on click. Nothing autoplays.
+- **Inner pages share one kit.** Every page below the nav other than the
+  homepage is built from `styles/kit.css` and the parts in
+  `components/kit/`: a frame (`KitFrame`) whose left gutter carries one line,
+  section headings with a ring node on it (`KitHeading`), the ruled list
+  (`KitRules`), setup steps as stops on a short thread (`KitSteps`), the
+  changelog timeline (`KitTimeline`), the ending where the line turns into
+  the last button (`KitEnd`), and an agent's logo chip (`AgentChip`; the
+  homepage keeps its own `.nt-chip`). Questions use `Faq.astro`, pictures of
+  the app sit in the homepage's still frame (`.k-still`), and the comparison
+  table, prose and small print are kit styles. Three type sizes below the
+  title: headings, body (17px) and small (14px). A page's own styles hold only
+  what is its own.
+- **Which line a page gets.** Agent pages: that agent's thread, in its
+  homepage color (`agentThreadColor`, from its place in the full list), from
+  its logo down to the Download button; the other agents sit at the bottom
+  with stubs of their own threads. The agents list: the trunk, with each
+  agent's strand tapping into it. The changelog: the trunk as a timeline,
+  a full node per feature release and a small one per patch, with each
+  agent's strand joining at the published release that added it (the
+  agents there from the start rise into its end). Release pages, compare,
+  download: the trunk with a node at each section (two headings side by
+  side share one). Privacy, terms, support and docs: no line, only the type.
+  `scripts/pageThread.ts` draws the line from the markup's `data-k-*`
+  attributes (listed at the top of `kit.css`), in layout coordinates, and
+  draws it again when a question opens or a script shows part of the page;
+  the nodes are CSS, so a page without script still shows them. The
+  heartbeat and the pullable strings are the homepage's alone.
 - **Motion** is one-time (the entrance, the threads pouring in, each panel
   playing once in view), 140 to 240ms on hover and focus with named
   properties in every `transition`, and the page is complete with reduced

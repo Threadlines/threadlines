@@ -1,0 +1,38 @@
+---
+/**
+ * An agent's logo in a round chip ringed in its thread color (the homepage's
+ * .nt-chip, which stays in HeroAgents.astro for the hero's own sizes). With
+ * `href` it is a link named for the agent, showing the name on hover; with
+ * `tap` its strand taps into the page's line (data-k-tap). The color always
+ * comes from the agent's place in the full AGENTS list.
+ */
+import AgentMark from "../AgentMark.astro";
+import { agentThreadIndex, type Agent } from "../../lib/agents";
+
+interface Props {
+  agent: Agent;
+  small?: boolean;
+  href?: string;
+  tap?: boolean;
+  /** The page's own agent: its line starts at the chip's bottom. */
+  lead?: boolean;
+  class?: string;
+}
+
+const { agent, small = false, href, tap = false, lead = false, class: className } = Astro.props;
+const index = agentThreadIndex(agent);
+const Tag = href ? "a" : "span";
+---
+
+<Tag
+  class:list={["k-chip", { "k-chip-sm": small, "k-lead": lead }, className]}
+  href={href}
+  aria-label={href ? agent.name : undefined}
+  data-name={href ? agent.name : undefined}
+  data-k-tap={tap ? String(index) : undefined}
+  data-k-start={lead ? "chip" : undefined}
+  data-wordmark={agent.markIsWordmark ? "" : undefined}
+  style={`--c: var(--t${index})`}
+>
+  <AgentMark slug={agent.slug} />
+</Tag>
