@@ -1,0 +1,162 @@
+---
+/**
+ * The nine agents at the top of the homepage, each a link to its page and the
+ * logo a colored thread falls from (scripts/threads/hero.ts). From 1060px they
+ * stand in two groups either side of the headline; below that, in one row
+ * above it. Hover or keyboard focus brings an agent's thread forward and shows
+ * its name.
+ *
+ * The thread colors are `--t0`..`--t8`, in this order (layouts/Layout.astro).
+ */
+import AgentMark from "./AgentMark.astro";
+import { agentPath, AGENTS } from "../lib/agents";
+
+/** Agents in the left group; the rest stand on the right. */
+const LEFT = 5;
+const groups = [AGENTS.slice(0, LEFT), AGENTS.slice(LEFT)] as const;
+---
+
+<div class="nt-agents rise" data-nt-agents>
+  {
+    groups.map((group, g) => (
+      <ul class:list={["nt-group", g === 0 ? "l" : "r"]}>
+        {group.map((agent, i) => (
+          <li>
+            <a
+              class:list={["nt-agent", { "nt-agent-wordmark": agent.markIsWordmark }]}
+              href={agentPath(agent)}
+              data-name={agent.name}
+              style={`--c: var(--t${g === 0 ? i : LEFT + i})`}
+              aria-label={agent.name}
+            >
+              <span class="nt-chip">
+                <AgentMark slug={agent.slug} />
+              </span>
+              <span class="nt-name" aria-hidden="true">
+                {agent.name}
+              </span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    ))
+  }
+</div>
+
+<style>
+  .nt-agents {
+    display: flex;
+    justify-content: center;
+  }
+
+  .nt-group {
+    list-style: none;
+    display: flex;
+    margin: 0;
+    padding: 0;
+  }
+
+  .nt-group li {
+    width: var(--pitch);
+    display: flex;
+    justify-content: center;
+  }
+
+  .nt-agent {
+    position: relative;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+  }
+
+  .nt-agent:focus-visible {
+    outline: none;
+  }
+
+  .nt-chip {
+    width: var(--chip);
+    height: var(--chip);
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--bg-card);
+    color: var(--fg);
+    box-shadow:
+      0 0 0 1.5px color-mix(in oklch, var(--c) 75%, transparent),
+      0 2px 6px -2px light-dark(#0d101726, #000a);
+    transition:
+      box-shadow 0.18s var(--ease),
+      transform 0.18s var(--ease);
+  }
+
+  .nt-chip :global(svg),
+  .nt-chip :global(img) {
+    width: 46%;
+    height: 46%;
+  }
+
+  .nt-agent-wordmark .nt-chip :global(svg) {
+    width: 56%;
+  }
+
+  .nt-name {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translate(-50%, 3px);
+    font-size: 13px;
+    line-height: 18px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    white-space: nowrap;
+    background: var(--fg);
+    color: var(--bg);
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      opacity 0.16s var(--ease),
+      transform 0.16s var(--ease);
+  }
+
+  .nt-agent:hover .nt-chip,
+  .nt-agent:focus-visible .nt-chip {
+    transform: translateY(-2px);
+    box-shadow:
+      0 0 0 2.5px var(--c),
+      0 6px 14px -6px color-mix(in oklch, var(--c) 70%, transparent);
+  }
+
+  .nt-agent:focus-visible .nt-chip {
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+  }
+
+  .nt-agent:hover .nt-name,
+  .nt-agent:focus-visible .nt-name {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+
+  /* Wide screens: two groups either side of the headline's clearing, so every thread falls straight. */
+  @media (width >= 1060px) {
+    .nt-agents {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) var(--clear) minmax(0, 1fr);
+    }
+
+    .nt-group.l {
+      grid-column: 1;
+      justify-content: flex-end;
+    }
+
+    .nt-group.r {
+      grid-column: 3;
+    }
+  }
+
+  @media (width <= 640px) {
+    .nt-agents {
+      margin-inline: -24px;
+    }
+  }
+</style>

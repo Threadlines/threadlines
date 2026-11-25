@@ -251,13 +251,15 @@ const structuredData = {
   .release-actions .primary-action {
     padding: 10px 16px;
     border-radius: 8px;
-    background: var(--accent-bright);
-    color: var(--accent-contrast);
+    background: var(--btn-bg);
+    color: var(--btn-fg);
     font-weight: 600;
+    transition: background-color 180ms var(--ease);
   }
 
   .release-actions .primary-action:hover {
-    color: var(--accent-contrast);
+    background: var(--btn-bg-hover);
+    color: var(--btn-fg);
   }
 
   @media (max-width: 620px) {

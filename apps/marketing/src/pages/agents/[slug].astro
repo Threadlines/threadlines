@@ -313,13 +313,15 @@ const structuredData = [
     gap: 8px;
     padding: 10px 16px;
     border-radius: 8px;
-    background: var(--accent-bright);
-    color: var(--accent-contrast);
+    background: var(--btn-bg);
+    color: var(--btn-fg);
     font-weight: 600;
+    transition: background-color 180ms var(--ease);
   }
 
   .agent-actions .primary-action:hover {
-    color: var(--accent-contrast);
+    background: var(--btn-bg-hover);
+    color: var(--btn-fg);
   }
 
   .agent-shot {

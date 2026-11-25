@@ -1,0 +1,78 @@
+/*
+ * The homepage's trunk (scripts/threads/spine.ts): the line that runs from
+ * the hero window down the page, and the gutter the sections keep for it. The
+ * thread colors and the cloth are site tokens (layouts/Layout.astro).
+ */
+
+/* The trunk's drawing covers the page, under the content. */
+.nt-spine {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.nt-spine path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Sections below the hero keep a gutter on the left for the trunk. */
+.nt-in {
+  padding-left: calc(var(--nt-pad) + var(--gut)) !important;
+}
+
+.nt-z,
+.nt-in .spread-head,
+.nt-in .tools,
+.nt-in .more,
+.nt-in .own-copy,
+.nt-in .facts {
+  position: relative;
+  z-index: 2;
+}
+
+/* The help band: a twill (diagonal rib) on a slightly deeper cloth. */
+.nt-help.band {
+  position: relative;
+  background: none;
+}
+
+.nt-help::before,
+.nt-help::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.nt-help::before {
+  background: var(--nt-band);
+}
+
+.nt-help::after {
+  background: var(--nt-weave-band);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6'%3E%3Cpath d='M0 6L6 0M-1 1L1 -1M5 7L7 5' stroke='%23000' stroke-width='1.1'/%3E%3C/svg%3E")
+    0 0 / 6px 6px repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6'%3E%3Cpath d='M0 6L6 0M-1 1L1 -1M5 7L7 5' stroke='%23000' stroke-width='1.1'/%3E%3C/svg%3E")
+    0 0 / 6px 6px repeat;
+}
+
+/* The last Download button takes each pulse: a ring whose color is set per pulse (--flash). */
+.own-copy .btn {
+  position: relative;
+}
+
+.nt-btn-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow:
+    0 0 0 2px var(--flash, transparent),
+    0 0 18px 2px var(--flash, transparent);
+}

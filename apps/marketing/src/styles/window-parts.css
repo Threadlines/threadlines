@@ -1,0 +1,76 @@
+/*
+ * The small parts of the app's interface the homepage draws in more than one
+ * place: the live window (components/HeroWindow.astro) and the panels down
+ * the page (components/HelpFeatures.astro). Both are hosts for the theme's
+ * --hw-* tokens (`.hw`, `.hw-tokens`; lib/heroThemes.ts heroThemeCss). Low
+ * specificity, so either host can adjust a part.
+ */
+:where(.hw, .hw-tokens) svg {
+  display: block;
+  flex: none;
+}
+
+:where(.hw, .hw-tokens) :where(.hw-dim) {
+  color: var(--hw-muted-foreground);
+}
+
+:where(.hw, .hw-tokens) :where(.hw-row-mark, .hw-mark) {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+:where(.hw, .hw-tokens) :where(.hw-row-mark, .hw-mark) svg,
+:where(.hw, .hw-tokens) :where(.hw-row-mark, .hw-mark) img {
+  width: 15px;
+  height: 15px;
+}
+
+:where(.hw, .hw-tokens) :where(.hw-mark-codex) {
+  color: var(--hw-foreground);
+}
+
+:where(.hw, .hw-tokens) :where(.hw-who) {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+:where(.hw, .hw-tokens) :where(.hw-who b) {
+  font-weight: 600;
+}
+
+:where(.hw, .hw-tokens) :where(.hw-meta) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--hw-muted-foreground);
+  font-family: var(--hw-mono);
+  font-size: 13px;
+}
+
+:where(.hw, .hw-tokens) :where(.hw-working-dots) {
+  display: inline-flex;
+  gap: 3px;
+}
+
+:where(.hw, .hw-tokens) :where(.hw-working-dots i) {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--hw-primary-readable);
+}
+
+:where(.hw, .hw-tokens) :where(.hw-working-dots i + i) {
+  opacity: 0.6;
+}
+
+:where(.hw, .hw-tokens) :where(.hw-working-dots i + i + i) {
+  opacity: 0.3;
+}
+
+:where(.hw, .hw-tokens) :where(.hw-placeholder) {
+  color: var(--hw-placeholder);
+}

@@ -320,17 +320,17 @@ const upcomingNote =
     display: inline-flex;
     align-items: baseline;
     gap: 10px;
-    background: var(--accent-bright);
-    color: var(--accent-contrast);
+    background: var(--btn-bg);
+    color: var(--btn-fg);
     font-weight: 600;
     border-radius: 10px;
     padding: 12px 22px;
     text-decoration: none;
-    transition: filter 0.2s ease;
+    transition: background-color 180ms var(--ease);
   }
 
   .dl-primary:hover {
-    filter: brightness(1.08);
+    background: var(--btn-bg-hover);
   }
 
   .dl-primary[hidden] {

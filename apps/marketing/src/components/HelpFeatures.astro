@@ -1,0 +1,702 @@
+---
+/**
+ * "Get help without losing the thread": Rooms, Threads and Fleet, each its
+ * words and Watch button beside a piece of the app drawn in markup. The
+ * pieces wear the hero window's theme (`.hw-tokens`, lib/heroThemes.ts) and
+ * its parts (styles/window-parts.css). The trunk's strands pass through them
+ * (scripts/threads/spine.ts): the `data-nt-*` hooks are where they join, and
+ * each piece plays once when it scrolls into view (`data-play`).
+ */
+import "../styles/window-parts.css";
+
+import AgentMark from "./AgentMark.astro";
+
+export interface HelpIdea {
+  id: "rooms" | "threads" | "fleet";
+  name: string;
+  text: string;
+  demo: { base: string; seconds: number; label: string };
+}
+
+interface Props {
+  ideas: ReadonlyArray<HelpIdea>;
+}
+
+const { ideas } = Astro.props;
+const byId = Object.fromEntries(ideas.map((idea) => [idea.id, idea])) as Record<HelpIdea["id"], HelpIdea>;
+
+/** 46 -> "0:46" */
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+const playIcon = `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 2.8v10.4L13 8z"/></svg>`;
+const sendIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>`;
+const order: HelpIdea["id"][] = ["rooms", "threads", "fleet"];
+---
+
+<div class="nt-feats">
+  {
+    order.map((id) => {
+      const idea = byId[id];
+      return (
+        <section class="nt-feat" id={id} aria-labelledby={`note-${id}`}>
+          <div class="nt-copy nt-z">
+            <h3 id={`note-${id}`}>{idea.name}</h3>
+            <p>{idea.text}</p>
+            <button
+              class="watch"
+              type="button"
+              data-demo={idea.demo.base}
+              data-label={idea.demo.label}
+              data-title={`${idea.name}, ${clock(idea.demo.seconds)}`}
+            >
+              <span class="watch-play" set:html={playIcon} />
+              Watch {idea.name} <time datetime={`PT${idea.demo.seconds}S`}>{clock(idea.demo.seconds)}</time>
+            </button>
+          </div>
+          {id === "rooms" && (
+            <div class="nt-stage">
+              <div class="hw-tokens nt-mini nt-room" data-play aria-hidden="true">
+                <div class="nt-bar">
+                  <span class="nt-lights"><i /><i /><i /></span>
+                  <b>Double charges at checkout</b>
+                  <span class="nt-bar-end">
+                    <span class="nt-pair">
+                      <span class="hw-mark"><AgentMark slug="claude-code" /></span>
+                      <span class="hw-mark hw-mark-codex"><AgentMark slug="codex" /></span>
+                    </span>
+                    2 agents
+                  </span>
+                </div>
+                <div class="nt-body">
+                  <p class="nt-event" data-nt-join>GPT-6.1-Sol joined and read the thread</p>
+                  <div class="nt-turn">
+                    <p class="hw-who"><span class="hw-mark hw-mark-codex"><AgentMark slug="codex" /></span><b>GPT-6.1-Sol</b><span class="hw-dim">· High</span></p>
+                    <p>The payment succeeds, the reply times out, and retry.ts charges again. It has no idempotency key.</p>
+                  </div>
+                  <div class="nt-turn" data-nt-twist-end>
+                    <p class="hw-who"><span class="hw-mark"><AgentMark slug="claude-code" /></span><b>Opus 5.5</b><span class="hw-dim">· High</span></p>
+                    <p>Added the key to retry.ts. Sol, can you check my fix?</p>
+                  </div>
+                  <div class="nt-turn">
+                    <p class="hw-who"><span class="hw-mark hw-mark-codex"><AgentMark slug="codex" /></span><b>GPT-6.1-Sol</b><span class="hw-dim">· High</span></p>
+                    <div class="nt-cell" style="--at: 1.1s">
+                      <p class="nt-before hw-meta"><span class="hw-working-dots"><i /><i /><i /></span>Working · 6s</p>
+                      <p class="nt-after">Checked it. One charge per order now, and the checkout tests pass.</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="nt-composer">
+                  <span class="hw-placeholder">Message Opus 5.5 and GPT-6.1-Sol</span>
+                  <span class="nt-send" set:html={sendIcon} />
+                </div>
+              </div>
+              <!-- Codex's logo, where its strand starts: placed by the threads script. -->
+              <span class="nt-guest" aria-hidden="true" hidden><AgentMark slug="codex" /></span>
+            </div>
+          )}
+          {id === "threads" && (
+            <div class="nt-stage nt-tstage" data-play aria-hidden="true">
+              <div class="hw-tokens nt-mini nt-line">
+                <p class="hw-who"><span class="hw-mark"><AgentMark slug="claude-code" /></span><b>Opus 5.5</b><span class="hw-dim">· High</span></p>
+                <p>Checkout got slow this week. I'll start three threads to look in parallel.</p>
+              </div>
+              <div class="nt-kids">
+                <div class="hw-tokens nt-mini nt-kid" data-nt-kid="5">
+                  <p class="nt-kid-title"><b>Time the payments</b><span class="nt-tag">reply</span></p>
+                  <p class="hw-who"><span class="hw-mark hw-mark-codex"><AgentMark slug="grok" /></span><b>Grok 4.7</b></p>
+                  <div class="nt-cell" style="--at: 0.8s">
+                    <p class="nt-before hw-meta"><span class="hw-working-dots"><i /><i /><i /></span>Working · 4s</p>
+                    <p class="nt-after nt-quote">Payments answer in 90 ms, same as last week.</p>
+                  </div>
+                </div>
+                <div class="hw-tokens nt-mini nt-kid" data-nt-kid="7">
+                  <p class="nt-kid-title"><b>Count the queries</b><span class="nt-tag">reply</span></p>
+                  <p class="hw-who"><span class="hw-mark hw-mark-codex"><AgentMark slug="muse-code" /></span><b>Muse Code</b></p>
+                  <div class="nt-cell" style="--at: 1.7s">
+                    <p class="nt-before hw-meta"><span class="hw-working-dots"><i /><i /><i /></span>Working · 9s</p>
+                    <p class="nt-after nt-quote">One checkout runs 120 queries: one for each item in the cart.</p>
+                  </div>
+                </div>
+                <div class="hw-tokens nt-mini nt-kid" data-nt-kid="2">
+                  <p class="nt-kid-title"><b>Measure the page</b><span class="nt-tag">reply</span></p>
+                  <p class="hw-who"><span class="hw-mark hw-mark-codex"><AgentMark slug="opencode" /></span><b>OpenCode</b></p>
+                  <div class="nt-cell" style="--at: 1.25s">
+                    <p class="nt-before hw-meta"><span class="hw-working-dots"><i /><i /><i /></span>Working · 5s</p>
+                    <p class="nt-after nt-quote">The page is 180 KB, same as last week.</p>
+                  </div>
+                </div>
+              </div>
+              <div class="hw-tokens nt-mini nt-line">
+                <p class="hw-who"><span class="hw-mark"><AgentMark slug="claude-code" /></span><b>Opus 5.5</b><span class="hw-dim">· High</span></p>
+                <div class="nt-cell" style="--at: 2.2s">
+                  <p class="nt-before hw-meta"><span class="hw-working-dots"><i /><i /><i /></span>Waiting on 3 threads</p>
+                  <p class="nt-after">The Muse Code thread found it. I'll load the cart items in one query.</p>
+                </div>
+              </div>
+            </div>
+          )}
+          {id === "fleet" && (
+            <div class="nt-stage nt-fleet" data-play aria-hidden="true">
+              <div class="hw-tokens nt-mini nt-fleetwin">
+                <div class="nt-bar">
+                  <span class="nt-lights"><i /><i /><i /></span>
+                  <b>Fleet</b>
+                  <span class="nt-bar-end nt-mono">2 working · 1 needs you</span>
+                </div>
+                <!-- The map of computers: drawn by the threads script. -->
+                <div class="nt-map" data-nt-map><svg class="nt-map-svg" /></div>
+                <ul class="nt-frows">
+                  <li>
+                    <span class="nt-fdot wait" />
+                    <span class="t"><b>Checkout recovery</b><small>MacBook Pro · Codex</small></span>
+                    <span class="st nt-mono wait">input</span>
+                  </li>
+                  <li>
+                    <span class="nt-fdot" />
+                    <span class="t"><b>Background browser screenshots</b><small>MacBook Pro · Claude Code</small></span>
+                    <span class="nt-cell nt-mono st" style="--at: 2.6s"><span class="nt-before">1 thread</span><span class="nt-after nt-st-done">answered</span></span>
+                  </li>
+                  <li>
+                    <span class="nt-fdot" />
+                    <span class="t"><b>Windows probe: background screenshots</b><small>Windows PC · Cursor</small></span>
+                    <span class="nt-cell nt-mono st" style="--at: 1.9s"><span class="nt-before">working</span><span class="nt-after nt-st-done">done</span></span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          )}
+        </section>
+      );
+    })
+  }
+</div>
+
+<style>
+  .nt-feats {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(48px, 4.4vw, 64px);
+    margin-top: clamp(40px, 4vw, 56px);
+  }
+
+  .nt-feat {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 290px);
+    grid-template-areas: "stage copy";
+    gap: 0 clamp(36px, 4vw, 64px);
+    align-items: start;
+  }
+
+  .nt-copy {
+    grid-area: copy;
+    padding-top: 6px;
+  }
+
+  .nt-copy h3 {
+    font-size: var(--text-b, 1.125rem);
+    font-weight: 600;
+    line-height: 1.55;
+  }
+
+  .nt-copy p {
+    color: var(--fg-muted);
+    text-wrap: pretty;
+    margin-top: 6px;
+  }
+
+  .nt-stage {
+    grid-area: stage;
+    min-width: 0;
+    position: relative;
+  }
+
+  /* Rooms, where Codex's logo can't stand beside the trunk: room for it above the panel. */
+  .nt-feat[data-guest="above"] .nt-stage {
+    padding-top: 52px;
+  }
+
+  /* ---- Watch buttons ---- */
+  .watch {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    margin-top: 16px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--text-s, 0.875rem);
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 160ms var(--ease);
+  }
+
+  .watch:hover {
+    color: var(--accent);
+  }
+
+  .watch-play {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1px var(--line-dim);
+    transition: box-shadow 160ms var(--ease);
+  }
+
+  .watch:hover .watch-play {
+    box-shadow: inset 0 0 0 1px currentColor;
+  }
+
+  .watch-play :global(svg) {
+    width: 10px;
+    height: 10px;
+    margin-left: 1px;
+  }
+
+  .watch time {
+    font-weight: 400;
+    color: var(--fg-muted);
+  }
+
+  /* ---- The pieces of the app: the app's glass ---- */
+  .nt-mini {
+    position: relative;
+    z-index: 2;
+    color: var(--hw-card-foreground, var(--fg));
+    font-family: var(--hw-sans, var(--font-sans));
+    font-size: 14px;
+    line-height: 1.5;
+    text-align: left;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--hw-card) 76%, transparent);
+    -webkit-backdrop-filter: blur(16px) saturate(1.3);
+    backdrop-filter: blur(16px) saturate(1.3);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--hw-foreground) 13%, transparent),
+      inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+      0 26px 54px -34px rgb(0 0 0 / 0.5);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .nt-mini p {
+    margin: 0;
+  }
+
+  .nt-mono {
+    font-family: var(--hw-mono);
+    font-size: 13px;
+  }
+
+  .nt-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 40px;
+    padding: 0 16px;
+    background: color-mix(in srgb, var(--hw-frame) 55%, transparent);
+    border-bottom: 1px solid var(--hw-sidebar-border);
+    border-radius: 14px 14px 0 0;
+    color: var(--hw-muted-foreground);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .nt-bar b {
+    color: var(--hw-foreground);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .nt-lights {
+    display: inline-flex;
+    gap: 6px;
+    flex: none;
+  }
+
+  .nt-lights i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--hw-muted-foreground) 35%, transparent);
+  }
+
+  .nt-bar-end {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .nt-pair {
+    display: inline-flex;
+  }
+
+  .nt-pair .hw-mark {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--hw-card);
+    box-shadow: 0 0 0 1.5px var(--hw-frame);
+  }
+
+  .nt-pair .hw-mark + .hw-mark {
+    margin-left: -5px;
+  }
+
+  .nt-pair .hw-mark :global(svg) {
+    width: 12px;
+    height: 12px;
+  }
+
+  .nt-body {
+    padding: 16px 22px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .nt-event {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--hw-muted-foreground);
+    font-size: 13px;
+  }
+
+  .nt-event::before,
+  .nt-event::after {
+    content: "";
+    height: 1px;
+    flex: 1;
+    background: var(--hw-border);
+  }
+
+  .nt-turn {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 22px;
+  }
+
+  .nt-turn > :global(.hw-who) {
+    margin-left: -22px;
+  }
+
+  .nt-composer {
+    margin: 0 16px 16px;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--hw-card) 85%, transparent);
+    box-shadow: inset 0 0 0 1px var(--hw-border);
+    padding: 11px 12px 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--hw-muted-foreground);
+  }
+
+  .nt-composer .hw-placeholder {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .nt-send {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--hw-primary);
+    color: var(--hw-primary-foreground);
+    flex: none;
+  }
+
+  .nt-send :global(svg) {
+    width: 15px;
+    height: 15px;
+  }
+
+  /* One cell, two states: what shows before the piece plays, and after. */
+  .nt-cell {
+    display: grid;
+  }
+
+  .nt-cell > * {
+    grid-area: 1 / 1;
+  }
+
+  .nt-before {
+    opacity: 0;
+  }
+
+  .nt-quote {
+    border-left: 2px solid var(--hw-border);
+    padding-left: 10px;
+  }
+
+  :global(.nt-armed) .nt-before {
+    opacity: 1;
+  }
+
+  :global(.nt-armed) .nt-after {
+    opacity: 0;
+  }
+
+  :global(.nt-armed.play) .nt-before {
+    animation: nt-hide 0.18s linear var(--at, 0.9s) forwards;
+  }
+
+  :global(.nt-armed.play) .nt-after {
+    animation: nt-show 0.42s var(--ease) var(--at, 0.9s) forwards;
+  }
+
+  @keyframes nt-hide {
+    to {
+      opacity: 0;
+    }
+  }
+
+  @keyframes nt-show {
+    from {
+      opacity: 0;
+      transform: translateY(5px);
+    }
+
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.nt-armed) .nt-before {
+      opacity: 0;
+    }
+
+    :global(.nt-armed) .nt-after {
+      opacity: 1;
+    }
+  }
+
+  /* ---- Threads ---- */
+  .nt-tstage {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .nt-line {
+    padding: 13px 18px;
+  }
+
+  .nt-line :global(.hw-who) {
+    margin-bottom: 2px;
+  }
+
+  .nt-kids {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin: 56px 0;
+  }
+
+  .nt-kid {
+    padding: 13px 15px 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .nt-kid-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+    font-family: var(--hw-sans);
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--hw-foreground);
+    line-height: 1.4;
+  }
+
+  .nt-kid-title > b {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .nt-tag {
+    flex: none;
+    margin-left: auto;
+    font-family: var(--hw-mono);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 18px;
+    padding: 0 6px;
+    border-radius: 5px;
+    color: var(--hw-muted-foreground);
+    background: var(--hw-secondary);
+    box-shadow: inset 0 0 0 1px var(--hw-border);
+  }
+
+  .nt-kid :global(.hw-who) {
+    font-size: 13px;
+    color: var(--hw-muted-foreground);
+  }
+
+  .nt-kid :global(.hw-who b) {
+    color: var(--hw-foreground);
+    font-weight: 500;
+  }
+
+  /* ---- Fleet: the app's Fleet view ---- */
+  .nt-fleetwin {
+    overflow: hidden;
+  }
+
+  .nt-map {
+    height: 168px;
+    margin: 4px 0 0;
+  }
+
+  .nt-map-svg {
+    display: block;
+    overflow: visible;
+  }
+
+  .nt-map :global(.nt-ft) {
+    fill: var(--hw-card-foreground);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .nt-map :global(.nt-fs) {
+    fill: var(--hw-muted-foreground);
+    font-family: var(--hw-mono);
+    font-size: 12px;
+  }
+
+  .nt-frows {
+    list-style: none;
+    margin: 0 16px 6px;
+    padding: 0;
+    border-top: 1px solid var(--hw-sidebar-border);
+  }
+
+  .nt-frows li {
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 2px;
+    border-bottom: 1px solid color-mix(in srgb, var(--hw-sidebar-border) 60%, transparent);
+  }
+
+  .nt-frows li:last-child {
+    border-bottom: 0;
+  }
+
+  .nt-frows .t {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    line-height: 1.35;
+  }
+
+  .nt-frows .t b {
+    font-weight: 500;
+  }
+
+  .nt-frows .t small {
+    display: block;
+    color: var(--hw-muted-foreground);
+    font-size: 13px;
+  }
+
+  .nt-frows .st {
+    color: var(--hw-primary-readable);
+    justify-items: end;
+  }
+
+  .nt-frows .wait {
+    color: var(--hw-warning-foreground);
+  }
+
+  .nt-fdot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--hw-primary-readable);
+  }
+
+  .nt-fdot.wait {
+    background: var(--hw-warning-foreground);
+  }
+
+  .nt-st-done {
+    color: var(--hw-success-foreground);
+  }
+
+  /* ---- Codex's logo at Rooms ---- */
+  .nt-guest {
+    position: absolute;
+    z-index: 2;
+    width: 40px;
+    height: 40px;
+    margin: -20px 0 0 -20px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--bg-card);
+    color: var(--fg);
+    box-shadow:
+      0 0 0 1.5px color-mix(in oklch, var(--t0) 70%, transparent),
+      0 2px 6px -2px light-dark(#0d101726, #000a);
+    pointer-events: none;
+  }
+
+  .nt-guest[data-size="above"] {
+    width: 30px;
+    height: 30px;
+    margin: -15px 0 0 -15px;
+  }
+
+  .nt-guest :global(svg) {
+    width: 19px;
+    height: 19px;
+  }
+
+  .nt-guest[data-size="above"] :global(svg) {
+    width: 15px;
+    height: 15px;
+  }
+
+  .nt-guest[hidden] {
+    display: none;
+  }
+
+  @media (width <= 900px) {
+    .nt-feat {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas: "copy" "stage";
+      row-gap: 28px;
+    }
+
+    .nt-copy p {
+      max-width: 34em;
+    }
+  }
+
+  @media (width <= 640px) {
+    .nt-kids {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 36px;
+      margin: 40px 0;
+    }
+  }
+</style>

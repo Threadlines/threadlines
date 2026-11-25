@@ -404,6 +404,111 @@ a switch's off track and a field's edge must stay visible against the group
 
 ## Marketing site
 
-The marketing site keeps its flat rules: structure from type, spacing and
-hairlines; no cards except clickable tiles; one display-size element per page
-(~40px max); body 15-16px; its own tokens (`--surface`, `--fg-*`).
+The marketing site (`apps/marketing`) is quieter than the app and flatter:
+structure from type, spacing and hairlines; no cards except clickable tiles.
+The homepage has no eyebrow labels, pills or chips above its headings; the
+other pages still carry their small labels until they are redone.
+
+- **Light and dark follow the computer.** Every site token in
+  `layouts/Layout.astro` (`--bg`, `--fg-*`, `--border`, `--surface`, ...) has a
+  light and a dark value through `light-dark()`. The footer's System, Light,
+  Dark control stores `tl-theme` (`light` or `dark`; System removes it), and
+  the head script applies it and `theme-color` before first paint. The nav's
+  sun and moon switch is the same choice in two parts: a radio group (arrow
+  keys move and pick) that goes through the footer's handler, so the two, the
+  `theme-color` tags and `tl-themechange` stay in step. Check every page in
+  both.
+- **The cloth.** Every page sits on a fine basket weave (`.page::before`,
+  `--nt-weave`), quieter on phones; the homepage's help band is a twill on a
+  slightly deeper cloth (`--nt-band`). Both are masks over a token color, so
+  they follow light and dark.
+- **Type.** Schibsted Grotesk; JetBrains Mono only for code-like detail.
+  The homepage headline is the one display size. Below it, three sizes:
+  headings (`clamp(2rem, 3.4vw, 2.75rem)`), body (18px) and small (14px).
+  No text under 13px on the opening screen.
+- **One primary button style.** Ink with white text in light, near-white
+  with ink text in dark (`.btn`, `--btn-*`), at most one per section. The
+  accent (hue 264) is for link hover, focus rings and live marks, never for
+  buttons.
+- **Nine threads.** The homepage is drawn as threads
+  (`src/scripts/threads/`). Each of the nine agents has a logo at the top of
+  the hero (`components/HeroAgents.astro`: two groups either side of the
+  headline from 1060px, one row above it below that) and a thread in its own
+  color (`--t0`..`--t8`: one lightness and chroma, nine hues). The threads
+  frame the headline like gathered curtains, cross in the twist (two flat
+  bands of separate lines crossing over and under twice, about 98px tall and
+  41px wide), and run into a ring on the top edge of the live window, over
+  the thread's name. A trunk leaves the window's bottom ring and runs down the
+  page to the last Download button; at Rooms, Threads and Fleet colored
+  strands leave it and tap back in through pieces of the app
+  (`components/HelpFeatures.astro`), each of the six tools hangs off it on a short
+  branch, and it draws itself in as the page scrolls. Wherever a strand
+  stands for an agent it starts at that agent's logo, at every width: where a
+  logo can't stand beside the trunk, room is kept for it above its panel.
+  The geometry is pure and tested (`geometry.ts`); the hand-tuned numbers
+  (the twist, the spring) live there and in `spring.ts`.
+- **The heartbeat.** Each thread carries one round dot in its own color,
+  one arrival a second. When one reaches the ring, the ring flashes, a
+  ripple runs along the window's edge, the window's working dots answer in
+  that color, and the bottom ring answers 380ms later; the pulse carries on
+  down the trunk. Pulses share their thread's geometry (so they stay on a
+  pulled string and pass under the front band at each crossing). Each is
+  drawn on a short stretch (160px) cut from its lane and moved along it by
+  dash offset; the stretch is cut again only when the pulse runs off it. One
+  loop, at most 30 frames a second, timed by one clock: a pulse draws only
+  while it is on screen, its flashes are timed by the same clock, the loop
+  stops in a hidden tab and under reduced motion, and nothing comes back out
+  of step. Flashes animate only opacity and transform; their color is set
+  once per arrival. Measured in Chrome on a desktop Mac, with no theme art:
+  about 35ms of main-thread time a second with the hero on screen and 33 at
+  the help band (the app's "medium" for theme art), repainting under 0.6
+  screens of pixels a second. Moving a dash along each whole line (the
+  mockup's way) cost about 27 to 30ms a second but repainted 16 to 111
+  screens a second; cutting the dashes afresh every frame cost more style
+  work. Measure again if you add a lane or a flash.
+- **Strings.** The hero threads behave like strings: a quick pass of the
+  mouse flicks one a few pixels, a press stretches it up to about 28px, and
+  it eases back. Paths are rewritten only while a thread is displaced, by one
+  loop that stops at rest. Only a primary pointer that lands on a thread is
+  captured, never on a link, button or text; text selection is turned off
+  only while a string is held. Touch gets a small flick on a tap and nothing
+  else, so scrolling and pinch zoom stay the browser's. Reduced motion: no
+  ringing.
+- **Starting early.** The threads script is inlined right after the hero
+  (compiled at build by the `virtual:threads-boot` plugin in
+  `astro.config.mjs`), so the drawing pours in as the hero paints, and
+  starts the trunk once its markup exists. The first measurement is
+  provisional: fonts loading, resize and rotation, the window crossing its
+  breakpoints and a theme moving the thread's name all measure again without
+  replaying the entrance or resetting the pulses. Without JavaScript nothing
+  is drawn and the logos, text and window still stand.
+- **The hero window is a live Threadlines window** (`components/HeroWindow.astro`),
+  drawn in the page's own markup and themed by the app's theme code at build
+  time (`lib/heroThemes.ts`): starters from `@threadlines/shared`, Showcase
+  files kept byte for byte from Threadlines/themes in `src/themes/showcase/`
+  (their SHA-256 is checked at build), and Honu Lagoon in `src/themes/`. Art
+  runs in the app's own backdrop frame, driven the way the app's host drives
+  it, at Glass 80 with the app's own slider math
+  (`@threadlines/shared/themeGlassFloors`); panels are solid until the art
+  draws, and stay solid if it can't. The pieces of the app down the page wear
+  the same theme (`.hw-tokens`) and parts (`styles/window-parts.css`). The
+  words around the picker (the line about asking an agent for a theme, each
+  theme's line, the draft in the window's message box, the asks "Yours"
+  types) live beside the theme list in `lib/heroThemes.ts`. The picker is a
+  glass strip of theme tiles laid over the window just above its message
+  box, each tile a small picture of the theme's art made at build time
+  (`pages/hero/thumbs/`). It is the only control; the window under it is a
+  picture (`role="img"`). Hovering a tile previews the theme, a click or the
+  arrow keys keep it, and without scripts the strip is hidden. The frame and each theme's art load
+  only after the page is idle.
+- **Real stills elsewhere.** Sections show captures of the current app
+  (`public/Screenshots/`), each with a hairline edge so dark captures sit on
+  a light page. Pick the capture that shows what the text says.
+- **No video until a click.** Demos open in a dialog and tool clips replace
+  their still in place, both built on click. Nothing autoplays.
+- **Motion** is one-time (the entrance, the threads pouring in, each panel
+  playing once in view), 140 to 240ms on hover and focus with named
+  properties in every `transition`, and the page is complete with reduced
+  motion. What keeps running is the heartbeat and the hero art, each under
+  its own frame-rate cap; both stop under reduced motion (the art draws one
+  frame and holds).
