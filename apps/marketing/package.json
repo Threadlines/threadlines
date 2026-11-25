@@ -11,11 +11,15 @@
     "typecheck": "astro check"
   },
   "dependencies": {
+    "@threadlines/contracts": "workspace:*",
+    "@threadlines/shared": "workspace:*",
     "@vercel/analytics": "^2.0.1",
-    "astro": "^7.4.13"
+    "astro": "^7.4.13",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.12",
+    "esbuild": "^0.28.2",
     "typescript": "~5.9.3",
     "vite": "catalog:",
     "vite-plus": "catalog:"

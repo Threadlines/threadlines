@@ -75,6 +75,10 @@
       "types": "./src/themes/glassLevel.ts",
       "import": "./src/themes/glassLevel.ts"
     },
+    "./themeGlassFloors": {
+      "types": "./src/themes/glassFloors.ts",
+      "import": "./src/themes/glassFloors.ts"
+    },
     "./themeFit": {
       "types": "./src/themes/fit.ts",
       "import": "./src/themes/fit.ts"
