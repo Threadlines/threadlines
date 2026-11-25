@@ -4160,25 +4160,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     threadId,
   ) =>
     Effect.gen(function* () {
-      const threadRow = yield* getActiveThreadIngestionRowById({ threadId }).pipe(
-        Effect.mapError(
-          toPersistenceSqlOrDecodeError(
-            "ProjectionSnapshotQuery.getThreadIngestionContext:getThread:query",
-            "ProjectionSnapshotQuery.getThreadIngestionContext:getThread:decodeRow",
+      const [threadRow, sessionRow] = yield* Effect.all(
+        [
+          getActiveThreadIngestionRowById({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadIngestionContext:getThread:query",
+                "ProjectionSnapshotQuery.getThreadIngestionContext:getThread:decodeRow",
+              ),
+            ),
           ),
-        ),
+          getThreadSessionRowByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadIngestionContext:getSession:query",
+                "ProjectionSnapshotQuery.getThreadIngestionContext:getSession:decodeRow",
+              ),
+            ),
+          ),
+        ],
+        { concurrency: "unbounded" },
       );
       if (Option.isNone(threadRow)) {
         return Option.none<ProjectionThreadIngestionContext>();
       }
-      const sessionRow = yield* getThreadSessionRowByThread({ threadId }).pipe(
-        Effect.mapError(
-          toPersistenceSqlOrDecodeError(
-            "ProjectionSnapshotQuery.getThreadIngestionContext:getSession:query",
-            "ProjectionSnapshotQuery.getThreadIngestionContext:getSession:decodeRow",
-          ),
-        ),
-      );
       const sideTurns = threadRow.value.sideTurns ?? [];
       return Option.some<ProjectionThreadIngestionContext>({
         id: threadRow.value.threadId,

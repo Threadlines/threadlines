@@ -49,7 +49,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { openRegularFile, readRegularFile } from "./AntigravityFileReads.ts";
+import { openRegularFile, readOpenedRegularFile } from "./AntigravityFileReads.ts";
 
 const MAX_SKILL_BYTES = 1_000_000;
 const MAX_SCAN_BYTES = 8_000_000;
@@ -248,15 +248,21 @@ class SkillScan {
     const maxBytes = Math.min(MAX_SKILL_BYTES, this.remainingBytes);
     const opened = await openRegularFile(path, { followLink: true });
     if (!opened) return undefined;
-    await opened.handle.close();
-    if (opened.size > maxBytes) {
-      if (maxBytes < MAX_SKILL_BYTES) this.exhausted = true;
-      return undefined;
+    try {
+      if (opened.size > maxBytes) {
+        if (maxBytes < MAX_SKILL_BYTES) this.exhausted = true;
+        return undefined;
+      }
+      const bytes = await readOpenedRegularFile(opened.handle, {
+        maxBytes,
+        expectedSize: opened.size,
+      });
+      if (bytes === undefined) return undefined;
+      this.remainingBytes -= bytes.byteLength;
+      return bytes.toString("utf8");
+    } finally {
+      await opened.handle.close();
     }
-    const bytes = await readRegularFile(path, { maxBytes, followLink: true });
-    if (bytes === undefined) return undefined;
-    this.remainingBytes -= bytes.byteLength;
-    return bytes.toString("utf8");
   }
 
   /** Adds the skill at `skillFile` unless a copy with its name came first. */

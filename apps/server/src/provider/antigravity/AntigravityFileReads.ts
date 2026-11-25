@@ -40,6 +40,42 @@ export async function openRegularFile(
   return { handle, size: stat.size };
 }
 
+/**
+ * Reads at most `maxBytes` from an already-open regular file handle, sizing
+ * the initial buffer from `expectedSize` rather than `maxBytes + 1` so small
+ * files avoid megabyte allocations while still refusing a file that grew past
+ * `maxBytes` after `stat`.
+ */
+export async function readOpenedRegularFile(
+  handle: fs.FileHandle,
+  options: {
+    readonly maxBytes: number;
+    readonly expectedSize?: number;
+    readonly from?: number;
+  },
+): Promise<Buffer | undefined> {
+  const from = options.from ?? 0;
+  const maxBytes = options.maxBytes;
+  const limit = maxBytes + 1;
+  const expected =
+    options.expectedSize !== undefined ? Math.max(0, options.expectedSize - from) : 4096;
+  const initialCapacity = Math.min(limit, Math.max(1, expected + 1));
+  let buffer = Buffer.allocUnsafe(initialCapacity);
+  let total = 0;
+  while (total < limit) {
+    if (total === buffer.length) {
+      const nextCapacity = Math.min(limit, Math.max(buffer.length * 2, total + 4096));
+      const next = Buffer.allocUnsafe(nextCapacity);
+      buffer.copy(next, 0, 0, total);
+      buffer = next;
+    }
+    const { bytesRead } = await handle.read(buffer, total, buffer.length - total, from + total);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+  }
+  return total > maxBytes ? undefined : buffer.subarray(0, total);
+}
+
 /** The bytes of a regular file of at most `maxBytes`; undefined otherwise. */
 export async function readRegularFile(
   path: string,
@@ -49,15 +85,10 @@ export async function readRegularFile(
   if (!opened) return undefined;
   try {
     if (opened.size > options.maxBytes) return undefined;
-    // Read one byte past the cap: a file that grew since `stat` is refused too.
-    const buffer = Buffer.alloc(options.maxBytes + 1);
-    let total = 0;
-    while (total < buffer.length) {
-      const { bytesRead } = await opened.handle.read(buffer, total, buffer.length - total, total);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-    }
-    return total > options.maxBytes ? undefined : buffer.subarray(0, total);
+    return await readOpenedRegularFile(opened.handle, {
+      maxBytes: options.maxBytes,
+      expectedSize: opened.size,
+    });
   } finally {
     await opened.handle.close();
   }

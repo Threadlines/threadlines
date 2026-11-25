@@ -340,6 +340,8 @@ interface AcpSessionContext {
   readonly sessionApprovalGrants: Set<string>;
   /** Interaction mode of the active prompt (`plan` disables client-side session approval auto-grants). */
   activeInteractionMode: ProviderInteractionMode | undefined;
+  /** Last default turn mode sent via `descriptor.sessionModeForTurn` (skips repeat no-op RPCs). */
+  lastDefaultTurnModeId: string | undefined;
   /** What the agent's `initialize` answer says it reads in a prompt. */
   readonly promptCapabilities: EffectAcpSchema.PromptCapabilities | null | undefined;
   /** The subagents this session's tool calls launched (`subagents`), as the thread shows them. */
@@ -2765,6 +2767,7 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             preapprovedMcpServers,
             sessionApprovalGrants: new Set(),
             activeInteractionMode: undefined,
+            lastDefaultTurnModeId: undefined,
             promptCapabilities: started.initializeResult.agentCapabilities?.promptCapabilities,
             subagentRoster:
               descriptor.subagents === undefined
@@ -4282,13 +4285,19 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
             : descriptor.sessionModeForTurn?.(input.interactionMode);
           const sessionId = parseAcpResumeCursor(ctx.session.resumeCursor)?.sessionId;
           if (turnModeId !== undefined && sessionId !== undefined) {
-            yield* ctx.acp
-              .request("session/set_mode", { sessionId, modeId: turnModeId })
-              .pipe(
-                Effect.mapError((cause) =>
-                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_mode", cause),
-                ),
-              );
+            if (turnModeId !== "default" || ctx.lastDefaultTurnModeId !== turnModeId) {
+              ctx.lastDefaultTurnModeId = undefined;
+              yield* ctx.acp
+                .request("session/set_mode", { sessionId, modeId: turnModeId })
+                .pipe(
+                  Effect.mapError((cause) =>
+                    mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_mode", cause),
+                  ),
+                );
+              if (turnModeId === "default") {
+                ctx.lastDefaultTurnModeId = turnModeId;
+              }
+            }
           }
         });
         return {

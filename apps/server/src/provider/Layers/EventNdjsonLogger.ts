@@ -328,6 +328,7 @@ const makeThreadWriter = Effect.fnUntraced(function* (input: {
           maxBytes: input.maxBytes,
           maxFiles: input.maxFiles,
           throwOnError: true,
+          asyncInit: true,
         }),
       };
     } catch (error) {
@@ -657,12 +658,21 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
     threadWriters: new Map(),
     failedSegments: new Set(),
   });
+  // Lock-free fast-path mirror updated under `stateRef` so hot writes avoid
+  // acquiring the `SynchronizedRef` semaphore once a thread writer exists.
+  const threadWritersFastPath = new Map<string, ThreadWriter>();
+  const failedSegmentsFastPath = new Set<string>();
   const bufferBudget = makeBufferBudget(maxBufferedBytes);
 
-  const resolveThreadWriter = Effect.fnUntraced(function* (
-    threadSegment: string,
-  ): Effect.fn.Return<ThreadWriter | undefined> {
-    return yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
+  const resolveThreadWriter = (threadSegment: string): Effect.Effect<ThreadWriter | undefined> => {
+    if (failedSegmentsFastPath.has(threadSegment)) {
+      return Effect.succeed(undefined);
+    }
+    const fastExisting = threadWritersFastPath.get(threadSegment);
+    if (fastExisting !== undefined) {
+      return Effect.succeed(fastExisting);
+    }
+    return SynchronizedRef.modifyEffect(stateRef, (state) => {
       if (state.failedSegments.has(threadSegment)) {
         return Effect.succeed([undefined, state] as const);
       }
@@ -684,6 +694,7 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
           if (!writer) {
             const nextFailedSegments = new Set(state.failedSegments);
             nextFailedSegments.add(threadSegment);
+            failedSegmentsFastPath.add(threadSegment);
             return [
               undefined,
               {
@@ -695,6 +706,7 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
 
           const nextThreadWriters = new Map(state.threadWriters);
           nextThreadWriters.set(threadSegment, writer);
+          threadWritersFastPath.set(threadSegment, writer);
           return [
             writer,
             {
@@ -705,7 +717,7 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
         }),
       );
     });
-  });
+  };
 
   const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
     const threadSegment = resolveThreadSegment(threadId);
@@ -726,6 +738,8 @@ export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
   const close = Effect.fnUntraced(function* () {
     yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
       Effect.gen(function* () {
+        threadWritersFastPath.clear();
+        failedSegmentsFastPath.clear();
         for (const writer of state.threadWriters.values()) {
           yield* writer.close();
         }

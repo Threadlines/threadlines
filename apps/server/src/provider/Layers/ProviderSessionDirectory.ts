@@ -177,11 +177,78 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       ),
     );
 
-  const listThreadIds: ProviderSessionDirectoryShape["listThreadIds"] = () =>
-    repository.list().pipe(
-      Effect.mapError(toPersistenceError("ProviderSessionDirectory.listThreadIds:list")),
-      Effect.map((rows) => rows.map((row) => row.threadId)),
+  const getBindingsByThreadIds: NonNullable<
+    ProviderSessionDirectoryShape["getBindingsByThreadIds"]
+  > = (threadIds) => {
+    if (threadIds.length === 0) {
+      return Effect.succeed([]);
+    }
+    if (repository.getByThreadIds) {
+      return repository.getByThreadIds(threadIds).pipe(
+        Effect.mapError(
+          toPersistenceError("ProviderSessionDirectory.getBindingsByThreadIds:getByThreadIds"),
+        ),
+        Effect.flatMap((rows) =>
+          Effect.forEach(
+            rows,
+            (row) => toRuntimeBinding(row, "ProviderSessionDirectory.getBindingsByThreadIds"),
+            { concurrency: "unbounded" },
+          ),
+        ),
+      );
+    }
+    return Effect.forEach(
+      threadIds,
+      (threadId) =>
+        repository.getByThreadId({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceError("ProviderSessionDirectory.getBindingsByThreadIds:getByThreadId"),
+          ),
+          Effect.flatMap((runtime) =>
+            Option.match(runtime, {
+              onNone: () =>
+                Effect.succeed<ProviderRuntimeBindingWithMetadata | undefined>(undefined),
+              onSome: (value) =>
+                toRuntimeBinding(value, "ProviderSessionDirectory.getBindingsByThreadIds"),
+            }),
+          ),
+        ),
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.map((rows) =>
+        rows.filter((row): row is ProviderRuntimeBindingWithMetadata => row !== undefined),
+      ),
     );
+  };
+
+  const listThreadIds: ProviderSessionDirectoryShape["listThreadIds"] = () =>
+    repository.listThreadIds
+      ? repository
+          .listThreadIds()
+          .pipe(
+            Effect.mapError(
+              toPersistenceError("ProviderSessionDirectory.listThreadIds:listThreadIds"),
+            ),
+          )
+      : repository.list().pipe(
+          Effect.mapError(toPersistenceError("ProviderSessionDirectory.listThreadIds:list")),
+          Effect.map((rows) => rows.map((row) => row.threadId)),
+        );
+
+  const listThreadIdsForThread: NonNullable<
+    ProviderSessionDirectoryShape["listThreadIdsForThread"]
+  > = (threadId) =>
+    repository.listThreadIdsForThread
+      ? repository
+          .listThreadIdsForThread({ threadId })
+          .pipe(
+            Effect.mapError(
+              toPersistenceError(
+                "ProviderSessionDirectory.listThreadIdsForThread:listThreadIdsForThread",
+              ),
+            ),
+          )
+      : listThreadIds();
 
   const listBindings: ProviderSessionDirectoryShape["listBindings"] = () =>
     repository.list().pipe(
@@ -204,7 +271,9 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
     upsert,
     getProvider,
     getBinding,
+    getBindingsByThreadIds,
     listThreadIds,
+    listThreadIdsForThread,
     listBindings,
     deleteBinding,
     patchIfSession,

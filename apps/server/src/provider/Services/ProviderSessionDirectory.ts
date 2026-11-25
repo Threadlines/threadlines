@@ -53,10 +53,21 @@ export interface ProviderSessionDirectoryShape {
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<ProviderRuntimeBinding>, ProviderSessionDirectoryReadError>;
 
+  readonly getBindingsByThreadIds?: (
+    threadIds: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<
+    ReadonlyArray<ProviderRuntimeBindingWithMetadata>,
+    ProviderSessionDirectoryReadError
+  >;
+
   readonly listThreadIds: () => Effect.Effect<
     ReadonlyArray<ThreadId>,
     ProviderSessionDirectoryPersistenceError
   >;
+
+  readonly listThreadIdsForThread?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProviderSessionDirectoryPersistenceError>;
 
   readonly listBindings: () => Effect.Effect<
     ReadonlyArray<ProviderRuntimeBindingWithMetadata>,

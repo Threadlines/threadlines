@@ -60,6 +60,9 @@ const encodeSuggestion = Schema.encodeEffect(SuggestionRow);
 
 export interface ProjectNoteRepositoryShape {
   readonly listNotes: () => Effect.Effect<ReadonlyArray<ProjectNote>, PersistenceSqlError>;
+  readonly listNotesByProjectId?: (
+    projectId: ProjectId,
+  ) => Effect.Effect<ReadonlyArray<ProjectNote>, PersistenceSqlError>;
   readonly listSuggestions: () => Effect.Effect<
     ReadonlyArray<ProjectNoteSuggestion>,
     PersistenceSqlError
@@ -99,6 +102,19 @@ export const makeProjectNoteRepository = Effect.gen(function* () {
     `,
   });
 
+  const selectNotesByProjectId = SqlSchema.findAll({
+    Request: ProjectId,
+    Result: NoteRow,
+    execute: (projectId) => sql`
+      SELECT id, project_id AS "projectId", title, summary, text, approved,
+        writer_ceiling_json AS "writerCeiling", author_json AS "author",
+        created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM project_notes
+      WHERE project_id = ${projectId}
+      ORDER BY created_at, id
+    `,
+  });
+
   const selectSuggestions = SqlSchema.findAll({
     Request: Schema.Void,
     Result: SuggestionRow,
@@ -114,6 +130,13 @@ export const makeProjectNoteRepository = Effect.gen(function* () {
   const listNotes: ProjectNoteRepositoryShape["listNotes"] = () =>
     selectNotes(undefined).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectNoteRepository.listNotes")),
+    );
+
+  const listNotesByProjectId: NonNullable<ProjectNoteRepositoryShape["listNotesByProjectId"]> = (
+    projectId,
+  ) =>
+    selectNotesByProjectId(projectId).pipe(
+      Effect.mapError(toPersistenceSqlError("ProjectNoteRepository.listNotesByProjectId")),
     );
 
   const listSuggestions: ProjectNoteRepositoryShape["listSuggestions"] = () =>
@@ -189,6 +212,7 @@ export const makeProjectNoteRepository = Effect.gen(function* () {
 
   return {
     listNotes,
+    listNotesByProjectId,
     listSuggestions,
     putNote,
     deleteNote,

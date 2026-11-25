@@ -334,6 +334,12 @@ export interface ProviderServiceShape {
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
 
   /**
+   * Look up one active provider session by canonical session key without
+   * scanning every provider adapter or persisted binding.
+   */
+  readonly getSession?: (threadId: ThreadId) => Effect.Effect<ProviderSession | undefined>;
+
+  /**
    * Ends every runtime of a thread and proves it gone, before the thread
    * moves to another computer (docs/design/fleet.md, Part 3b, "The
    * barrier"): each session whose key belongs to the thread (its own agent,

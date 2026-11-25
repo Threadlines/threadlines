@@ -157,14 +157,18 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly workflowSizeGuideline?: string | null;
     readonly env?: Readonly<Record<string, string>> | null;
   }> = [];
-  public readonly getContextUsageCalls: Array<void> = [];
+  public readonly getContextUsageCalls: Array<
+    { readonly detail?: "summary" | "full" } | undefined
+  > = [];
   public readonly rewindFilesCalls: Array<{
     readonly userMessageId: string;
     readonly options?: { readonly dryRun?: boolean };
   }> = [];
   private contextUsageResponses: Array<SDKControlGetContextUsageResponse> = [];
   private lastContextUsageResponse: SDKControlGetContextUsageResponse | undefined;
-  public getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+  public getContextUsage?: (opts?: {
+    readonly detail?: "summary" | "full";
+  }) => Promise<SDKControlGetContextUsageResponse>;
   public rewindFilesResult: RewindFilesResult = {
     canRewind: true,
     filesChanged: [],
@@ -180,14 +184,17 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   setContextUsageResponses(responses: ReadonlyArray<SDKControlGetContextUsageResponse>): void {
     this.contextUsageResponses = [...responses];
     this.lastContextUsageResponse = responses[responses.length - 1];
-    this.getContextUsage = async function (this: FakeClaudeQuery) {
-      this.getContextUsageCalls.push(undefined);
+    this.getContextUsage = async function (
+      this: FakeClaudeQuery,
+      opts?: { readonly detail?: "summary" | "full" },
+    ) {
+      this.getContextUsageCalls.push(opts);
       const response = this.contextUsageResponses.shift() ?? this.lastContextUsageResponse;
       if (!response) {
         throw new Error("No fake Claude context usage response configured.");
       }
       return response;
-    } as () => Promise<SDKControlGetContextUsageResponse>;
+    };
   }
 
   emit(message: SDKMessage): void {
@@ -8549,11 +8556,68 @@ describe("ClaudeAdapterLive", () => {
         });
       }
       assert.equal(harness.query.getContextUsageCalls.length, 1);
+      assert.deepEqual(harness.query.getContextUsageCalls[0], { detail: "summary" });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "bounds hung getContextUsage calls with a timeout so turn completion still settles",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const runtimeEventsFiber = yield* Stream.takeUntil(
+          adapter.streamEvents,
+          (event) => event.type === "turn.completed",
+        ).pipe(Stream.runCollect, Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "hello",
+          attachments: [],
+        });
+
+        harness.query.getContextUsage = (opts) => {
+          harness.query.getContextUsageCalls.push(opts);
+          return new Promise(() => {});
+        };
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          duration_ms: 100,
+          duration_api_ms: 90,
+          num_turns: 1,
+          result: "done",
+          stop_reason: "end_turn",
+          session_id: "sdk-session-hung-context",
+        } as unknown as SDKMessage);
+        harness.query.finish();
+
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("3 seconds");
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        assert.equal(
+          runtimeEvents.some((event) => event.type === "turn.completed"),
+          true,
+        );
+        assert.deepEqual(harness.query.getContextUsageCalls, [{ detail: "summary" }]);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("refreshes Claude context window after assistant response snapshots", () => {
     const harness = makeHarness();
@@ -8809,6 +8873,7 @@ describe("ClaudeAdapterLive", () => {
         });
       }
       assert.equal(harness.query.getContextUsageCalls.length, 1);
+      assert.deepEqual(harness.query.getContextUsageCalls[0], { detail: "summary" });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

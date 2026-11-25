@@ -62,14 +62,48 @@ export function openCodeErrorStatus(cause: unknown): number | undefined {
   return typeof inner.cause.status === "number" ? inner.cause.status : undefined;
 }
 
+/**
+ * Default wall-clock limit for OpenCode HTTP requests so a wedged server call
+ * cannot hang a fiber indefinitely. Long-running operations (such as explicit
+ * context compaction) pass `{ timeoutMs: null }`.
+ */
+export const DEFAULT_OPENCODE_REQUEST_TIMEOUT_MS = 15_000;
+
 export const runOpenCode = <A>(
   operation: string,
   fn: (signal: AbortSignal) => Promise<A>,
-): Effect.Effect<A, OpenCodeError> =>
-  Effect.tryPromise({
-    try: fn,
+  options?: { readonly timeoutMs?: number | null },
+): Effect.Effect<A, OpenCodeError> => {
+  const timeoutMs =
+    options?.timeoutMs === undefined ? DEFAULT_OPENCODE_REQUEST_TIMEOUT_MS : options.timeoutMs;
+  return Effect.tryPromise({
+    try: async (signal) => {
+      if (timeoutMs === null || timeoutMs <= 0) {
+        return await fn(signal);
+      }
+      const controller = new AbortController();
+      const onOuterAbort = () => {
+        controller.abort(signal.reason);
+      };
+      if (signal.aborted) {
+        controller.abort(signal.reason);
+      } else {
+        signal.addEventListener("abort", onOuterAbort, { once: true });
+      }
+      const timer = setTimeout(() => {
+        controller.abort(new Error(`OpenCode request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      try {
+        return await fn(controller.signal);
+      } finally {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onOuterAbort);
+      }
+    },
     catch: (cause) => new OpenCodeError({ operation, detail: openCodeErrorDetail(cause), cause }),
   });
+};
 
 /**
  * HTTP Basic credentials. The username is always `opencode`; the password is
