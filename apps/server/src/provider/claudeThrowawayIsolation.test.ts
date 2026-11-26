@@ -49,5 +49,16 @@ describe("throwaway runs keep Claude in their own folder", () => {
     ).toContain("CLAUDE_SECURESTORAGE_CONFIG_DIR");
     // Not isolated: every folder is the user's to use.
     expect(violation(realAccount, {})).toBeUndefined();
+    // Mixed-case secure-storage override on Windows is still caught.
+    expect(
+      throwawayClaudeSpawnViolation(
+        {
+          claude_config_dir: "/tmp/tl-verify/claude-config",
+          claude_securestorage_config_dir: "",
+        },
+        isolated,
+        "win32",
+      ),
+    ).toContain("CLAUDE_SECURESTORAGE_CONFIG_DIR");
   });
 });

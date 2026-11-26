@@ -8,8 +8,6 @@
  *
  * @module provider/Drivers/GrokDriver
  */
-import { join } from "node:path";
-
 import { GrokSettings, type ProviderInstanceEnvironment } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -22,7 +20,11 @@ import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { type AcpProviderDriverEnv, makeAcpProviderDriver } from "../acp/AcpProviderDriver.ts";
 import { GROK_ACP_DESCRIPTOR } from "../acp/GrokAcpSupport.ts";
-import { grokMainHome, materializeGrokAccountFolder } from "../grok/GrokAccountFolder.ts";
+import {
+  grokApiKeyHome,
+  grokMainHome,
+  materializeGrokAccountFolder,
+} from "../grok/GrokAccountFolder.ts";
 import { makeGrokAuthFlows } from "../grok/GrokAuth.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import {
@@ -74,7 +76,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
       // key runs in a folder of its own with no sign-in, laid over the folder
       // it would otherwise use: the same setup and conversations, and no
       // sign-in there (an account's own, or the terminal's) to beat the key.
-      const apiKeyHome = join((yield* ServerConfig).stateDir, "grok", "api-key", input.instanceId);
+      const apiKeyHome = grokApiKeyHome((yield* ServerConfig).stateDir, input.instanceId);
       if (input.config.authMethod === "api-key") {
         yield* materializeGrokAccountFolder({ mainDir: home, accountDir: apiKeyHome }).pipe(
           Effect.mapError(failed),

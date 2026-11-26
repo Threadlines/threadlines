@@ -18,6 +18,8 @@ import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
+import { grokApiKeyHome } from "../grok/GrokAccountFolder.ts";
+import { canMakeSymlinks } from "../../testUtils/symlinks.ts";
 import {
   allocateAccountInstanceId,
   ProviderAccounts,
@@ -316,6 +318,52 @@ it.layer(NodeServices.layer)("ProviderAccounts", (it) => {
       ).toBe(true);
     }).pipe(Effect.provide(makeLayer(spawned)));
   });
+
+  it.effect(
+    "cleans up Grok's API-key overlay folder and unlinks mcp_credentials.json on remove",
+    () => {
+      const spawned: SpawnedCommand[] = [];
+      return Effect.gen(function* () {
+        const accounts = yield* ProviderAccounts;
+        const config = yield* ServerConfig;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        const { instanceId } = yield* accounts.add({
+          driver: ProviderDriverKind.make("grok"),
+          displayName: "Work",
+        });
+        const managedFolder = path.join(config.stateDir, "accounts", instanceId);
+        const apiKeyFolder = grokApiKeyHome(config.stateDir, instanceId);
+        yield* fileSystem.makeDirectory(apiKeyFolder, { recursive: true });
+        yield* fileSystem.writeFileString(path.join(apiKeyFolder, "marker"), "x");
+
+        // Threadlines' Grok API-key overlay tree cannot be claimed as another account's folder.
+        const rejected = yield* accounts
+          .add({
+            driver: ProviderDriverKind.make("codex"),
+            displayName: "Overlap",
+            folder: apiKeyFolder,
+          })
+          .pipe(Effect.flip);
+        expect(rejected.reason).toBe("invalidFolder");
+
+        const sharedCreds = path.join(config.stateDir, "shared-mcp-creds.json");
+        if (canMakeSymlinks) {
+          yield* fileSystem.writeFileString(sharedCreds, '{"token":"keep"}');
+          yield* fileSystem.symlink(sharedCreds, path.join(managedFolder, "mcp_credentials.json"));
+        }
+
+        yield* accounts.remove({ instanceId });
+
+        expect(yield* fileSystem.exists(managedFolder)).toBe(false);
+        expect(yield* fileSystem.exists(apiKeyFolder)).toBe(false);
+        if (canMakeSymlinks) {
+          expect(yield* fileSystem.readFileString(sharedCreds)).toBe('{"token":"keep"}');
+        }
+      }).pipe(Effect.provide(makeLayer(spawned)));
+    },
+  );
 });
 
 // Real time: removal polls the registry until the account has stopped.

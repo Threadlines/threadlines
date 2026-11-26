@@ -26,6 +26,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { deleteEnvVars, readEnvVar, setEnvVar } from "./ProviderInstanceEnvironment.ts";
+
 export const SHARE_CLAUDE_SIGN_IN_ENV = "THREADLINES_SHARE_CLAUDE_SIGN_IN";
 /** Set on an isolated run to the folder Claude was given; read by the Claude driver. */
 export const ISOLATED_CLAUDE_CONFIG_DIR_ENV = "THREADLINES_ISOLATED_CLAUDE_CONFIG_DIR";
@@ -41,11 +43,17 @@ export function resolveThrowawayClaudeConfigDir(input: {
   readonly tempDirs: ReadonlyArray<string>;
   readonly environment: NodeJS.ProcessEnv;
   readonly join: (...parts: ReadonlyArray<string>) => string;
+  readonly platform?: NodeJS.Platform;
 }): string | undefined {
-  if (parseBooleanEnvFlag(input.environment[SHARE_CLAUDE_SIGN_IN_ENV]) === true) {
+  const platform = input.platform ?? process.platform;
+  if (
+    parseBooleanEnvFlag(readEnvVar(input.environment, SHARE_CLAUDE_SIGN_IN_ENV, platform)) === true
+  ) {
     return undefined;
   }
-  if ((input.environment.CLAUDE_CONFIG_DIR?.trim() ?? "") !== "") return undefined;
+  if ((readEnvVar(input.environment, "CLAUDE_CONFIG_DIR", platform)?.trim() ?? "") !== "") {
+    return undefined;
+  }
   if (!isThrowawayDataFolder({ baseDirs: input.baseDirs, tempDirs: input.tempDirs })) {
     return undefined;
   }
@@ -84,9 +92,9 @@ export const isolateThrowawayClaudeSignIn = Effect.fn("isolateThrowawayClaudeSig
   });
   if (configDir === undefined) return undefined;
 
-  environment.CLAUDE_CONFIG_DIR = configDir;
-  environment[ISOLATED_CLAUDE_CONFIG_DIR_ENV] = configDir;
-  delete environment.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+  setEnvVar(environment, "CLAUDE_CONFIG_DIR", configDir);
+  setEnvVar(environment, ISOLATED_CLAUDE_CONFIG_DIR_ENV, configDir);
+  deleteEnvVars(environment, ["CLAUDE_SECURESTORAGE_CONFIG_DIR"]);
   yield* Effect.logInfo("claude.sign-in.isolated-for-throwaway-run", { configDir });
   return configDir;
 });
@@ -105,14 +113,17 @@ export const isolateThrowawayClaudeSignIn = Effect.fn("isolateThrowawayClaudeSig
 export function throwawayClaudeSpawnViolation(
   spawnEnvironment: NodeJS.ProcessEnv,
   processEnvironment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): string | undefined {
-  const isolatedConfigDir = processEnvironment[ISOLATED_CLAUDE_CONFIG_DIR_ENV]?.trim() ?? "";
+  const isolatedConfigDir =
+    readEnvVar(processEnvironment, ISOLATED_CLAUDE_CONFIG_DIR_ENV, platform)?.trim() ?? "";
   if (isolatedConfigDir === "") return undefined;
   // The isolated folder sits directly inside the run's data folder.
   const dataFolder = NodePath.dirname(isolatedConfigDir);
-  const configDir = spawnEnvironment.CLAUDE_CONFIG_DIR?.trim() ?? "";
+  const configDir = readEnvVar(spawnEnvironment, "CLAUDE_CONFIG_DIR", platform)?.trim() ?? "";
   const outside = configDir === "" || !isFilesystemPathWithin(configDir, dataFolder);
-  if (!outside && spawnEnvironment.CLAUDE_SECURESTORAGE_CONFIG_DIR === undefined) return undefined;
+  const secureStorage = readEnvVar(spawnEnvironment, "CLAUDE_SECURESTORAGE_CONFIG_DIR", platform);
+  if (!outside && secureStorage === undefined) return undefined;
   return `This is a throwaway Threadlines run, so Claude stays inside its own data folder. ${
     outside
       ? "This account's Claude folder is outside it."

@@ -28,6 +28,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { withUsualCommandLookup } from "@threadlines/shared/windowsCommandLookup";
 import { planCliSpawn } from "../../cliSpawn.ts";
+import { deleteEnvVars, readEnvVar } from "../ProviderInstanceEnvironment.ts";
 import {
   createModelCapabilities,
   getProviderOptionCurrentValue,
@@ -1599,7 +1600,9 @@ const CLAUDE_TOKEN_AUTH_ENV_NAMES = [
 
 /** Whether Claude would run on a token or key rather than its own sign-in. */
 function usesClaudeTokenAuth(environment: NodeJS.ProcessEnv): boolean {
-  return CLAUDE_TOKEN_AUTH_ENV_NAMES.some((name) => (environment[name]?.trim() ?? "") !== "");
+  return CLAUDE_TOKEN_AUTH_ENV_NAMES.some(
+    (name) => (readEnvVar(environment, name)?.trim() ?? "") !== "",
+  );
 }
 
 /**
@@ -1843,7 +1846,7 @@ export const readClaudeLaunchVersion = (launch: ClaudeLaunchTarget) =>
  */
 function stripClaudeTokenAuth(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const normalAuthEnvironment = { ...environment };
-  for (const name of CLAUDE_TOKEN_AUTH_ENV_NAMES) delete normalAuthEnvironment[name];
+  deleteEnvVars(normalAuthEnvironment, CLAUDE_TOKEN_AUTH_ENV_NAMES);
   return normalAuthEnvironment;
 }
 

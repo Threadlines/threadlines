@@ -58,6 +58,7 @@ import {
 } from "../accountOverlay.ts";
 import { antigravityInstancePaths } from "../antigravity/AntigravityProfile.ts";
 import { grokProcessEnvironment } from "../acp/GrokAcpSupport.ts";
+import { grokApiKeyHome, grokApiKeyRoot } from "../grok/GrokAccountFolder.ts";
 import { resolveGrokBinary } from "../grok/GrokBinary.ts";
 import { openCodeDataFolder } from "../opencode/OpenCodeDataPaths.ts";
 import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
@@ -68,6 +69,7 @@ import {
   deleteEnvVars,
   mergeProviderInstanceEnvironment,
   readEnvVar,
+  setEnvVar,
 } from "../ProviderInstanceEnvironment.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
@@ -168,6 +170,7 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
   const accountsRoot = path.join(serverConfig.stateDir, ACCOUNTS_DIRECTORY);
+  const grokApiKeysRoot = grokApiKeyRoot(serverConfig.stateDir);
   const cleanupRoot = path.join(accountsRoot, CLEANUP_DIRECTORY);
   const managedFolderFor = (instanceId: string) => path.join(accountsRoot, instanceId);
 
@@ -241,12 +244,14 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
           return [antigravityInstancePaths(serverConfig.stateDir, instanceId).profileDir];
         case "grok": {
           const accountFolder = readConfigString(instance.config, "accountFolder");
-          if (accountFolder) return [path.resolve(expandHomePath(accountFolder))];
+          const apiKeyFolder = path.resolve(grokApiKeyHome(serverConfig.stateDir, instanceId));
+          if (accountFolder) return [path.resolve(expandHomePath(accountFolder)), apiKeyFolder];
           const grokHome = readEnvVar(environment, "GROK_HOME")?.trim();
           return [
             grokHome
               ? path.resolve(expandHomePath(grokHome))
               : path.join(NodeOS.homedir(), ".grok"),
+            apiKeyFolder,
           ];
         }
         default:
@@ -265,7 +270,10 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
   }) =>
     Effect.gen(function* () {
       const chosen = yield* canonicalize(expandHomePath(input.folder));
-      if (isWithin(path, yield* canonicalize(accountsRoot), chosen)) {
+      if (
+        isWithin(path, yield* canonicalize(accountsRoot), chosen) ||
+        isWithin(path, yield* canonicalize(grokApiKeysRoot), chosen)
+      ) {
         return yield* fail(
           "invalidFolder",
           "That folder belongs to Threadlines. Pick another one.",
@@ -362,10 +370,29 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
       );
     });
 
+  /** Grok's sign-in-free API-key overlay folder, exactly where Threadlines puts it. */
+  const isOwnedGrokApiKeyFolder = (instanceId: string, folder: string) =>
+    Effect.gen(function* () {
+      const expected = path.resolve(grokApiKeyHome(serverConfig.stateDir, instanceId));
+      const samePath = (left: string, right: string) =>
+        normalizeOverlayPath(left, process.platform) ===
+        normalizeOverlayPath(right, process.platform);
+      if (!samePath(path.resolve(folder), expected)) return false;
+      return samePath(
+        yield* canonicalize(folder),
+        (yield* canonicalize(path.dirname(folder))) + path.sep + path.basename(folder),
+      );
+    });
+
   const isOwnedFolder = (record: CleanupRecord, folder: string) =>
     record.driver === "antigravity"
       ? isOwnedAntigravityFolder(record.instanceId, folder)
-      : isManagedFolder(record.instanceId, folder);
+      : record.driver === "grok"
+        ? Effect.gen(function* () {
+            if (yield* isOwnedGrokApiKeyFolder(record.instanceId, folder)) return true;
+            return yield* isManagedFolder(record.instanceId, folder);
+          })
+        : isManagedFolder(record.instanceId, folder);
 
   /** Fails unless the agent's own CLI confirmed the sign-out. */
   const signOut = (record: CleanupRecord) =>
@@ -373,11 +400,19 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
       const folder = record.signOutFolder;
       if (!folder) return;
       const isClaude = record.driver === "claudeAgent";
+      const privateLinkEntries = isClaude
+        ? ([".credentials.json", ".claude.json"] as const)
+        : record.driver === "grok"
+          ? ([
+              "auth.json",
+              "mcp_credentials.json",
+              "auth.json.lock",
+              "auth.json.commit.lock",
+            ] as const)
+          : (["auth.json", "auth.json.lock", "auth.lock", ".login.lock", "secrets"] as const);
       // Never let a sign-out follow a link into another folder's login; if a
       // link can't be removed, the sign-out doesn't run.
-      for (const entryName of isClaude
-        ? [".credentials.json", ".claude.json"]
-        : ["auth.json", "secrets"]) {
+      for (const entryName of privateLinkEntries) {
         yield* removeLinkIfPresent({ fileSystem, accountPath: folder, entryName });
       }
       const command = buildProviderSignOutCommand({
@@ -399,7 +434,10 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
         : record.driver === "grok"
           ? grokProcessEnvironment({ accountFolder: folder, authMethod: "subscription" })
           : process.env;
-      const env: NodeJS.ProcessEnv = { ...baseEnv, ...command.env };
+      const env: NodeJS.ProcessEnv = { ...baseEnv };
+      for (const [key, value] of Object.entries(command.env)) {
+        setEnvVar(env, key, value);
+      }
       if (isClaude) deleteEnvVars(env, ["CLAUDE_SECURESTORAGE_CONFIG_DIR"]);
       const result = yield* spawnAndCollect(
         command.file,
@@ -649,6 +687,14 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
         driver === "antigravity"
           ? antigravityInstancePaths(serverConfig.stateDir, instanceId)
           : undefined;
+      const grokApiKeyDir =
+        driver === "grok"
+          ? path.resolve(grokApiKeyHome(serverConfig.stateDir, instanceId))
+          : undefined;
+      const managedFolders = [
+        ...(managed ? [path.resolve(expandHomePath(folder))] : []),
+        ...(grokApiKeyDir !== undefined ? [grokApiKeyDir] : []),
+      ];
       const record: CleanupRecord | undefined = antigravity
         ? {
             instanceId,
@@ -657,15 +703,15 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
             binaryPath: "",
             homePath: "",
           }
-        : managed
+        : managedFolders.length > 0
           ? {
               instanceId,
               driver,
-              folders: [path.resolve(expandHomePath(folder))],
+              folders: managedFolders,
               // OpenCode's login lives in the folder's database: deleting it is the sign-out.
-              ...(driver === "opencode"
-                ? {}
-                : { signOutFolder: path.resolve(expandHomePath(folder)) }),
+              ...(managed && driver !== "opencode"
+                ? { signOutFolder: path.resolve(expandHomePath(folder)) }
+                : {}),
               binaryPath: readConfigString(instance.config, "binaryPath"),
               homePath: readConfigString(instance.config, "homePath"),
             }
