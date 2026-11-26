@@ -10,21 +10,32 @@
  * @module provider/opencode/OpenCodeDataPaths
  */
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import * as NodePath from "node:path";
 
 import { openCodeAccountEnvironment } from "@threadlines/shared/providerAuthCommands";
 
+import { expandHomePath } from "../../pathExpansion.ts";
+import { readEnvVar, setEnvVar } from "../ProviderInstanceEnvironment.ts";
+
 /** The home OpenCode's own `os.homedir()` resolves to in this environment. */
-function environmentHome(environment: NodeJS.ProcessEnv): string {
-  const home = process.platform === "win32" ? environment.USERPROFILE : environment.HOME;
+function environmentHome(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
+  const home =
+    platform === "win32"
+      ? readEnvVar(environment, "USERPROFILE", platform)
+      : readEnvVar(environment, "HOME", platform);
   return home?.trim() || homedir();
 }
 
 /** OpenCode's own data folder for an environment without an account folder. */
-export function openCodeDataFolder(environment: NodeJS.ProcessEnv): string {
+export function openCodeDataFolder(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const pathApi = platform === "win32" ? NodePath.win32 : NodePath.posix;
   const dataHome =
-    environment.XDG_DATA_HOME?.trim() || join(environmentHome(environment), ".local", "share");
-  return join(dataHome, "opencode");
+    readEnvVar(environment, "XDG_DATA_HOME", platform)?.trim() ||
+    pathApi.join(environmentHome(environment, platform), ".local", "share");
+  return pathApi.join(dataHome, "opencode");
 }
 
 /**
@@ -42,16 +53,20 @@ export const OPENCODE_DATABASE_FILE_NAME = /^opencode(?:-[\w.-]+)?\.db$/u;
 export function openCodeDatabaseLocation(input: {
   readonly accountFolder: string;
   readonly environment: NodeJS.ProcessEnv;
+  readonly platform?: NodeJS.Platform;
 }): { readonly file: string } | { readonly folder: string } {
-  const environment = {
-    ...input.environment,
-    ...openCodeAccountEnvironment({
-      accountFolder: input.accountFolder,
-      platform: process.platform,
-    }),
-  };
-  const explicit = environment.OPENCODE_DB?.trim();
-  const folder = openCodeDataFolder(environment);
+  const platform = input.platform ?? process.platform;
+  const pathApi = platform === "win32" ? NodePath.win32 : NodePath.posix;
+  const trimmedAccountFolder = input.accountFolder.trim();
+  const accountFolder = trimmedAccountFolder ? expandHomePath(trimmedAccountFolder) : "";
+  const environment: NodeJS.ProcessEnv = { ...input.environment };
+  for (const [key, value] of Object.entries(
+    openCodeAccountEnvironment({ accountFolder, platform }),
+  )) {
+    setEnvVar(environment, key, value, platform);
+  }
+  const explicit = readEnvVar(environment, "OPENCODE_DB", platform)?.trim();
+  const folder = openCodeDataFolder(environment, platform);
   if (!explicit) return { folder };
-  return { file: isAbsolute(explicit) ? explicit : join(folder, explicit) };
+  return { file: pathApi.isAbsolute(explicit) ? explicit : pathApi.join(folder, explicit) };
 }

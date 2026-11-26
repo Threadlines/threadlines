@@ -50,7 +50,12 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { removeLinkIfPresent } from "../accountOverlay.ts";
+import {
+  isPathWithinOverlayDir,
+  isSameOverlayDirectory,
+  normalizeOverlayPath,
+  removeLinkIfPresent,
+} from "../accountOverlay.ts";
 import { antigravityInstancePaths } from "../antigravity/AntigravityProfile.ts";
 import { grokProcessEnvironment } from "../acp/GrokAcpSupport.ts";
 import { resolveGrokBinary } from "../grok/GrokBinary.ts";
@@ -59,7 +64,11 @@ import { ProviderAuthSessions } from "../auth/ProviderAuthSessions.ts";
 import { claudeInstanceBaseEnvironment, resolveClaudeConfigDir } from "../Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../Drivers/CodexHomeLayout.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import {
+  deleteEnvVars,
+  mergeProviderInstanceEnvironment,
+  readEnvVar,
+} from "../ProviderInstanceEnvironment.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderSetupError } from "../Errors.ts";
@@ -140,9 +149,13 @@ export function allocateAccountInstanceId(input: {
 }
 
 /** True when `child` is `parent` or inside it (both canonical). */
-function isWithin(path: Path.Path, parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+function isWithin(
+  path: Path.Path,
+  parent: string,
+  child: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return isPathWithinOverlayDir({ path, dir: parent, candidate: child, platform });
 }
 
 export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* () {
@@ -212,7 +225,7 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
           const decoded = decodeCodexSettingsOption(instance.config ?? {});
           if (Option.isNone(decoded)) return [];
           const layout = yield* resolveCodexHomeLayout(decoded.value);
-          const environmentHome = environment.CODEX_HOME?.trim();
+          const environmentHome = readEnvVar(environment, "CODEX_HOME")?.trim();
           return [
             layout.sharedHomePath,
             ...(layout.effectiveHomePath ? [layout.effectiveHomePath] : []),
@@ -229,7 +242,7 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
         case "grok": {
           const accountFolder = readConfigString(instance.config, "accountFolder");
           if (accountFolder) return [path.resolve(expandHomePath(accountFolder))];
-          const grokHome = environment.GROK_HOME?.trim();
+          const grokHome = readEnvVar(environment, "GROK_HOME")?.trim();
           return [
             grokHome
               ? path.resolve(expandHomePath(grokHome))
@@ -304,17 +317,31 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
     Effect.gen(function* () {
       if (!folder) return false;
       const expected = path.resolve(managedFolderFor(instanceId));
+      const candidate = path.resolve(expandHomePath(folder));
+      const samePath = (left: string, right: string) =>
+        normalizeOverlayPath(left, process.platform) ===
+        normalizeOverlayPath(right, process.platform);
       if (
-        (yield* canonicalize(expected)) !==
-        (yield* canonicalize(accountsRoot)) + path.sep + instanceId
+        !samePath(
+          yield* canonicalize(expected),
+          (yield* canonicalize(accountsRoot)) + path.sep + instanceId,
+        )
       ) {
         return false;
       }
-      if ((yield* canonicalize(expandHomePath(folder))) !== (yield* canonicalize(expected))) {
+      if (
+        !(yield* isSameOverlayDirectory({
+          fileSystem,
+          path,
+          dirA: expected,
+          dirB: candidate,
+          platform: process.platform,
+        }))
+      ) {
         return false;
       }
       const marker = yield* fileSystem
-        .readFileString(path.join(expected, MARKER_FILE))
+        .readFileString(path.join(candidate, MARKER_FILE))
         .pipe(Effect.option);
       if (Option.isNone(marker)) return false;
       const decoded = decodeAccountMarker(marker.value);
@@ -325,10 +352,13 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
   const isOwnedAntigravityFolder = (instanceId: string, folder: string) =>
     Effect.gen(function* () {
       const paths = antigravityInstancePaths(serverConfig.stateDir, instanceId);
-      if (folder !== paths.profileDir && folder !== paths.tempRoot) return false;
-      return (
-        (yield* canonicalize(folder)) ===
-        (yield* canonicalize(path.dirname(folder))) + path.sep + path.basename(folder)
+      const samePath = (left: string, right: string) =>
+        normalizeOverlayPath(left, process.platform) ===
+        normalizeOverlayPath(right, process.platform);
+      if (!samePath(folder, paths.profileDir) && !samePath(folder, paths.tempRoot)) return false;
+      return samePath(
+        yield* canonicalize(folder),
+        (yield* canonicalize(path.dirname(folder))) + path.sep + path.basename(folder),
       );
     });
 
@@ -370,7 +400,7 @@ export const makeProviderAccounts = Effect.fn("makeProviderAccounts")(function* 
           ? grokProcessEnvironment({ accountFolder: folder, authMethod: "subscription" })
           : process.env;
       const env: NodeJS.ProcessEnv = { ...baseEnv, ...command.env };
-      if (isClaude) delete env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+      if (isClaude) deleteEnvVars(env, ["CLAUDE_SECURESTORAGE_CONFIG_DIR"]);
       const result = yield* spawnAndCollect(
         command.file,
         ChildProcess.make(command.file, [...command.args], { shell: false, env }),

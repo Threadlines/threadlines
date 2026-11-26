@@ -85,6 +85,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { mcpElicitationPrompt, mcpElicitationResponse } from "../mcpElicitation.ts";
+import { withoutCodexSqliteHome } from "../Drivers/CodexHomeLayout.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
@@ -2163,8 +2164,14 @@ const makeCodexSessionRuntimeIn = (
         mcpSessionRegistry.revoke(options.threadId, credential.generation),
       );
     }
+    // A side answer runs in its own temporary home with a copied rollout;
+    // inheriting CODEX_SQLITE_HOME would point it at the user's real DB.
+    const baseEnv =
+      lockdown !== undefined
+        ? withoutCodexSqliteHome(options.environment ?? process.env)
+        : (options.environment ?? process.env);
     const env = {
-      ...(options.environment ?? process.env),
+      ...baseEnv,
       ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
       ...(credential !== undefined ? { [CODEX_BROWSER_TOKEN_ENV_VAR]: credential.token } : {}),
       ...(borrowedSignIn?.kind === "apiKey" ? { OPENAI_API_KEY: borrowedSignIn.apiKey } : {}),

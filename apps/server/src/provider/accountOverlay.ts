@@ -38,6 +38,84 @@ function toOverlayError(cause: unknown, detail: string): AccountOverlayError {
   return isAccountOverlayError(cause) ? cause : new AccountOverlayError({ detail, cause });
 }
 
+/**
+ * Normalizes a resolved path for overlay target comparisons. Windows junctions
+ * can report `\\?\C:\...` verbatim prefixes or differing drive-letter case.
+ */
+export function normalizeOverlayPath(value: string, platform: NodeJS.Platform): string {
+  if (platform !== "win32") return value;
+  const withoutVerbatim = /^\\\\\?\\[A-Za-z]:/.test(value) ? value.slice(4) : value;
+  return withoutVerbatim.toLowerCase();
+}
+
+/** True when `candidate` equals `dir` or sits beneath it. */
+export function isPathWithinOverlayDir(input: {
+  readonly path: Path.Path;
+  readonly dir: string;
+  readonly candidate: string;
+  readonly platform: NodeJS.Platform;
+}): boolean {
+  const relative = input.path.relative(
+    normalizeOverlayPath(input.dir, input.platform),
+    normalizeOverlayPath(input.candidate, input.platform),
+  );
+  if (relative === "") return true;
+  if (input.path.isAbsolute(relative)) return false;
+  if (relative === "..") return false;
+  return !relative.startsWith(`..${input.path.sep}`) && !relative.startsWith("../");
+}
+
+/**
+ * True when `dirA` and `dirB` name the same directory, either lexically
+ * (accounting for Windows casing / verbatim prefixes) or on disk via symlinks,
+ * junctions, or hard directory aliases.
+ */
+export const isSameOverlayDirectory = Effect.fn("accountOverlay.isSameOverlayDirectory")(
+  function* (input: {
+    readonly fileSystem: FileSystem.FileSystem;
+    readonly path: Path.Path;
+    readonly dirA: string;
+    readonly dirB: string;
+    readonly platform: NodeJS.Platform;
+  }): Effect.fn.Return<boolean> {
+    const resolvedA = input.path.resolve(input.dirA);
+    const resolvedB = input.path.resolve(input.dirB);
+    if (
+      normalizeOverlayPath(resolvedA, input.platform) ===
+      normalizeOverlayPath(resolvedB, input.platform)
+    ) {
+      return true;
+    }
+
+    const [realA, realB] = yield* Effect.all([
+      input.fileSystem.realPath(resolvedA).pipe(Effect.orElseSucceed(() => undefined)),
+      input.fileSystem.realPath(resolvedB).pipe(Effect.orElseSucceed(() => undefined)),
+    ]);
+    if (
+      realA !== undefined &&
+      realB !== undefined &&
+      normalizeOverlayPath(realA, input.platform) === normalizeOverlayPath(realB, input.platform)
+    ) {
+      return true;
+    }
+
+    return yield* Effect.promise(async () => {
+      try {
+        const [statA, statB] = await Promise.all([NodeFS.stat(resolvedA), NodeFS.stat(resolvedB)]);
+        return (
+          statA.isDirectory() &&
+          statB.isDirectory() &&
+          statA.dev === statB.dev &&
+          statA.ino === statB.ino &&
+          statA.ino !== 0
+        );
+      } catch {
+        return false;
+      }
+    });
+  },
+);
+
 export type LinkState =
   | { readonly _tag: "Missing" }
   | { readonly _tag: "NotSymlink" }
@@ -97,6 +175,8 @@ export const isSharedHardLink = (input: {
       return (
         targetStats.isFile() &&
         linkStats.isFile() &&
+        targetStats.nlink > 1 &&
+        linkStats.nlink > 1 &&
         targetStats.dev === linkStats.dev &&
         targetStats.ino === linkStats.ino
       );
@@ -158,7 +238,10 @@ export const linkSharedEntry = Effect.fn("accountOverlay.linkSharedEntry")(funct
   }
 
   if (state._tag === "Symlink") {
-    if (path.resolve(path.dirname(link), state.target) === target) {
+    if (
+      normalizeOverlayPath(path.resolve(path.dirname(link), state.target), input.platform) ===
+      normalizeOverlayPath(target, input.platform)
+    ) {
       return { _tag: "Linked", kind: "symlink" };
     }
     if (input.foreignLink === "keep") return { _tag: "Conflict" };
@@ -216,7 +299,7 @@ export const relinkSplitHardLink = Effect.fn("accountOverlay.relinkSplitHardLink
  * after an atomic save splits them), and where each link pointed (so one the
  * user has since pointed elsewhere is never removed).
  */
-const OVERLAY_STATE_FILE = ".threadlines-overlay.json";
+export const OVERLAY_STATE_FILE = ".threadlines-overlay.json";
 const OverlayState = Schema.Struct({
   linked: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   hardLinked: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
@@ -258,7 +341,15 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
   const platform = input.platform ?? process.platform;
   const mainDir = path.resolve(input.mainDir);
   const accountDir = path.resolve(input.accountDir);
-  if (mainDir === accountDir) {
+  if (
+    yield* isSameOverlayDirectory({
+      fileSystem,
+      path,
+      dirA: mainDir,
+      dirB: accountDir,
+      platform,
+    })
+  ) {
     return yield* new AccountOverlayError({
       detail: `A ${input.agent} account folder must be different from the main ${input.agent} folder.`,
     });
@@ -286,8 +377,7 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
     const state = yield* readLinkState(fileSystem, path.join(accountDir, entryName));
     if (state._tag !== "Symlink") continue;
     const target = path.resolve(accountDir, state.target);
-    const relative = path.relative(mainDir, target);
-    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    if (isPathWithinOverlayDir({ path, dir: mainDir, candidate: target, platform })) {
       yield* removeLinkIfPresent({ fileSystem, accountPath: accountDir, entryName });
     } else {
       yield* Effect.logWarning(`${input.agent} account folder keeps a login link of its own`, {
@@ -350,7 +440,8 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
         const unchanged =
           state._tag === "Symlink" &&
           made !== undefined &&
-          path.resolve(accountDir, state.target) === made;
+          normalizeOverlayPath(path.resolve(accountDir, state.target), platform) ===
+            normalizeOverlayPath(made, platform);
         const dangling =
           state._tag === "Symlink" &&
           !(yield* fileSystem.exists(linkPath).pipe(Effect.orElseSucceed(() => false)));
@@ -397,6 +488,8 @@ export const materializeAccountOverlay = Effect.fn("materializeAccountOverlay")(
     Object.keys(targets).length === Object.keys(previousTargets).length &&
     Object.entries(targets).every(([name, target]) => previousTargets[name] === target);
   if (
+    previousState === undefined ||
+    previousState._tag !== "Some" ||
     !sameSet(linked, previouslyLinked) ||
     !sameSet(hardLinked, previouslyHardLinked) ||
     !sameTargets

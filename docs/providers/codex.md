@@ -177,9 +177,11 @@ Shadow home path: ~/.codex_p
 ```
 
 Both providers must use the same `CODEX_HOME path`; only the second one has a `Shadow home path`.
-Threadlines links the shadow home's shared entries back to `~/.codex` and keeps `auth.json`,
-`models_cache.json` and `secrets` (Codex's encrypted login store) private to the account. When you
-choose your own shadow home folder, removing the account leaves that folder and its login alone.
+Threadlines links the shadow home's shared config, extensions, and history folders back to `~/.codex`,
+points Codex's SQLite databases directly at `~/.codex` via `CODEX_SQLITE_HOME` (so database sidecars
+stay beside their database), and keeps `auth.json`, `models_cache.json`, `secrets` (Codex's encrypted
+login store), and runtime files private to the account. When you choose your own shadow home folder,
+removing the account leaves that folder and its login alone.
 
 ## If Both Accounts Look The Same
 

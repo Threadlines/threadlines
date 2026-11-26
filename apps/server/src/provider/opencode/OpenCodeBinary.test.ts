@@ -1,6 +1,10 @@
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { describe, expect, it } from "vite-plus/test";
 
 import { openCodeMaintenanceResolver, openCodeOneMigrationCapabilities } from "./OpenCodeBinary.ts";
+import { openCodeDatabaseLocation } from "./OpenCodeDataPaths.ts";
 
 describe("openCodeMaintenanceResolver", () => {
   // Homebrew carries OpenCode 2 as core `opencode` and as the tap's
@@ -125,5 +129,29 @@ describe("openCodeMaintenanceResolver", () => {
       env: { PATH: "/opt/node-20/bin:/usr/bin" },
     });
     expect(update?.environmentPatch).toEqual({ PATH: "/opt/node-20/bin:/usr/bin" });
+  });
+});
+
+describe("openCodeDatabaseLocation", () => {
+  it("expands ~ in accountFolder and overrides mixed-case opencode_db on Windows", () => {
+    expect(
+      openCodeDatabaseLocation({
+        accountFolder: "~/opencode-work",
+        environment: {},
+        platform: "darwin",
+      }),
+    ).toEqual({
+      file: NodePath.join(NodeOS.homedir(), "opencode-work", "opencode.db"),
+    });
+
+    expect(
+      openCodeDatabaseLocation({
+        accountFolder: "C:\\accounts\\opencode-work",
+        environment: { opencode_db: "C:\\old\\opencode.db" },
+        platform: "win32",
+      }),
+    ).toEqual({
+      file: "C:\\accounts\\opencode-work\\opencode.db",
+    });
   });
 });

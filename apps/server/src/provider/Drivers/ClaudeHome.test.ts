@@ -216,6 +216,22 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         ).toBe(`claude:config:${path.resolve("/tmp/other-claude")}`);
       }),
     );
+
+    it.effect("strips mixed-case ambient credentials on Windows for account folders", () =>
+      Effect.sync(() => {
+        const env = claudeInstanceBaseEnvironment(
+          { accountFolder: "C:\\accounts\\work" },
+          {
+            anthropic_api_key: "sk-ant-leak",
+            Claude_Code_Oauth_Token: "oauth-leak",
+            claude_securestorage_config_dir: "",
+            PATH: "C:\\bin",
+          },
+          "win32",
+        );
+        expect(env).toEqual({ PATH: "C:\\bin" });
+      }),
+    );
   });
 
   describe("claudeLocalSettingsFiles", () => {

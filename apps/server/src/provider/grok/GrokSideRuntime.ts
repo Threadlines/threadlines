@@ -36,6 +36,7 @@ import * as path from "node:path";
 
 import type { AcpSideRuntime } from "../acp/AcpProviderDescriptor.ts";
 import type { AcpSpawnInput } from "../acp/AcpSessionRuntime.ts";
+import { deleteEnvVars, setEnvVar } from "../ProviderInstanceEnvironment.ts";
 import { driverAnswersOnTheSide } from "../sideAnswerDrivers.ts";
 import { makeSideRuntimeHome, removeSideRuntimeHome } from "../sideRuntimeHome.ts";
 
@@ -132,24 +133,23 @@ export const GROK_SIDE_RUNTIME_CONFIG = [
 export function grokSideRuntimeEnvironment(
   base: NodeJS.ProcessEnv,
   home: string,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
-  for (const name of REMOVED_VARIABLES) delete env[name];
-  for (const name of COMPAT_VARIABLES) env[name] = "0";
-  return {
-    ...env,
-    GROK_HOME: home,
-    // Grok may write its temp folder; a user's TMPDIR could sit in the checkout.
-    TMPDIR: path.join(home, "tmp"),
-    GROK_SANDBOX: SIDE_SANDBOX_PROFILE,
-    GROK_FOLDER_TRUST: "1",
-    GROK_MANAGED_CONFIG: "0",
-    GROK_DISABLE_EXPERIMENTS: "1",
-    GROK_MEMORY: "0",
-    GROK_SUBAGENTS: "0",
-    GROK_WORKFLOWS: "0",
-    GROK_GOAL: "0",
-  };
+  deleteEnvVars(env, REMOVED_VARIABLES, platform);
+  for (const name of COMPAT_VARIABLES) setEnvVar(env, name, "0", platform);
+  setEnvVar(env, "GROK_HOME", home, platform);
+  // Grok may write its temp folder; a user's TMPDIR could sit in the checkout.
+  setEnvVar(env, "TMPDIR", path.join(home, "tmp"), platform);
+  setEnvVar(env, "GROK_SANDBOX", SIDE_SANDBOX_PROFILE, platform);
+  setEnvVar(env, "GROK_FOLDER_TRUST", "1", platform);
+  setEnvVar(env, "GROK_MANAGED_CONFIG", "0", platform);
+  setEnvVar(env, "GROK_DISABLE_EXPERIMENTS", "1", platform);
+  setEnvVar(env, "GROK_MEMORY", "0", platform);
+  setEnvVar(env, "GROK_SUBAGENTS", "0", platform);
+  setEnvVar(env, "GROK_WORKFLOWS", "0", platform);
+  setEnvVar(env, "GROK_GOAL", "0", platform);
+  return env;
 }
 
 type SignInStore = Readonly<Record<string, unknown>>;

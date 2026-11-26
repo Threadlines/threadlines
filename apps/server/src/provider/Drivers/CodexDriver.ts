@@ -83,8 +83,10 @@ import {
 } from "../providerMaintenance.ts";
 import {
   codexContinuationIdentity,
+  codexSqliteHomePath,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
+  withCodexSqliteHome,
 } from "./CodexHomeLayout.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
@@ -172,16 +174,8 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
       const serverSettings = yield* ServerSettingsService;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
       const homeLayout = yield* resolveCodexHomeLayout(config);
-      const continuationIdentity = codexContinuationIdentity(homeLayout);
-      const stampIdentity = withInstanceIdentity({
-        instanceId,
-        displayName,
-        accentColor,
-        continuationGroupKey: continuationIdentity.continuationKey,
-      });
-      yield* materializeCodexShadowHome(homeLayout).pipe(
+      const shadowHome = yield* materializeCodexShadowHome(homeLayout).pipe(
         Effect.mapError(
           (cause) =>
             new ProviderDriverError({
@@ -192,6 +186,16 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             }),
         ),
       );
+      const continuationIdentity = codexContinuationIdentity(homeLayout, shadowHome);
+      const sqliteHomePath = codexSqliteHomePath(homeLayout, shadowHome);
+      const baseEnvironment = () => withCodexSqliteHome(process.env, sqliteHomePath);
+      const processEnv = mergeProviderInstanceEnvironment(environment, baseEnvironment());
+      const stampIdentity = withInstanceIdentity({
+        instanceId,
+        displayName,
+        accentColor,
+        continuationGroupKey: continuationIdentity.continuationKey,
+      });
       const effectiveConfig = {
         ...config,
         enabled,
@@ -263,7 +267,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
           return maintenanceCapabilities;
         },
         getSettings: Effect.gen(function* () {
-          refreshProviderInstanceEnvironment(environment, processEnv);
+          refreshProviderInstanceEnvironment(environment, processEnv, baseEnvironment());
           maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
             binaryPath: effectiveConfig.binaryPath,
             env: processEnv,

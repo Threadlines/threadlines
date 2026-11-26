@@ -26,6 +26,7 @@ import { ChildProcessSpawner } from "effect/process";
 import { openCodeAccountEnvironment } from "@threadlines/shared/providerAuthCommands";
 
 import { ServerConfig } from "../../config.ts";
+import { expandHomePath } from "../../pathExpansion.ts";
 import { makeOpenCodeTextGeneration } from "../../textGeneration/OpenCodeTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeOpenCodeAdapter } from "../Layers/OpenCodeAdapter.ts";
@@ -56,6 +57,7 @@ import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import {
   mergeProviderInstanceEnvironment,
   refreshProviderInstanceEnvironment,
+  setEnvVar,
 } from "../ProviderInstanceEnvironment.ts";
 import {
   createProviderVersionAdvisory,
@@ -113,7 +115,8 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       // sign-ins and sessions). With a server URL the data lives with that
       // server instead. Copied, never assigned into: the merge can return
       // `process.env` itself.
-      const accountFolder = config.serverUrl.trim() ? "" : config.accountFolder.trim();
+      const rawAccountFolder = config.serverUrl.trim() ? "" : config.accountFolder.trim();
+      const accountFolder = rawAccountFolder ? expandHomePath(rawAccountFolder) : "";
       const accountEnvironment = openCodeAccountEnvironment({
         accountFolder,
         platform: process.platform,
@@ -131,10 +134,15 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
           ),
         );
       }
+      const applyAccountEnvironment = (target: NodeJS.ProcessEnv) => {
+        for (const [key, value] of Object.entries(accountEnvironment)) {
+          setEnvVar(target, key, value);
+        }
+      };
       const processEnv: NodeJS.ProcessEnv = {
         ...mergeProviderInstanceEnvironment(environment),
-        ...accountEnvironment,
       };
+      applyAccountEnvironment(processEnv);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
@@ -351,7 +359,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         },
         getSettings: Effect.gen(function* () {
           refreshProviderInstanceEnvironment(environment, processEnv);
-          Object.assign(processEnv, accountEnvironment);
+          applyAccountEnvironment(processEnv);
           maintenance = yield* resolveMaintenance;
           return settings;
         }),
