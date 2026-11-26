@@ -33,6 +33,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+
+import { readEnvVar } from "../ProviderInstanceEnvironment.ts";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -630,8 +632,14 @@ function normalizeCredentialString(value: string | undefined): string | undefine
  * environment. That keeps the CLI off the stored sign-in, and the token has
  * no access to plan usage.
  */
-export function hasClaudeChatOnlyToken(environment: NodeJS.ProcessEnv): boolean {
-  return normalizeCredentialString(environment[CLAUDE_CODE_OAUTH_TOKEN_ENV]) !== undefined;
+export function hasClaudeChatOnlyToken(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return (
+    normalizeCredentialString(readEnvVar(environment, CLAUDE_CODE_OAUTH_TOKEN_ENV, platform)) !==
+    undefined
+  );
 }
 
 /**

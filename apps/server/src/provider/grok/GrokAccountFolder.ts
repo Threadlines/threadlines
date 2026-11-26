@@ -57,6 +57,16 @@ export function grokMainHome(environment: NodeJS.ProcessEnv): string {
   return fromEnvironment ? resolve(expandHomePath(fromEnvironment)) : join(homedir(), ".grok");
 }
 
+/** Directory holding Threadlines' sign-in-free API-key overlay folders for Grok instances. */
+export function grokApiKeyRoot(stateDir: string): string {
+  return join(stateDir, "grok", "api-key");
+}
+
+/** Sign-in-free overlay folder Threadlines creates for an API-key Grok instance. */
+export function grokApiKeyHome(stateDir: string, instanceId: string): string {
+  return join(grokApiKeyRoot(stateDir), instanceId);
+}
+
 export const materializeGrokAccountFolder = (input: {
   readonly mainDir: string;
   readonly accountDir: string;
