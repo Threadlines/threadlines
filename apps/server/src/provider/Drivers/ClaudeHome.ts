@@ -9,6 +9,8 @@ import { resolveCommandOutsideWorkingFolder } from "@threadlines/shared/shell";
 
 import { expandHomePath } from "../../pathExpansion.ts";
 import { resolveLinkedWorktreeMainCheckout } from "../../vcs/CheckoutPresence.ts";
+import { normalizeOverlayPath } from "../accountOverlay.ts";
+import { deleteEnvVars, readEnvVar, setEnvVar } from "../ProviderInstanceEnvironment.ts";
 
 /**
  * The Claude binary to hand the SDK. The SDK starts it outside the server's
@@ -48,7 +50,7 @@ export const resolveClaudeMainConfigDir = Effect.fn("resolveClaudeMainConfigDir"
 ): Effect.fn.Return<string, never, Path.Path> {
   const path = yield* Path.Path;
   // Environment values are not shell-expanded, so a literal `~` stays literal.
-  const configured = environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
+  const configured = readEnvVar(environment, "CLAUDE_CONFIG_DIR")?.trim() ?? "";
   if (configured.length > 0) return path.resolve(configured);
   return path.join(yield* resolveClaudeHomePath(config), ".claude");
 });
@@ -133,11 +135,15 @@ const CLAUDE_SECURE_STORAGE_ENV = "CLAUDE_SECURESTORAGE_CONFIG_DIR";
 export function claudeInstanceBaseEnvironment(
   config: Pick<ClaudeSettings, "accountFolder">,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   if (config.accountFolder.trim().length === 0) return baseEnv;
   const environment: NodeJS.ProcessEnv = { ...baseEnv };
-  for (const name of CLAUDE_AMBIENT_CREDENTIAL_ENV_NAMES) delete environment[name];
-  delete environment[CLAUDE_SECURE_STORAGE_ENV];
+  deleteEnvVars(
+    environment,
+    [...CLAUDE_AMBIENT_CREDENTIAL_ENV_NAMES, CLAUDE_SECURE_STORAGE_ENV],
+    platform,
+  );
   return environment;
 }
 
@@ -216,8 +222,8 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   if (config.accountFolder.trim().length > 0) {
     // `HOME` stays the user's: the agent's own commands keep their git, SSH
     // and GitHub settings, and only Claude's folder (and login) moves.
-    environment.CLAUDE_CONFIG_DIR = yield* resolveClaudeConfigDir(config, environment);
-    delete environment[CLAUDE_SECURE_STORAGE_ENV];
+    setEnvVar(environment, "CLAUDE_CONFIG_DIR", yield* resolveClaudeConfigDir(config, environment));
+    deleteEnvVars(environment, [CLAUDE_SECURE_STORAGE_ENV]);
   }
   return environment;
 });
@@ -240,7 +246,8 @@ export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationG
     const historyDir = options.sharesMainHistory
       ? yield* resolveClaudeMainConfigDir(config, environment)
       : yield* resolveClaudeConfigDir(config, environment);
-    return historyDir === path.join(resolvedHomePath, ".claude")
+    return normalizeOverlayPath(historyDir, process.platform) ===
+      normalizeOverlayPath(path.join(resolvedHomePath, ".claude"), process.platform)
       ? `claude:home:${resolvedHomePath}`
       : `claude:config:${historyDir}`;
   },

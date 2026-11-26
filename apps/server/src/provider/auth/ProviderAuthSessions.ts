@@ -67,6 +67,7 @@ import { resolveMuseBinary } from "../muse/MuseBinary.ts";
 import { resolveOpenCodeBinary } from "../opencode/OpenCodeBinary.ts";
 import { PtyAdapter, type PtyAdapterShape, type PtyProcess } from "../../terminal/Services/PTY.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
+import { deleteEnvVars, setEnvVar } from "../ProviderInstanceEnvironment.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import type {
   ProviderAuthQuestion,
@@ -221,24 +222,32 @@ function buildAuthSpawnEnv(input: {
   readonly extraSuppressed?: ReadonlyArray<string>;
   readonly instanceEnvironment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
   readonly commandEnv: Readonly<Record<string, string>>;
+  readonly platform?: NodeJS.Platform;
 }): NodeJS.ProcessEnv {
-  const suppressed = new Set<string>([
+  const platform = input.platform ?? process.platform;
+  const suppressedNames = [
     CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
     ...CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
     ...(input.extraSuppressed ?? []),
-  ]);
+  ];
+  const suppressed = new Set<string>(
+    platform === "win32" ? suppressedNames.map((name) => name.toUpperCase()) : suppressedNames,
+  );
+  const isSuppressed = (name: string) =>
+    suppressed.has(platform === "win32" ? name.toUpperCase() : name);
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(input.baseEnv)) {
-    if (value === undefined || suppressed.has(key)) continue;
+    if (value === undefined || isSuppressed(key)) continue;
     env[key] = value;
   }
   for (const variable of input.instanceEnvironment) {
-    if (suppressed.has(variable.name)) continue;
-    env[variable.name] = variable.value;
+    if (isSuppressed(variable.name)) continue;
+    setEnvVar(env, variable.name, variable.value, platform);
   }
   for (const [key, value] of Object.entries(input.commandEnv)) {
-    env[key] = value;
+    setEnvVar(env, key, value, platform);
   }
+  deleteEnvVars(env, suppressedNames, platform);
   return env;
 }
 

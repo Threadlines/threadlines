@@ -238,6 +238,23 @@ describe("Grok launch", () => {
     );
     expect(byKey.XAI_API_KEY).toBe("sk-inherited");
     expect(byKey.GROK_DISABLE_API_KEY_AUTH).toBeUndefined();
+
+    // Mixed-case env vars on Windows must also be removed so subscription accounts
+    // cannot silently bill per token or override GROK_HOME.
+    const winSubscription = grokProcessEnvironment(
+      { accountFolder: "C:\\accounts\\grok", authMethod: "subscription" },
+      {
+        xai_api_key: "sk-win-leak",
+        Grok_Auth_Path: "C:\\Users\\me\\.grok\\auth.json",
+        grok_home: "C:\\Users\\me\\.grok",
+      },
+      "win32",
+    );
+    expect(winSubscription.xai_api_key).toBeUndefined();
+    expect(winSubscription.XAI_API_KEY).toBeUndefined();
+    expect(winSubscription.Grok_Auth_Path).toBeUndefined();
+    expect(winSubscription.grok_home).toBeUndefined();
+    expect(winSubscription.GROK_HOME).toBe("C:\\accounts\\grok");
   });
 
   it("updates by how Grok was installed", () => {

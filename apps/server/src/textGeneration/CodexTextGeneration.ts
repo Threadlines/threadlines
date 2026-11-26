@@ -19,6 +19,7 @@ import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@threadlines/
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
+import { withoutCodexSqliteHome } from "../provider/Drivers/CodexHomeLayout.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import {
   redactCodexProviderSecrets,
@@ -324,8 +325,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         options.ignoreUserConfig && gatewayLaunch?.config !== undefined
           ? yield* makeGatewayHome(operation, gatewayLaunch.config)
           : undefined;
+      // A gateway run gets a temporary home of its own; keep SQLite isolated too.
+      const baseEnv = gatewayHome !== undefined ? withoutCodexSqliteHome(environment) : environment;
       const env = {
-        ...environment,
+        ...baseEnv,
         ...(gatewayHome !== undefined
           ? { CODEX_HOME: gatewayHome }
           : codexConfig.homePath

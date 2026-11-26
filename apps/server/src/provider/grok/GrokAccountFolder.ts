@@ -19,6 +19,7 @@ import { join, resolve } from "node:path";
 
 import { expandHomePath } from "../../pathExpansion.ts";
 import { materializeAccountOverlay } from "../accountOverlay.ts";
+import { readEnvVar } from "../ProviderInstanceEnvironment.ts";
 
 const SHARED_DIRECTORIES = [
   // Conversations (resume) and the worktrees Grok made for them.
@@ -52,7 +53,7 @@ const PRIVATE_FILES = ["auth.json", "mcp_credentials.json"] as const;
 
 /** The Grok folder an instance uses without an account folder: `GROK_HOME`, else `~/.grok`. */
 export function grokMainHome(environment: NodeJS.ProcessEnv): string {
-  const fromEnvironment = environment.GROK_HOME?.trim();
+  const fromEnvironment = readEnvVar(environment, "GROK_HOME")?.trim();
   return fromEnvironment ? resolve(expandHomePath(fromEnvironment)) : join(homedir(), ".grok");
 }
 

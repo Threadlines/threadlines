@@ -32,6 +32,7 @@ import { ChildProcessSpawner } from "effect/process";
 import * as EffectAcpErrors from "effect-acp/errors";
 
 import { expandHomePath } from "../../pathExpansion.ts";
+import { deleteEnvVars, setEnvVar } from "../ProviderInstanceEnvironment.ts";
 import { grokContinuationKey, grokMainHome } from "../grok/GrokAccountFolder.ts";
 import {
   detectGrokBinary,
@@ -121,20 +122,21 @@ const GROK_ACCOUNT_OVERRIDE_VARIABLES = ["GROK_AUTH_PATH", "GROK_AUTH"] as const
 export function grokProcessEnvironment(
   settings: Pick<GrokSettings, "accountFolder" | "authMethod">,
   environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...environment };
   const accountFolder = settings.accountFolder.trim();
   if (accountFolder) {
-    env.GROK_HOME = expandHomePath(accountFolder);
-    for (const name of GROK_ACCOUNT_OVERRIDE_VARIABLES) delete env[name];
+    setEnvVar(env, "GROK_HOME", expandHomePath(accountFolder), platform);
+    deleteEnvVars(env, GROK_ACCOUNT_OVERRIDE_VARIABLES, platform);
   }
   if (settings.authMethod !== "api-key") {
-    for (const name of GROK_API_KEY_VARIABLES) delete env[name];
-    env.GROK_DISABLE_API_KEY_AUTH = "1";
+    deleteEnvVars(env, GROK_API_KEY_VARIABLES, platform);
+    setEnvVar(env, "GROK_DISABLE_API_KEY_AUTH", "1", platform);
   }
-  env.GROK_DISABLE_AUTOUPDATER = "1";
-  env.GROK_OAUTH2_REFERRER = GROK_OAUTH_REFERRER;
-  env.GROK_FOLDER_TRUST = "0";
+  setEnvVar(env, "GROK_DISABLE_AUTOUPDATER", "1", platform);
+  setEnvVar(env, "GROK_OAUTH2_REFERRER", GROK_OAUTH_REFERRER, platform);
+  setEnvVar(env, "GROK_FOLDER_TRUST", "0", platform);
   return env;
 }
 

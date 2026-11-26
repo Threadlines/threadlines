@@ -101,8 +101,10 @@ import {
   resolveClaudeConfigDir,
 } from "./Drivers/ClaudeHome.ts";
 import {
+  codexSqliteHomePath,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
+  withCodexSqliteHome,
   type CodexHomeLayout,
 } from "./Drivers/CodexHomeLayout.ts";
 import { buildCodexInitializeParams } from "./Layers/CodexProvider.ts";
@@ -1608,7 +1610,7 @@ const resolveCodexActionContext = Effect.fn("providerExtensions.resolveCodexActi
 
     const config = { ...decoded, enabled };
     const layout = yield* resolveCodexHomeLayout(config);
-    yield* materializeCodexShadowHome(layout).pipe(
+    const shadowHome = yield* materializeCodexShadowHome(layout).pipe(
       Effect.mapError(
         (cause) =>
           new ProviderExtensionsError({
@@ -1617,11 +1619,15 @@ const resolveCodexActionContext = Effect.fn("providerExtensions.resolveCodexActi
           }),
       ),
     );
+    const sqliteHomePath = codexSqliteHomePath(layout, shadowHome);
     return {
       config,
       cwd,
       environment: compactProcessEnv({
-        ...mergeProviderInstanceEnvironment(providerConfig.environment ?? []),
+        ...withCodexSqliteHome(
+          mergeProviderInstanceEnvironment(providerConfig.environment ?? []),
+          sqliteHomePath,
+        ),
         ...(layout.effectiveHomePath ? { CODEX_HOME: layout.effectiveHomePath } : {}),
       }),
     };
@@ -1759,8 +1765,9 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       };
     }
 
+    const sqliteHomePath = codexSqliteHomePath(layout, materialized.success);
     const env = {
-      ...input.environment,
+      ...withCodexSqliteHome(input.environment, sqliteHomePath),
       ...(layout.effectiveHomePath ? { CODEX_HOME: layout.effectiveHomePath } : {}),
     };
     const includeApps = input.includeApps ?? true;
