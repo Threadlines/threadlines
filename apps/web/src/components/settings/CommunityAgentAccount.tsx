@@ -73,6 +73,13 @@ export function CommunityAgentAccount(props: {
   const needsSignIn = liveProvider?.auth.status === "unauthenticated";
   const site = community.website ?? community.repository;
 
+  if (liveProvider?.availability === "unavailable") {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Fix the problem above first, then sign in here.
+      </p>
+    );
+  }
   if (liveProvider?.enabled === false) {
     return <p className="text-xs text-muted-foreground">Turn {displayName} on to sign in.</p>;
   }

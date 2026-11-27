@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertCircleIcon,
   ChevronDownIcon,
   PipetteIcon,
   PlusIcon,
@@ -729,6 +730,8 @@ function ProviderAccountSignInSection(props: {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind | null;
   readonly displayName: string;
+  readonly enabled: boolean;
+  readonly hasExpandedProblemAlert: boolean;
   readonly liveProvider: ServerProvider | undefined;
   readonly terminalLoginCommand: string;
   readonly idPrefix: string;
@@ -801,7 +804,12 @@ function ProviderAccountSignInSection(props: {
             onSave={props.onSaveInstance}
           />
         ) : null}
-        {props.liveProvider?.enabled === false ? (
+        {props.enabled && props.liveProvider?.availability === "unavailable" ? (
+          // The driver could not initialize; the full reason sits above the tabs.
+          <p className="text-xs text-muted-foreground">
+            Fix the problem above first, then sign in here.
+          </p>
+        ) : props.liveProvider?.enabled === false ? (
           // Turned off: the server has not looked at it, so there is no
           // sign-in state to show or run yet.
           <p className="text-xs text-muted-foreground">Turn {props.displayName} on to sign in.</p>
@@ -811,10 +819,16 @@ function ProviderAccountSignInSection(props: {
             Install {props.displayName} first, then sign in here.
           </p>
         ) : props.liveProvider?.runnable === false ? (
-          // A sign-in would fail the same way the check did: reinstall first.
+          // A sign-in would fail the same way the check did: reinstall or fix it first.
           <div className="grid gap-1 text-xs text-muted-foreground">
-            <p>Signing in won't work until {props.displayName} can start. Reinstall it first.</p>
-            {props.liveProvider.message ? <p>{props.liveProvider.message}</p> : null}
+            <p>
+              {props.hasExpandedProblemAlert
+                ? `Signing in won't work until ${props.displayName} can start.`
+                : `Signing in won't work until ${props.displayName} can start. Reinstall it first.`}
+            </p>
+            {!props.hasExpandedProblemAlert && props.liveProvider.message ? (
+              <p>{props.liveProvider.message}</p>
+            ) : null}
           </div>
         ) : methodStep?.kind === "settings" && needsSignIn ? (
           // Only a field above can fix it: no button that would just fail.
@@ -1705,8 +1719,16 @@ export function ProviderInstanceCard({
   // Without an Install button the full guide (with its link) is the only way
   // forward, so it stays whole.
   const showFullGuide = agentStatus.kind === "notInstalled" && !providerInstallView;
+  // Unavailable snapshots and other non-reinstall errors truncate on the
+  // collapsed row; show the full reason once expanded above the tabs.
+  const expandedProblemDetail =
+    enabled &&
+    agentStatus.kind === "problem" &&
+    (liveProvider?.availability === "unavailable" || agentStatus.repair === undefined)
+      ? (liveProvider?.unavailableReason ?? liveProvider?.message ?? summary.detail)
+      : null;
   const diagnosis =
-    tone === "none"
+    tone === "none" || (isExpanded && expandedProblemDetail !== null)
       ? null
       : showFullGuide
         ? (summary.detail ?? null)
@@ -1722,7 +1744,7 @@ export function ProviderInstanceCard({
     ) : agentStatus.kind === "checking" ? (
       "Checking…"
     ) : hasAuthenticatedEmail ? (
-      <span className="inline-flex min-w-0 items-center gap-x-1">
+      <span className="inline-flex max-w-full min-w-0 items-center gap-x-1">
         <ProviderAuthEmail email={authEmail} />
         {/* Ahead of the plan and workspace, which a narrow row cuts off first. */}
         {liveProvider?.auth.securityNotice ? (
@@ -1747,7 +1769,7 @@ export function ProviderInstanceCard({
         ) : null}
       </span>
     ) : (
-      <span className="inline-flex min-w-0 items-center gap-x-1">
+      <span className="inline-flex max-w-full min-w-0 items-center gap-x-1">
         <span className="shrink-0">{summary.headline}</span>
         {/* A sign-in with no email (an API key) beside a gateway: the headline names the key. */}
         {runsOnText && summary.headline !== runsOnText ? (
@@ -1927,6 +1949,24 @@ export function ProviderInstanceCard({
     >
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
+          {expandedProblemDetail ? (
+            <div
+              role="alert"
+              className="flex items-start gap-2 border-y border-group-divider bg-destructive/[0.05] px-3.5 py-2.5 text-[12.5px] leading-5 text-foreground dark:bg-destructive/[0.08]"
+            >
+              <AlertCircleIcon
+                className="mt-[3px] size-3.5 shrink-0 text-destructive-foreground"
+                aria-hidden
+              />
+              <p className="min-w-0 flex-1 select-text [overflow-wrap:anywhere]">
+                {isCommunityAgent ? (
+                  expandedProblemDetail
+                ) : (
+                  <LinkifiedText text={expandedProblemDetail} />
+                )}
+              </p>
+            </div>
+          ) : null}
           <div className="px-3.5">
             <ProviderDetailsNav
               sections={availableDetailsSections}
@@ -1964,7 +2004,13 @@ export function ProviderInstanceCard({
               title="Account & Sign-in"
               description="Runs the sign-in this agent offers."
             >
-              {community ? (
+              {enabled && liveProvider?.availability === "unavailable" ? (
+                <p className="text-xs text-muted-foreground">
+                  Fix the problem above first, then sign in here.
+                </p>
+              ) : liveProvider?.enabled === false ? (
+                <p className="text-xs text-muted-foreground">Turn {displayName} on to sign in.</p>
+              ) : community ? (
                 <CommunityAgentAccount
                   instanceId={instanceId}
                   displayName={displayName}
@@ -1993,6 +2039,8 @@ export function ProviderInstanceCard({
                 instanceId={instanceId}
                 driverKind={driverKind}
                 displayName={displayName}
+                enabled={enabled}
+                hasExpandedProblemAlert={expandedProblemDetail !== null}
                 liveProvider={liveProvider}
                 terminalLoginCommand={terminalLoginCommand}
                 idPrefix={`provider-instance-${instanceId}`}

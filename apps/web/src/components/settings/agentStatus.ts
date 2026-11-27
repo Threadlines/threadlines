@@ -58,7 +58,11 @@ export function deriveAgentStatus(input: {
     };
   }
   if (snapshot?.availability === "unavailable") {
-    return { kind: "problem", headline: "Unavailable", detail: snapshot.unavailableReason ?? null };
+    return {
+      kind: "problem",
+      headline: "Unavailable",
+      detail: snapshot.unavailableReason ?? snapshot.message ?? null,
+    };
   }
   if (!snapshot || !snapshot.enabled || snapshot.statusReason === "provider_probe_pending") {
     return { kind: "checking" };

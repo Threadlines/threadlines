@@ -4375,6 +4375,79 @@ describe("GeneralSettingsPanel observability", () => {
       expect(scrollViewport!.scrollWidth).toBeGreaterThan(scrollViewport!.clientWidth);
     });
   });
+
+  it("shows Unavailable and the full unavailableReason when expanding a broken provider row", async () => {
+    const workId = ProviderInstanceId.make("codex_work");
+    const reason =
+      "Cannot prepare Codex shadow home at C:\\Users\\alice\\.threadlines\\accounts\\work because C:\\Users\\alice\\.threadlines\\accounts\\work\\state_5.sqlite-shm already exists and is not a symlink. Move or remove that file, then turn this account off and on again.";
+    const baseConfig = createBaseServerConfig();
+
+    setServerConfigSnapshot({
+      ...baseConfig,
+      settings: {
+        ...baseConfig.settings,
+        providerInstances: {
+          ...baseConfig.settings.providerInstances,
+          [workId]: {
+            driver: ProviderDriverKind.make("codex"),
+            displayName: "Work",
+            enabled: true,
+            config: {
+              shadowHomePath: "C:\\Users\\alice\\.threadlines\\accounts\\work",
+            },
+          },
+        },
+      },
+      providers: [
+        {
+          instanceId: workId,
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Work",
+          enabled: false,
+          installed: false,
+          version: null,
+          status: "error",
+          auth: { status: "unknown" },
+          message: reason,
+          availability: "unavailable",
+          unavailableReason: reason,
+          checkedAt: "2026-11-27T12:00:00.000Z",
+          models: [],
+          slashCommands: [],
+          skills: [],
+        },
+      ],
+    });
+
+    mounted = await renderWithTestRouter(
+      <TestAppProviders>
+        <ProviderSettingsPanel />
+      </TestAppProviders>,
+    );
+
+    const row = await vi.waitUntil(() =>
+      document.querySelector<HTMLElement>(`[data-provider-instance-id="${workId}"]`),
+    );
+    expect(row.textContent).toContain("Unavailable");
+    expect(row.textContent).not.toContain("Disabled");
+
+    await openProviderDetails("Codex · Work", workId);
+
+    const alert = page.elementLocator(row).getByRole("alert");
+    await expect.element(alert).toBeVisible();
+    await expect.element(alert).toHaveTextContent(reason);
+    await expect
+      .element(
+        page.elementLocator(row).getByText("Fix the problem above first, then sign in here."),
+      )
+      .toBeVisible();
+    expect(row.textContent).not.toContain("Turn Codex · Work on to sign in.");
+
+    // Switching tabs keeps the error reason visible while editing configuration.
+    await page.elementLocator(row).getByRole("button", { name: "Configuration" }).click();
+    await expect.element(alert).toBeVisible();
+    await expect.element(alert).toHaveTextContent(reason);
+  });
 });
 
 describe("ThreadsSettingsPanel new thread defaults", () => {
