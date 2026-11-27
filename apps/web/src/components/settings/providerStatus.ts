@@ -35,6 +35,13 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
       detail: "Waiting for the server to report installation and authentication details.",
     };
   }
+  if (provider.availability === "unavailable") {
+    return {
+      headline: "Unavailable",
+      detail:
+        provider.unavailableReason ?? provider.message ?? "This provider could not be initialized.",
+    };
+  }
   if (!provider.enabled) {
     return {
       headline: "Disabled",

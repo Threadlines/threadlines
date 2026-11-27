@@ -255,3 +255,32 @@ describe("Codex on a gateway from its own config", () => {
     });
   });
 });
+
+describe("getProviderSummary for unavailable providers", () => {
+  it("reports Unavailable and unavailableReason even when the snapshot has enabled: false", () => {
+    const reason =
+      "Cannot prepare Codex shadow home at C:\\Users\\alice\\.threadlines\\accounts\\work because state_5.sqlite-shm already exists.";
+    const provider = {
+      instanceId: ProviderInstanceId.make("codex_work"),
+      driver: ProviderDriverKind.make("codex"),
+      displayName: "Work",
+      enabled: false,
+      installed: false,
+      version: null,
+      status: "error",
+      auth: { status: "unknown" },
+      message: reason,
+      availability: "unavailable",
+      unavailableReason: reason,
+      checkedAt: "2026-11-27T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    } satisfies ServerProvider;
+
+    expect(getProviderSummary(provider)).toEqual({
+      headline: "Unavailable",
+      detail: reason,
+    });
+  });
+});

@@ -196,4 +196,43 @@ describe("deriveAgentStatus", () => {
       detection: null,
     });
   });
+
+  it("reports an enabled provider with an unavailable snapshot as a problem", () => {
+    const unavailable = snapshot({
+      enabled: false,
+      installed: false,
+      status: "error",
+      auth: { status: "unknown" },
+      availability: "unavailable",
+      unavailableReason: "Cannot prepare Codex shadow home.",
+      message: "Cannot prepare Codex shadow home.",
+    });
+
+    expect(deriveAgentStatus({ enabled: true, driverKind: CODEX, snapshot: unavailable })).toEqual({
+      kind: "problem",
+      headline: "Unavailable",
+      detail: "Cannot prepare Codex shadow home.",
+    });
+    expect(
+      deriveAgentStatus({
+        enabled: true,
+        driverKind: CODEX,
+        snapshot: {
+          ...unavailable,
+          unavailableReason: undefined,
+          message: "Fallback error message.",
+        },
+      }),
+    ).toEqual({
+      kind: "problem",
+      headline: "Unavailable",
+      detail: "Fallback error message.",
+    });
+    expect(deriveAgentStatus({ enabled: false, driverKind: CODEX, snapshot: unavailable })).toEqual(
+      {
+        kind: "off",
+        detection: null,
+      },
+    );
+  });
 });
