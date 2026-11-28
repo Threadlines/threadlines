@@ -98,9 +98,11 @@ Project rules and skills come from the project as usual: `AGENTS.md` and `GEMINI
 
 Threadlines reads which skills Antigravity loads, the way Antigravity finds them, and Settings
 search lists them. Global skills are read through the account's profile, so the list matches what
-that account's agent sees, including skills the agent keeps in its own profile. When two have the same name, the first wins in this order:
+that account's agent sees, including skills the agent keeps in its own profile. On Antigravity
+1.5.16 and newer, user-global `~/.agents/skills` is also read automatically (read-only in
+Settings). When two have the same name, the first wins in this order:
 `~/.gemini/config/skills`, the project's `.gemini/skills`, `~/.gemini/antigravity-cli/skills`, the
-project's `.agents/skills`, then `.agent/skills`. Folders a `skills.json` declares come after those: the project's
+project's `.agents/skills`, `.agent/skills`, then `~/.agents/skills` (1.5.16+). Folders a `skills.json` declares come after those: the project's
 `.agents/skills.json` in the project and each folder above it up to the repository root, then
 `~/.gemini/config/skills.json`. Threadlines follows the same rules as Antigravity for these files:
 `inherits` reads another file, `include_only` and `exclude` match names exactly, a nested skill
@@ -272,7 +274,9 @@ history, also one sent in the moment the session is stopping. A message whose mo
 set never reaches Antigravity: its turn fails, and the earlier conversation Threadlines had put in
 front of it goes with the next message instead. Throwaway sessions opened for sign-in checks,
 model discovery, or text generation have their conversation files cleaned up from the profile once
-they exit.
+they exit. Deleting a thread or reverting an earlier message also removes that conversation and its
+verified child subagent files from the profile (skipping any session still used by another thread),
+without starting `agy` if it is not running.
 
 ### Editing an Earlier Message
 
@@ -280,7 +284,8 @@ Antigravity can't rewind its own conversation. When you edit an earlier message 
 one), Threadlines first stops anything Antigravity still runs for the thread (a running turn, its
 commands and subagents, by a cancel, then a moment to wind down) and ends that session, so nothing
 it ran can write over the files being restored. Then it restores the files. It also drops the
-saved conversation from its own record of the thread, so the next message starts a new Antigravity
+saved conversation from its own record of the thread and deletes the retired conversation files
+from the profile, so the next message starts a new Antigravity
 session and sends it the turns that are left: Antigravity no longer remembers the removed ones,
 also when Threadlines restarts before that message. Nothing is started to do this when Antigravity
 wasn't running. If Threadlines can't update that record, the thread says Antigravity still
@@ -293,9 +298,9 @@ turns.
 
 Each turn's tokens come from the CLI's answer to the prompt: input is its input plus cached reads,
 and output already includes thinking. They count on the Usage page under Antigravity, priced at
-Google's Gemini 4 API rates (an equivalent, not what a Google plan bills). A reply the agent starts
-by itself reports no tokens, so it isn't counted. The context meter beside the composer reads the
-CLI's context usage updates (1.5.8+).
+Google's Gemini 4 API rates (an equivalent, not what a Google plan bills). Antigravity 1.5.15+
+folds background work tokens into the session usage update. The context meter beside the composer
+reads the CLI's context usage updates (1.5.8+).
 
 ## Sign-In Methods
 
@@ -350,8 +355,14 @@ Google account's email (blurred until you show it).
 The numbers come from Google, not from Antigravity: Threadlines asks Google's Cloud Code service
 (`retrieveUserQuotaSummary`, the call Google's own Antigravity apps make) with the sign-in
 Antigravity saved in this account's profile, using Antigravity's client User-Agent (Cloud Code
-gates quota responses on it). Google doesn't publish this API, so it can change or stop answering;
-the row then says it couldn't read the limits and keeps the last numbers.
+gates quota responses on it). When Google includes `bankedResets` in that summary, Threadlines
+surfaces them on the Antigravity row in Settings, its Usage tab, the ring beside the send button,
+and on matching model-limit notices above the composer. Claiming one sends
+`claimBankedQuotaReset` to the same Cloud Code host with a stable `requestId` for retry safety and
+updates the usage snapshot from the response; banked resets locked below Google's usage threshold
+stay visible as banked and unavailable until enough quota is used. Google doesn't publish this API,
+so it can change or stop answering; the row then says it couldn't read the limits and keeps the last
+numbers.
 
 When the numbers can be stale:
 

@@ -44,7 +44,10 @@ import {
   listAntigravityPlugins,
 } from "./antigravity/AntigravityExtensions.ts";
 import { antigravityInstancePaths } from "./antigravity/AntigravityProfile.ts";
-import { makeAntigravitySkillsLister } from "./antigravity/AntigravitySkills.ts";
+import {
+  antigravitySupportsHomeAgentsSkills,
+  makeAntigravitySkillsLister,
+} from "./antigravity/AntigravitySkills.ts";
 import {
   type AntigravitySkillDir,
   antigravityUserGeminiDir,
@@ -1006,10 +1009,42 @@ export const readOtherProviderInventory = Effect.fn(
       else directByReal.set(key, [entry]);
     }
 
+    const homeAgentsSkillsDir = path.join(userHome, ".agents", "skills");
+    // Canonicalize `userHome` (e.g. macOS `/var` -> `/private/var`), NOT
+    // `homeAgentsSkillsDir` itself, so a symlinked `~/.agents/skills ->
+    // ~/.gemini/config/skills` never misclassifies enabled `.gemini` entries.
+    const realUserHome = yield* fileSystem
+      .realPath(userHome)
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+    const canonicalHomeAgentsSkillsDir = realUserHome
+      ? path.join(realUserHome, ".agents", "skills")
+      : null;
+    const homeAgentsSkillsPrefixes = [
+      `${normalizedPathKey(homeAgentsSkillsDir)}/`,
+      ...(canonicalHomeAgentsSkillsDir &&
+      normalizedPathKey(canonicalHomeAgentsSkillsDir) !== normalizedPathKey(homeAgentsSkillsDir)
+        ? [`${normalizedPathKey(canonicalHomeAgentsSkillsDir)}/`]
+        : []),
+    ];
+    const includeHomeAgentsSkills = antigravitySupportsHomeAgentsSkills(input.snapshot?.version);
     const antigravityToggleNotice =
       "Applies inside Threadlines only. Terminal agy sessions still load ~/.gemini/config/skills.";
 
+    const isFromHomeAgentsSkills = (skillPath: string) => {
+      const key = normalizedPathKey(skillPath);
+      return homeAgentsSkillsPrefixes.some((prefix) => key.startsWith(prefix));
+    };
+
     const enrichAntigravitySkill = (skill: ProviderExtensionSkill): ProviderExtensionSkill => {
+      // Preserve `~/.agents/skills` origin before resolving symlinks so a shared
+      // skill symlinked to the same target as a disabled `~/.gemini` skill never
+      // binds back to the toggleable `.gemini` entry.
+      if (skill.source === "Shared user (.agents/skills)" || isFromHomeAgentsSkills(skill.path)) {
+        return {
+          ...skill,
+          source: "Shared user (.agents/skills)",
+        };
+      }
       let direct = directByDiscovered.get(normalizedPathKey(skill.path));
       if (!direct && skill.scope === "user") {
         const candidates = directByReal.get(normalizedPathKey(skill.path)) ?? [];
@@ -1044,18 +1079,35 @@ export const readOtherProviderInventory = Effect.fn(
         cwd: projectCwd ?? homedir(),
         profileDir,
         includeProject: projectCwd !== undefined,
+        userHome,
+        includeHomeAgentsSkills,
       });
-      skills = listed.map((skill) =>
-        enrichAntigravitySkill({
-          name: skill.name,
-          path: skill.path,
-          ...(skill.displayName ? { displayName: skill.displayName } : {}),
-          ...(skill.description ? { description: skill.description } : {}),
-          ...(skill.shortDescription ? { shortDescription: skill.shortDescription } : {}),
-          enabled: skill.enabled ?? true,
-          ...(skill.scope ? { scope: skill.scope } : {}),
-          source: skill.scope === "project" ? "Project" : "Antigravity profile",
-        }),
+      skills = yield* Effect.forEach(
+        listed,
+        (skill) =>
+          Effect.gen(function* () {
+            let resolvedPath: string | undefined;
+            if (isFromHomeAgentsSkills(skill.path)) {
+              const real = yield* fileSystem
+                .realPath(skill.path)
+                .pipe(Effect.catch(() => Effect.succeed(skill.path)));
+              if (normalizedPathKey(real) !== normalizedPathKey(skill.path)) {
+                resolvedPath = real;
+              }
+            }
+            return enrichAntigravitySkill({
+              name: skill.name,
+              path: skill.path,
+              ...(resolvedPath ? { resolvedPath } : {}),
+              ...(skill.displayName ? { displayName: skill.displayName } : {}),
+              ...(skill.description ? { description: skill.description } : {}),
+              ...(skill.shortDescription ? { shortDescription: skill.shortDescription } : {}),
+              enabled: skill.enabled ?? true,
+              ...(skill.scope ? { scope: skill.scope } : {}),
+              source: skill.scope === "project" ? "Project" : "Antigravity profile",
+            });
+          }),
+        { concurrency: 8 },
       );
     } else {
       const roots: ScannedSkillRoot[] = [
@@ -1096,6 +1148,16 @@ export const readOtherProviderInventory = Effect.fn(
           source: "Antigravity CLI",
           priority: 5,
         },
+        ...(includeHomeAgentsSkills
+          ? [
+              {
+                root: homeAgentsSkillsDir,
+                scope: "user" as const,
+                source: "Shared user (.agents/skills)",
+                priority: 1,
+              },
+            ]
+          : []),
       ];
       const scanned = yield* Effect.forEach(roots, (root) => scanSkillRoot(root, projectBoundary), {
         concurrency: 4,

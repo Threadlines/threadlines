@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import {
+  antigravitySupportsHomeAgentsSkills,
   listAntigravitySkillsNow as listInProfile,
   makeAntigravitySkillsLister,
   MAX_SKILL_DESCRIPTION_LENGTH,
@@ -18,6 +19,7 @@ async function listAntigravitySkillsNow(workspace: {
   readonly cwd: string;
   readonly userHome: string;
   readonly profileDir: string;
+  readonly includeHomeAgentsSkills?: boolean;
 }) {
   await shareAntigravityUserConfigNow({ ...workspace, platform: "linux" });
   return listInProfile(workspace);
@@ -79,8 +81,11 @@ describe("listAntigravitySkillsNow", () => {
     await writeSkill(path.join(w.gemini, "antigravity-cli", "skills", "b"), "cli-global");
     await writeSkill(path.join(w.cwd, ".agents", "skills", "c"), "agents-project");
     await writeSkill(path.join(w.cwd, ".agent", "skills", "d"), "legacy-project");
-    // The agent never reads ~/.agents/skills on its own.
-    await writeSkill(path.join(w.userHome, ".agents", "skills", "e"), "home-agents");
+    // Antigravity 1.5.16+ also discovers user-global ~/.agents/skills.
+    const homeAgents = await writeSkill(
+      path.join(w.userHome, ".agents", "skills", "e"),
+      "home-agents",
+    );
 
     const { skills } = await listAntigravitySkillsNow(w);
 
@@ -88,6 +93,7 @@ describe("listAntigravitySkillsNow", () => {
       "agents-project",
       "cli-global",
       "gemini-project",
+      "home-agents",
       "legacy-project",
       "review",
     ]);
@@ -99,6 +105,21 @@ describe("listAntigravitySkillsNow", () => {
       enabled: true,
     });
     expect(skills.find((skill) => skill.name === "agents-project")?.scope).toBe("project");
+    expect(skills.find((skill) => skill.name === "home-agents")).toEqual({
+      name: "home-agents",
+      path: homeAgents,
+      scope: "user",
+      enabled: true,
+    });
+
+    // Older binaries (< 1.5.16) skip ~/.agents/skills.
+    const older = await listAntigravitySkillsNow({ ...w, includeHomeAgentsSkills: false });
+    expect(names(older.skills)).not.toContain("home-agents");
+    expect(antigravitySupportsHomeAgentsSkills("1.5.14")).toBe(false);
+    expect(antigravitySupportsHomeAgentsSkills("1.5.15")).toBe(false);
+    expect(antigravitySupportsHomeAgentsSkills("1.5.16")).toBe(true);
+    expect(antigravitySupportsHomeAgentsSkills("1.5.19")).toBe(true);
+    expect(antigravitySupportsHomeAgentsSkills(undefined)).toBe(true);
   });
 
   it("keeps the first copy of a name in the agent's own order", async () => {
@@ -109,6 +130,7 @@ describe("listAntigravitySkillsNow", () => {
       path.join(w.gemini, "antigravity-cli", "skills"),
       path.join(w.cwd, ".agents", "skills"),
       path.join(w.cwd, ".agent", "skills"),
+      path.join(w.userHome, ".agents", "skills"),
     ];
     for (const [index, root] of order.entries()) {
       await writeSkill(path.join(root, `copy-${index}`), "review", `Copy ${index}.`);
@@ -119,6 +141,26 @@ describe("listAntigravitySkillsNow", () => {
       expect(path.dirname(path.dirname(skills[0]!.path))).toBe(root);
       await NodeFS.rm(root, { recursive: true });
     }
+  });
+
+  it("preserves the ~/.agents/skills path when a skill is symlinked from elsewhere", async () => {
+    const w = await makeWorkspace();
+    const sharedSource = path.join(w.root, "dotfiles", "my-skill");
+    await writeSkill(sharedSource, "linked-home-skill", "From dotfiles.");
+    const linkDir = path.join(w.userHome, ".agents", "skills", "my-skill");
+    await NodeFS.mkdir(path.dirname(linkDir), { recursive: true });
+    await NodeFS.symlink(sharedSource, linkDir);
+
+    const { skills } = await listAntigravitySkillsNow(w);
+    expect(skills).toEqual([
+      {
+        name: "linked-home-skill",
+        description: "From dotfiles.",
+        path: path.join(linkDir, "SKILL.md"),
+        scope: "user",
+        enabled: true,
+      },
+    ]);
   });
 
   it("treats a root with its own SKILL.md as one skill, names a nameless skill after its folder", async () => {
@@ -142,7 +184,7 @@ describe("listAntigravitySkillsNow", () => {
 
   it("follows skills.json: inherits, literal include_only and exclude, null lists, no ~ expansion", async () => {
     const w = await makeWorkspace();
-    const shared = path.join(w.userHome, ".agents", "skills");
+    const shared = path.join(w.userHome, "shared-skills");
     await writeSkill(path.join(shared, "yagni"), "yagni", "Keep it simple.");
     await writeSkill(path.join(shared, "experimental-draft"), "experimental-draft");
     await writeSkill(path.join(shared, "dropped"), "dropped");

@@ -267,10 +267,17 @@ export const ServerProviderRateLimitResetCredit = Schema.Struct({
   id: TrimmedNonEmptyString,
   resetType: ServerProviderRateLimitResetType,
   status: ServerProviderRateLimitResetCreditStatus,
-  grantedAt: NonNegativeInt,
+  /** When the credit was granted (absent for providers such as Antigravity that report none). */
+  grantedAt: Schema.optional(NonNegativeInt),
   expiresAt: Schema.optional(NonNegativeInt),
   title: Schema.optional(TrimmedNonEmptyString),
   description: Schema.optional(TrimmedNonEmptyString),
+  /** Units left on one banked reset entry; defaults to 1 when omitted. */
+  remainingCount: Schema.optional(NonNegativeInt),
+  /** Models this reset covers (same matching rules as `ServerProviderScopedUsageWindow`). */
+  scopeModels: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  /** Models excluded even when `scopeModels` matches them. */
+  scopeExcludes: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 export type ServerProviderRateLimitResetCredit = typeof ServerProviderRateLimitResetCredit.Type;
 
@@ -1119,6 +1126,8 @@ export const ServerProviderRateLimitResetCreditConsumeInput = Schema.Struct({
   instanceId: ProviderInstanceId,
   idempotencyKey: Schema.optionalKey(TrimmedNonEmptyString),
   creditId: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Account id shown when the user opened the reset dialog; rejects if the sign-in changed. */
+  accountId: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type ServerProviderRateLimitResetCreditConsumeInput =
   typeof ServerProviderRateLimitResetCreditConsumeInput.Type;

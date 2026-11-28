@@ -221,7 +221,7 @@ import { shownSettingsChange } from "@threadlines/shared/settingsChangeState";
 import { hasAgentRecords } from "@threadlines/shared/threadParticipants";
 import { modelPickerTriggerSummary, shouldRenderTraitsControls } from "./traitControls";
 import {
-  canRequestProviderRateLimitResetCredit,
+  canViewProviderRateLimitResetCredits,
   useProviderRateLimitResetCredit,
 } from "../ProviderRateLimitResetCredit";
 import { CircleAlertIcon, FileIcon, FileTextIcon, XIcon } from "lucide-react";
@@ -1965,22 +1965,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const meterProviderResetCredits =
     meterProviderStatus?.accountUsage?.rateLimitResetCredits ?? null;
-  const canResetMeterProviderUsage = canRequestProviderRateLimitResetCredit(
+  const canResetMeterProviderUsage = canViewProviderRateLimitResetCredits(
     meterProviderStatus,
-    meterProviderResetCredits?.availableCount,
+    meterProviderResetCredits,
   );
   const requestMeterProviderUsageReset = useCallback(() => {
     if (!canResetMeterProviderUsage || !meterProviderResetCredits) return;
     requestRateLimitResetCredit({
       instanceId: meterInstanceId,
+      environmentId,
+      accountId: meterProviderStatus?.auth.accountId,
       providerLabel: meterProviderLabel,
       resetCredits: meterProviderResetCredits,
     });
   }, [
     canResetMeterProviderUsage,
+    environmentId,
     meterInstanceId,
     meterProviderLabel,
     meterProviderResetCredits,
+    meterProviderStatus?.auth.accountId,
     requestRateLimitResetCredit,
   ]);
   // Compacting works on the agent holding the thread; the meter offers it

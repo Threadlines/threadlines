@@ -62,6 +62,11 @@ export interface ProviderAccountUsageSpendControlPresentation {
 
 export interface ProviderAccountUsageResetCreditsPresentation {
   readonly availableCount: number;
+  /**
+   * Total unexpired banked units (available plus threshold-locked) when some
+   * banked resets are not yet claimable (`bankedCount > availableCount`).
+   */
+  readonly bankedCount?: number;
   readonly label: string;
   /** Compact availability copy for dense rows, e.g. "4 available". */
   readonly shortLabel: string;
@@ -94,18 +99,36 @@ export type ProviderRateLimitResetCreditAttentionUrgency = Extract<
   "soon" | "critical"
 >;
 
-function soonestUsableResetCreditExpirationMs(
+function soonestResetCreditExpirationMs(
   credits: ReadonlyArray<ServerProviderRateLimitResetCredit> | undefined,
   nowMs: number,
+  includeIneligible = false,
 ): number | null {
   let soonest: number | null = null;
   for (const credit of credits ?? []) {
-    if (credit.status !== "available") continue;
+    if (credit.status !== "available" && !(includeIneligible && credit.status === "unknown")) {
+      continue;
+    }
     const expiresAtMs = normalizeResetTimestampMs(credit.expiresAt);
     if (expiresAtMs === null || expiresAtMs <= nowMs) continue;
     if (soonest === null || expiresAtMs < soonest) soonest = expiresAtMs;
   }
   return soonest;
+}
+
+function bankedResetCreditsCount(
+  credits: ReadonlyArray<ServerProviderRateLimitResetCredit> | undefined,
+  nowMs: number,
+): number {
+  let total = 0;
+  for (const credit of credits ?? []) {
+    if (credit.status !== "available" && credit.status !== "unknown") continue;
+    const expiresAtMs = normalizeResetTimestampMs(credit.expiresAt);
+    if (expiresAtMs !== null && expiresAtMs <= nowMs) continue;
+    const units = credit.remainingCount ?? 1;
+    if (Number.isInteger(units) && units > 0) total += units;
+  }
+  return total;
 }
 
 export function providerRateLimitResetCreditsExpirationUrgency(
@@ -604,18 +627,30 @@ function formatResetCreditsPresentation(
     return undefined;
   }
 
-  const expirationUrgency = providerRateLimitResetCreditsExpirationUrgency(
-    usage.rateLimitResetCredits?.credits,
+  const credits = usage.rateLimitResetCredits?.credits;
+  const bankedCount = Math.max(availableCount, bankedResetCreditsCount(credits, nowMs));
+  const expirationUrgency = providerRateLimitResetCreditsExpirationUrgency(credits, nowMs);
+  const soonestExpirationMs = soonestResetCreditExpirationMs(
+    credits,
     nowMs,
-  );
-  const soonestExpirationMs = soonestUsableResetCreditExpirationMs(
-    usage.rateLimitResetCredits?.credits,
-    nowMs,
+    availableCount === 0 && bankedCount > 0,
   );
   const nextExpiration =
     soonestExpirationMs === null ? null : formatRemainingDuration(soonestExpirationMs, nowMs);
+
+  if (availableCount === 0 && bankedCount > 0) {
+    return {
+      availableCount,
+      bankedCount,
+      label: `${bankedCount} banked · 0 available`,
+      shortLabel: `${bankedCount} banked`,
+      detail: nextExpiration ? `next expires in ${nextExpiration}` : "use more quota to unlock",
+    };
+  }
+
   return {
     availableCount,
+    ...(bankedCount > availableCount ? { bankedCount } : {}),
     label: availableCount === 1 ? "1 reset available" : `${availableCount} resets available`,
     shortLabel: availableCount <= 0 ? "None available" : `${availableCount} available`,
     detail: nextExpiration ? `next expires in ${nextExpiration}` : "expiration dates unavailable",

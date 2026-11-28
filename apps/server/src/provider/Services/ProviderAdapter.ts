@@ -406,6 +406,17 @@ export interface ProviderAdapterShape<TError> {
   readonly deleteThread?: (threadId: ThreadId) => Effect.Effect<void, TError>;
 
   /**
+   * Deletes on-disk conversation state for a deleted or retired thread session
+   * without spawning a stopped agent process. `protectedCursors` carries the
+   * resume cursors still held by other live threads on the same provider
+   * instance so shared records are never removed.
+   */
+  readonly deleteStoredSession?: (input: {
+    readonly resumeCursor: unknown;
+    readonly protectedCursors: ReadonlyArray<unknown>;
+  }) => Effect.Effect<void>;
+
+  /**
    * A moved thread's session, to carry it to another computer
    * (docs/design/fleet.md, Part 3d): the files its resume cursor needs in
    * this instance's home, and the cursor to send. Null when it has none

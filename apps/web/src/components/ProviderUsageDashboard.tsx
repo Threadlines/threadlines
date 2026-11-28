@@ -549,10 +549,12 @@ export function ProviderUsageDashboard(props: {
       props.usage.spendControl !== undefined ||
       props.usage.resetCredits !== undefined ||
       props.usage.notice !== undefined);
+  const availableResetCount = props.usage.resetCredits?.availableCount ?? 0;
+  const bankedResetCount = props.usage.resetCredits?.bankedCount ?? 0;
   const canReset =
     showLimits &&
     props.onResetAccountUsage !== undefined &&
-    (props.usage.resetCredits?.availableCount ?? 0) > 0;
+    (availableResetCount > 0 || bankedResetCount > 0);
 
   return (
     <div className="grid gap-5">
@@ -577,13 +579,19 @@ export function ProviderUsageDashboard(props: {
                     disabled={props.accountUsageResetInFlight === true}
                     onClick={props.onResetAccountUsage}
                     aria-label={
-                      props.usage.resetCredits.expirationUrgency
-                        ? `Reset ${props.displayName} usage (a reset expires soon)`
-                        : `Reset ${props.displayName} usage`
+                      availableResetCount === 0
+                        ? `View banked ${props.displayName} usage resets`
+                        : props.usage.resetCredits.expirationUrgency
+                          ? `Reset ${props.displayName} usage (a reset expires soon)`
+                          : `Reset ${props.displayName} usage`
                     }
                   >
                     <RotateCcwIcon className="size-3" />
-                    {props.accountUsageResetInFlight ? "Resetting" : "Reset"}
+                    {props.accountUsageResetInFlight
+                      ? "Resetting"
+                      : availableResetCount > 0
+                        ? "Reset"
+                        : "View resets"}
                     {props.usage.resetCredits.expirationUrgency ? (
                       <span
                         aria-hidden="true"

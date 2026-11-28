@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as os from "node:os";
 import * as path from "node:path";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -2230,5 +2230,43 @@ describe("Antigravity tool rows and attachments", () => {
         expect(blocks[6]).toMatchObject({ type: "text" });
         expect(String(blocks[6]!.text)).toContain('Attached file "budget.xlsx"');
       }).pipe(Effect.scoped, Effect.provide(testServices)),
+  );
+
+  it.live(
+    "recognizes Gemini Enterprise prepaid balance exhaustion as a refusal with no usageLimit",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-prepaid-")));
+        try {
+          const outcome = antigravityTurnBehavior(dir).turnMachine!.outcome!;
+          const watch = yield* outcome.watch("session-prepaid", "gemini-3.1-pro-high");
+          const failure = yield* watch.check({
+            error: {
+              _tag: "AcpRequestError",
+              code: -32603,
+              errorMessage:
+                'RESOURCE_EXHAUSTED (code 429): Your organization\'s prepaid balance is insufficient. {"reason": "QUOTA_EXHAUSTED"}',
+            },
+          });
+          expect(failure).toEqual({
+            errorMessage:
+              "Your organization's prepaid balance is insufficient. Contact your administrator to add funds.",
+            failureCategory: "refusal",
+          });
+          expect(
+            antigravityFailure({
+              errorText: "Your organization's prepaid balance is insufficient.",
+              stopReason: "refusal",
+              nowMs: Date.now(),
+            }),
+          ).toEqual({
+            errorMessage:
+              "Your organization's prepaid balance is insufficient. Contact your administrator to add funds.",
+            failureCategory: "refusal",
+          });
+        } finally {
+          yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
+        }
+      }),
   );
 });

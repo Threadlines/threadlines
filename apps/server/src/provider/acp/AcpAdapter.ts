@@ -4921,6 +4921,26 @@ export function makeAcpAdapter<Settings extends AcpProviderSettings>(
       ...(descriptor.subagents
         ? { readSubagentTranscript: readSubagentTranscript(descriptor.subagents) }
         : {}),
+      ...(descriptor.deleteStoredSession
+        ? {
+            deleteStoredSession: ({
+              resumeCursor,
+              protectedCursors,
+            }: {
+              readonly resumeCursor: unknown;
+              readonly protectedCursors: ReadonlyArray<unknown>;
+            }) => {
+              const parsed = parseAcpResumeCursor(resumeCursor);
+              if (parsed === undefined) return Effect.void;
+              const protectedIds = new Set<string>();
+              for (const cursor of protectedCursors) {
+                const other = parseAcpResumeCursor(cursor);
+                if (other !== undefined) protectedIds.add(other.sessionId);
+              }
+              return descriptor.deleteStoredSession!(parsed.sessionId, protectedIds);
+            },
+          }
+        : {}),
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     } satisfies AcpAdapterShape;
   });

@@ -2109,6 +2109,9 @@ export interface EnvironmentApi {
     writeInstructionFile: (
       input: ProviderInstructionWriteInput,
     ) => Promise<ProviderInstructionWriteResult>;
+    consumeRateLimitResetCredit: (
+      input: ServerProviderRateLimitResetCreditConsumeInput,
+    ) => Promise<ServerProviderRateLimitResetCreditConsumeResult>;
   };
   attachments: {
     read: (input: ChatAttachmentReadInput) => Promise<ChatAttachmentReadResult>;

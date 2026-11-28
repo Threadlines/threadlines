@@ -109,6 +109,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       readExtensionMcpResource: rpcClient.server.readProviderExtensionMcpResource,
       getInstructionFiles: rpcClient.server.getProviderInstructionFiles,
       writeInstructionFile: rpcClient.server.writeProviderInstructionFile,
+      consumeRateLimitResetCredit: rpcClient.server.consumeProviderRateLimitResetCredit,
     },
     attachments: {
       read: rpcClient.attachments.read,

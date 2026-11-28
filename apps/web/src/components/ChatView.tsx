@@ -516,6 +516,7 @@ import { HeaderEdgeFade } from "./HeaderEdgeFade";
 import { TitleBarContent, useTitleBarRowPresent } from "./sidebar/titleBarSlot";
 import {
   canRequestProviderRateLimitResetCredit,
+  hasClaimableResetCreditForModel,
   isProviderUsageLimitErrorMessage,
   useProviderRateLimitResetCredit,
 } from "./ProviderRateLimitResetCredit";
@@ -2986,16 +2987,28 @@ export default function ChatView(props: ChatViewProps) {
   } = useProviderRateLimitResetCredit();
   const activeProviderResetCredits =
     activeProviderStatus?.accountUsage?.rateLimitResetCredits ?? null;
-  const canResetActiveProviderUsage = canRequestProviderRateLimitResetCredit(
-    activeProviderStatus,
-    activeProviderResetCredits?.availableCount,
-  );
+  const activeThreadModelSlug = activeModelSelection?.model ?? null;
+  const activeThreadModelName = useMemo(() => {
+    if (!activeThreadModelSlug) return null;
+    return (
+      activeProviderStatus?.models.find((model) => model.slug === activeThreadModelSlug)?.name ??
+      activeThreadModelSlug
+    );
+  }, [activeProviderStatus?.models, activeThreadModelSlug]);
+  const canResetActiveProviderUsage =
+    canRequestProviderRateLimitResetCredit(
+      activeProviderStatus,
+      activeProviderResetCredits?.availableCount,
+    ) && hasClaimableResetCreditForModel(activeProviderResetCredits, activeThreadModelName);
   const requestActiveProviderUsageReset = useCallback(() => {
     if (!canResetActiveProviderUsage || !activeProviderStatus || !activeProviderResetCredits) {
       return;
     }
     requestThreadErrorRateLimitResetCredit({
       instanceId: activeProviderStatus.instanceId,
+      environmentId: threadComputerEnvironmentId,
+      accountId: activeProviderStatus.auth.accountId,
+      modelName: activeThreadModelName,
       providerLabel: activeProviderLabel,
       resetCredits: activeProviderResetCredits,
     });
@@ -3003,8 +3016,10 @@ export default function ChatView(props: ChatViewProps) {
     activeProviderLabel,
     activeProviderResetCredits,
     activeProviderStatus,
+    activeThreadModelName,
     canResetActiveProviderUsage,
     requestThreadErrorRateLimitResetCredit,
+    threadComputerEnvironmentId,
   ]);
   const threadErrorIsUsageLimit =
     activeThread?.session?.lastErrorUsageLimit != null ||
@@ -3015,6 +3030,9 @@ export default function ChatView(props: ChatViewProps) {
     }
     return {
       availableCount: activeProviderResetCredits.availableCount,
+      scoped: (activeProviderResetCredits.credits ?? []).some(
+        (credit) => credit.scopeModels !== undefined,
+      ),
       isResetting: isConsumingThreadErrorRateLimitResetCredit,
       onReset: requestActiveProviderUsageReset,
     };

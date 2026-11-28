@@ -153,69 +153,70 @@ const asset = (
   };
 };
 
-const BUILD_1_5_14 = "1.5.14-5302690847260672";
+const BUILD_1_5_19 = "1.5.19-4821414830800896";
 
 /**
- * Google's 1.5.14 builds, from the update feed on 2026-11-23. Sizes were
- * measured from the downloads, which matched the feed's sha512.
+ * Google's 1.5.19 builds, from the update feed on 2026-11-28. Archive sizes
+ * were measured from Google's download headers (`Content-Length`); Unix
+ * executables are size-capped and measured by the installer.
  */
 export const ANTIGRAVITY_RELEASE: AntigravityRelease = {
-  version: "1.5.14",
+  version: "1.5.19",
   assets: {
     "darwin-arm64": asset(
       "darwin-arm64",
-      BUILD_1_5_14,
-      "26830fd46bfb9200d073cf3e71bf94b707552557b4380ec01afd6e99f3a2b030e65422dab1867f77318078692defc859a7547d17ec4b0b1e9369f13c9c3caea6",
-      85_943_943,
-      229_152_672,
+      BUILD_1_5_19,
+      "d798b1b2f91eb88a43c304ea5075db13cb069f01219c3b9f370037dc2c89d7e6c36ee96f160f9019947c1f5b55e744d8102e8303271d618f70d71cdb0911b213",
+      85_928_527,
+      undefined,
     ),
     "darwin-x64": asset(
       "darwin-x64",
-      BUILD_1_5_14,
-      "1b6a1fc6dbe46ba6d9d0405d1b6095189f35ebfc4c3c33ceb1fd1b6d0c9fd702b52ac10b64b8b52aed0d8d71ae02c5df3cffd5e3e3d37549c2daffcce2a853c7",
-      91_613_810,
-      238_884_352,
+      BUILD_1_5_19,
+      "c989fa40e36858cecebaa1223ed93fbb9aaaba6fbaf3697d5d397cd451b4eea9ba7cebb3b5a6faf8ddec6dbce3730bdfda98b1c182062a522a7b9ea875d30894",
+      91_516_270,
+      undefined,
     ),
     "linux-arm64": asset(
       "linux-arm64",
-      BUILD_1_5_14,
-      "c9b29bba475f63a1a80161ae93ba72b221c7a586d9851e4d0061546704bab66d6b2760b25d716d191724fc7564f3246456ee151e28aa37af48dbcd72bdc6c463",
-      92_116_379,
-      256_070_320,
+      BUILD_1_5_19,
+      "eeecedfc2a63af281e245d73bb69f949a17c6d3ebcd3d023220056ddcc05e204a00d1d0ea77f68741b2fc15a1f66f740bc0e3bf800d734721c60938e61653010",
+      94_382_838,
+      undefined,
     ),
     "linux-x64": asset(
       "linux-x64",
-      BUILD_1_5_14,
-      "83311d3f354567612dc16c1ae2ea9b503d6f6833aa4e138d39aa229da3f3bb99b0e4d7cca0bce4796b0060d6a51d8113eb7449ed5dc0e7900bf217107ea5bff9",
-      101_195_950,
-      273_240_776,
+      BUILD_1_5_19,
+      "8160da6ceef2b7b62bb4a630b54b3fb4ee5283377509230736880c4ba4815e848a25cf346954a98134b647eb2f5d34e0364e77fbf74367ffd7dc29c525ddd82d",
+      103_658_205,
+      undefined,
     ),
     "linux-arm64-musl": asset(
       "linux-arm64-musl",
-      BUILD_1_5_14,
-      "f6e35fc3dab2cd49fd4296ddee0841b9cc4c7020b6c6aaea6452c5b3452b0ad8d66451c9098e418ad6b2f6eabcc81cdf13105ed043903248b11d6fb24ae709ab",
-      87_901_519,
-      231_767_616,
+      BUILD_1_5_19,
+      "e5fbc849f6288556b1d8b7e0d0a70b763dd404ff9673c5ec7921937955793283d91e931e48779b0e8ac39f6973bf6b53e763279eb88a0dbd1deab6da37a1e411",
+      90_079_606,
+      undefined,
     ),
     "linux-x64-musl": asset(
       "linux-x64-musl",
-      BUILD_1_5_14,
-      "1da24922727c5b4e84369d0843575d7d6f180a1946e2dc4289171ad1e3ca92594e687724d1902a7d83e407f98f0a8d3b7c3e976f03680fd80dbed2d2da00c0ed",
-      93_553_347,
-      244_676_552,
+      BUILD_1_5_19,
+      "8a5541bc71900e7571ce2c5cfc637e6155ace45f108badd91ee235c1e8f122c034bd07e1efc6f18a77467075419102d99d03ac5b8033e271e0914d05adf60634",
+      95_963_524,
+      undefined,
     ),
     "win32-arm64": asset(
       "win32-arm64",
-      BUILD_1_5_14,
-      "b2ce5462cf1845b25c05ca651b5bd93735fd807f8e7b40c61d0e99445df1a76b97ee24c890d5f5ba0453f848ca174f74d492ad1901a2ddcba5d7a9b4399ddfef",
-      226_082_456,
+      BUILD_1_5_19,
+      "c0d8b034dc010b598139b301e7fec9f665538f08da6af3e8fa0868fb1f4ffcbe937d4e5bc6bb25d9f23b29908bc74cb444a10598b4021d1a0267be0467bee9c0",
+      233_281_360,
       undefined,
     ),
     "win32-x64": asset(
       "win32-x64",
-      BUILD_1_5_14,
-      "785548b23242ec9112759bb4b525d94a3d4d2e9868e5cedb9ea34e5ce01dbb00abf5de66c41d8f4903e8a4379445f685483f999ece91867bfbd9d4812760d835",
-      238_615_704,
+      BUILD_1_5_19,
+      "122ce5ed90a0f0ec8a87fd3383e167ba4ab39afeb40ed8a302393f5da74c62883d915efa9fe8071eb2f00b37a1384354225b230ff345fac8d9d5bf70983ce1b8",
+      246_379_312,
       undefined,
     ),
   },

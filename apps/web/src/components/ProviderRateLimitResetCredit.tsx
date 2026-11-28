@@ -1,15 +1,19 @@
 "use client";
 
-import { useCallback, type ReactNode, useState } from "react";
+import { useCallback, type ReactNode, useRef, useState } from "react";
 import { ClockIcon, ExternalLinkIcon, TimerResetIcon } from "lucide-react";
 import {
+  type EnvironmentId,
   type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderRateLimitResetCredit,
   type ServerProviderRateLimitResetCredits,
   type ServerProviderRateLimitResetCreditOutcome,
 } from "@threadlines/contracts";
+import { usageScopeHoldsModel } from "@threadlines/shared/usageLimits";
 
+import { readEnvironmentApi } from "../environmentApi";
+import { isAppBackendEnvironment } from "../environments/providerComputer";
 import { ensureLocalApi } from "../localApi";
 import { openExternalUrl } from "../lib/externalLinks";
 import {
@@ -32,6 +36,12 @@ import { failureNotice, toastManager } from "./ui/toast";
 
 export type ProviderRateLimitResetCreditRequest = {
   readonly instanceId: ProviderInstanceId;
+  /** Environment running the provider instance; omit or pass null for the app backend. */
+  readonly environmentId?: EnvironmentId | null | undefined;
+  /** Account id shown when the dialog opened, so a sign-in switch cannot spend another account's credit. */
+  readonly accountId?: string | null | undefined;
+  /** When opened from a model-specific limit notice, only credits covering this model are enabled. */
+  readonly modelName?: string | null | undefined;
   /** Provider name for the dialog and toasts, e.g. "Codex" or "Claude". */
   readonly providerLabel: string;
   readonly resetCredits: ServerProviderRateLimitResetCredits;
@@ -68,12 +78,84 @@ export function canRequestProviderRateLimitResetCredit(
   );
 }
 
+/**
+ * Whether a provider has any reset credits worth inspecting in the dialog,
+ * including threshold-locked banked resets that are not claimable yet.
+ */
+export function canViewProviderRateLimitResetCredits(
+  provider: Pick<ServerProvider, "driver"> | null | undefined,
+  resetCredits: ServerProviderRateLimitResetCredits | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (provider === null || provider === undefined || !resetCredits) return false;
+  if (canRequestProviderRateLimitResetCredit(provider, resetCredits.availableCount)) return true;
+  return (resetCredits.credits ?? []).some((credit) => {
+    if (credit.status !== "available" && credit.status !== "unknown") return false;
+    if (
+      credit.expiresAt !== undefined &&
+      normalizeResetCreditTimestampMs(credit.expiresAt) <= nowMs
+    ) {
+      return false;
+    }
+    return (credit.remainingCount ?? 1) > 0;
+  });
+}
+
+export function doesProviderRateLimitResetCreditCoverModel(
+  credit: ServerProviderRateLimitResetCredit,
+  modelName: string | null | undefined,
+): boolean {
+  if (!modelName || credit.scopeModels === undefined) return true;
+  return usageScopeHoldsModel(
+    {
+      name: credit.title ?? "",
+      models: credit.scopeModels,
+      excludes: credit.scopeExcludes,
+    },
+    modelName,
+  );
+}
+
+/**
+ * Whether at least one claimable, unexpired reset credit covers `modelName`
+ * (or applies plan-wide without model scoping).
+ */
+export function hasClaimableResetCreditForModel(
+  resetCredits: ServerProviderRateLimitResetCredits | null | undefined,
+  modelName: string | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (
+    !resetCredits ||
+    !Number.isInteger(resetCredits.availableCount) ||
+    resetCredits.availableCount <= 0
+  ) {
+    return false;
+  }
+  const credits = resetCredits.credits ?? [];
+  const usableDetailedUnits = credits.reduce(
+    (sum, credit) =>
+      canUseProviderRateLimitResetCredit(credit, nowMs) ? sum + (credit.remainingCount ?? 1) : sum,
+    0,
+  );
+  if (resetCredits.availableCount > usableDetailedUnits) return true;
+  return credits.some(
+    (credit) =>
+      canUseProviderRateLimitResetCredit(credit, nowMs) &&
+      doesProviderRateLimitResetCreditCoverModel(credit, modelName),
+  );
+}
+
 export function formatProviderRateLimitResetCreditTooltip(
   availableCount: number,
   providerLabel: string,
+  options?: { readonly scoped?: boolean },
 ): string {
   const creditLabel =
     availableCount === 1 ? "your reset credit" : `1 of your ${availableCount} reset credits`;
+  if (options?.scoped) {
+    return `Use ${creditLabel} to refresh the current ${providerLabel} usage limits.`;
+  }
   return `Use ${creditLabel} to refresh the current ${providerLabel} 5h and weekly usage windows.`;
 }
 
@@ -244,14 +326,43 @@ export function ProviderRateLimitResetCreditDialog(props: {
   const detailedCredits = sortProviderRateLimitResetCreditsByExpiration(
     resetCredits?.credits ?? [],
   );
-  const additionalCreditCount = Math.max(
-    0,
-    (resetCredits?.availableCount ?? 0) - detailedCredits.length,
-  );
   const nowMs = props.pendingReset?.openedAtMs ?? 0;
-  const recommendedCreditId = detailedCredits.find((credit) =>
-    canUseProviderRateLimitResetCredit(credit, nowMs),
+  const availableCount = resetCredits?.availableCount ?? 0;
+  const usableDetailedUnits = detailedCredits.reduce(
+    (sum, credit) =>
+      canUseProviderRateLimitResetCredit(credit, nowMs) ? sum + (credit.remainingCount ?? 1) : sum,
+    0,
+  );
+  const totalBankedUnits = Math.max(
+    availableCount,
+    detailedCredits.reduce((sum, credit) => {
+      if (credit.status !== "available" && credit.status !== "unknown") return sum;
+      if (
+        credit.expiresAt !== undefined &&
+        normalizeResetCreditTimestampMs(credit.expiresAt) <= nowMs
+      ) {
+        return sum;
+      }
+      return sum + (credit.remainingCount ?? 1);
+    }, 0),
+  );
+  const lockedBankedUnits = Math.max(0, totalBankedUnits - availableCount);
+  const additionalCreditCount = Math.max(0, availableCount - usableDetailedUnits);
+  const hasScopedCredits = detailedCredits.some((credit) => credit.scopeModels !== undefined);
+  const targetModelName = props.pendingReset?.modelName ?? null;
+  const recommendedCreditId = detailedCredits.find(
+    (credit) =>
+      canUseProviderRateLimitResetCredit(credit, nowMs) &&
+      doesProviderRateLimitResetCreditCoverModel(credit, targetModelName),
   )?.id;
+  const dialogDescription =
+    availableCount === 0 && totalBankedUnits > 0
+      ? `${totalBankedUnits === 1 ? "1 banked reset is" : `${totalBankedUnits} banked resets are`} waiting until you use more of your current ${providerLabel} usage.`
+      : availableCount > 0 && lockedBankedUnits > 0
+        ? `${availableCount === 1 ? "1 reset is" : `${availableCount} resets are`} available, plus ${lockedBankedUnits} banked ${lockedBankedUnits === 1 ? "reset" : "resets"} waiting on usage.`
+        : availableCount === 1
+          ? `1 reset is available. Choose it to refresh your current ${providerLabel} ${hasScopedCredits ? "usage limits" : "usage windows"}.`
+          : `${availableCount} resets are available. Choose one to refresh your current ${providerLabel} ${hasScopedCredits ? "usage limits" : "usage windows"}.`;
 
   return (
     <Dialog open={props.pendingReset !== null} onOpenChange={props.onOpenChange}>
@@ -261,20 +372,22 @@ export function ProviderRateLimitResetCreditDialog(props: {
       >
         <DialogHeader>
           <DialogTitle>{providerLabel} usage resets</DialogTitle>
-          <DialogDescription>
-            {resetCredits?.availableCount === 1
-              ? `1 reset is available. Choose it to refresh your current ${providerLabel} usage windows.`
-              : `${resetCredits?.availableCount ?? 0} resets are available. Choose one to refresh your current ${providerLabel} usage windows.`}
-          </DialogDescription>
+          <DialogDescription>{dialogDescription}</DialogDescription>
         </DialogHeader>
 
         <DialogPanel>
           <div className="divide-y divide-border/60 overflow-hidden rounded-xl border bg-background/50">
             {detailedCredits.map((credit) => {
-              const canUse = canUseProviderRateLimitResetCredit(credit, nowMs);
+              const coversModel = doesProviderRateLimitResetCreditCoverModel(
+                credit,
+                targetModelName,
+              );
+              const canUse = canUseProviderRateLimitResetCredit(credit, nowMs) && coversModel;
               const isThisCreditResetting =
                 props.isResetting && props.resettingCreditId === credit.id;
-              const statusLabel = providerRateLimitResetCreditStatusLabel(credit, nowMs);
+              const statusLabel = !coversModel
+                ? "Other models"
+                : providerRateLimitResetCreditStatusLabel(credit, nowMs);
               const urgency = providerRateLimitResetCreditExpirationUrgency(
                 credit.expiresAt,
                 nowMs,
@@ -283,6 +396,7 @@ export function ProviderRateLimitResetCreditDialog(props: {
                 credit.expiresAt === undefined
                   ? "Does not expire"
                   : `Expires ${formatProviderRateLimitResetCreditDate(credit.expiresAt)}`;
+              const remainingCount = credit.remainingCount ?? 1;
               return (
                 <section
                   className="flex min-w-0 items-center justify-between gap-4 px-4 py-3"
@@ -304,13 +418,18 @@ export function ProviderRateLimitResetCreditDialog(props: {
                     <TimerResetIcon className="size-4" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-center gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <h3
                         className="truncate font-medium text-sm"
                         title={credit.title ?? `Full ${providerLabel} usage reset`}
                       >
                         {credit.title ?? `Full ${providerLabel} usage reset`}
                       </h3>
+                      {remainingCount > 1 ? (
+                        <Badge size="sm" variant="outline" className="font-mono tabular-nums">
+                          ×{remainingCount}
+                        </Badge>
+                      ) : null}
                       {credit.expiresAt === undefined ? null : (
                         <Badge
                           size="sm"
@@ -336,6 +455,9 @@ export function ProviderRateLimitResetCreditDialog(props: {
                       {expirationDateLabel}
                       {statusLabel === "Available" ? null : ` · ${statusLabel}`}
                     </p>
+                    {credit.description ? (
+                      <p className="mt-0.5 text-muted-foreground text-xs">{credit.description}</p>
+                    ) : null}
                   </div>
                   <Button
                     className="shrink-0"
@@ -404,6 +526,29 @@ export function ProviderRateLimitResetCreditDialog(props: {
   );
 }
 
+async function consumeProviderRateLimitResetCreditRpc(
+  environmentId: EnvironmentId | null | undefined,
+  input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly idempotencyKey: string;
+    readonly creditId?: string;
+    readonly accountId?: string;
+  },
+) {
+  if (
+    environmentId === undefined ||
+    environmentId === null ||
+    isAppBackendEnvironment(environmentId)
+  ) {
+    return ensureLocalApi().server.consumeProviderRateLimitResetCredit(input);
+  }
+  const api = readEnvironmentApi(environmentId);
+  if (!api?.providers) {
+    throw new Error("That computer isn't connected right now.");
+  }
+  return api.providers.consumeRateLimitResetCredit(input);
+}
+
 export function useProviderRateLimitResetCredit(): {
   readonly pendingRateLimitResetCredit: ProviderRateLimitResetCreditRequest | null;
   readonly isConsumingRateLimitResetCredit: boolean;
@@ -416,9 +561,13 @@ export function useProviderRateLimitResetCredit(): {
   const [resettingRateLimitResetCreditId, setResettingRateLimitResetCreditId] = useState<
     string | null
   >(null);
+  // Reuse the same idempotency key across retries of a failed/timed-out claim
+  // until the outcome is known or the dialog closes.
+  const idempotencyKeysRef = useRef(new Map<string, string>());
 
   const requestRateLimitResetCredit = useCallback(
     (request: ProviderRateLimitResetCreditRequest) => {
+      idempotencyKeysRef.current.clear();
       setPendingRateLimitResetCredit({ ...request, openedAtMs: Date.now() });
     },
     [],
@@ -427,6 +576,7 @@ export function useProviderRateLimitResetCredit(): {
   const handleDialogOpenChange = useCallback(
     (open: boolean) => {
       if (!open && !isConsumingRateLimitResetCredit) {
+        idempotencyKeysRef.current.clear();
         setPendingRateLimitResetCredit(null);
       }
     },
@@ -438,14 +588,23 @@ export function useProviderRateLimitResetCredit(): {
       const pendingReset = pendingRateLimitResetCredit;
       if (!pendingReset || isConsumingRateLimitResetCredit) return;
 
+      const attemptKey = `${pendingReset.openedAtMs}:${creditId ?? "__next__"}`;
+      let idempotencyKey = idempotencyKeysRef.current.get(attemptKey);
+      if (!idempotencyKey) {
+        idempotencyKey = randomUUID();
+        idempotencyKeysRef.current.set(attemptKey, idempotencyKey);
+      }
+
       setIsConsumingRateLimitResetCredit(true);
       setResettingRateLimitResetCreditId(creditId ?? null);
       try {
-        const result = await ensureLocalApi().server.consumeProviderRateLimitResetCredit({
+        const result = await consumeProviderRateLimitResetCreditRpc(pendingReset.environmentId, {
           instanceId: pendingReset.instanceId,
-          idempotencyKey: randomUUID(),
+          idempotencyKey,
           ...(creditId ? { creditId } : {}),
+          ...(pendingReset.accountId ? { accountId: pendingReset.accountId } : {}),
         });
+        idempotencyKeysRef.current.delete(attemptKey);
         toastManager.add(
           toastForProviderRateLimitResetCreditOutcome(result.outcome, pendingReset.providerLabel),
         );

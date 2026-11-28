@@ -535,19 +535,27 @@ export function ContextWindowMeter(props: {
                     </span>
                     {accountUsage.resetCredits.detail}
                   </span>
-                  {props.onResetAccountUsage && accountUsage.resetCredits.availableCount > 0 ? (
+                  {props.onResetAccountUsage &&
+                  (accountUsage.resetCredits.availableCount > 0 ||
+                    (accountUsage.resetCredits.bankedCount ?? 0) > 0) ? (
                     <button
                       type="button"
                       disabled={props.accountUsageResetInFlight === true}
                       onClick={props.onResetAccountUsage}
                       className={cn("relative", contextWindowActionButtonClassName)}
                       aria-label={
-                        accountUsage.resetCredits.expirationUrgency
-                          ? "Reset usage (a reset expires soon)"
-                          : undefined
+                        accountUsage.resetCredits.availableCount === 0
+                          ? "View banked usage resets"
+                          : accountUsage.resetCredits.expirationUrgency
+                            ? "Reset usage (a reset expires soon)"
+                            : undefined
                       }
                     >
-                      {props.accountUsageResetInFlight ? "Resetting" : "Reset"}
+                      {props.accountUsageResetInFlight
+                        ? "Resetting"
+                        : accountUsage.resetCredits.availableCount > 0
+                          ? "Reset"
+                          : "View resets"}
                       {accountUsage.resetCredits.expirationUrgency ? (
                         <span
                           aria-hidden="true"

@@ -3801,4 +3801,146 @@ Per-component (rounded)
       }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
     },
   );
+
+  it.effect(
+    "lists Antigravity ~/.agents/skills as read-only Shared user on 1.5.16+, version-gates older CLIs, and avoids symlink collisions with .gemini",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "provider-ext-agy-home-" });
+        const home = path.join(root, "home");
+        const project = path.join(root, "project");
+        const stateDir = path.join(root, "state");
+        const dotfilesSkill = path.join(root, "dotfiles", "shared-skill");
+        yield* fs.makeDirectory(project, { recursive: true });
+        yield* fs.makeDirectory(dotfilesSkill, { recursive: true });
+        yield* fs.writeFileString(
+          path.join(dotfilesSkill, "SKILL.md"),
+          "---\nname: shared-skill\ndescription: Shared via symlink\n---\n# Shared\n",
+        );
+
+        const homeAgentsDir = path.join(home, ".agents", "skills");
+        yield* fs.makeDirectory(homeAgentsDir, { recursive: true });
+        yield* fs.symlink(dotfilesSkill, path.join(homeAgentsDir, "shared-skill"));
+
+        const settings = makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: false },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+          providerInstances: {
+            antigravity: {
+              driver: "antigravity",
+              displayName: "Antigravity",
+              enabled: true,
+              config: { enabled: true },
+              environment: [
+                { name: "HOME", value: home },
+                { name: "USERPROFILE", value: home },
+              ],
+            },
+          },
+        });
+        const makeSnapshot = (version: string) =>
+          ({
+            instanceId: ProviderInstanceId.make("antigravity"),
+            provider: "antigravity",
+            driverKind: "antigravity",
+            displayName: "Antigravity",
+            enabled: true,
+            installed: true,
+            version,
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: "2026-11-28T00:00:00.000Z",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          }) as unknown as ServerProvider;
+
+        const inventory19 = yield* readProviderExtensionsInventory({
+          request: { cwd: project },
+          settings,
+          providers: [makeSnapshot("1.5.19")],
+          stateDir,
+        });
+        const agy19 = inventory19.providers.find((p) => String(p.instanceId) === "antigravity");
+        const sharedSkill = agy19?.skills.find((s) => s.name === "shared-skill");
+        assert.isDefined(sharedSkill);
+        assert.equal(sharedSkill?.source, "Shared user (.agents/skills)");
+        assert.notEqual(sharedSkill?.canToggle, true);
+        assert.notEqual(sharedSkill?.canDelete, true);
+
+        const inventory15 = yield* readProviderExtensionsInventory({
+          request: { cwd: project },
+          settings,
+          providers: [makeSnapshot("1.5.15")],
+          stateDir,
+        });
+        const agy15 = inventory15.providers.find((p) => String(p.instanceId) === "antigravity");
+        assert.isUndefined(agy15?.skills.find((s) => s.name === "shared-skill"));
+
+        // When ~/.agents/skills itself is a symlink to ~/.gemini/config/skills, enabled
+        // ~/.gemini/config/skills entries keep their toggle capability.
+        const linkedHome = path.join(root, "linked-home");
+        const geminiSkills = path.join(linkedHome, ".gemini", "config", "skills");
+        const geminiOwnSkill = path.join(geminiSkills, "own-skill");
+        yield* fs.makeDirectory(geminiOwnSkill, { recursive: true });
+        yield* fs.writeFileString(
+          path.join(geminiOwnSkill, "SKILL.md"),
+          "---\nname: own-skill\ndescription: Own Gemini skill\n---\n# Own\n",
+        );
+        yield* fs.makeDirectory(path.join(linkedHome, ".agents"), { recursive: true });
+        yield* fs.symlink(geminiSkills, path.join(linkedHome, ".agents", "skills"));
+        const linkedStateDir = path.join(root, "linked-state");
+        const { antigravityInstancePaths } = yield* Effect.promise(
+          () => import("./antigravity/AntigravityProfile.ts"),
+        );
+        const { shareAntigravityUserConfigNow } = yield* Effect.promise(
+          () => import("./antigravity/AntigravityUserConfig.ts"),
+        );
+        const linkedProfileDir = antigravityInstancePaths(linkedStateDir, "antigravity").profileDir;
+        yield* Effect.promise(() =>
+          shareAntigravityUserConfigNow({
+            userHome: linkedHome,
+            profileDir: linkedProfileDir,
+            platform: "linux",
+          }),
+        );
+        const linkedSettings = makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: false },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+          providerInstances: {
+            antigravity: {
+              driver: "antigravity",
+              displayName: "Antigravity",
+              enabled: true,
+              config: { enabled: true },
+              environment: [
+                { name: "HOME", value: linkedHome },
+                { name: "USERPROFILE", value: linkedHome },
+              ],
+            },
+          },
+        });
+        const linkedInventory = yield* readProviderExtensionsInventory({
+          request: { cwd: project },
+          settings: linkedSettings,
+          providers: [makeSnapshot("1.5.19")],
+          stateDir: linkedStateDir,
+        });
+        const linkedOwn = linkedInventory.providers
+          .find((p) => String(p.instanceId) === "antigravity")
+          ?.skills.find((s) => s.name === "own-skill");
+        assert.isDefined(linkedOwn);
+        assert.equal(linkedOwn?.canToggle, true);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });
