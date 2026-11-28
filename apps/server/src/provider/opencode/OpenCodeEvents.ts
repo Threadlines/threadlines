@@ -116,8 +116,27 @@ const ShellInfo = Schema.Struct({
   ),
 });
 
+const Location = Schema.Struct({
+  directory: OptionalString,
+});
+
+const locationEvent = <const Type extends string>(type: Type) =>
+  Schema.Struct({
+    type: Schema.Literal(type),
+    location: Schema.optional(Location),
+  });
+
 const OpenCodeEventSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("server.connected") }),
+  locationEvent("agent.updated"),
+  locationEvent("command.updated"),
+  locationEvent("config.updated"),
+  locationEvent("credential.updated"),
+  locationEvent("credential.switched"),
+  locationEvent("mcp.status.changed"),
+  locationEvent("model.updated"),
+  locationEvent("provider.updated"),
+  locationEvent("skill.updated"),
   sessionEvent("session.created", {
     parentID: Schema.optional(Schema.NullOr(Id)),
     title: OptionalString,
@@ -282,6 +301,15 @@ export function decodeOpenCodeFrame(frame: unknown): DecodedOpenCodeFrame {
 export function openCodeEventSessionId(event: OpenCodeEvent): string | undefined {
   switch (event.type) {
     case "server.connected":
+    case "agent.updated":
+    case "command.updated":
+    case "config.updated":
+    case "credential.updated":
+    case "credential.switched":
+    case "mcp.status.changed":
+    case "model.updated":
+    case "provider.updated":
+    case "skill.updated":
     case "shell.exited":
       return undefined;
     case "form.created":

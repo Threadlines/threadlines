@@ -6,6 +6,7 @@ import type {
   ServerProviderAccountUsage,
   ServerProviderAuth,
   ServerProviderDetection,
+  ServerProviderSessionCommands,
   ServerProviderSkill,
   ServerProviderSlashCommand,
   ServerProviderModel,
@@ -20,6 +21,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { normalizeModelSlug } from "@threadlines/shared/model";
+import { sameSlashCommands } from "@threadlines/shared/slashCommands";
 import { planCliSpawn } from "../cliSpawn.ts";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import { createProviderVersionAdvisory } from "./providerMaintenance.ts";
@@ -342,3 +344,46 @@ export const collectStreamAsString = <E>(
   stream: Stream.Stream<Uint8Array, E>,
 ): Effect.Effect<string, E> =>
   collectUint8StreamText({ stream }).pipe(Effect.map((collected) => collected.text));
+
+/**
+ * A snapshot with the sessions' slash-command lists as they are now: returns
+ * the same snapshot when nothing changed (so no update is published), and
+ * strips any list the snapshot carried before when no session lists commands.
+ */
+export function withSessionCommands(
+  snapshot: ServerProvider,
+  bySession: ReadonlyMap<string, ReadonlyArray<ServerProviderSlashCommand>>,
+): ServerProvider {
+  const { sessionCommands: previous, ...rest } = snapshot;
+  if (bySession.size === 0) return previous === undefined ? snapshot : rest;
+  const next = groupSessionCommands(bySession);
+  const unchanged =
+    previous !== undefined &&
+    previous.length === next.length &&
+    previous.every((group, index) => {
+      const other = next[index];
+      return (
+        other !== undefined &&
+        group.sessions.length === other.sessions.length &&
+        group.sessions.every((session, at) => session === other.sessions[at]) &&
+        sameSlashCommands(group.commands, other.commands)
+      );
+    });
+  return unchanged ? snapshot : { ...rest, sessionCommands: next };
+}
+
+/** Sessions' lists for the status: each distinct list once, with the sessions that listed it. */
+export function groupSessionCommands(
+  bySession: ReadonlyMap<string, ReadonlyArray<ServerProviderSlashCommand>>,
+): ReadonlyArray<ServerProviderSessionCommands> {
+  const groups: Array<{
+    sessions: Array<string>;
+    commands: ReadonlyArray<ServerProviderSlashCommand>;
+  }> = [];
+  for (const [session, commands] of bySession) {
+    const group = groups.find((entry) => sameSlashCommands(entry.commands, commands));
+    if (group) group.sessions.push(session);
+    else groups.push({ sessions: [session], commands });
+  }
+  return groups;
+}

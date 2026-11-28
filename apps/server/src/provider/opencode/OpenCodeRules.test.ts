@@ -133,6 +133,22 @@ describe("openCodeSessionRules", () => {
     expect(effect(rulesWith(false), own, "*")).toBe("deny");
   });
 
+  it("denies all Threadlines browser tools when browserTools is false", () => {
+    const rules = [
+      ...BUILD_AGENT,
+      ...openCodeSessionRules({
+        runtimeMode: "full-access",
+        agentRules: BUILD_AGENT,
+        toolKey: ownKey,
+        browserTools: false,
+        roomTools: false,
+      }),
+    ];
+    expect(effect(rules, `${openCodeBrowserServerName(ownKey)}_browser_snapshot`, "*")).toBe(
+      "deny",
+    );
+  });
+
   it("honours a user's deny of Threadlines' own tools", () => {
     const agent: ReadonlyArray<OpenCodeRule> = [
       ...BUILD_AGENT,

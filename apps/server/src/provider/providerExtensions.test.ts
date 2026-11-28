@@ -3801,4 +3801,142 @@ Per-component (rounded)
       }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
     },
   );
+
+  it.effect(
+    "reads OpenCode MCP servers and skill policies from opencode.jsonc and OPENCODE_CONFIG_DIR",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "provider-ext-oc-jsonc-" });
+        const configDir = path.join(root, "custom-oc-config");
+        const project = path.join(root, "repo");
+        const stateDir = path.join(root, "state");
+
+        yield* fs.makeDirectory(path.join(project, ".git"), { recursive: true });
+        yield* fs.makeDirectory(path.join(configDir, "skills", "user-skill"), { recursive: true });
+        yield* fs.makeDirectory(path.join(configDir, "skills", "proj-locked"), { recursive: true });
+        yield* fs.makeDirectory(path.join(configDir, "skills", "jsonc-locked"), {
+          recursive: true,
+        });
+        yield* fs.writeFileString(
+          path.join(configDir, "skills", "user-skill", "SKILL.md"),
+          "---\nname: user-skill\ndescription: Toggleable\n---\nBody\n",
+        );
+        yield* fs.writeFileString(
+          path.join(configDir, "skills", "proj-locked", "SKILL.md"),
+          "---\nname: proj-locked\ndescription: Locked by project jsonc\n---\nBody\n",
+        );
+        yield* fs.writeFileString(
+          path.join(configDir, "skills", "jsonc-locked", "SKILL.md"),
+          "---\nname: jsonc-locked\ndescription: Managed in user jsonc\n---\nBody\n",
+        );
+        yield* fs.writeFileString(
+          path.join(configDir, "opencode.jsonc"),
+          `{
+            // User JSONC config with trailing commas
+            "mcp": {
+              "linear": { "type": "remote", "url": "https://mcp.linear.app/mcp", },
+            },
+            "policies": [
+              { "action": "skill.use", "resource": "jsonc-locked", "effect": "deny", },
+            ],
+          }\n`,
+        );
+        yield* fs.writeFileString(
+          path.join(project, "opencode.jsonc"),
+          `{
+            // Project JSONC config
+            "mcp": {
+              "repo-tool": { "type": "local", "command": ["node", "mcp.js"], },
+            },
+            "policies": [
+              { "action": "skill.use", "resource": "proj-locked", "effect": "deny", },
+            ],
+          }\n`,
+        );
+
+        const settings = makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: false },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+          providerInstances: {
+            opencode: {
+              driver: "opencode",
+              displayName: "OpenCode",
+              enabled: true,
+              config: { enabled: true, serverUrl: "" },
+              environment: [{ name: "OPENCODE_CONFIG_DIR", value: configDir, sensitive: false }],
+            },
+          },
+        });
+
+        const inventory = yield* readProviderExtensionsInventory({
+          request: { cwd: project, providerInstanceId: ProviderInstanceId.make("opencode") },
+          settings,
+          providers: [],
+          stateDir,
+        });
+        const oc = inventory.providers[0];
+        assert.isDefined(oc);
+        assert.deepEqual(
+          oc?.mcpServers.map((s) => `${s.name}:${s.origin?.kind}:${s.transport}`),
+          ["linear:user:http", "repo-tool:project:stdio"],
+        );
+        const projLocked = oc?.skills.find((s) => s.name === "proj-locked");
+        assert.equal(projLocked?.enabled, false);
+        assert.equal(projLocked?.canToggle, undefined);
+        assert.match(projLocked?.toggleNotice ?? "", /project's opencode\.jsonc/i);
+
+        const jsoncLocked = oc?.skills.find((s) => s.name === "jsonc-locked");
+        assert.equal(jsoncLocked?.enabled, false);
+        assert.equal(jsoncLocked?.canToggle, undefined);
+        assert.match(jsoncLocked?.toggleNotice ?? "", /Managed by opencode\.jsonc/i);
+
+        const toggleable = oc?.skills.find((s) => s.name === "user-skill");
+        assert.equal(toggleable?.enabled, true);
+        assert.equal(toggleable?.canToggle, true);
+
+        // Enabling a skill denied in lower-precedence config.json writes an explicit allow to opencode.json.
+        yield* fs.writeFileString(
+          path.join(configDir, "config.json"),
+          JSON.stringify({
+            policies: [{ action: "skill.use", resource: "user-skill", effect: "deny" }],
+          }),
+        );
+        const beforeOverride = yield* readProviderExtensionsInventory({
+          request: { cwd: project, providerInstanceId: ProviderInstanceId.make("opencode") },
+          settings,
+          providers: [],
+          stateDir,
+        });
+        assert.equal(
+          beforeOverride.providers[0]?.skills.find((s) => s.name === "user-skill")?.enabled,
+          false,
+        );
+        yield* setProviderExtensionSkillEnabled({
+          request: {
+            cwd: project,
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            path: toggleable!.path,
+            enabled: true,
+          },
+          settings,
+          stateDir,
+        });
+        const afterOverride = yield* readProviderExtensionsInventory({
+          request: { cwd: project, providerInstanceId: ProviderInstanceId.make("opencode") },
+          settings,
+          providers: [],
+          stateDir,
+        });
+        assert.equal(
+          afterOverride.providers[0]?.skills.find((s) => s.name === "user-skill")?.enabled,
+          true,
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

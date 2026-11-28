@@ -25,6 +25,9 @@
  *
  * @module provider/Layers/OpenCodeAdapter
  */
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
+
 import {
   ApprovalRequestId,
   type CanonicalItemType,
@@ -44,10 +47,13 @@ import {
   RuntimeRequestId,
   RuntimeTaskId,
   type RuntimeMode,
+  type RuntimeUsageLimit,
+  type ServerProviderSlashCommand,
   type ThreadId,
   TurnId,
 } from "@threadlines/contracts";
 import { withFailureCategory } from "../providerFailureCategory.ts";
+import { nonEmptyTrimmed } from "../providerSnapshot.ts";
 import {
   MANAGED_WORKTREE_INSTRUCTION,
   renderThreadContextSeed,
@@ -55,6 +61,7 @@ import {
 } from "@threadlines/shared/contextSeed";
 import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
 import { randomUUIDv4 } from "@threadlines/shared/uuid";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -99,7 +106,7 @@ import {
 import { FILE_LINK_INSTRUCTIONS } from "../fileLinkInstructions.ts";
 import {
   type OpenCodeClient,
-  type OpenCodeError,
+  OpenCodeError,
   type OpenCodeModelRef,
   openCodeErrorDetail,
   openCodeErrorStatus,
@@ -134,7 +141,6 @@ import {
   openCodeThreadToolKey,
 } from "../opencode/OpenCodeRules.ts";
 import type {
-  OpenCodeActiveServer,
   OpenCodeServerManagerShape,
   OpenCodeServerSignal,
 } from "../opencode/OpenCodeServerManager.ts";
@@ -158,14 +164,21 @@ const BUILD_AGENT = "build";
 const PLAN_AGENT = "plan";
 /** How long a stop may take before the adapter checks whether OpenCode is still running. */
 const STOP_SETTLE_TIMEOUT = Duration.seconds(10);
+/** Maximum repeated stop checks before leaving an unresponsive turn open. */
+const STOP_SETTLE_MAX_CHECKS = 6;
 /** Asking OpenCode whether stopped work ended: each call's limit, and how often to ask again. */
 const OPENCODE_CONFIRM_CALL_TIMEOUT = Duration.seconds(5);
 const OPENCODE_CONFIRM_RETRY = Duration.millis(500);
 const OPENCODE_CONFIRM_ATTEMPTS = 10;
 /** How long a turn waits for the execution OpenCode starts to deliver steered input. */
 const HELD_END_GRACE = Duration.seconds(5);
+/** Maximum repeated inbox polls while waiting for a steered prompt to start executing. */
+const HELD_END_MAX_CHECKS = 12;
 /** Lists (models, agents) are empty for a moment in a directory the server has not loaded yet. */
 const CATALOG_RETRY_DEADLINE = Duration.seconds(5);
+/** How long a live shell output poll may wait before returning `pending`. */
+const COMMAND_OUTPUT_TIMEOUT_MS = 5_000;
+const OPENCODE_PLAN_FILE_PATTERN = /(?:^|[\\/])\.opencode[\\/]plans[\\/][^\\/]+\.md$/iu;
 const DECLINE_MESSAGE =
   "The user declined this action. Do not try it again; continue without it or ask the user how to proceed.";
 const QUESTION_DISMISSED_MESSAGE =
@@ -178,6 +191,15 @@ export interface OpenCodeAdapterOptions {
   readonly settings: OpenCodeSettings;
   readonly manager: OpenCodeServerManagerShape;
   readonly nativeEventLogger?: EventNdjsonLogger | undefined;
+  /** Per-session slash commands, for the provider snapshot (`sessionCommands`). */
+  readonly onSessionCommands?: (
+    sessionKey: string,
+    commands: ReadonlyArray<ServerProviderSlashCommand> | undefined,
+  ) => Effect.Effect<void>;
+  /** Fired when OpenCode reports a catalog, config, skill, command, or credential change. */
+  readonly onCatalogChanged?: Effect.Effect<void>;
+  /** Current plan usage limit when a rate-limit or quota failure does not name a reset time. */
+  readonly readUsageLimit?: Effect.Effect<RuntimeUsageLimit | undefined>;
 }
 
 type Terminal =
@@ -192,16 +214,24 @@ type Terminal =
 interface ActiveTurn {
   readonly turnId: TurnId;
   readonly origin: "user" | "provider";
+  /** True when this turn ran on OpenCode's `plan` agent. */
+  readonly plan: boolean;
   /** The prompt that opened a user turn; also its fork and rollback boundary. */
   readonly promptId: string | undefined;
   /** Prompts and steers of ours OpenCode has not delivered yet. */
   readonly undelivered: Set<string>;
   /** When the turn began (epoch ms); history after it belongs to the turn. */
   readonly startedAt: number;
+  /** Last non-empty assistant text block completed during this turn. */
+  finalText: string;
+  /** Plan markdown file under `.opencode/plans/` written during this plan turn, if any. */
+  planFilePath: string | undefined;
   executionStarted: boolean;
   stopRequested: boolean;
   heldEnd: Terminal | undefined;
+  holdToken: number;
   heldEndFiber: Fiber.Fiber<void> | undefined;
+  stopCheckFiber: Fiber.Fiber<void> | undefined;
   readonly done: Deferred.Deferred<void>;
 }
 
@@ -262,6 +292,17 @@ type SessionSignalItem =
       readonly permission: OpenCodePermissionRequest;
     }
   | {
+      readonly _tag: "FinishTurn";
+      readonly turn: ActiveTurn;
+      readonly terminal: Terminal;
+    }
+  | {
+      readonly _tag: "FinishHeldTurn";
+      readonly turn: ActiveTurn;
+      readonly holdToken: number;
+      readonly terminal: Terminal;
+    }
+  | {
       readonly _tag: "ServerGone";
       readonly failure: string | undefined;
     };
@@ -271,12 +312,15 @@ interface SessionContext {
   session: ProviderSession;
   readonly rootSessionId: string;
   readonly directory: string;
+  readonly external: boolean;
   readonly generation: number;
   readonly client: OpenCodeClient;
   readonly scope: Scope.Closeable;
   /** Per-session FIFO queue so one thread's HTTP work never blocks another thread's SSE stream. */
   readonly eventQueue: Queue.Queue<SessionSignalItem>;
   readonly toolKey: string;
+  /** Whether Threadlines' local loopback MCP servers are attached for this session. */
+  localToolServers: boolean;
   /** The room endpoint is attached: every room tool, or the app guide alone (roomEndpointGrant). */
   readonly roomEndpoint: boolean;
   /** With the room tools: agents may change scheduled tasks; its instructions say so. */
@@ -291,6 +335,8 @@ interface SessionContext {
   readonly projectInstructions: string | undefined;
   readonly runtimeMode: RuntimeMode;
   agent: string;
+  /** Preferred non-plan primary agent for this session (kept when resuming a custom agent). */
+  defaultAgent: string;
   model: OpenCodeModelRef | undefined;
   contextLimit: number | undefined;
   pendingSeed: string | undefined;
@@ -327,7 +373,16 @@ interface SessionContext {
   readonly questionIds: Map<string, ApprovalRequestId>;
   /** Unsupported form cancellations currently in flight (formId -> sessionId). */
   readonly inFlightFormCancels: Map<string, string>;
-  readonly backgroundShells: Map<string, { readonly callId: string; readonly sessionId: string }>;
+  readonly backgroundShells: Map<
+    string,
+    {
+      readonly callId: string;
+      readonly sessionId: string;
+      readonly description?: string;
+    }
+  >;
+  /** Background shells the user moved past (`releaseBackgroundCommands`); kept alive, not awaited. */
+  readonly releasedBackgroundShells: Set<string>;
   /** Diff previews from approval requests, by tool call: `write` reports none when it succeeds. */
   readonly approvalPreviews: Map<string, unknown>;
   readonly shellCalls: Map<string, string>;
@@ -342,6 +397,8 @@ interface SessionContext {
   /** Set when `ServerGone` is observed so queued resyncs skip dead-server HTTP calls. */
   serverGone: boolean;
   stopped: boolean;
+  /** Resolved when `stopContext` runs so callers awaiting queue settlement never hang. */
+  readonly stoppedDeferred: Deferred.Deferred<void>;
 }
 
 interface AgentInfo {
@@ -357,6 +414,69 @@ interface ModelInfo {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isLoopbackServerUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+function resolveProjectPlanFilePath(
+  directory: string,
+  rawPath: string,
+): { readonly absolute: string; readonly relative: string } | undefined {
+  const trimmed = rawPath.trim();
+  if (!trimmed || !OPENCODE_PLAN_FILE_PATTERN.test(trimmed)) return undefined;
+  const plansDir = NodePath.resolve(directory, ".opencode", "plans");
+  const absolute = NodePath.resolve(directory, trimmed);
+  const rel = NodePath.relative(plansDir, absolute);
+  if (
+    rel.length === 0 ||
+    rel.startsWith("..") ||
+    NodePath.isAbsolute(rel) ||
+    /[\\/]/u.test(rel) ||
+    !/\.md$/iu.test(rel)
+  ) {
+    return undefined;
+  }
+  return { absolute, relative: `.opencode/plans/${rel}` };
+}
+
+function extractPlanFilePath(
+  directory: string,
+  toolInput: unknown,
+  metadata: unknown,
+): string | undefined {
+  if (isRecord(metadata) && Array.isArray(metadata.files)) {
+    for (const file of metadata.files) {
+      if (!isRecord(file)) continue;
+      for (const key of ["filePath", "path", "file"] as const) {
+        const candidate = file[key];
+        if (typeof candidate === "string") {
+          const resolved = resolveProjectPlanFilePath(directory, candidate);
+          if (resolved) return resolved.relative;
+        }
+      }
+    }
+  }
+  if (isRecord(toolInput)) {
+    for (const key of ["filePath", "path", "file"] as const) {
+      const candidate = toolInput[key];
+      if (typeof candidate === "string") {
+        const resolved = resolveProjectPlanFilePath(directory, candidate);
+        if (resolved) return resolved.relative;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isOpenCodeSessionNotFound(error: OpenCodeError): boolean {
+  return openCodeErrorStatus(error) === 404 || openCodeErrorTag(error) === "SessionNotFoundError";
 }
 
 /** The prompt id for a Threadlines message: stable, so a resend is the same prompt. */
@@ -494,17 +614,25 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       { readonly generation: number; readonly value: ReadonlyArray<ModelInfo> }
     >();
     const MCP_SERVER_CACHE_TTL_MS = 30_000;
+    let mcpCacheVersion = 0;
+    let commandCacheVersion = 0;
     const mcpServerCache = new Map<
       string,
       {
         readonly generation: number;
+        readonly version: number;
         readonly loadedAtMs: number;
         readonly value: ReadonlyArray<string>;
       }
     >();
     const commandCache = new Map<
       string,
-      { readonly generation: number; readonly value: ReadonlySet<string> }
+      {
+        readonly generation: number;
+        readonly version: number;
+        readonly commands: ReadonlyArray<ServerProviderSlashCommand>;
+        readonly names: ReadonlySet<string>;
+      }
     >();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -574,7 +702,11 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         Effect.flatMap((items) =>
           items.length > 0 ? Effect.succeed(items) : Effect.fail("empty" as const),
         ),
-        Effect.retry({ schedule: Schedule.spaced(Duration.millis(250)), times: 20 }),
+        Effect.retry({
+          while: (error) => error === "empty",
+          schedule: Schedule.spaced(Duration.millis(250)),
+          times: 20,
+        }),
         Effect.timeoutOption(CATALOG_RETRY_DEADLINE),
         Effect.map((found) => (found._tag === "Some" ? found.value : [])),
         Effect.catch((error) => (error === "empty" ? Effect.succeed([]) : Effect.fail(error))),
@@ -630,36 +762,78 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       });
 
     const loadMcpServers = (client: OpenCodeClient, directory: string, generation: number) =>
-      runOpenCode("mcp.list", (signal) =>
-        client.mcp.list({ location: { directory } }, { signal }),
-      ).pipe(
-        Effect.map((result) => (result.data ?? []).map((server) => server.name)),
-        Effect.tap((names) =>
-          Effect.sync(() => {
-            if ((mcpServerCache.get(directory)?.generation ?? -1) <= generation) {
-              mcpServerCache.set(directory, { generation, loadedAtMs: Date.now(), value: names });
-            }
-          }),
-        ),
-        Effect.orElseSucceed(() => mcpServerCache.get(directory)?.value ?? []),
-      );
+      Effect.suspend(() => {
+        const version = mcpCacheVersion;
+        return runOpenCode("mcp.list", (signal) =>
+          client.mcp.list({ location: { directory } }, { signal }),
+        ).pipe(
+          Effect.map((result) => (result.data ?? []).map((server) => server.name)),
+          Effect.tap((names) =>
+            Effect.sync(() => {
+              const existing = mcpServerCache.get(directory);
+              if (
+                version === mcpCacheVersion &&
+                (existing?.generation ?? -1) <= generation &&
+                (existing?.version ?? -1) <= version
+              ) {
+                mcpServerCache.set(directory, {
+                  generation,
+                  version,
+                  loadedAtMs: Date.now(),
+                  value: names,
+                });
+              }
+            }),
+          ),
+          Effect.orElseSucceed(() => mcpServerCache.get(directory)?.value ?? []),
+        );
+      });
 
     /** The project's slash commands (`/init`, `/review`, the user's own). */
     const loadCommands = (client: OpenCodeClient, directory: string, generation: number) =>
       Effect.gen(function* () {
+        const version = commandCacheVersion;
         const cached = commandCache.get(directory);
-        if (cached && cached.generation === generation) return cached.value;
-        const names = yield* runOpenCode("command.list", (signal) =>
+        if (cached && cached.generation === generation && cached.version === version) {
+          return { commands: cached.commands, names: cached.names, version };
+        }
+        const commands = yield* runOpenCode("command.list", (signal) =>
           client.command.list({ location: { directory } }, { signal }),
         ).pipe(
-          Effect.map((result) => new Set((result.data ?? []).map((command) => command.name))),
-          Effect.orElseSucceed(() => new Set<string>()),
+          Effect.map((result) =>
+            (result.data ?? []).flatMap((command): ReadonlyArray<ServerProviderSlashCommand> => {
+              const name = nonEmptyTrimmed(command.name);
+              if (!name) return [];
+              const description = nonEmptyTrimmed(command.description);
+              return [{ name, ...(description ? { description } : {}) }];
+            }),
+          ),
+          Effect.orElseSucceed(() => [] as ReadonlyArray<ServerProviderSlashCommand>),
         );
-        if (names.size > 0 && (commandCache.get(directory)?.generation ?? -1) <= generation) {
-          commandCache.set(directory, { generation, value: names });
+        const names = new Set(commands.map((command) => command.name));
+        const existing = commandCache.get(directory);
+        if (
+          version === commandCacheVersion &&
+          commands.length > 0 &&
+          (existing?.generation ?? -1) <= generation &&
+          (existing?.version ?? -1) <= version
+        ) {
+          commandCache.set(directory, { generation, version, commands, names });
         }
-        return names;
+        return { commands, names, version };
       });
+
+    const publishSessionCommands = (ctx: SessionContext) =>
+      options.onSessionCommands
+        ? loadCommands(ctx.client, ctx.directory, ctx.generation).pipe(
+            Effect.flatMap(({ commands, version }) =>
+              ctx.stopped || version !== commandCacheVersion
+                ? Effect.void
+                : options.onSessionCommands!(ctx.threadId, commands),
+            ),
+            Effect.ignore,
+          )
+        : Effect.void;
 
     const cachedContextLimit = (
       directory: string,
@@ -692,17 +866,22 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
 
     const rulesFor = (ctx: SessionContext, agentId: string) =>
       Effect.gen(function* () {
-        const agents = yield* loadAgents(ctx.client, ctx.directory, ctx.generation).pipe(
-          Effect.orElseSucceed(() => []),
-        );
+        const agents = yield* loadAgents(ctx.client, ctx.directory, ctx.generation);
+        if (agents.length === 0) {
+          return yield* new OpenCodeError({
+            operation: "agent.list",
+            detail: "OpenCode returned no agents, so session permission rules could not be built.",
+          });
+        }
         return openCodeSessionRules({
           runtimeMode: ctx.runtimeMode,
           agentRules: agents.find((agent) => agent.id === agentId)?.rules ?? [],
           toolKey: ctx.toolKey,
-          roomTools: ctx.roomEndpoint,
-          agentPages: ctx.agentPageAssetsDir !== undefined,
-          commandRequests: ctx.commandRequests,
-          deviceTools: ctx.deviceTools,
+          browserTools: ctx.localToolServers,
+          roomTools: ctx.localToolServers && ctx.roomEndpoint,
+          agentPages: ctx.localToolServers && ctx.agentPageAssetsDir !== undefined,
+          commandRequests: ctx.localToolServers && ctx.commandRequests,
+          deviceTools: ctx.localToolServers && ctx.deviceTools,
         });
       });
 
@@ -785,9 +964,16 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           yield* appendBlock(ctx, block, finalText.slice(block.text.length));
         }
         block.done = true;
-        if (block.kind === "text" && block.sessionId !== ctx.rootSessionId) {
-          const child = ctx.children.get(block.sessionId);
-          if (child && block.text.trim()) child.lastText = block.text.trim();
+        if (block.kind === "text") {
+          const trimmed = block.text.trim();
+          if (block.sessionId === ctx.rootSessionId) {
+            if (trimmed && ctx.activeTurn && block.turnId === ctx.activeTurn.turnId) {
+              ctx.activeTurn.finalText = trimmed;
+            }
+          } else {
+            const child = ctx.children.get(block.sessionId);
+            if (child && trimmed) child.lastText = trimmed;
+          }
         }
         const summary = block.text.trim();
         block.text = "";
@@ -919,6 +1105,16 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       Effect.gen(function* () {
         if (tool.done) return;
         tool.done = true;
+        if (
+          !outcome.failed &&
+          tool.sessionId === ctx.rootSessionId &&
+          tool.identity.kind === "edit" &&
+          ctx.activeTurn?.plan &&
+          tool.turnId === ctx.activeTurn.turnId
+        ) {
+          const planPath = extractPlanFilePath(ctx.directory, tool.input, outcome.metadata);
+          if (planPath) ctx.activeTurn.planFilePath = planPath;
+        }
         const base = yield* eventBase(ctx, tool.sessionId, tool.turnId);
         if (tool.identity.kind === "shell") {
           const output = openCodeCommandOutput(outcome.content) || outcome.error || "";
@@ -1175,12 +1371,49 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         });
       });
 
+    // ── Background tasks ────────────────────────────────────────────────
+
+    const publishBackgroundTasks = (ctx: SessionContext) =>
+      Effect.gen(function* () {
+        const shellTasks = [...ctx.backgroundShells.entries()].map(([shellId, shell]) => ({
+          taskId: RuntimeTaskId.make(shellId),
+          taskType: "local_bash",
+          kind: "command" as const,
+          toolUseId: shell.callId,
+          stoppable: true,
+          ...(shell.description ? { description: shell.description } : {}),
+          ...(ctx.releasedBackgroundShells.has(shellId) ? { awaited: false } : {}),
+        }));
+        const agentTasks = [...ctx.children.values()]
+          .filter((child) => child.background && child.status === "running")
+          .map((child) => ({
+            taskId: RuntimeTaskId.make(child.sessionId),
+            taskType: "local_agent",
+            kind: "agent" as const,
+            stoppable: true,
+            ...(child.callId ? { toolUseId: child.callId } : {}),
+            ...(child.title ? { description: child.title } : {}),
+          }));
+        yield* emit({
+          type: "task.snapshot.updated",
+          ...(yield* eventBase(ctx, ctx.rootSessionId, ctx.activeTurn?.turnId)),
+          payload: {
+            tasks: [...shellTasks, ...agentTasks],
+          },
+        });
+      });
+
     // ── Turns ────────────────────────────────────────────────────────────
 
     const finishTurn = (ctx: SessionContext, turn: ActiveTurn, terminal: Terminal) =>
       Effect.gen(function* () {
         if (ctx.activeTurn !== turn) return;
-        if (turn.heldEndFiber) yield* Fiber.interrupt(turn.heldEndFiber);
+        const heldFiber = turn.heldEndFiber;
+        turn.heldEndFiber = undefined;
+        if (heldFiber) yield* Fiber.interrupt(heldFiber);
+        const stopFiber = turn.stopCheckFiber;
+        turn.stopCheckFiber = undefined;
+        if (stopFiber) yield* Fiber.interrupt(stopFiber);
         yield* closeBlocks(ctx, ctx.rootSessionId);
         yield* closeTools(ctx, ctx.rootSessionId, terminal.kind !== "succeeded");
         yield* dropPendingRequests(ctx, ctx.rootSessionId);
@@ -1229,12 +1462,70 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             }
           }
         }
+        // Perform any async lookups (plan file read, usage limit lookup) while
+        // `ctx.activeTurn` still holds `turn`, so a concurrent `sendTurn` waits
+        // on `turn.done` and can never start a new turn before terminal events
+        // and `runtime.error` are emitted in order.
+        const stopped =
+          turn.stopRequested || (terminal.kind === "interrupted" && terminal.reason === "user");
+        const failureCategory =
+          terminal.kind === "failed" ? openCodeFailureCategory(terminal.type) : undefined;
+        const failedErrorMessage =
+          terminal.kind === "failed"
+            ? failureMessage(terminal)
+            : terminal.kind === "interrupted" && !stopped && terminal.reason !== "superseded"
+              ? terminal.reason === "inactivity"
+                ? "OpenCode stopped the run after an hour without activity."
+                : "OpenCode stopped the run before it finished."
+              : undefined;
+
+        let planMarkdown = "";
+        if (turn.plan && terminal.kind === "succeeded") {
+          const resolvedPlan = turn.planFilePath
+            ? resolveProjectPlanFilePath(ctx.directory, turn.planFilePath)
+            : undefined;
+          let planFromFile = "";
+          if (resolvedPlan) {
+            if (typeof ctx.client.file?.read === "function") {
+              planFromFile = yield* runOpenCode(
+                "file.read",
+                (signal) =>
+                  ctx.client.file.read(
+                    { location: { directory: ctx.directory }, path: resolvedPlan.relative },
+                    { signal },
+                  ),
+                { timeoutMs: COMMAND_OUTPUT_TIMEOUT_MS },
+              ).pipe(
+                Effect.map((bytes) => new TextDecoder().decode(bytes).trim()),
+                Effect.orElseSucceed(() => ""),
+              );
+            }
+            if (!planFromFile && !ctx.external) {
+              planFromFile = yield* fileSystem.readFileString(resolvedPlan.absolute).pipe(
+                Effect.map((content) => content.trim()),
+                Effect.orElseSucceed(() => ""),
+              );
+            }
+          }
+          planMarkdown = planFromFile || turn.finalText.trim();
+        }
+        const usageLimit =
+          failureCategory === "rate_limit" && options.readUsageLimit
+            ? yield* options.readUsageLimit.pipe(Effect.orElseSucceed(() => undefined))
+            : undefined;
+
+        if (ctx.stopped || ctx.activeTurn !== turn) return;
         ctx.activeTurn = undefined;
         ctx.turns.push({ id: turn.turnId, promptId: turn.promptId });
         const { activeTurnId: _active, ...session } = ctx.session;
         ctx.session = { ...session, status: "ready", updatedAt: yield* nowIso };
-        const stopped =
-          turn.stopRequested || (terminal.kind === "interrupted" && terminal.reason === "user");
+        if (planMarkdown.length > 0) {
+          yield* emit({
+            type: "turn.proposed.completed",
+            ...(yield* eventBase(ctx, ctx.rootSessionId, turn.turnId)),
+            payload: { planMarkdown },
+          });
+        }
         yield* emit({
           type: "turn.completed",
           ...(yield* eventBase(ctx, ctx.rootSessionId, turn.turnId)),
@@ -1244,20 +1535,29 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               : terminal.kind === "failed"
                 ? {
                     state: "failed",
-                    errorMessage: failureMessage(terminal),
-                    ...withFailureCategory(openCodeFailureCategory(terminal.type)),
+                    errorMessage: failedErrorMessage!,
+                    ...withFailureCategory(failureCategory),
+                    ...(usageLimit ? { usageLimit } : {}),
                   }
                 : stopped || terminal.reason === "superseded"
                   ? { state: "interrupted", stopReason: terminal.reason ?? "user" }
                   : {
                       state: "failed",
                       stopReason: terminal.reason ?? null,
-                      errorMessage:
-                        terminal.reason === "inactivity"
-                          ? "OpenCode stopped the run after an hour without activity."
-                          : "OpenCode stopped the run before it finished.",
+                      errorMessage: failedErrorMessage!,
                     },
         });
+        if (failedErrorMessage !== undefined) {
+          yield* emit({
+            type: "runtime.error",
+            ...(yield* eventBase(ctx, ctx.rootSessionId, undefined)),
+            payload: {
+              message: failedErrorMessage,
+              class: failureCategory === "auth" ? "authentication_error" : "provider_error",
+              ...withFailureCategory(failureCategory),
+            },
+          });
+        }
         yield* Deferred.succeed(turn.done, undefined);
       });
 
@@ -1267,6 +1567,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         readonly turnId: TurnId;
         readonly origin: ActiveTurn["origin"];
         readonly promptId?: string;
+        readonly plan?: boolean;
       },
     ) =>
       Effect.gen(function* () {
@@ -1274,13 +1575,18 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         const turn: ActiveTurn = {
           turnId: input.turnId,
           origin: input.origin,
+          plan: input.plan ?? false,
           promptId: input.promptId,
           undelivered: new Set(input.promptId ? [input.promptId] : []),
           startedAt: Date.now(),
+          finalText: "",
+          planFilePath: undefined,
           executionStarted: false,
           stopRequested: false,
           heldEnd: undefined,
+          holdToken: 0,
           heldEndFiber: undefined,
+          stopCheckFiber: undefined,
           done: yield* Deferred.make<void>(),
         };
         ctx.activeTurn = turn;
@@ -1301,23 +1607,54 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
     /**
      * Steered input OpenCode has not delivered yet makes it start another
      * execution; the turn stays open for it. If none comes, the turn ends
-     * with the execution that did.
+     * with the execution that did. Settlement runs on `ctx.eventQueue` so it
+     * never races with live SSE handlers.
      */
     const holdTurnEnd = (ctx: SessionContext, turn: ActiveTurn, terminal: Terminal) =>
       Effect.gen(function* () {
+        if (turn.heldEndFiber) {
+          const previous = turn.heldEndFiber;
+          turn.heldEndFiber = undefined;
+          yield* Fiber.interrupt(previous);
+        }
         turn.heldEnd = terminal;
+        turn.holdToken += 1;
+        const holdToken = turn.holdToken;
         turn.heldEndFiber = yield* Effect.gen(function* () {
-          yield* Effect.sleep(HELD_END_GRACE);
-          if (ctx.activeTurn !== turn || !turn.heldEnd) return;
-          const inbox = yield* runOpenCode("session.inbox.list", (signal) =>
-            ctx.client.session.inbox.list({ sessionID: ctx.rootSessionId }, { signal }),
-          ).pipe(Effect.orElseSucceed(() => []));
-          const stillQueued = inbox.some((item) => turn.undelivered.has(item.id));
-          if (!stillQueued) {
-            turn.undelivered.clear();
-            // This fiber is the timer; finishTurn must not interrupt it.
-            turn.heldEndFiber = undefined;
-            yield* finishTurn(ctx, turn, turn.heldEnd);
+          for (let attempt = 0; attempt < HELD_END_MAX_CHECKS; attempt += 1) {
+            yield* Effect.sleep(HELD_END_GRACE);
+            if (
+              ctx.stopped ||
+              ctx.activeTurn !== turn ||
+              turn.holdToken !== holdToken ||
+              !turn.heldEnd
+            ) {
+              return;
+            }
+            const inbox = yield* runOpenCode("session.inbox.list", (signal) =>
+              ctx.client.session.inbox.list({ sessionID: ctx.rootSessionId }, { signal }),
+            ).pipe(Effect.option);
+            if (
+              ctx.stopped ||
+              ctx.activeTurn !== turn ||
+              turn.holdToken !== holdToken ||
+              !turn.heldEnd
+            ) {
+              return;
+            }
+            // A failed inbox check proves nothing: keep the turn held and retry
+            // so a queued steer is not split into a separate turn.
+            if (Option.isNone(inbox)) continue;
+            const stillQueued = inbox.value.some((item) => turn.undelivered.has(item.id));
+            if (!stillQueued) {
+              yield* Queue.offer(ctx.eventQueue, {
+                _tag: "FinishHeldTurn",
+                turn,
+                holdToken,
+                terminal,
+              });
+              return;
+            }
           }
         }).pipe(Effect.forkIn(ctx.scope));
       });
@@ -1329,8 +1666,10 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           turn.executionStarted = true;
           if (turn.heldEnd) {
             turn.heldEnd = undefined;
-            if (turn.heldEndFiber) yield* Fiber.interrupt(turn.heldEndFiber);
+            turn.holdToken += 1;
+            const heldFiber = turn.heldEndFiber;
             turn.heldEndFiber = undefined;
+            if (heldFiber) yield* Fiber.interrupt(heldFiber);
           }
           return;
         }
@@ -1475,11 +1814,13 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               taskType: "local_agent",
               toolUseId: tool.callId,
               isBackgrounded: true,
+              pendingCountManagedBySnapshot: true,
               ...(child.agent ? { subagentType: child.agent } : {}),
               ...(typeof input.description === "string" ? { description: input.description } : {}),
               stoppable: true,
             },
           } as ProviderRuntimeEvent);
+          yield* publishBackgroundTasks(ctx);
         }
       });
 
@@ -1513,11 +1854,37 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               taskId: RuntimeTaskId.make(child.sessionId),
               taskType: "local_agent",
               toolUseId: child.callId,
+              pendingCountManagedBySnapshot: true,
               status:
                 status === "completed" ? "completed" : status === "failed" ? "failed" : "stopped",
             },
           } as ProviderRuntimeEvent);
+          yield* publishBackgroundTasks(ctx);
         }
+      });
+
+    const emitTokenUsage = (ctx: SessionContext, tokens: OpenCodeTokens) =>
+      Effect.gen(function* () {
+        const used = usedContextTokens(tokens);
+        if (used <= 0) return;
+        yield* emit({
+          type: "thread.token-usage.updated",
+          ...(yield* eventBase(ctx, ctx.rootSessionId, ctx.activeTurn?.turnId)),
+          payload: {
+            usage: {
+              usedTokens: used,
+              lastUsedTokens: used,
+              lastInputTokens: Math.round(tokens.input),
+              lastCachedInputTokens: Math.round(tokens.cache?.read ?? 0),
+              lastOutputTokens: Math.round(tokens.output),
+              ...(tokens.reasoning
+                ? { lastReasoningOutputTokens: Math.round(tokens.reasoning) }
+                : {}),
+              ...(ctx.contextLimit && ctx.contextLimit > 0 ? { maxTokens: ctx.contextLimit } : {}),
+              compactsAutomatically: true,
+            },
+          },
+        });
       });
 
     // ── Event routing ────────────────────────────────────────────────────
@@ -1645,28 +2012,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           case "session.step.failed": {
             const tokens = event.data.tokens;
             if (!isRoot || !tokens) return;
-            const used = usedContextTokens(tokens);
-            if (used <= 0) return;
-            yield* emit({
-              type: "thread.token-usage.updated",
-              ...(yield* eventBase(ctx, ctx.rootSessionId, ctx.activeTurn?.turnId)),
-              payload: {
-                usage: {
-                  usedTokens: used,
-                  lastUsedTokens: used,
-                  lastInputTokens: Math.round(tokens.input),
-                  lastCachedInputTokens: Math.round(tokens.cache?.read ?? 0),
-                  lastOutputTokens: Math.round(tokens.output),
-                  ...(tokens.reasoning
-                    ? { lastReasoningOutputTokens: Math.round(tokens.reasoning) }
-                    : {}),
-                  ...(ctx.contextLimit && ctx.contextLimit > 0
-                    ? { maxTokens: ctx.contextLimit }
-                    : {}),
-                  compactsAutomatically: true,
-                },
-              },
-            });
+            yield* emitTokenUsage(ctx, tokens);
             return;
           }
           case "session.text.started":
@@ -1737,9 +2083,12 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                   ? metadata.shellID
                   : [...ctx.shellCalls].find(([, callId]) => callId === tool.callId)?.[0];
               if (shellId) {
+                const description = openCodeToolDetail(tool.identity, tool.input);
+                ctx.shellCalls.set(shellId, tool.callId);
                 ctx.backgroundShells.set(shellId, {
                   callId: tool.callId,
                   sessionId: tool.sessionId,
+                  ...(description ? { description } : {}),
                 });
                 yield* emit({
                   type: "task.started",
@@ -1749,12 +2098,12 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                     taskType: "local_bash",
                     toolUseId: tool.callId,
                     isBackgrounded: true,
+                    pendingCountManagedBySnapshot: true,
                     stoppable: true,
-                    ...(openCodeToolDetail(tool.identity, tool.input)
-                      ? { description: openCodeToolDetail(tool.identity, tool.input)! }
-                      : {}),
+                    ...(description ? { description } : {}),
                   },
                 } as ProviderRuntimeEvent);
+                yield* publishBackgroundTasks(ctx);
               }
             }
             const preview = ctx.approvalPreviews.get(tool.callId);
@@ -1830,6 +2179,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               },
             });
             if (!failed) {
+              if (event.data.tokens) {
+                yield* emitTokenUsage(ctx, event.data.tokens);
+              }
               yield* emit({
                 type: "thread.state.changed",
                 ...(yield* eventBase(ctx, ctx.rootSessionId, ctx.activeTurn?.turnId)),
@@ -1870,6 +2222,15 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           case "session.revert.committed":
           case "session.revert.cleared":
           case "server.connected":
+          case "agent.updated":
+          case "command.updated":
+          case "config.updated":
+          case "credential.updated":
+          case "credential.switched":
+          case "mcp.status.changed":
+          case "model.updated":
+          case "provider.updated":
+          case "skill.updated":
             return;
         }
       }).pipe(
@@ -1886,6 +2247,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         const shell = ctx.backgroundShells.get(event.data.id);
         if (!shell) return;
         ctx.backgroundShells.delete(event.data.id);
+        ctx.releasedBackgroundShells.delete(event.data.id);
         ctx.shellCalls.delete(event.data.id);
         yield* emit({
           type: "task.completed",
@@ -1894,12 +2256,14 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             taskId: RuntimeTaskId.make(event.data.id),
             taskType: "local_bash",
             toolUseId: shell.callId,
+            pendingCountManagedBySnapshot: true,
             status:
               event.data.exit === 0 || event.data.exit === undefined || event.data.exit === null
                 ? "completed"
                 : "failed",
           },
         } as ProviderRuntimeEvent);
+        yield* publishBackgroundTasks(ctx);
       });
 
     /** A session's messages created at or after `since` (epoch ms), oldest first, every page. */
@@ -1968,23 +2332,70 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               continue;
             const state = isRecord(part.state) ? part.state : {};
             const tool = yield* toolStarted(ctx, sessionId, part.id, part.name);
+            const hadInput = tool.input !== undefined;
             if (
               !tool.done &&
-              tool.input === undefined &&
+              !hadInput &&
               state.input !== undefined &&
               typeof state.input !== "string"
             ) {
               tool.input = state.input;
             }
+            if (
+              tool.identity.kind === "subagent" &&
+              isRecord(state.metadata) &&
+              typeof state.metadata.sessionID === "string"
+            ) {
+              yield* linkChild(ctx, tool, state.metadata.sessionID);
+            }
             if (state.status === "completed" || state.status === "error") {
+              if (
+                state.status === "completed" &&
+                tool.identity.kind === "shell" &&
+                isRecord(state.metadata) &&
+                state.metadata.status === "running" &&
+                typeof state.metadata.shellID === "string"
+              ) {
+                const shellId = state.metadata.shellID;
+                ctx.shellCalls.set(shellId, tool.callId);
+                if (!ctx.backgroundShells.has(shellId)) {
+                  const description = openCodeToolDetail(tool.identity, tool.input);
+                  ctx.backgroundShells.set(shellId, {
+                    callId: tool.callId,
+                    sessionId: tool.sessionId,
+                    ...(description ? { description } : {}),
+                  });
+                  yield* emit({
+                    type: "task.started",
+                    ...(yield* eventBase(ctx, ctx.rootSessionId, tool.turnId)),
+                    payload: {
+                      taskId: RuntimeTaskId.make(shellId),
+                      taskType: "local_bash",
+                      toolUseId: tool.callId,
+                      isBackgrounded: true,
+                      pendingCountManagedBySnapshot: true,
+                      stoppable: true,
+                      ...(description ? { description } : {}),
+                    },
+                  } as ProviderRuntimeEvent);
+                  yield* publishBackgroundTasks(ctx);
+                }
+              }
+              const errorType =
+                isRecord(state.error) && typeof state.error.type === "string"
+                  ? state.error.type
+                  : undefined;
               yield* toolFinished(ctx, tool, {
                 failed: state.status === "error",
+                declined: errorType === "permission.rejected",
                 ...(Array.isArray(state.content) ? { content: state.content } : {}),
                 metadata: state.metadata,
                 ...(isRecord(state.error) && typeof state.error.message === "string"
                   ? { error: state.error.message }
                   : {}),
               });
+            } else if (!tool.done && !hadInput && tool.input !== undefined) {
+              yield* toolUpdated(ctx, tool);
             }
           }
         }
@@ -2091,11 +2502,13 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           (child) => child.status === "running" || child.sessionId in running,
         );
         // Idle sessions with no active turn, running execution, running child,
-        // or open ask cannot have missed anything while the stream was down.
+        // running background shell, or open ask cannot have missed anything
+        // while the stream was down.
         if (
           !turn &&
           !(ctx.rootSessionId in running) &&
           !hasActiveChild &&
+          ctx.backgroundShells.size === 0 &&
           ctx.approvals.size === 0 &&
           ctx.questions.size === 0
         ) {
@@ -2205,6 +2618,62 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           }
         }
 
+        // Reconcile background shells that may have exited while the stream was down.
+        const trackedShells = Array.from(ctx.backgroundShells.entries());
+        if (trackedShells.length > 0) {
+          const shellStatuses = yield* Effect.forEach(
+            trackedShells,
+            ([shellId]) =>
+              runOpenCode("shell.get", (signal) =>
+                ctx.client.shell.get(
+                  { id: shellId, location: { directory: ctx.directory } },
+                  { signal },
+                ),
+              ).pipe(
+                Effect.map((found) =>
+                  found.data?.status === "running"
+                    ? ("running" as const)
+                    : found.data?.exit === 0 || found.data?.exit === undefined
+                      ? ("completed" as const)
+                      : ("failed" as const),
+                ),
+                Effect.catch((error) =>
+                  Effect.succeed(
+                    openCodeErrorStatus(error) === 404 ||
+                      openCodeErrorTag(error) === "ShellNotFoundError"
+                      ? ("stopped" as const)
+                      : ("unknown" as const),
+                  ),
+                ),
+              ),
+            { concurrency: "unbounded" },
+          );
+          if (ctx.stopped || ctx.serverGone) return;
+          let shellsChanged = false;
+          for (const [index, [shellId, shell]] of trackedShells.entries()) {
+            const status = shellStatuses[index];
+            if (status === "running" || status === "unknown") continue;
+            if (!ctx.backgroundShells.delete(shellId)) continue;
+            ctx.releasedBackgroundShells.delete(shellId);
+            ctx.shellCalls.delete(shellId);
+            shellsChanged = true;
+            yield* emit({
+              type: "task.completed",
+              ...(yield* eventBase(ctx, ctx.rootSessionId, undefined)),
+              payload: {
+                taskId: RuntimeTaskId.make(shellId),
+                taskType: "local_bash",
+                toolUseId: shell.callId,
+                pendingCountManagedBySnapshot: true,
+                status,
+              },
+            } as ProviderRuntimeEvent);
+          }
+          if (shellsChanged) {
+            yield* publishBackgroundTasks(ctx);
+          }
+        }
+
         if (
           ctx.stopped ||
           ctx.serverGone ||
@@ -2301,6 +2770,20 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             if (!stillPending) return Effect.void;
             return showApprovalCard(ctx, item.permission);
           }
+          case "FinishTurn":
+            return finishTurn(ctx, item.turn, item.terminal);
+          case "FinishHeldTurn": {
+            if (
+              ctx.activeTurn !== item.turn ||
+              item.turn.holdToken !== item.holdToken ||
+              !item.turn.heldEnd
+            ) {
+              return Effect.void;
+            }
+            item.turn.undelivered.clear();
+            item.turn.heldEndFiber = undefined;
+            return finishTurn(ctx, item.turn, item.terminal);
+          }
           case "ServerGone":
             return stopContext(ctx, item.failure).pipe(
               Effect.forkIn(adapterScope, { startImmediately: true }),
@@ -2391,10 +2874,105 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             for (const [dir, entry] of commandCache) {
               if (entry.generation <= signal.generation) commandCache.delete(dir);
             }
+            mcpCacheVersion += 1;
+            commandCacheVersion += 1;
             return;
           }
           case "Event": {
             const event = signal.event;
+            const invalidateDirectoryOrAll = <V>(
+              cache: Map<string, V>,
+              directory: string | undefined,
+            ) => {
+              if (directory) cache.delete(directory);
+              else cache.clear();
+            };
+            const notifyCatalogChanged = () =>
+              options.onCatalogChanged
+                ? options.onCatalogChanged.pipe(
+                    Effect.ignore,
+                    Effect.forkIn(adapterScope),
+                    Effect.asVoid,
+                  )
+                : Effect.void;
+            const refreshActiveSessionCommands = (directory: string | undefined) => {
+              const matching = Array.from(sessions.values()).filter(
+                (ctx) =>
+                  ctx.generation === signal.generation &&
+                  !ctx.stopped &&
+                  (directory === undefined || ctx.directory === directory),
+              );
+              if (matching.length === 0 || !options.onSessionCommands) return Effect.void;
+              return Effect.forEach(matching, (ctx) => publishSessionCommands(ctx), {
+                concurrency: "unbounded",
+                discard: true,
+              }).pipe(Effect.forkIn(adapterScope), Effect.asVoid);
+            };
+            const reloadActiveMcpServers = (directory: string | undefined) => {
+              const dirsToReload = new Map<string, SessionContext>();
+              for (const ctx of sessions.values()) {
+                if (
+                  ctx.generation === signal.generation &&
+                  !ctx.stopped &&
+                  (directory === undefined || ctx.directory === directory) &&
+                  !dirsToReload.has(ctx.directory)
+                ) {
+                  dirsToReload.set(ctx.directory, ctx);
+                }
+              }
+              if (dirsToReload.size === 0) return Effect.void;
+              return Effect.forEach(
+                Array.from(dirsToReload.values()),
+                (ctx) => loadMcpServers(ctx.client, ctx.directory, ctx.generation),
+                { concurrency: "unbounded", discard: true },
+              ).pipe(Effect.forkIn(adapterScope), Effect.asVoid);
+            };
+            switch (event.type) {
+              case "agent.updated":
+                invalidateDirectoryOrAll(agentCache, event.location?.directory);
+                return;
+              case "model.updated":
+                invalidateDirectoryOrAll(modelCache, event.location?.directory);
+                yield* notifyCatalogChanged();
+                return;
+              case "command.updated":
+                commandCacheVersion += 1;
+                invalidateDirectoryOrAll(commandCache, event.location?.directory);
+                yield* refreshActiveSessionCommands(event.location?.directory);
+                yield* notifyCatalogChanged();
+                return;
+              case "mcp.status.changed": {
+                const directory = event.location?.directory;
+                mcpCacheVersion += 1;
+                invalidateDirectoryOrAll(mcpServerCache, directory);
+                yield* reloadActiveMcpServers(directory);
+                return;
+              }
+              case "provider.updated":
+              case "credential.updated":
+              case "credential.switched":
+                invalidateDirectoryOrAll(modelCache, event.location?.directory);
+                yield* notifyCatalogChanged();
+                return;
+              case "skill.updated":
+                yield* notifyCatalogChanged();
+                return;
+              case "config.updated": {
+                const directory = event.location?.directory;
+                mcpCacheVersion += 1;
+                commandCacheVersion += 1;
+                invalidateDirectoryOrAll(agentCache, directory);
+                invalidateDirectoryOrAll(modelCache, directory);
+                invalidateDirectoryOrAll(commandCache, directory);
+                invalidateDirectoryOrAll(mcpServerCache, directory);
+                yield* refreshActiveSessionCommands(directory);
+                yield* reloadActiveMcpServers(directory);
+                yield* notifyCatalogChanged();
+                return;
+              }
+              default:
+                break;
+            }
             if (event.type === "shell.exited") {
               for (const ctx of sessions.values()) {
                 if (ctx.generation === signal.generation && !ctx.stopped) {
@@ -2432,12 +3010,16 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
+        yield* Deferred.succeed(ctx.stoppedDeferred, undefined);
         const leftoverResyncs = ctx.pendingResyncCount;
         ctx.pendingResyncCount = 0;
         if (leftoverResyncs > 0) {
           yield* completeGenerationResync(ctx.generation, leftoverResyncs);
         }
         sessions.delete(ctx.threadId);
+        if (options.onSessionCommands) {
+          yield* options.onSessionCommands(ctx.threadId, undefined).pipe(Effect.ignore);
+        }
         for (const [sessionId, owner] of owners) {
           if (owner === ctx) owners.delete(sessionId);
         }
@@ -2579,30 +3161,45 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
 
     const instructionsFor = (ctx: SessionContext, managedWorktree: boolean) =>
       [
-        buildPreviewPanelInstructions("opencode", `${openCodeBrowserServerName(ctx.toolKey)}_`),
-        ...(ctx.agentPageAssetsDir !== undefined
+        ...(ctx.localToolServers
           ? [
-              buildAgentPageInstructions({
-                assetsDir: ctx.agentPageAssetsDir,
-                toolPrefix: `${openCodePagesServerName(ctx.toolKey)}_`,
-              }),
+              buildPreviewPanelInstructions(
+                "opencode",
+                `${openCodeBrowserServerName(ctx.toolKey)}_`,
+              ),
+              ...(ctx.agentPageAssetsDir !== undefined
+                ? [
+                    buildAgentPageInstructions({
+                      assetsDir: ctx.agentPageAssetsDir,
+                      toolPrefix: `${openCodePagesServerName(ctx.toolKey)}_`,
+                    }),
+                  ]
+                : []),
+              ...(ctx.commandRequests
+                ? [
+                    buildCommandRequestInstructions({
+                      toolPrefix: `${openCodeCommandsServerName(ctx.toolKey)}_`,
+                    }),
+                  ]
+                : []),
+              ...(ctx.deviceTools
+                ? [buildDeviceInstructions(`${openCodeDeviceServerName(ctx.toolKey)}_`)]
+                : []),
+              ...(ctx.scheduleTools
+                ? [
+                    buildScheduleInstructions({
+                      toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_`,
+                    }),
+                  ]
+                : []),
+              ...(ctx.roomEndpoint
+                ? [
+                    buildGuideInstructions({
+                      toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_`,
+                    }),
+                  ]
+                : []),
             ]
-          : []),
-        ...(ctx.commandRequests
-          ? [
-              buildCommandRequestInstructions({
-                toolPrefix: `${openCodeCommandsServerName(ctx.toolKey)}_`,
-              }),
-            ]
-          : []),
-        ...(ctx.deviceTools
-          ? [buildDeviceInstructions(`${openCodeDeviceServerName(ctx.toolKey)}_`)]
-          : []),
-        ...(ctx.scheduleTools
-          ? [buildScheduleInstructions({ toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_` })]
-          : []),
-        ...(ctx.roomEndpoint
-          ? [buildGuideInstructions({ toolPrefix: `${openCodeRoomServerName(ctx.toolKey)}_` })]
           : []),
         FILE_LINK_INSTRUCTIONS,
         ...(managedWorktree ? [MANAGED_WORKTREE_INSTRUCTION] : []),
@@ -2731,18 +3328,23 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         if (existing) yield* stopContext(existing, undefined);
 
         // OpenCode compares paths as strings; a symlinked directory (macOS
-        // /tmp) silently breaks its snapshots, so diffs and reverts.
-        const directory = yield* fileSystem.realPath(input.cwd.trim()).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapterValidationError({
-                provider: PROVIDER,
-                operation: "startSession",
-                issue: `Working directory not found: ${input.cwd}`,
-                cause,
-              }),
-          ),
-        );
+        // /tmp) silently breaks its snapshots, so diffs and reverts. For an
+        // external server the path may only exist on that remote host.
+        const rawCwd = input.cwd.trim();
+        const externalConfigured = options.settings.serverUrl.trim().length > 0;
+        const directory = externalConfigured
+          ? yield* fileSystem.realPath(rawCwd).pipe(Effect.orElseSucceed(() => rawCwd))
+          : yield* fileSystem.realPath(rawCwd).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "startSession",
+                    issue: `Working directory not found: ${input.cwd}`,
+                    cause,
+                  }),
+              ),
+            );
 
         const scope = yield* Scope.make("sequential");
         return yield* Effect.gen(function* () {
@@ -2786,9 +3388,11 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const model = resolveModel(boundSelection);
 
+          const hasResumeCursor = input.resumeCursor !== undefined && input.resumeCursor !== null;
           const resumeId = parseOpenCodeResumeCursor(input.resumeCursor)?.sessionId;
           let rootSessionId: string | undefined;
           let resumed = false;
+          let resumeFailed = false;
           let initialSessionInfo:
             | {
                 readonly agent?: string | undefined;
@@ -2801,27 +3405,43 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                   | undefined;
               }
             | undefined;
-          if (resumeId) {
+          if (hasResumeCursor && !resumeId) {
+            if (input.resumePolicy === "required") {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "session.get",
+                detail: "OpenCode cannot resume that saved session.",
+              });
+            }
+            resumeFailed = true;
+          } else if (resumeId) {
             const found = yield* runOpenCode("session.get", (signal) =>
               client.session.get({ sessionID: resumeId }, { signal }),
-            ).pipe(Effect.option);
-            if (found._tag === "Some") {
-              rootSessionId = found.value.id;
-              initialSessionInfo = found.value;
+            ).pipe(Effect.result);
+            if (found._tag === "Success") {
+              rootSessionId = found.success.id;
+              initialSessionInfo = found.success;
               resumed = true;
               // A checkout switch resumes the same conversation somewhere
               // else; OpenCode keeps working wherever the session is.
-              if (found.value.location?.directory !== directory) {
+              if (found.success.location?.directory !== directory) {
                 yield* runOpenCode("session.move", (signal) =>
                   client.session.move({ sessionID: rootSessionId!, directory }, { signal }),
                 ).pipe(Effect.mapError(toRequestError("session.move")));
               }
-            } else if (input.resumePolicy === "required") {
-              return yield* new ProviderAdapterRequestError({
-                provider: PROVIDER,
-                method: "session.get",
-                detail: `OpenCode no longer has session ${resumeId}.`,
-              });
+            } else if (isOpenCodeSessionNotFound(found.failure)) {
+              if (input.resumePolicy === "required") {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session.get",
+                  detail: `OpenCode no longer has session ${resumeId}.`,
+                });
+              }
+              resumeFailed = true;
+            } else {
+              // Preserve the saved session cursor on transient or server errors
+              // instead of silently replacing the conversation with a blank one.
+              return yield* toRequestError("session.get")(found.failure);
             }
           }
           if (!rootSessionId && input.forkFrom) {
@@ -2871,8 +3491,11 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               ),
             ).pipe(Effect.mapError(toRequestError("session.create")));
             rootSessionId = created.id;
+            initialSessionInfo = created;
           }
 
+          const canAttachLocalToolServers =
+            !active.server.external || isLoopbackServerUrl(active.server.url);
           const ctx: SessionContext = {
             threadId: input.threadId,
             session: {
@@ -2885,17 +3508,20 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               threadId: input.threadId,
               resumeCursor: { schemaVersion: RESUME_SCHEMA_VERSION, sessionId: rootSessionId },
               providerThreadId: rootSessionId,
-              ...(roomTools ? { roomTools: true } : {}),
+              ...(roomTools ? { roomTools: canAttachLocalToolServers } : {}),
+              ...(resumeFailed ? { resumeFailed: true } : {}),
               createdAt: yield* nowIso,
               updatedAt: yield* nowIso,
             },
             rootSessionId,
             directory,
+            external: active.server.external,
             generation: active.generation,
             client,
             scope,
             eventQueue: yield* Queue.unbounded<SessionSignalItem>(),
             toolKey: openCodeThreadToolKey(input.threadId),
+            localToolServers: canAttachLocalToolServers,
             roomEndpoint: roomGrant.attach,
             scheduleTools: roomTools && input.scheduleTools === true,
             agentPageAssetsDir,
@@ -2904,6 +3530,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             projectInstructions: input.projectInstructions,
             runtimeMode: input.runtimeMode,
             agent: BUILD_AGENT,
+            defaultAgent: BUILD_AGENT,
             model,
             contextLimit: undefined,
             pendingSeed:
@@ -2929,6 +3556,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             questionIds: new Map(),
             inFlightFormCancels: new Map(),
             backgroundShells: new Map(),
+            releasedBackgroundShells: new Set(),
             approvalPreviews: new Map(),
             shellCalls: new Map(),
             compactionCount: 0,
@@ -2938,27 +3566,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             pendingResyncCount: 0,
             serverGone: false,
             stopped: false,
+            stoppedDeferred: yield* Deferred.make<void>(),
           };
 
-          // The browser panel (and, in a room, the room tools), on a
-          // credential that names this thread and dies with this context.
-          const credential = yield* mcpSessionRegistry.credentialFor({
-            sessionKey: input.threadId,
-            browser: true,
-            room: roomGrant.attach,
-            pages: agentPageAssetsDir !== undefined,
-            commands: input.commandRequests === true,
-            device: input.deviceTools === true,
-            scheduledRun: input.scheduledRunTools === true,
-            guideOnly: roomGrant.guideOnly,
-            // OpenCode registers tool servers per folder: every session in
-            // `directory` can call these, so a limit on one limits all.
-            toolDirectory: directory,
-          });
-          yield* Scope.addFinalizer(
-            scope,
-            mcpSessionRegistry.revoke(input.threadId, credential.generation),
-          );
           if (resumed || input.forkFrom) {
             const info =
               initialSessionInfo ??
@@ -2969,6 +3579,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               );
             if (info) {
               ctx.agent = info.agent ?? BUILD_AGENT;
+              if (info.agent && info.agent !== PLAN_AGENT) {
+                ctx.defaultAgent = info.agent;
+              }
               if (!model && info.model) {
                 ctx.model = {
                   providerID: info.model.providerID,
@@ -2978,6 +3591,57 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               }
             }
           }
+
+          let localToolWarning: string | undefined;
+          let credential: { readonly token: string; readonly generation: number } | undefined;
+          if (canAttachLocalToolServers) {
+            // The browser panel (and, in a room, the room tools), on a
+            // credential that names this thread and dies with this context.
+            credential = yield* mcpSessionRegistry.credentialFor({
+              sessionKey: input.threadId,
+              browser: true,
+              room: roomGrant.attach,
+              pages: agentPageAssetsDir !== undefined,
+              commands: input.commandRequests === true,
+              device: input.deviceTools === true,
+              scheduledRun: input.scheduledRunTools === true,
+              guideOnly: roomGrant.guideOnly,
+              // OpenCode registers tool servers per folder: every session in
+              // `directory` can call these, so a limit on one limits all.
+              toolDirectory: directory,
+            });
+            yield* Scope.addFinalizer(
+              scope,
+              mcpSessionRegistry.revoke(input.threadId, credential.generation),
+            );
+          } else {
+            localToolWarning =
+              "Threadlines' local tools (browser, room, pages, commands, devices) are not attached because this OpenCode server is remote.";
+          }
+
+          // For an external loopback server (e.g. a container that cannot reach
+          // host loopback), register tools first so a refusal degrades cleanly
+          // instead of failing session startup or advertising missing tools.
+          if (active.server.external && credential !== undefined) {
+            const attached = yield* registerToolServers(ctx, credential).pipe(
+              Effect.as(true),
+              Effect.catch((error) =>
+                Effect.logWarning(
+                  "Could not register Threadlines tool servers on external OpenCode server",
+                  { error },
+                ).pipe(Effect.as(false)),
+              ),
+            );
+            if (!attached) {
+              ctx.localToolServers = false;
+              if (roomTools) {
+                ctx.session = { ...ctx.session, roomTools: false };
+              }
+              localToolWarning =
+                "Threadlines could not attach its local tools to the configured OpenCode server; continuing without them.";
+            }
+          }
+
           // Run independent post-create setup in parallel while keeping
           // session-mutating RPCs (`interrupt` -> `update` -> `switchModel`)
           // serialized so OpenCode never races updates to the same session.
@@ -2991,7 +3655,8 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 ctx.client.session.interrupt({ sessionID: ctx.rootSessionId }, { signal }),
               ).pipe(Effect.mapError(toRequestError("session.interrupt")));
             }
-            yield* applyRules(ctx, rootSessionId!, yield* rulesFor(ctx, BUILD_AGENT)).pipe(
+            yield* rulesFor(ctx, ctx.agent).pipe(
+              Effect.flatMap((rules) => applyRules(ctx, rootSessionId!, rules)),
               Effect.mapError(toRequestError("session.update")),
             );
             if ((resumed || input.forkFrom) && model) {
@@ -3000,9 +3665,13 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               ).pipe(Effect.mapError(toRequestError("session.switchModel")));
             }
           });
-          const [, , contextLimit] = yield* Effect.all(
+          const [, , contextLimit, , loadedCommands] = yield* Effect.all(
             [
-              registerToolServers(ctx, credential).pipe(Effect.mapError(toRequestError("mcp.add"))),
+              !active.server.external && credential !== undefined
+                ? registerToolServers(ctx, credential).pipe(
+                    Effect.mapError(toRequestError("mcp.add")),
+                  )
+                : Effect.void,
               sessionSetup,
               contextLimitFor(ctx, ctx.model),
               runOpenCode("instructions.put", (signal) =>
@@ -3015,6 +3684,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                   { signal },
                 ),
               ).pipe(Effect.mapError(toRequestError("instructions.put"))),
+              options.onSessionCommands
+                ? loadCommands(client, directory, active.generation)
+                : Effect.succeed(undefined),
             ],
             { concurrency: "unbounded" },
           );
@@ -3051,6 +3723,15 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           sessions.set(input.threadId, ctx);
           ranHere.add(input.threadId);
           owners.set(rootSessionId, ctx);
+          if (
+            options.onSessionCommands &&
+            loadedCommands !== undefined &&
+            loadedCommands.version === commandCacheVersion
+          ) {
+            yield* options
+              .onSessionCommands(input.threadId, loadedCommands.commands)
+              .pipe(Effect.ignore);
+          }
           yield* Queue.take(ctx.eventQueue).pipe(
             Effect.flatMap((item) => processSessionItem(ctx, item)),
             Effect.forever,
@@ -3072,6 +3753,13 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             ...(yield* eventBase(ctx, rootSessionId, undefined)),
             payload: { providerThreadId: rootSessionId },
           });
+          if (localToolWarning !== undefined) {
+            yield* emit({
+              type: "runtime.warning",
+              ...(yield* eventBase(ctx, rootSessionId, undefined)),
+              payload: { message: localToolWarning },
+            } as ProviderRuntimeEvent);
+          }
           return ctx.session;
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });
@@ -3150,7 +3838,23 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             issue: `Turn for ${threadId} requires text or attachments.`,
           });
         }
-        return { text, files };
+        return { text, files, notes };
+      });
+
+    const resolveDefaultAgent = (ctx: SessionContext) =>
+      Effect.gen(function* () {
+        const agents = yield* loadAgents(ctx.client, ctx.directory, ctx.generation).pipe(
+          Effect.orElseSucceed(() => []),
+        );
+        if (agents.length === 0) return ctx.defaultAgent;
+        if (agents.some((candidate) => candidate.id === ctx.defaultAgent)) return ctx.defaultAgent;
+        if (agents.some((candidate) => candidate.id === BUILD_AGENT)) return BUILD_AGENT;
+        return (
+          agents.find((candidate) => candidate.mode === "primary" && candidate.id !== PLAN_AGENT)
+            ?.id ??
+          agents.find((candidate) => candidate.id !== PLAN_AGENT)?.id ??
+          ctx.defaultAgent
+        );
       });
 
     const switchAgent = (ctx: SessionContext, agent: string) =>
@@ -3171,8 +3875,19 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           ctx.client.session.switchAgent({ sessionID: ctx.rootSessionId, agent }, { signal }),
         ).pipe(Effect.mapError(toRequestError("session.switchAgent")));
         ctx.agent = agent;
-        yield* applyRules(ctx, ctx.rootSessionId, yield* rulesFor(ctx, agent)).pipe(
+        yield* rulesFor(ctx, agent).pipe(
+          Effect.flatMap((rules) => applyRules(ctx, ctx.rootSessionId, rules)),
           Effect.mapError(toRequestError("session.update")),
+        );
+      });
+
+    const finishTurnSerialized = (ctx: SessionContext, turn: ActiveTurn, terminal: Terminal) =>
+      Effect.suspend(() => {
+        if (ctx.stopped) return Effect.void;
+        return Queue.offer(ctx.eventQueue, { _tag: "FinishTurn", turn, terminal }).pipe(
+          Effect.andThen(
+            Effect.raceFirst(Deferred.await(turn.done), Deferred.await(ctx.stoppedDeferred)),
+          ),
         );
       });
 
@@ -3190,7 +3905,9 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               });
             }
             const content = yield* promptContent(input.threadId, input);
-            yield* switchAgent(ctx, input.interactionMode === "plan" ? PLAN_AGENT : BUILD_AGENT);
+            const targetAgent =
+              input.interactionMode === "plan" ? PLAN_AGENT : yield* resolveDefaultAgent(ctx);
+            yield* switchAgent(ctx, targetAgent);
             const selection =
               input.modelSelection?.instanceId === boundInstanceId
                 ? input.modelSelection
@@ -3213,21 +3930,37 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
             const skills = (input.skills ?? []).map((skill) => ({ id: skill.name }));
             // `/name args` runs one of the project's commands. OpenCode gives
             // a command no prompt id, so its turn has no fork or rollback point.
-            const command = /^\/(\S+)(?:\s+([\s\S]*))?$/u.exec(content.text);
+            // Check `typed.text` when present so server-prepended context does
+            // not hide a typed command; if it runs, context stays deferred.
+            const commandSource =
+              input.typed !== undefined ? input.typed.text.trim() : content.text;
+            const command = /^\/(\S+)(?:\s+([\s\S]*))?$/u.exec(commandSource);
             const commands = command
               ? yield* loadCommands(ctx.client, ctx.directory, ctx.generation)
               : undefined;
-            if (command && commands?.has(command[1]!)) {
+            if (ctx.stopped) {
+              return yield* new ProviderAdapterSessionNotFoundError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+              });
+            }
+            if (command && commands?.names.has(command[1]!)) {
+              const contextDeferred =
+                input.typed?.context !== undefined || ctx.pendingSeed !== undefined;
+              const commandText = [command[2]?.trim() ?? "", ...content.notes]
+                .filter(Boolean)
+                .join("\n\n");
               const turn = yield* beginTurn(ctx, {
                 turnId: TurnId.make(`cmd_${(yield* randomUUIDv4).replaceAll("-", "")}`),
                 origin: "user",
+                plan: ctx.agent === PLAN_AGENT,
               });
               const sent = yield* runOpenCode("session.command", (signal) =>
                 ctx.client.session.command(
                   {
                     sessionID: ctx.rootSessionId,
                     name: command[1]!,
-                    text: command[2]?.trim() ?? "",
+                    text: commandText,
                     ...(content.files.length > 0 ? { files: content.files } : {}),
                     ...(skills.length > 0 ? { skills } : {}),
                     delivery: "steer",
@@ -3236,16 +3969,23 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 ),
               ).pipe(Effect.exit);
               if (Exit.isFailure(sent)) {
-                yield* finishTurn(ctx, turn, {
+                yield* finishTurnSerialized(ctx, turn, {
                   kind: "failed",
-                  message: `OpenCode could not run /${command[1]}: ${String(sent.cause)}`,
+                  message: `OpenCode could not run /${command[1]}: ${openCodeErrorDetail(Cause.squash(sent.cause))}`,
                   type: undefined,
                 });
+                return {
+                  threadId: input.threadId,
+                  turnId: turn.turnId,
+                  resumeCursor: ctx.session.resumeCursor,
+                  undelivered: true as const,
+                };
               }
               return {
                 threadId: input.threadId,
                 turnId: turn.turnId,
                 resumeCursor: ctx.session.resumeCursor,
+                ...(contextDeferred ? { contextDeferred: true as const } : {}),
               };
             }
 
@@ -3254,6 +3994,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               turnId: TurnId.make(promptId),
               origin: "user",
               promptId,
+              plan: ctx.agent === PLAN_AGENT,
             });
             const text = ctx.pendingSeed
               ? withContextSeedPreamble(ctx.pendingSeed, content.text)
@@ -3272,14 +4013,19 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               ),
             ).pipe(Effect.exit);
             if (Exit.isFailure(sent)) {
-              yield* finishTurn(ctx, turn, {
+              yield* finishTurnSerialized(ctx, turn, {
                 kind: "failed",
-                message: `OpenCode did not accept the message: ${String(sent.cause)}`,
+                message: `OpenCode did not accept the message: ${openCodeErrorDetail(Cause.squash(sent.cause))}`,
                 type: undefined,
               });
-            } else {
-              ctx.pendingSeed = undefined;
+              return {
+                threadId: input.threadId,
+                turnId: turn.turnId,
+                resumeCursor: ctx.session.resumeCursor,
+                undelivered: true as const,
+              };
             }
+            ctx.pendingSeed = undefined;
             return {
               threadId: input.threadId,
               turnId: turn.turnId,
@@ -3300,6 +4046,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           return yield* steerRejectedError(PROVIDER, "OpenCode", "turn-finishing");
         }
         const content = yield* promptContent(input.threadId, input);
+        const skills = (input.skills ?? []).map((skill) => ({ id: skill.name }));
         const promptId = openCodePromptId(input.messageId, yield* randomUUIDv4);
         return yield* ctx.steerLock.withPermit(
           Effect.gen(function* () {
@@ -3319,6 +4066,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                   id: promptId,
                   text: content.text,
                   ...(content.files.length > 0 ? { files: content.files } : {}),
+                  ...(skills.length > 0 ? { skills } : {}),
                   delivery: "steer",
                 },
                 { signal },
@@ -3393,32 +4141,51 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
         if (!turn || ctx.activeTurn !== turn) return;
         if (!result.interrupted) {
           // Nothing was running: the prompt was still queued, or the end
-          // event is on its way. Either way the turn is over.
-          yield* finishTurn(ctx, turn, { kind: "interrupted", reason: "user" });
+          // event is on its way. Either way the turn is over; serialize through
+          // the session queue so any final SSE deltas land first.
+          yield* finishTurnSerialized(ctx, turn, { kind: "interrupted", reason: "user" });
           return;
         }
-        yield* Effect.gen(function* () {
-          yield* Effect.sleep(STOP_SETTLE_TIMEOUT);
-          if (ctx.activeTurn !== turn) return;
-          const active = yield* runOpenCode("session.active", (signal) =>
-            ctx.client.session.active({ signal }),
-          ).pipe(Effect.option);
-          // The turn may have ended (and the next begun) while we asked.
-          if (ctx.activeTurn !== turn) return;
-          // Only OpenCode saying it is idle ends the turn; a failed check
-          // proves nothing, so the turn stays open and the stop is repeated.
-          if (active._tag === "Some" && !(ctx.rootSessionId in active.value)) {
-            yield* finishTurn(ctx, turn, { kind: "interrupted", reason: "user" });
-            return;
+        if (turn.stopCheckFiber) {
+          const previous = turn.stopCheckFiber;
+          turn.stopCheckFiber = undefined;
+          yield* Fiber.interrupt(previous);
+        }
+        turn.stopCheckFiber = yield* Effect.gen(function* () {
+          for (let attempt = 1; attempt <= STOP_SETTLE_MAX_CHECKS + 1; attempt += 1) {
+            yield* Effect.sleep(STOP_SETTLE_TIMEOUT);
+            if (ctx.stopped || ctx.activeTurn !== turn) return;
+            const active = yield* runOpenCode("session.active", (signal) =>
+              ctx.client.session.active({ signal }),
+            ).pipe(Effect.option);
+            // The turn may have ended (and the next begun) while we asked.
+            if (ctx.stopped || ctx.activeTurn !== turn) return;
+            // Only OpenCode saying it is idle ends the turn; a failed check
+            // proves nothing, so the turn stays open and the stop is repeated.
+            if (active._tag === "Some" && !(ctx.rootSessionId in active.value)) {
+              turn.stopCheckFiber = undefined;
+              yield* Queue.offer(ctx.eventQueue, {
+                _tag: "FinishTurn",
+                turn,
+                terminal: { kind: "interrupted", reason: "user" },
+              });
+              return;
+            }
+            if (attempt > STOP_SETTLE_MAX_CHECKS) return;
+            if (attempt === 1) {
+              yield* emit({
+                type: "runtime.warning",
+                ...(yield* eventBase(ctx, ctx.rootSessionId, turn.turnId)),
+                payload: { message: "OpenCode has not stopped yet; asking it again." },
+              } as ProviderRuntimeEvent);
+            }
+            yield* runOpenCode("session.interrupt", (signal) =>
+              ctx.client.session.interrupt(
+                { sessionID: ctx.rootSessionId, resume: false },
+                { signal },
+              ),
+            ).pipe(Effect.ignore);
           }
-          yield* emit({
-            type: "runtime.warning",
-            ...(yield* eventBase(ctx, ctx.rootSessionId, turn.turnId)),
-            payload: { message: "OpenCode has not stopped yet; asking it again." },
-          } as ProviderRuntimeEvent);
-          yield* runOpenCode("session.interrupt", (signal) =>
-            ctx.client.session.interrupt({ sessionID: ctx.rootSessionId }, { signal }),
-          ).pipe(Effect.ignore);
         }).pipe(Effect.forkIn(ctx.scope));
       });
 
@@ -3687,7 +4454,10 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
               .map((part) => String(part.text))
               .join("\n"),
             toolUses: tools.map((part) => {
-              const identity = identifyOpenCodeTool(String(part.name));
+              const identity = identifyOpenCodeTool(
+                String(part.name),
+                mcpServerCache.get(ctx.directory)?.value ?? [],
+              );
               const toolInput = isRecord(part.state) ? part.state.input : undefined;
               return {
                 name: String(part.name),
@@ -3833,6 +4603,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           // Nothing promises a shell.exited after a removal: whichever of the
           // two takes the shell out of the map first ends the task, once.
           if (ctx.backgroundShells.delete(taskId)) {
+            ctx.releasedBackgroundShells.delete(taskId);
             ctx.shellCalls.delete(taskId);
             yield* emit({
               type: "task.completed",
@@ -3841,9 +4612,11 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
                 taskId: RuntimeTaskId.make(taskId),
                 taskType: "local_bash",
                 toolUseId: shell.callId,
+                pendingCountManagedBySnapshot: true,
                 status,
               },
             } as ProviderRuntimeEvent);
+            yield* publishBackgroundTasks(ctx);
           }
           return true;
         }
@@ -3997,6 +4770,116 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
           : ({ confirmed: false, reason: problems.join("; ") } as const);
       });
 
+    const releaseBackgroundCommands: NonNullable<
+      OpenCodeAdapterShape["releaseBackgroundCommands"]
+    > = (threadId) =>
+      Effect.gen(function* () {
+        const ctx = yield* requireSession(threadId);
+        let released = false;
+        for (const shellId of ctx.backgroundShells.keys()) {
+          if (!ctx.releasedBackgroundShells.has(shellId)) {
+            ctx.releasedBackgroundShells.add(shellId);
+            released = true;
+          }
+        }
+        if (released) {
+          yield* publishBackgroundTasks(ctx);
+        }
+      });
+
+    const readCommandOutput: NonNullable<OpenCodeAdapterShape["readCommandOutput"]> = (
+      threadId,
+      toolCallId,
+    ) =>
+      Effect.gen(function* () {
+        const ctx = sessions.get(threadId);
+        if (!ctx || ctx.stopped) return { status: "unavailable" } as const;
+        const tool = ctx.tools.get(toolCallId);
+        let shellId: string | undefined;
+        for (const [id, shell] of ctx.backgroundShells) {
+          if (shell.callId === toolCallId) {
+            shellId = id;
+            break;
+          }
+        }
+        if (shellId === undefined && tool && !tool.done && tool.identity.kind === "shell") {
+          for (const [id, callId] of ctx.shellCalls) {
+            if (callId === toolCallId) {
+              shellId = id;
+              break;
+            }
+          }
+        }
+        if (shellId === undefined) {
+          return {
+            status:
+              tool && !tool.done && tool.identity.kind === "shell" ? "pending" : "unavailable",
+          } as const;
+        }
+        if (typeof ctx.client.shell?.output !== "function") {
+          return { status: "unavailable" } as const;
+        }
+        const result = yield* runOpenCode(
+          "shell.output",
+          (signal) =>
+            ctx.client.shell.output(
+              { id: shellId, location: { directory: ctx.directory } },
+              { signal },
+            ),
+          { timeoutMs: COMMAND_OUTPUT_TIMEOUT_MS },
+        ).pipe(Effect.result);
+        if (result._tag === "Failure") {
+          const status = openCodeErrorStatus(result.failure);
+          const tag = openCodeErrorTag(result.failure);
+          return {
+            status: status === 404 || tag === "ShellNotFoundError" ? "unavailable" : "pending",
+          } as const;
+        }
+        const data = result.success.data;
+        const output = typeof data?.output === "string" ? data.output : "";
+        const totalBytes =
+          typeof data?.size === "number" && Number.isSafeInteger(data.size) && data.size >= 0
+            ? data.size
+            : Buffer.byteLength(output, "utf8");
+        return { status: "running", output, totalBytes } as const;
+      });
+
+    const noteExtensionsChanged: NonNullable<OpenCodeAdapterShape["noteExtensionsChanged"]> = () =>
+      Effect.gen(function* () {
+        mcpCacheVersion += 1;
+        commandCacheVersion += 1;
+        agentCache.clear();
+        modelCache.clear();
+        commandCache.clear();
+        mcpServerCache.clear();
+        const server = yield* manager.running;
+        if (!server) return;
+        if (typeof server.client.location?.reload === "function") {
+          yield* runOpenCode("location.reload", (signal) =>
+            server.client.location.reload({ signal }),
+          ).pipe(Effect.ignore);
+        }
+        const activeSessions = Array.from(sessions.values()).filter((ctx) => !ctx.stopped);
+        const dirsToReload = new Map<string, SessionContext>();
+        for (const ctx of activeSessions) {
+          if (!dirsToReload.has(ctx.directory)) dirsToReload.set(ctx.directory, ctx);
+        }
+        yield* Effect.all(
+          [
+            Effect.forEach(activeSessions, (ctx) => publishSessionCommands(ctx), {
+              concurrency: "unbounded",
+              discard: true,
+            }),
+            Effect.forEach(
+              Array.from(dirsToReload.values()),
+              (ctx) => loadMcpServers(ctx.client, ctx.directory, ctx.generation),
+              { concurrency: "unbounded", discard: true },
+            ),
+          ],
+          { concurrency: "unbounded", discard: true },
+        );
+      });
+
     yield* Effect.addFinalizer(() =>
       stopAll().pipe(Effect.ignore, Effect.andThen(PubSub.shutdown(runtimeEvents))),
     );
@@ -4015,6 +4898,8 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       steerTurn,
       interruptTurn,
       compactContext,
+      releaseBackgroundCommands,
+      noteExtensionsChanged,
       respondToRequest,
       respondToUserInput,
       stopSession,
@@ -4039,6 +4924,7 @@ export function makeOpenCodeAdapter(options: OpenCodeAdapterOptions) {
       rollbackThread,
       deleteThread,
       readSubagentTranscript,
+      readCommandOutput,
       stopAll,
       confirmThreadStopped,
       // One server runs every thread's agent, so its work can't be split.

@@ -615,6 +615,8 @@ export const writeOpenCodeSkillToggle = Effect.fn(
   readonly skillName: string;
   readonly enabled: boolean;
   readonly forbiddenBoundary?: string | undefined;
+  /** Effective policy from lower-precedence user configs (e.g. `config.json`). */
+  readonly inheritedEffect?: "allow" | "deny" | undefined;
 }): Effect.fn.Return<void, string, Path.Path> {
   const path = yield* Path.Path;
   if (hasOpenCodePolicyWildcard(input.skillName)) {
@@ -689,9 +691,12 @@ export const writeOpenCodeSkillToggle = Effect.fn(
             effect: "deny",
           });
         } else {
-          // If remaining rules (e.g. a wildcard `*` deny) still deny this skill, append an explicit allow.
+          // If remaining rules (e.g. a wildcard `*` deny or lower-precedence config.json)
+          // still deny this skill, append an explicit allow.
           const probeDoc: Record<string, unknown> = { ...doc, policies: filteredPolicies };
-          if (evaluateOpenCodeSkillPolicy(probeDoc, input.skillName) === "deny") {
+          const effectiveAfterRemoval =
+            evaluateOpenCodeSkillPolicy(probeDoc, input.skillName) ?? input.inheritedEffect;
+          if (effectiveAfterRemoval === "deny") {
             filteredPolicies.push({
               action: "skill.use",
               resource: input.skillName,

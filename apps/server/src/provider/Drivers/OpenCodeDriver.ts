@@ -11,7 +11,13 @@
 import { homedir } from "node:os";
 import * as NodePath from "node:path";
 
-import { OpenCodeSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
+import {
+  OpenCodeSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+  type ServerProviderSlashCommand,
+} from "@threadlines/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -19,11 +25,13 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import { openCodeAccountEnvironment } from "@threadlines/shared/providerAuthCommands";
+import { usageResetTimeMs } from "@threadlines/shared/usageLimits";
 
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
@@ -33,15 +41,19 @@ import { makeOpenCodeAdapter } from "../Layers/OpenCodeAdapter.ts";
 import {
   checkOpenCodeProviderStatus,
   makePendingOpenCodeProvider,
+  openCodeAccountUsage,
+  openCodeUsageLimitFromAccountUsage,
 } from "../Layers/OpenCodeProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import type { ServerProviderShape } from "../Services/ServerProvider.ts";
 import {
   openCodeMaintenanceBinaryPath,
   openCodeMaintenanceResolver,
   openCodeOneMigrationCapabilities,
   resolveOpenCodeBinary,
 } from "../opencode/OpenCodeBinary.ts";
+import { runOpenCode } from "../opencode/OpenCodeClient.ts";
 import {
   OPENCODE_DATABASE_FILE_NAME,
   openCodeDatabaseLocation,
@@ -53,7 +65,7 @@ import {
   type ProviderDriver,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
-import type { ServerProviderDraft } from "../providerSnapshot.ts";
+import { type ServerProviderDraft, withSessionCommands } from "../providerSnapshot.ts";
 import {
   mergeProviderInstanceEnvironment,
   refreshProviderInstanceEnvironment,
@@ -71,6 +83,27 @@ const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("opencode");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+/** How often an idle OpenCode instance with active Go/Zen usage limits re-reads them. */
+const OPENCODE_SCHEDULED_USAGE_REFRESH_MS = 30 * 60 * 1000;
+const CATALOG_REFRESH_DEBOUNCE = Duration.millis(250);
+const USAGE_LIMIT_READ_TIMEOUT_MS = 5_000;
+
+function earliestUsageResetMs(accountUsage: ServerProvider["accountUsage"]): number | undefined {
+  let earliest: number | undefined;
+  for (const limit of accountUsage?.limits ?? []) {
+    for (const window of [limit.primary, limit.secondary, ...(limit.scoped ?? [])]) {
+      const resetMs = usageResetTimeMs(window?.resetsAt);
+      if (resetMs !== undefined && (earliest === undefined || resetMs < earliest)) {
+        earliest = resetMs;
+      }
+    }
+    const spendResetMs = usageResetTimeMs(limit.individualLimit?.resetsAt);
+    if (spendResetMs !== undefined && (earliest === undefined || spendResetMs < earliest)) {
+      earliest = spendResetMs;
+    }
+  }
+  return earliest;
+}
 
 export type OpenCodeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
@@ -111,6 +144,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       const fileSystem = yield* FileSystem.FileSystem;
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
+      const driverScope = yield* Scope.Scope;
       // An account folder gives this instance its own OpenCode database (its
       // sign-ins and sessions). With a server URL the data lives with that
       // server instead. Copied, never assigned into: the merge can return
@@ -147,12 +181,15 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         driverKind: DRIVER_KIND,
         instanceId,
       });
-      const stampIdentity = withInstanceIdentity({
+      const sessionCommands = new Map<string, ReadonlyArray<ServerProviderSlashCommand>>();
+      const stampBaseIdentity = withInstanceIdentity({
         instanceId,
         displayName,
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
       });
+      const stampIdentity = (draft: ServerProviderDraft): ServerProvider =>
+        withSessionCommands(stampBaseIdentity(draft), sessionCommands);
       const settings = { ...config, enabled } satisfies OpenCodeSettings;
       // Looked up each time it is needed, never once: a one-click install
       // lands in a directory this server's PATH may not include yet.
@@ -214,10 +251,85 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
           : {}),
       });
 
+      // Set once the snapshot exists; sessions and live SSE callbacks run after that.
+      let liveSnapshot: ServerProviderShape | undefined;
+      let catalogRefreshPending = false;
+      const scheduleCatalogRefresh = Effect.suspend(() => {
+        cachedProbe = undefined;
+        if (catalogRefreshPending) return Effect.void;
+        catalogRefreshPending = true;
+        return Effect.sleep(CATALOG_REFRESH_DEBOUNCE).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              catalogRefreshPending = false;
+              return liveSnapshot ? liveSnapshot.refresh.pipe(Effect.ignore) : Effect.void;
+            }),
+          ),
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              catalogRefreshPending = false;
+            }),
+          ),
+          Effect.forkIn(driverScope),
+          Effect.asVoid,
+        );
+      });
+
+      const readUsageLimit = Effect.gen(function* () {
+        const nowMs = yield* Clock.currentTimeMillis;
+        const running = yield* manager.running;
+        if (running && typeof running.client.experimental?.usage?.limits === "function") {
+          const checkedAt = DateTime.formatIso(yield* DateTime.now);
+          const fresh = yield* runOpenCode(
+            "usage.limits",
+            (signal) =>
+              running.client.experimental.usage.limits(
+                { location: { directory: serverConfig.cwd } },
+                { signal },
+              ),
+            { timeoutMs: USAGE_LIMIT_READ_TIMEOUT_MS },
+          ).pipe(
+            Effect.map((result) => openCodeAccountUsage(result.data, checkedAt)),
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (fresh) {
+            if (cachedProbe) {
+              cachedProbe = {
+                ...cachedProbe,
+                snapshot: { ...cachedProbe.snapshot, accountUsage: fresh },
+                checkedAtMs: nowMs,
+                earliestResetMs: earliestUsageResetMs(fresh),
+                usageLimitsFailed: false,
+              };
+            }
+            if (liveSnapshot) {
+              yield* liveSnapshot
+                .patchSnapshot((current) => ({ ...current, accountUsage: fresh }))
+                .pipe(Effect.ignore);
+            }
+            return openCodeUsageLimitFromAccountUsage(fresh, nowMs);
+          }
+        }
+        const current = liveSnapshot ? yield* liveSnapshot.getSnapshot : undefined;
+        return openCodeUsageLimitFromAccountUsage(current?.accountUsage, nowMs);
+      });
+
       const adapter = yield* makeOpenCodeAdapter({
         instanceId,
         settings,
         manager,
+        onSessionCommands: (sessionKey, commands) =>
+          Effect.suspend(() => {
+            if (commands === undefined) sessionCommands.delete(sessionKey);
+            else sessionCommands.set(sessionKey, commands);
+            return (
+              liveSnapshot?.patchSnapshot((current) =>
+                withSessionCommands(current, sessionCommands),
+              ) ?? Effect.void
+            );
+          }).pipe(Effect.ignoreCause({ log: true })),
+        onCatalogChanged: scheduleCatalogRefresh,
+        readUsageLimit,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const textGeneration = yield* makeOpenCodeTextGeneration(manager);
@@ -231,8 +343,12 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         | {
             readonly signature: string;
             readonly snapshot: ServerProvider;
+            readonly checkedAtMs: number;
+            readonly earliestResetMs: number | undefined;
+            readonly usageLimitsFailed: boolean;
           }
         | undefined;
+      let lastKnownAccountUsage: ServerProvider["accountUsage"];
       const statSig = (targetPath: string) =>
         fileSystem.stat(targetPath).pipe(
           Effect.map((info) => {
@@ -301,15 +417,30 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       });
 
       const runFullCheck = Effect.gen(function* () {
-        const signature = yield* probeSignature;
+        const [signature, nowMs] = yield* Effect.all([probeSignature, Clock.currentTimeMillis], {
+          concurrency: "unbounded",
+        });
+        let usageLimitsFailed = false;
         const draft = yield* checkOpenCodeProviderStatus({
           settings: { ...settings, binaryPath: currentBinary() },
           manager,
           cwd: serverConfig.cwd,
           environment: processEnv,
           canMoveToOpenCodeTwo: maintenance.oneMigration.update !== null,
+          onUsageLimitsFailed: () => {
+            usageLimitsFailed = true;
+          },
         });
-        const current = stampIdentity(draft);
+        // Preserve the last known account usage across a transient `usage.limits`
+        // error instead of wiping active Go/Zen meters from the UI.
+        const effectiveDraft =
+          usageLimitsFailed && draft.accountUsage === undefined && lastKnownAccountUsage
+            ? { ...draft, accountUsage: lastKnownAccountUsage }
+            : draft;
+        if (!usageLimitsFailed) {
+          lastKnownAccountUsage = effectiveDraft.accountUsage;
+        }
+        const current = stampIdentity(effectiveDraft);
         installedVersion = current.version;
         if (current.version) {
           pendingMove = isOpenCodeOneVersion(current.version)
@@ -323,7 +454,13 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         cachedProbe =
           !serverUrl &&
           (current.status === "ready" || !current.installed || isStableUnauthenticated)
-            ? { signature, snapshot: current }
+            ? {
+                signature,
+                snapshot: current,
+                checkedAtMs: nowMs,
+                earliestResetMs: earliestUsageResetMs(current.accountUsage),
+                usageLimitsFailed,
+              }
             : undefined;
         return current;
       }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
@@ -335,8 +472,17 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         if (serverUrl) {
           return yield* runFullCheck;
         }
-        const signature = yield* probeSignature;
-        if (cachedProbe && cachedProbe.signature === signature) {
+        const [signature, nowMs] = yield* Effect.all([probeSignature, Clock.currentTimeMillis], {
+          concurrency: "unbounded",
+        });
+        const usageRefreshDue =
+          cachedProbe !== undefined &&
+          (cachedProbe.usageLimitsFailed ||
+            (cachedProbe.snapshot.accountUsage !== undefined &&
+              (nowMs - cachedProbe.checkedAtMs >= OPENCODE_SCHEDULED_USAGE_REFRESH_MS ||
+                (cachedProbe.earliestResetMs !== undefined &&
+                  nowMs >= cachedProbe.earliestResetMs))));
+        if (cachedProbe && cachedProbe.signature === signature && !usageRefreshDue) {
           const running = yield* manager.running;
           if (
             running &&
@@ -345,10 +491,13 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
           ) {
             yield* manager.retire;
           }
-          return {
-            ...cachedProbe.snapshot,
-            checkedAt: DateTime.formatIso(yield* DateTime.now),
-          };
+          return withSessionCommands(
+            {
+              ...cachedProbe.snapshot,
+              checkedAt: DateTime.formatIso(yield* DateTime.now),
+            },
+            sessionCommands,
+          );
         }
         return yield* runFullCheck;
       });
@@ -369,22 +518,29 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
           makePendingOpenCodeProvider(current, processEnv).pipe(Effect.map(stampIdentity)),
         checkProvider: runFullCheck,
         scheduledCheckProvider: scheduledCheck,
-        enrichSnapshot: ({ snapshot: current, publishSnapshot }) => {
+        enrichSnapshot: ({ snapshot: current, updateSnapshot }) => {
           const capabilities = capabilitiesFor(current.version);
           // A 1.x install Threadlines cannot move gets no "update available";
           // the status message says how to install OpenCode 2.
           return current.version && isOpenCodeOneVersion(current.version) && !capabilities.update
-            ? publishSnapshot({
-                ...current,
+            ? updateSnapshot((now) => ({
+                ...now,
                 versionAdvisory: createProviderVersionAdvisory({
                   driver: current.driver,
                   currentVersion: current.version,
                   checkedAt: current.checkedAt,
                 }),
-              })
+              }))
             : enrichProviderSnapshotWithVersionAdvisory(current, capabilities).pipe(
                 Effect.provideService(HttpClient.HttpClient, httpClient),
-                Effect.flatMap(publishSnapshot),
+                Effect.flatMap((enriched) =>
+                  updateSnapshot((now) => ({
+                    ...now,
+                    ...(enriched.versionAdvisory
+                      ? { versionAdvisory: enriched.versionAdvisory }
+                      : {}),
+                  })),
+                ),
               );
         },
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
@@ -400,6 +556,8 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
             }),
         ),
       );
+
+      liveSnapshot = snapshot;
 
       return {
         instanceId,

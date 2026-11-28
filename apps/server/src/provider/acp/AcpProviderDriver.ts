@@ -8,12 +8,7 @@
  *
  * @module provider/acp/AcpProviderDriver
  */
-import type {
-  ServerProvider,
-  ServerProviderSessionCommands,
-  ServerProviderSlashCommand,
-} from "@threadlines/contracts";
-import { sameSlashCommands } from "@threadlines/shared/slashCommands";
+import type { ServerProvider, ServerProviderSlashCommand } from "@threadlines/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -44,7 +39,12 @@ import {
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
 import { withKnownCliDirsOnPath } from "../providerDetection.ts";
-import type { ServerProviderDraft } from "../providerSnapshot.ts";
+import {
+  groupSessionCommands,
+  type ServerProviderDraft,
+  withSessionCommands,
+} from "../providerSnapshot.ts";
+export { groupSessionCommands, withSessionCommands };
 import { type AcpAdapterOptions, makeAcpAdapter } from "./AcpAdapter.ts";
 import {
   buildInitialAcpProviderSnapshot,
@@ -56,49 +56,6 @@ import type { AcpProviderDescriptor, AcpProviderSettings } from "./AcpProviderDe
 import { makeAcpTextGeneration } from "./AcpTextGeneration.ts";
 
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
-
-/**
- * A snapshot with the sessions' lists as they are now: the same snapshot
- * when they didn't change (nothing is published then), and none of a list
- * the snapshot carried from before.
- */
-export function withSessionCommands(
-  snapshot: ServerProvider,
-  bySession: ReadonlyMap<string, ReadonlyArray<ServerProviderSlashCommand>>,
-): ServerProvider {
-  const { sessionCommands: previous, ...rest } = snapshot;
-  if (bySession.size === 0) return previous === undefined ? snapshot : rest;
-  const next = groupSessionCommands(bySession);
-  const unchanged =
-    previous !== undefined &&
-    previous.length === next.length &&
-    previous.every((group, index) => {
-      const other = next[index];
-      return (
-        other !== undefined &&
-        group.sessions.length === other.sessions.length &&
-        group.sessions.every((session, at) => session === other.sessions[at]) &&
-        sameSlashCommands(group.commands, other.commands)
-      );
-    });
-  return unchanged ? snapshot : { ...rest, sessionCommands: next };
-}
-
-/** Sessions' lists for the status: each distinct list once, with the sessions that listed it. */
-export function groupSessionCommands(
-  bySession: ReadonlyMap<string, ReadonlyArray<ServerProviderSlashCommand>>,
-): ReadonlyArray<ServerProviderSessionCommands> {
-  const groups: Array<{
-    sessions: Array<string>;
-    commands: ReadonlyArray<ServerProviderSlashCommand>;
-  }> = [];
-  for (const [session, commands] of bySession) {
-    const group = groups.find((entry) => sameSlashCommands(entry.commands, commands));
-    if (group) group.sessions.push(session);
-    else groups.push({ sessions: [session], commands });
-  }
-  return groups;
-}
 
 export type AcpProviderDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner

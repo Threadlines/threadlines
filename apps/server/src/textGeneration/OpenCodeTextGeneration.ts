@@ -21,6 +21,8 @@ import {
   type TextGenerationRequest,
 } from "./TextGenerationFromText.ts";
 
+const OPENCODE_TEXT_GENERATION_TIMEOUT_MS = 180_000;
+
 export const makeOpenCodeTextGeneration = (manager: OpenCodeServerManagerShape) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -55,11 +57,14 @@ export const makeOpenCodeTextGeneration = (manager: OpenCodeServerManagerShape) 
                 ),
               ),
               (session) =>
-                runOpenCode("session.generate", (signal) =>
-                  server.client.session.generate(
-                    { sessionID: session.id, prompt: input.prompt },
-                    { signal },
-                  ),
+                runOpenCode(
+                  "session.generate",
+                  (signal) =>
+                    server.client.session.generate(
+                      { sessionID: session.id, prompt: input.prompt },
+                      { signal },
+                    ),
+                  { timeoutMs: OPENCODE_TEXT_GENERATION_TIMEOUT_MS },
                 ),
               (session) =>
                 runOpenCode("session.remove", (signal) =>

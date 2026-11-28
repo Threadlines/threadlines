@@ -57,7 +57,14 @@ import {
   seedClaudeProviderUsage,
   stopClaudeCliAfterSignInRenewal,
 } from "./ClaudeProvider.ts";
-import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
+import {
+  checkOpenCodeProviderStatus,
+  loadOpenCodeCatalog,
+  openCodeAccountUsage,
+  openCodeModelMeta,
+  openCodeUsageLimitFromAccountUsage,
+} from "./OpenCodeProvider.ts";
+import type { OpenCodeClient } from "../opencode/OpenCodeClient.ts";
 import { type ServerProviderDraft } from "../providerSnapshot.ts";
 import {
   makeClaudeTokenUsageHistoryReader,
@@ -3407,6 +3414,206 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             status.message,
             "OpenCode is installed but cannot start. Cannot find module '@opencode/cli-darwin-arm64'",
           );
+        }),
+      );
+    });
+
+    describe("OpenCode model catalog and usage limits", () => {
+      it.effect(
+        "enriches models with default marker, pricing/context meta, free chip, and filters disabled/deprecated",
+        () =>
+          Effect.gen(function* () {
+            const fakeClient = {
+              model: {
+                list: async () => ({
+                  data: [
+                    {
+                      id: "claude-sonnet-4",
+                      providerID: "anthropic",
+                      name: "Claude Sonnet 4",
+                      enabled: true,
+                      status: "active",
+                      limit: { context: 200_000, output: 16_000 },
+                      cost: [{ input: 3, output: 15, cache: { read: 0.3, write: 3.75 } }],
+                      variants: [{ id: "high" }],
+                    },
+                    {
+                      id: "zen-free",
+                      providerID: "opencode",
+                      name: "Zen Free",
+                      enabled: true,
+                      status: "active",
+                      limit: { context: 131_072, output: 8_192 },
+                      cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+                      variants: [],
+                    },
+                    {
+                      id: "old-model",
+                      providerID: "anthropic",
+                      name: "Deprecated Model",
+                      enabled: true,
+                      status: "deprecated",
+                      limit: { context: 100_000, output: 4_000 },
+                      cost: [{ input: 1, output: 2, cache: { read: 0, write: 0 } }],
+                      variants: [],
+                    },
+                    {
+                      id: "disabled-model",
+                      providerID: "openai",
+                      name: "Disabled Model",
+                      enabled: false,
+                      status: "active",
+                      limit: { context: 128_000, output: 4_000 },
+                      cost: [{ input: 2, output: 8, cache: { read: 0, write: 0 } }],
+                      variants: [],
+                    },
+                  ],
+                }),
+                default: async () => ({
+                  data: { id: "claude-sonnet-4", providerID: "anthropic" },
+                }),
+              },
+              provider: {
+                list: async () => ({
+                  data: [
+                    { id: "anthropic", name: "Anthropic" },
+                    { id: "opencode", name: "OpenCode Zen" },
+                    { id: "openai", name: "OpenAI" },
+                  ],
+                }),
+              },
+              command: { list: async () => ({ data: [] }) },
+              skill: { list: async () => ({ data: [] }) },
+              experimental: {
+                usage: {
+                  limits: async () => ({ data: null }),
+                },
+              },
+            } as unknown as OpenCodeClient;
+
+            const catalog = yield* loadOpenCodeCatalog(
+              fakeClient,
+              "/tmp/project",
+              "2026-05-01T12:00:00.000Z",
+            );
+            assert.deepStrictEqual(
+              catalog.models.map((model) => model.slug),
+              ["anthropic/claude-sonnet-4", "opencode/zen-free"],
+            );
+            assert.deepStrictEqual(catalog.connectedProviders, ["Anthropic"]);
+            const sonnet = catalog.models.find(
+              (model) => model.slug === "anthropic/claude-sonnet-4",
+            );
+            assert.strictEqual(sonnet?.isDefault, true);
+            assert.strictEqual(sonnet?.metaLabel, "200K ctx · $3/M in · $15/M out");
+            assert.strictEqual(sonnet?.promoLabel, undefined);
+
+            const zen = catalog.models.find((model) => model.slug === "opencode/zen-free");
+            assert.strictEqual(zen?.isDefault, undefined);
+            assert.strictEqual(zen?.metaLabel, "128K ctx");
+            assert.strictEqual(zen?.promoLabel, "Free");
+
+            // Non-Zen zero-cost model (e.g. local Ollama) omits the "Free" promo chip.
+            assert.deepStrictEqual(
+              openCodeModelMeta({
+                providerID: "ollama",
+                limit: { context: 1_000_000 },
+                cost: [{ input: 0, output: 0 }],
+              }),
+              { metaLabel: "1M ctx" },
+            );
+          }),
+      );
+
+      it.effect("maps OpenCode Go windows and Console budgets onto accountUsage", () =>
+        Effect.sync(() => {
+          const checkedAt = "2026-05-01T12:00:00.000Z";
+          const usage = openCodeAccountUsage(
+            {
+              workspace: { id: "ws_1", name: "Team", usageURL: "https://opencode.ai/usage" },
+              go: {
+                rolling: { percent: 42.4, limited: false, resetsAt: 1_777_650_000_000 },
+                weekly: { percent: 99.7, limited: false, resetsAt: 1_778_000_000_000 },
+                monthly: { percent: 100, limited: true, resetsAt: 1_780_000_000_000 },
+              },
+              budgets: [
+                {
+                  id: "b_all",
+                  limit: 50,
+                  spent: 12.5,
+                  coverage: "all",
+                  resetsAt: 1_780_000_000_000,
+                },
+                {
+                  id: "b_model",
+                  limit: 20,
+                  spent: 20,
+                  coverage: "models",
+                  models: [{ name: "Claude Opus" }],
+                  resetsAt: 1_780_000_000_000,
+                },
+              ],
+            },
+            checkedAt,
+          );
+          assert.strictEqual(usage?.source, "grok-billing");
+          assert.strictEqual(usage?.primaryLimitId, "opencode");
+          const limit = usage?.limits[0];
+          assert.strictEqual(limit?.limitName, "OpenCode Go (Team)");
+          assert.strictEqual(limit?.planType, "Go");
+          assert.strictEqual(limit?.rateLimitReachedType, "monthly");
+          assert.deepStrictEqual(limit?.primary, {
+            usedPercent: 42,
+            remainingPercent: 58,
+            resetsAt: 1_777_650_000,
+            windowDurationMins: 300,
+            checkedAt,
+          });
+          // 99.7% without `limited: true` caps at 99% so it never says "limit reached" prematurely.
+          assert.deepStrictEqual(limit?.secondary, {
+            usedPercent: 99,
+            remainingPercent: 1,
+            resetsAt: 1_778_000_000,
+            windowDurationMins: 10_080,
+            checkedAt,
+          });
+          assert.deepStrictEqual(limit?.individualLimit, {
+            limit: "$50.00",
+            used: "$12.50",
+            remainingPercent: 75,
+            resetsAt: 1_780_000_000,
+          });
+          assert.strictEqual(limit?.scoped?.length, 2);
+          assert.strictEqual(limit?.scoped?.[0]?.scopeLabel, "Monthly");
+          assert.strictEqual(limit?.scoped?.[0]?.usedPercent, 100);
+          assert.strictEqual(limit?.scoped?.[1]?.scopeLabel, "Claude Opus");
+          assert.strictEqual(limit?.scoped?.[1]?.severity, "warning");
+
+          assert.strictEqual(openCodeAccountUsage(null, checkedAt), undefined);
+          assert.strictEqual(openCodeAccountUsage({ budgets: [] }, checkedAt), undefined);
+
+          // Monthly Go exhaustion and all-model budget exhaustion both expose reset times.
+          const nowMs = Date.parse(checkedAt);
+          assert.deepStrictEqual(openCodeUsageLimitFromAccountUsage(usage, nowMs), {
+            resetsAt: new Date(1_780_000_000_000).toISOString(),
+          });
+          const budgetExhausted = openCodeAccountUsage(
+            {
+              budgets: [
+                {
+                  id: "b_all",
+                  limit: 25,
+                  spent: 25,
+                  coverage: "all",
+                  resetsAt: 1_781_000_000_000,
+                },
+              ],
+            },
+            checkedAt,
+          );
+          assert.deepStrictEqual(openCodeUsageLimitFromAccountUsage(budgetExhausted, nowMs), {
+            resetsAt: new Date(1_781_000_000_000).toISOString(),
+          });
         }),
       );
     });

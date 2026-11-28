@@ -42,6 +42,7 @@ import {
   annotateAntigravityPluginSkills,
   listAntigravityMcpServers,
   listAntigravityPlugins,
+  parseJsoncObject,
 } from "./antigravity/AntigravityExtensions.ts";
 import { antigravityInstancePaths } from "./antigravity/AntigravityProfile.ts";
 import { makeAntigravitySkillsLister } from "./antigravity/AntigravitySkills.ts";
@@ -143,6 +144,8 @@ function environmentHome(environment: NodeJS.ProcessEnv): string {
 }
 
 function openCodeConfigDir(environment: NodeJS.ProcessEnv): string {
+  const explicitDir = environment.OPENCODE_CONFIG_DIR?.trim();
+  if (explicitDir) return expandHomePath(explicitDir);
   const xdgConfigHome = environment.XDG_CONFIG_HOME?.trim();
   return xdgConfigHome
     ? `${xdgConfigHome}/opencode`
@@ -693,12 +696,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 type JsonReadOutcome =
   | { readonly kind: "missing" }
   | { readonly kind: "unsafe"; readonly message: string }
-  | { readonly kind: "ok"; readonly doc: Record<string, unknown> }
+  | { readonly kind: "ok"; readonly doc: Record<string, unknown>; readonly strictJson?: boolean }
   | { readonly kind: "error"; readonly message: string };
 
 const readJsonFileSafe = Effect.fn("otherProviderExtensions.readJsonFileSafe")(function* (
   filePath: string,
   confineBoundary?: string | undefined,
+  options?: { readonly allowJsonc?: boolean },
 ): Effect.fn.Return<JsonReadOutcome, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -724,9 +728,15 @@ const readJsonFileSafe = Effect.fn("otherProviderExtensions.readJsonFileSafe")(f
   try {
     const parsed: unknown = JSON.parse(contents);
     return isRecord(parsed)
-      ? { kind: "ok", doc: parsed }
+      ? { kind: "ok", doc: parsed, strictJson: true }
       : { kind: "error", message: `${filePath} is not a JSON object.` };
   } catch {
+    if (options?.allowJsonc) {
+      const parsed = parseJsoncObject(contents);
+      if (parsed) {
+        return { kind: "ok", doc: parsed, strictJson: false };
+      }
+    }
     return { kind: "error", message: `${filePath} contains invalid JSON.` };
   }
 });
@@ -1445,54 +1455,121 @@ export const readOtherProviderInventory = Effect.fn(
       },
     ];
     const userConfigPath = path.join(configDir, "opencode.json");
-    const projectConfigPath = projectCwd ? path.join(projectCwd, "opencode.json") : undefined;
-    const [scanned, projectConfigResult, userConfigResult, realUserConfigPath] = yield* Effect.all(
-      [
-        Effect.forEach(roots, (root) => scanSkillRoot(root, projectBoundary), { concurrency: 4 }),
-        projectConfigPath
-          ? readJsonFileSafe(projectConfigPath, projectBoundary)
-          : Effect.succeed<JsonReadOutcome>({ kind: "missing" }),
-        readJsonFileSafe(userConfigPath),
-        fileSystem.realPath(userConfigPath).pipe(Effect.catch(() => Effect.succeed(null))),
-      ],
-      { concurrency: "unbounded" },
+    const explicitConfig = input.processEnv.OPENCODE_CONFIG?.trim();
+    const explicitConfigPath = explicitConfig ? expandHomePath(explicitConfig) : undefined;
+    // Precedence order (lowest to highest) matching OpenCode's config layering.
+    const userConfigPaths = [
+      path.join(configDir, "config.json"),
+      userConfigPath,
+      path.join(configDir, "opencode.jsonc"),
+      ...(explicitConfigPath ? [explicitConfigPath] : []),
+    ].filter((filePath, index, list) => list.indexOf(filePath) === index);
+    const projectConfigPaths = projectCwd
+      ? [path.join(projectCwd, "opencode.json"), path.join(projectCwd, "opencode.jsonc")]
+      : [];
+    const [scanned, projectConfigResults, userConfigResults, realUserConfigPath] =
+      yield* Effect.all(
+        [
+          Effect.forEach(roots, (root) => scanSkillRoot(root, projectBoundary), { concurrency: 4 }),
+          Effect.forEach(
+            projectConfigPaths,
+            (filePath) =>
+              readJsonFileSafe(filePath, projectBoundary, { allowJsonc: true }).pipe(
+                Effect.map((result) => ({ filePath, result })),
+              ),
+            { concurrency: "unbounded" },
+          ),
+          Effect.forEach(
+            userConfigPaths,
+            (filePath) =>
+              readJsonFileSafe(filePath, undefined, { allowJsonc: true }).pipe(
+                Effect.map((result) => ({ filePath, result })),
+              ),
+            { concurrency: "unbounded" },
+          ),
+          fileSystem.realPath(userConfigPath).pipe(Effect.catch(() => Effect.succeed(null))),
+        ],
+        { concurrency: "unbounded" },
+      );
+    const userConfigIndex = userConfigResults.findIndex(
+      (entry) => entry.filePath === userConfigPath,
     );
+    const userConfigResult =
+      userConfigIndex >= 0
+        ? userConfigResults[userConfigIndex]!.result
+        : ({ kind: "missing" } satisfies JsonReadOutcome);
+    const higherUserConfigs =
+      userConfigIndex >= 0 ? userConfigResults.slice(userConfigIndex + 1) : [];
     const userConfigPointsIntoProject =
       projectBoundary !== undefined &&
       realUserConfigPath !== null &&
       isPathWithinBoundary(path, projectBoundary, realUserConfigPath);
     const policyAnnotatedSkills = dedupeSkillsByPriority(scanned.flat()).map((skill) => {
-      const projectEffect =
-        projectConfigResult.kind === "ok"
-          ? evaluateOpenCodeSkillPolicy(projectConfigResult.doc, skill.name)
-          : undefined;
-      const userEffect =
-        userConfigResult.kind === "ok"
-          ? evaluateOpenCodeSkillPolicy(userConfigResult.doc, skill.name)
-          : undefined;
+      let projectEffect: "allow" | "deny" | undefined;
+      let projectPolicyPath: string | undefined;
+      for (const entry of projectConfigResults) {
+        if (entry.result.kind !== "ok") continue;
+        const next = evaluateOpenCodeSkillPolicy(entry.result.doc, skill.name);
+        if (next !== undefined) {
+          projectEffect = next;
+          projectPolicyPath = entry.filePath;
+        }
+      }
+      let userEffect: "allow" | "deny" | undefined;
+      for (const entry of userConfigResults) {
+        if (entry.result.kind !== "ok") continue;
+        const next = evaluateOpenCodeSkillPolicy(entry.result.doc, skill.name);
+        if (next !== undefined) {
+          userEffect = next;
+        }
+      }
+      let overrideUserPolicyPath: string | undefined;
+      for (const entry of higherUserConfigs) {
+        if (entry.result.kind !== "ok") continue;
+        if (evaluateOpenCodeSkillPolicy(entry.result.doc, skill.name) !== undefined) {
+          overrideUserPolicyPath = entry.filePath;
+        }
+      }
 
-      if (projectEffect === "deny" && projectConfigPath) {
+      if (projectEffect === "deny" && projectPolicyPath) {
         return {
           ...skill,
           enabled: false,
-          configPath: projectConfigPath,
-          toggleNotice: "Disabled by this project's opencode.json. Open config to change it.",
+          configPath: projectPolicyPath,
+          toggleNotice: `Disabled by this project's ${path.basename(projectPolicyPath)}. Open config to change it.`,
         };
       }
-      if (projectEffect === "allow" && projectConfigPath) {
+      if (projectEffect === "allow" && projectPolicyPath) {
         return {
           ...skill,
           enabled: true,
-          configPath: projectConfigPath,
-          toggleNotice: "Enabled by this project's opencode.json. Open config to change it.",
+          configPath: projectPolicyPath,
+          toggleNotice: `Enabled by this project's ${path.basename(projectPolicyPath)}. Open config to change it.`,
+        };
+      }
+      if (overrideUserPolicyPath) {
+        return {
+          ...skill,
+          enabled: userEffect !== "deny",
+          configPath: overrideUserPolicyPath,
+          toggleNotice: `Managed by ${path.basename(overrideUserPolicyPath)}. Open config to change it.`,
         };
       }
       if (userConfigResult.kind === "error") {
         return {
           ...skill,
-          enabled: true,
+          enabled: userEffect !== "deny",
           configPath: userConfigPath,
           toggleNotice: "Fix invalid JSON in opencode.json before toggling skills.",
+        };
+      }
+      if (userConfigResult.kind === "ok" && userConfigResult.strictJson === false) {
+        return {
+          ...skill,
+          enabled: userEffect !== "deny",
+          configPath: userConfigPath,
+          toggleNotice:
+            "User opencode.json contains comments or trailing commas. Open config to edit it directly.",
         };
       }
       if (userConfigPointsIntoProject) {
@@ -1521,14 +1598,19 @@ export const readOtherProviderInventory = Effect.fn(
       };
     });
     const skills = yield* annotateDeletableSkills(policyAnnotatedSkills, writableRoots);
-    const mcpServers = dedupeMcpServers(
-      projectConfigResult.kind === "ok"
-        ? parseOpenCodeMcpConfig(projectConfigResult.doc, "project")
-        : [],
-      userConfigResult.kind === "ok" ? parseOpenCodeMcpConfig(userConfigResult.doc, "user") : [],
-    );
-    const mcpErrors = [projectConfigResult, userConfigResult].flatMap((entry) =>
-      entry.kind === "error" || entry.kind === "unsafe" ? [entry.message] : [],
+    const projectMcpServers = projectConfigResults
+      .toReversed()
+      .flatMap((entry) =>
+        entry.result.kind === "ok" ? parseOpenCodeMcpConfig(entry.result.doc, "project") : [],
+      );
+    const userMcpServers = userConfigResults
+      .toReversed()
+      .flatMap((entry) =>
+        entry.result.kind === "ok" ? parseOpenCodeMcpConfig(entry.result.doc, "user") : [],
+      );
+    const mcpServers = dedupeMcpServers(projectMcpServers, userMcpServers);
+    const mcpErrors = [...projectConfigResults, ...userConfigResults].flatMap(({ result }) =>
+      result.kind === "error" || result.kind === "unsafe" ? [result.message] : [],
     );
     return {
       ...base,
@@ -1704,12 +1786,23 @@ export const setOtherProviderSkillEnabled = Effect.fn(
     const projectBoundary = repoRoot
       ? yield* fileSystem.realPath(repoRoot).pipe(Effect.catch(() => Effect.succeed(repoRoot)))
       : undefined;
-    const userConfigPath = path.join(openCodeConfigDir(input.processEnv), "opencode.json");
+    const configDir = openCodeConfigDir(input.processEnv);
+    const userConfigPath = path.join(configDir, "opencode.json");
+    const baseConfigResult = yield* readJsonFileSafe(
+      path.join(configDir, "config.json"),
+      undefined,
+      { allowJsonc: true },
+    );
+    const inheritedEffect =
+      baseConfigResult.kind === "ok"
+        ? evaluateOpenCodeSkillPolicy(baseConfigResult.doc, matched.name)
+        : undefined;
     yield* writeOpenCodeSkillToggle({
       userConfigPath,
       skillName: matched.name,
       enabled: input.enabled,
       forbiddenBoundary: projectBoundary,
+      inheritedEffect,
     });
     // Re-read inventory to verify effective state (e.g. a project config cannot be overridden).
     const after = yield* readOtherProviderInventory({

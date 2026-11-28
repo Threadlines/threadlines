@@ -122,6 +122,8 @@ export function openCodeSessionRules(input: {
   /** The session agent's rules, from `/api/agent`. */
   readonly agentRules: ReadonlyArray<OpenCodeRule>;
   readonly toolKey: string;
+  /** The browser tools (default true; false when a remote OpenCode server cannot reach loopback). */
+  readonly browserTools?: boolean;
   readonly roomTools: boolean;
   /** The page tools: a page shows only in the caller's own thread, so they never ask. */
   readonly agentPages?: boolean;
@@ -138,11 +140,15 @@ export function openCodeSessionRules(input: {
     { action: `${PAGES_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
     { action: `${COMMANDS_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
     { action: `${DEVICE_SERVER_PREFIX}*`, resource: "*", effect: "deny" },
-    {
-      action: `${openCodeBrowserServerName(input.toolKey)}_*`,
-      resource: "*",
-      effect: "allow",
-    },
+    ...(input.browserTools !== false
+      ? [
+          {
+            action: `${openCodeBrowserServerName(input.toolKey)}_*`,
+            resource: "*",
+            effect: "allow",
+          } satisfies OpenCodeRule,
+        ]
+      : []),
     ...(input.roomTools
       ? [
           {
