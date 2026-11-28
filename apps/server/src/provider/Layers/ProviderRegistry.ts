@@ -727,6 +727,7 @@ export const ProviderRegistryLive = Layer.effect(
       readonly instanceId: ProviderInstanceId;
       readonly idempotencyKey?: string;
       readonly creditId?: string;
+      readonly accountId?: string;
     }) {
       const instance = yield* instanceRegistry.getInstance(input.instanceId);
       if (!instance) {
@@ -747,6 +748,7 @@ export const ProviderRegistryLive = Layer.effect(
       const outcome = yield* consume({
         idempotencyKey: input.idempotencyKey ?? randomUUID(),
         ...(input.creditId ? { creditId: input.creditId } : {}),
+        ...(input.accountId ? { accountId: input.accountId } : {}),
       }).pipe(
         Effect.map((result) => result.outcome),
         Effect.mapError(

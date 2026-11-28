@@ -305,3 +305,174 @@ export const removeAntigravitySessionFiles = (profileDir: string, sessionId: str
       await NodeFSP.rm(brainEntry.path, { recursive: true, force: true }).catch(() => undefined);
     }
   });
+
+const MAX_DELETE_TREE_NODES = 128;
+const MAX_DELETE_TREE_DEPTH = 4;
+const MAX_SUBAGENT_META_BYTES = 128 * 1024;
+const MAX_INBOX_FILES_TO_CHECK = 256;
+
+async function readSmallProfileJson(
+  profileDir: string,
+  segments: ReadonlyArray<string>,
+): Promise<unknown> {
+  const file = await openAntigravityProfileFile(profileDir, segments);
+  if (typeof file === "string") return undefined;
+  try {
+    if (file.size > MAX_SUBAGENT_META_BYTES) return undefined;
+    const buffer = Buffer.alloc(file.size);
+    let offset = 0;
+    while (offset < file.size) {
+      const { bytesRead } = await file.handle.read(buffer, offset, file.size - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (!(await file.stillHeld())) return undefined;
+    return JSON.parse(buffer.subarray(0, offset).toString("utf8")) as unknown;
+  } catch {
+    return undefined;
+  } finally {
+    await file.handle.close();
+  }
+}
+
+/**
+ * Confirms `childId` actually belongs to `parentId`: its inbox under
+ * `brain/<childId>/.system_generated/messages/` holds a JSON message whose
+ * `sender` equals `parentId`. Without that proof, we never delete `childId`.
+ */
+async function childInboxReferencesParent(
+  profileDir: string,
+  parentId: string,
+  childId: string,
+): Promise<boolean> {
+  const inboxEntry = await antigravityProfileEntry(
+    profileDir,
+    ["brain", childId, ".system_generated", "messages"],
+    "directory",
+  );
+  if (typeof inboxEntry === "string") return false;
+  const dir = await NodeFSP.opendir(inboxEntry.path).catch(() => undefined);
+  if (!dir) return false;
+  const names: Array<string> = [];
+  try {
+    for await (const entry of dir) {
+      if (names.length >= MAX_INBOX_FILES_TO_CHECK) break;
+      if (entry.name.endsWith(".json") && entry.name !== "read.json") {
+        names.push(entry.name);
+      }
+    }
+  } catch {
+    return false;
+  }
+  for (const name of names) {
+    const record = await readSmallProfileJson(profileDir, [
+      "brain",
+      childId,
+      ".system_generated",
+      "messages",
+      name,
+    ]);
+    if (
+      typeof record === "object" &&
+      record !== null &&
+      !Array.isArray(record) &&
+      (record as { sender?: unknown }).sender === parentId
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Finds verified direct child subagent conversation IDs of `parentId`: each
+ * child's record under `brain/<parentId>/.system_generated/subagents/<child>.json`
+ * must match its filename (`conversationId === child`) and the child's own
+ * inbox must carry a message from `parentId`. Ambiguous or unreadable records
+ * are skipped rather than risked.
+ */
+async function verifiedChildConversationIds(
+  profileDir: string,
+  parentId: string,
+): Promise<ReadonlyArray<string>> {
+  const subagentsDir = await antigravityProfileEntry(
+    profileDir,
+    ["brain", parentId, ".system_generated", "subagents"],
+    "directory",
+  );
+  if (typeof subagentsDir === "string") return [];
+  const dir = await NodeFSP.opendir(subagentsDir.path).catch(() => undefined);
+  if (!dir) return [];
+  const files: Array<string> = [];
+  try {
+    for await (const entry of dir) {
+      if (files.length >= MAX_DELETE_TREE_NODES) break;
+      if (entry.name.endsWith(".json")) files.push(entry.name);
+    }
+  } catch {
+    return [];
+  }
+  const verified: Array<string> = [];
+  for (const fileName of files) {
+    const stem = fileName.slice(0, -".json".length);
+    if (!SESSION_ID.test(stem) || stem === parentId) continue;
+    const meta = await readSmallProfileJson(profileDir, [
+      "brain",
+      parentId,
+      ".system_generated",
+      "subagents",
+      fileName,
+    ]);
+    if (
+      typeof meta !== "object" ||
+      meta === null ||
+      Array.isArray(meta) ||
+      (meta as { conversationId?: unknown }).conversationId !== stem
+    ) {
+      continue;
+    }
+    if (await childInboxReferencesParent(profileDir, parentId, stem)) {
+      verified.push(stem);
+    }
+  }
+  return verified;
+}
+
+/**
+ * Removes an Antigravity conversation and any verified descendant subagent
+ * conversations owned by it inside `profileDir`. Skips `sessionId` or any
+ * descendant present in `protectedSessionIds` (e.g. still bound to another
+ * live thread).
+ */
+export const removeAntigravityConversationTree = (
+  profileDir: string,
+  sessionId: string,
+  protectedSessionIds?: ReadonlySet<string>,
+) =>
+  Effect.gen(function* () {
+    if (!SESSION_ID.test(sessionId)) return;
+    if (protectedSessionIds?.has(sessionId)) return;
+    const toDelete: Array<string> = [];
+    const seen = new Set<string>([sessionId]);
+    const queue: Array<{ readonly id: string; readonly depth: number }> = [
+      { id: sessionId, depth: 0 },
+    ];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      toDelete.push(current.id);
+      if (current.depth >= MAX_DELETE_TREE_DEPTH || seen.size >= MAX_DELETE_TREE_NODES) continue;
+      const children = yield* Effect.promise(() =>
+        verifiedChildConversationIds(profileDir, current.id).catch(() => []),
+      );
+      for (const childId of children) {
+        if (seen.size >= MAX_DELETE_TREE_NODES) break;
+        if (seen.has(childId) || protectedSessionIds?.has(childId)) continue;
+        seen.add(childId);
+        queue.push({ id: childId, depth: current.depth + 1 });
+      }
+    }
+    // Delete children before parents so a partial failure keeps parent links intact for inspection.
+    for (const id of toDelete.toReversed()) {
+      yield* removeAntigravitySessionFiles(profileDir, id);
+    }
+  });

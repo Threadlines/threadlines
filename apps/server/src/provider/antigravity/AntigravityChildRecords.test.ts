@@ -13,7 +13,10 @@ import {
   antigravityChildTranscript,
   readAntigravityChildren,
 } from "./AntigravityChildRecords.ts";
-import { openAntigravityProfileFile } from "./AntigravitySessionLog.ts";
+import {
+  openAntigravityProfileFile,
+  removeAntigravityConversationTree,
+} from "./AntigravitySessionLog.ts";
 
 const PARENT = "7d40e54d-5977-4239-940b-246cdd81a12b";
 
@@ -290,5 +293,120 @@ describe("openAntigravityProfileFile", () => {
         });
       }),
     ),
+  );
+});
+
+describe("removeAntigravityConversationTree", () => {
+  it.live(
+    "removes the conversation and verified children while skipping spoofed and protected sessions",
+    () =>
+      withProfile((records) =>
+        Effect.gen(function* () {
+          const conversations = path.join(records.profile, "antigravity-acp", "conversations");
+          const exists = (file: string) =>
+            import("node:fs/promises").then((fs) =>
+              fs
+                .access(file)
+                .then(() => true)
+                .catch(() => false),
+            );
+          const seedConversation = async (id: string) => {
+            await mkdir(conversations, { recursive: true });
+            await writeFile(path.join(conversations, `${id}.pb`), "pb");
+            await writeFile(path.join(conversations, `${id}.db`), "db");
+            await writeFile(path.join(conversations, `${id}.db-wal`), "wal");
+            await writeFile(path.join(conversations, `${id}.db-shm`), "shm");
+          };
+
+          yield* Effect.promise(async () => {
+            await seedConversation(PARENT);
+            await seedConversation("child-verified");
+            await seedConversation("child-protected");
+            await seedConversation("child-spoofed");
+            await seedConversation("unrelated-session");
+
+            // Verified child: subagent JSON matches filename AND child inbox has message from PARENT.
+            await records.child("child-verified", "call_verified");
+            // Protected child: verified, but still bound to another live thread.
+            await records.child("child-protected", "call_protected");
+            // Spoofed child: listed in parent subagents folder, but no inbox message from PARENT.
+            await records.write([PARENT, ".system_generated", "subagents", "child-spoofed.json"], {
+              conversationId: "child-spoofed",
+              state: "SUBAGENT_STATE_ALIVE",
+            });
+            await records.write(["child-spoofed", ".system_generated", "messages", "other.json"], {
+              sender: "some-other-parent",
+              content: "not from parent",
+            });
+          });
+
+          yield* removeAntigravityConversationTree(
+            records.profile,
+            PARENT,
+            new Set(["child-protected"]),
+          );
+
+          // Parent and verified child are deleted.
+          expect(
+            yield* Effect.promise(() => exists(path.join(conversations, `${PARENT}.db`))),
+          ).toBe(false);
+          expect(yield* Effect.promise(() => exists(path.join(records.brain, PARENT)))).toBe(false);
+          expect(
+            yield* Effect.promise(() => exists(path.join(conversations, "child-verified.db"))),
+          ).toBe(false);
+          expect(
+            yield* Effect.promise(() => exists(path.join(records.brain, "child-verified"))),
+          ).toBe(false);
+
+          // Protected, spoofed, and unrelated sessions stay intact.
+          expect(
+            yield* Effect.promise(() => exists(path.join(conversations, "child-protected.db"))),
+          ).toBe(true);
+          expect(
+            yield* Effect.promise(() => exists(path.join(conversations, "child-spoofed.db"))),
+          ).toBe(true);
+          expect(
+            yield* Effect.promise(() => exists(path.join(conversations, "unrelated-session.db"))),
+          ).toBe(true);
+        }),
+      ),
+  );
+
+  it.live(
+    "drains and deletes all 127 verified direct children at the tree cap without orphaning",
+    () =>
+      withProfile((records) =>
+        Effect.gen(function* () {
+          const conversations = path.join(records.profile, "antigravity-acp", "conversations");
+          const exists = (file: string) =>
+            import("node:fs/promises").then((fs) =>
+              fs
+                .access(file)
+                .then(() => true)
+                .catch(() => false),
+            );
+          yield* Effect.promise(async () => {
+            await mkdir(conversations, { recursive: true });
+            await writeFile(path.join(conversations, `${PARENT}.db`), "db");
+            for (let index = 0; index < 127; index += 1) {
+              const childId = `child-${String(index).padStart(3, "0")}`;
+              await writeFile(path.join(conversations, `${childId}.db`), "db");
+              await records.child(childId, `call_${index}`);
+            }
+          });
+
+          yield* removeAntigravityConversationTree(records.profile, PARENT);
+
+          expect(
+            yield* Effect.promise(() => exists(path.join(conversations, `${PARENT}.db`))),
+          ).toBe(false);
+          expect(
+            yield* Effect.promise(() => exists(path.join(conversations, "child-000.db"))),
+          ).toBe(false);
+          expect(
+            yield* Effect.promise(() => exists(path.join(conversations, "child-126.db"))),
+          ).toBe(false);
+        }),
+      ),
   );
 });

@@ -3315,6 +3315,49 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    * binding forgets the conversation. Nothing is started for it. Undefined
    * for every other agent, which `rollbackConversation` handles as before.
    */
+  /**
+   * Removes on-disk conversation state for a deleted or retired thread session
+   * without spawning a stopped agent process. Collects every resume cursor still
+   * bound to other threads on the same provider instance so shared records are
+   * never touched.
+   */
+  const deleteStoredSessionFiles = (input: {
+    readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+    readonly instanceId: ProviderInstanceId | undefined;
+    readonly excludeThreadId: ThreadId;
+    readonly resumeCursor: unknown;
+  }) =>
+    Effect.gen(function* () {
+      const del = input.adapter.deleteStoredSession;
+      if (del === undefined || input.resumeCursor === undefined || input.resumeCursor === null) {
+        return;
+      }
+      // Do not swallow directory lookup failures: an incomplete protection set
+      // could delete a conversation still shared by another thread.
+      const otherThreadIds = yield* directory.listThreadIds();
+      const protectedCursors: Array<unknown> = [];
+      for (const otherId of otherThreadIds) {
+        if (otherId === input.excludeThreadId) continue;
+        const otherBinding = Option.getOrUndefined(yield* directory.getBinding(otherId));
+        if (
+          otherBinding !== undefined &&
+          otherBinding.providerInstanceId === input.instanceId &&
+          otherBinding.resumeCursor !== undefined &&
+          otherBinding.resumeCursor !== null
+        ) {
+          protectedCursors.push(otherBinding.resumeCursor);
+        }
+      }
+      yield* del({ resumeCursor: input.resumeCursor, protectedCursors });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider service skipped stored session cleanup", {
+          threadId: input.excludeThreadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+
   const forgetByStartingOver = (threadId: ThreadId, numTurns: number) =>
     Effect.gen(function* () {
       // A binding that can't be read fails the revert: whether something of
@@ -3365,6 +3408,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
       }
       const forgotten = yield* forgetConversation(threadId);
+      if (forgotten) {
+        yield* deleteStoredSessionFiles({
+          adapter,
+          instanceId: binding.providerInstanceId,
+          excludeThreadId: threadId,
+          resumeCursor: binding.resumeCursor,
+        });
+      }
       yield* analytics.record("provider.conversation.rolled_back", {
         ...analyticsAgentProperties({
           provider: adapter.provider,
@@ -3610,18 +3661,43 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.native_delete_supported": routed.adapter.deleteThread !== undefined,
       });
+      const bindingBeforeDelete = Option.getOrUndefined(
+        yield* directory.getBinding(input.threadId).pipe(Effect.orElseSucceed(() => Option.none())),
+      );
+      let stoppedConfirmed = true;
       if (routed.adapter.deleteThread && (admitted || routed.isActive)) {
         yield* routed.adapter.deleteThread(routed.threadId);
-      } else if (routed.isActive) {
-        yield* routed.adapter.stopSession(routed.threadId);
+      } else {
+        if (routed.isActive) {
+          yield* routed.adapter.stopSession(routed.threadId);
+        }
+        // Wait for an already-stopping runtime too: ACP marks `hasSession` false
+        // as soon as shutdown begins, before the child process has exited.
+        if (routed.adapter.whenStopped !== undefined) {
+          const settled = yield* routed.adapter.whenStopped(routed.threadId).pipe(
+            Effect.timeoutOption(REVERT_STOP_WAIT),
+            Effect.orElseSucceed(() => Option.none<void>()),
+          );
+          stoppedConfirmed = Option.isSome(settled);
+        }
       }
       yield* directory.deleteBinding(input.threadId);
+      if (admitted && stoppedConfirmed && bindingBeforeDelete?.resumeCursor !== undefined) {
+        yield* deleteStoredSessionFiles({
+          adapter: routed.adapter,
+          instanceId: routed.instanceId ?? bindingBeforeDelete.providerInstanceId,
+          excludeThreadId: input.threadId,
+          resumeCursor: bindingBeforeDelete.resumeCursor,
+        });
+      }
       yield* analytics.record("provider.thread.deleted", {
         ...analyticsAgentProperties({
           provider: routed.adapter.provider,
           communityAgentId: yield* communityAgentIdOf(routed.instanceId),
         }),
-        nativeDelete: routed.adapter.deleteThread !== undefined,
+        nativeDelete:
+          routed.adapter.deleteThread !== undefined ||
+          routed.adapter.deleteStoredSession !== undefined,
       });
     }).pipe(
       withMetrics({

@@ -711,16 +711,16 @@ describe("makeAntigravityReleaseSource", () => {
 
 describe("parseAntigravityFeedManifest", () => {
   const builtInAsset = ANTIGRAVITY_RELEASE.assets["darwin-arm64"];
-  // Google's manifest for 1.5.14 on Apple silicon, as the feed served it.
+  // Google's manifest for the built-in release on Apple silicon, as the feed served it.
   const google = {
-    version: "1.5.14",
-    url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.14-5302690847260672/darwin-arm/cli_mac_arm64.tar.gz",
+    version: ANTIGRAVITY_RELEASE.version,
+    url: builtInAsset.url,
     sha512: builtInAsset.sha512,
   };
 
   it("accepts Google's manifest as the built-in release, without its sizes", () => {
     assert.deepStrictEqual(parseAntigravityFeedManifest(google, "darwin-arm64"), {
-      version: "1.5.14",
+      version: ANTIGRAVITY_RELEASE.version,
       asset: {
         url: builtInAsset.url,
         sha512: builtInAsset.sha512,
@@ -742,11 +742,11 @@ describe("parseAntigravityFeedManifest", () => {
     const windows = ANTIGRAVITY_RELEASE.assets["win32-x64"];
     assert.deepStrictEqual(
       parseAntigravityFeedManifest(
-        { version: "1.5.14", url: windows.url, sha512: windows.sha512 },
+        { version: ANTIGRAVITY_RELEASE.version, url: windows.url, sha512: windows.sha512 },
         "win32-x64",
       ),
       {
-        version: "1.5.14",
+        version: ANTIGRAVITY_RELEASE.version,
         asset: {
           url: windows.url,
           sha512: windows.sha512,
@@ -766,16 +766,19 @@ describe("parseAntigravityFeedManifest", () => {
       "another file name": { ...google, url: google.url.replace("cli_mac_arm64", "cli_mac_x64") },
       "a query string": { ...google, url: `${google.url}?alt=media` },
       "plain http": { ...google, url: google.url.replace("https:", "http:") },
-      "a version the url doesn't name": { ...google, version: "1.5.15" },
+      "a version the url doesn't name": { ...google, version: "1.5.99" },
       "a prerelease version": {
         ...google,
-        version: "1.5.14-beta",
-        url: google.url.replace("1.5.14-", "1.5.14-beta-"),
+        version: `${ANTIGRAVITY_RELEASE.version}-beta`,
+        url: google.url.replace(
+          `${ANTIGRAVITY_RELEASE.version}-`,
+          `${ANTIGRAVITY_RELEASE.version}-beta-`,
+        ),
       },
       "a two-part version": {
         ...google,
         version: "1.5",
-        url: google.url.replace("1.5.14-", "1.5-"),
+        url: google.url.replace(`${ANTIGRAVITY_RELEASE.version}-`, "1.5-"),
       },
       "a short sha512": { ...google, sha512: google.sha512.slice(0, 64) },
       "a sha512 that isn't hex": { ...google, sha512: `${google.sha512.slice(0, 127)}g` },

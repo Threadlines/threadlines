@@ -66,7 +66,10 @@ import {
 } from "../antigravity/AntigravityRelease.ts";
 import type { AntigravityReleaseSource } from "../antigravity/AntigravityReleaseSource.ts";
 import { antigravityAttachmentDelivery } from "../antigravity/AntigravityAttachments.ts";
-import { removeAntigravitySessionFiles } from "../antigravity/AntigravitySessionLog.ts";
+import {
+  removeAntigravityConversationTree,
+  removeAntigravitySessionFiles,
+} from "../antigravity/AntigravitySessionLog.ts";
 import { antigravitySubagents } from "../antigravity/AntigravitySubagents.ts";
 import {
   normalizeAntigravitySessionUpdate,
@@ -87,7 +90,10 @@ import {
   writeAntigravityAgentRefusal,
   writeAntigravityCatalog,
 } from "../antigravity/AntigravityProfile.ts";
-import { makeAntigravitySkillsLister } from "../antigravity/AntigravitySkills.ts";
+import {
+  antigravitySupportsHomeAgentsSkills,
+  makeAntigravitySkillsLister,
+} from "../antigravity/AntigravitySkills.ts";
 import { antigravityUserHome } from "../antigravity/AntigravityUserConfig.ts";
 import { holdLaunchGate, type LaunchGate } from "../managedRuntime/LaunchGate.ts";
 import {
@@ -1076,6 +1082,7 @@ export function makeAntigravityDescriptor(
    * lists models afresh.
    */
   let lastAgentTag: string | undefined;
+  let lastCustomVersion: string | undefined;
   const agentTag = (settings: AntigravitySettings) => {
     const custom = settings.binaryPath.trim();
     const read = custom
@@ -1091,7 +1098,10 @@ export function makeAntigravityDescriptor(
     return read.pipe(
       Effect.tap((tag) =>
         Effect.sync(() => {
-          if (tag !== undefined) lastAgentTag = tag;
+          if (tag !== undefined) {
+            if (tag !== lastAgentTag) lastCustomVersion = undefined;
+            lastAgentTag = tag;
+          }
         }),
       ),
     );
@@ -1183,6 +1193,7 @@ export function makeAntigravityDescriptor(
       Effect.gen(function* () {
         const problem = antigravityAgentProblem(response);
         if (settings.binaryPath.trim()) {
+          lastCustomVersion = response.agentInfo?.version?.trim() || undefined;
           const tag = yield* agentTag(settings);
           if (tag) yield* writeAntigravityAgentRefusal(paths.profileDir, { tag, problem });
         }
@@ -1209,6 +1220,8 @@ export function makeAntigravityDescriptor(
     clientSessionApprovals: true,
     onEphemeralSessionClosed: (sessionId) =>
       removeAntigravitySessionFiles(paths.profileDir, sessionId),
+    deleteStoredSession: (sessionId, protectedSessionIds) =>
+      removeAntigravityConversationTree(paths.profileDir, sessionId, protectedSessionIds),
     cancellationNotice: "The request was cancelled by the client.",
     // Tool text bounded, no inline images, `call_mcp_tool` shown as the MCP tool.
     normalizeSessionUpdate: normalizeAntigravitySessionUpdate,
@@ -1311,8 +1324,8 @@ export function makeAntigravityDescriptor(
             message: custom ? `Antigravity was not found at ${custom}.` : NOT_INSTALLED_MESSAGE,
           } satisfies AcpProviderProbeOutcome;
         }
-        const version = managed?.version ?? null;
         const tag = yield* agentTag(settings);
+        const version = custom ? (lastCustomVersion ?? null) : (managed?.version ?? null);
         const latest = custom ? {} : { latestVersion: (yield* releases!.newest).version };
         const refusal =
           custom && tag ? yield* readAntigravityAgentRefusal(paths.profileDir, tag) : undefined;
@@ -1375,15 +1388,22 @@ export function makeAntigravityDescriptor(
       }),
     // What the agent would see: the profile is brought up to date first, as
     // a start would, and global skills are read through it.
-    listSkills: (_settings, environment) =>
-      prepareAntigravityProfile(paths.profileDir, {
-        userHome: userHomeFor(environment),
-        platform,
-      }).pipe(
-        Effect.andThen(
-          listSkills({ cwd: input.skillsCwd ?? process.cwd(), profileDir: paths.profileDir }),
-        ),
-      ),
+    listSkills: (settings, environment) =>
+      Effect.gen(function* () {
+        const userHome = userHomeFor(environment);
+        yield* prepareAntigravityProfile(paths.profileDir, { userHome, platform });
+        const installedVersion = settings.binaryPath.trim()
+          ? lastCustomVersion
+          : runtime
+            ? (yield* runtime.installed)?.version
+            : undefined;
+        return yield* listSkills({
+          cwd: input.skillsCwd ?? process.cwd(),
+          profileDir: paths.profileDir,
+          userHome,
+          includeHomeAgentsSkills: antigravitySupportsHomeAgentsSkills(installedVersion),
+        });
+      }),
     modelDiscoveryTimeoutMs: ANTIGRAVITY_DISCOVERY_TIMEOUT_MS,
     discoverModelOptions: (acp) =>
       Effect.gen(function* () {

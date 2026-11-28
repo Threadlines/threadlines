@@ -124,6 +124,9 @@ const GRPC_STATUS_NAMES =
 const STATUS_ERROR = new RegExp(`(${GRPC_STATUS_NAMES}) \\(code (\\d{3})\\): (\\P{Cc}+)`, "u");
 /** Go map (`reason:QUOTA_EXHAUSTED`) or 1.5 JSON (`"reason": "QUOTA_EXHAUSTED"`). */
 const QUOTA_EXHAUSTED = /(?:\breason:QUOTA_EXHAUSTED\b|"reason"\s*:\s*"QUOTA_EXHAUSTED")/u;
+/** Gemini Enterprise empty prepaid wallet (CLI 1.5.17+): stops immediately, no quota reset timer. */
+const PREPAID_BALANCE_INSUFFICIENT =
+  /prepaid balance is insufficient|\bPREPAID_BALANCE_INSUFFICIENT\b/iu;
 const VALIDATION_REQUIRED = /\bVALIDATION_REQUIRED\b|verify your account/iu;
 /**
  * A saved thinking block the model refuses (its signature is gone): it sits
@@ -150,6 +153,8 @@ const GO_DURATION_UNIT_MS: Record<string, number> = {
 };
 
 const QUOTA_MESSAGE = "You've reached your Antigravity quota for now.";
+const PREPAID_BALANCE_MESSAGE =
+  "Your organization's prepaid balance is insufficient. Contact your administrator to add funds.";
 const LOST_SESSION_MESSAGE =
   "Antigravity's saved conversation can no longer be sent to the model. The next message starts a new Antigravity session with this thread's history.";
 const UNKNOWN_ERROR_MESSAGE = "Antigravity stopped this turn because of an error.";
@@ -212,6 +217,12 @@ export function antigravityFailure(input: {
 }): AcpPromptFailure | undefined {
   const text = input.errorText ?? "";
   if (input.errorText === undefined && input.stopReason !== "refusal") return undefined;
+  if (PREPAID_BALANCE_INSUFFICIENT.test(text)) {
+    return {
+      errorMessage: PREPAID_BALANCE_MESSAGE,
+      failureCategory: "refusal",
+    };
+  }
   if (input.stopReason === "refusal" || QUOTA_EXHAUSTED.test(text)) {
     const resetsAt = quotaResetAt(text, input.nowMs);
     return {
@@ -334,7 +345,8 @@ function antigravityPromptOutcome(
               const errorText = acpErrorText(answer.error);
               const recognized =
                 errorText !== undefined &&
-                (parseApiError(errorText) !== undefined ||
+                (PREPAID_BALANCE_INSUFFICIENT.test(errorText) ||
+                  parseApiError(errorText) !== undefined ||
                   QUOTA_EXHAUSTED.test(errorText) ||
                   VALIDATION_REQUIRED.test(errorText) ||
                   LOST_THINKING_SIGNATURE.test(errorText));

@@ -22,6 +22,7 @@ import type { ProviderSignInFlowView } from "./providerSignIn";
 
 interface UsageResetAction {
   readonly availableCount: number;
+  readonly scoped?: boolean;
   readonly isResetting?: boolean;
   readonly onReset: () => void;
 }
@@ -153,6 +154,7 @@ export function buildThreadErrorNotice({
       tooltip={formatProviderRateLimitResetCreditTooltip(
         usageReset.availableCount,
         providerLabel ?? "provider",
+        usageReset.scoped ? { scoped: true } : undefined,
       )}
       tooltipSide="top"
     >

@@ -47,7 +47,7 @@ import { placeIdFromArrivalHash } from "../../appPlaceLinks";
 import { APP_VERSION } from "../../branding";
 import { getDesktopUpdateButtonTooltip } from "../../components/desktopUpdate.logic";
 import {
-  canRequestProviderRateLimitResetCredit,
+  canViewProviderRateLimitResetCredits,
   useProviderRateLimitResetCredit,
 } from "../ProviderRateLimitResetCredit";
 import { isElectron } from "../../env";
@@ -1979,11 +1979,11 @@ export function ProviderSettingsPanel({
     const favoriteModels = (settings.favorites ?? [])
       .filter((favorite) => favorite.provider === row.instanceId)
       .map((favorite) => favorite.model);
-    const canResetProviderUsage = canRequestProviderRateLimitResetCredit(
-      liveProvider,
-      liveProvider?.accountUsage?.rateLimitResetCredits?.availableCount,
-    );
     const providerResetCredits = liveProvider?.accountUsage?.rateLimitResetCredits;
+    const canResetProviderUsage = canViewProviderRateLimitResetCredits(
+      liveProvider,
+      providerResetCredits,
+    );
     const resetLabel = driverOption?.label ?? String(row.driver);
     // A community agent Threadlines now has built in: offered while the
     // built-in one is off.
@@ -2083,6 +2083,7 @@ export function ProviderSettingsPanel({
             ? () =>
                 requestRateLimitResetCredit({
                   instanceId: row.instanceId,
+                  accountId: liveProvider?.auth.accountId,
                   providerLabel: liveProvider?.displayName?.trim() || resetLabel,
                   resetCredits: providerResetCredits,
                 })

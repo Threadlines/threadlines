@@ -211,6 +211,60 @@ describe("deriveProviderAccountUsagePresentation", () => {
     });
   });
 
+  it("formats threshold-locked Antigravity banked resets with bankedCount and zero available", () => {
+    const nowMs = Date.UTC(2026, 6, 14);
+    const usage: ServerProviderAccountUsage = {
+      source: "claude-oauth-usage",
+      checkedAt: new Date(nowMs).toISOString(),
+      rateLimitResetCredits: {
+        availableCount: 0,
+        credits: [
+          {
+            id: "banked-1",
+            resetType: "unknown",
+            status: "unknown",
+            expiresAt: Math.floor((nowMs + 5 * 24 * 60 * 60 * 1000) / 1000),
+            remainingCount: 2,
+            title: "Gemini reset",
+            description: "Applies to Gemini. Use more quota before claiming.",
+            scopeModels: ["Gemini"],
+          },
+        ],
+      },
+      limits: [],
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, nowMs)?.resetCredits).toEqual({
+      availableCount: 0,
+      bankedCount: 2,
+      label: "2 banked · 0 available",
+      shortLabel: "2 banked",
+      detail: "next expires in 5d",
+    });
+
+    const withoutExpiry: ServerProviderAccountUsage = {
+      ...usage,
+      rateLimitResetCredits: {
+        availableCount: 0,
+        credits: [
+          {
+            id: "banked-2",
+            resetType: "unknown",
+            status: "unknown",
+            title: "Gemini reset",
+          },
+        ],
+      },
+    };
+    expect(deriveProviderAccountUsagePresentation(withoutExpiry, nowMs)?.resetCredits).toEqual({
+      availableCount: 0,
+      bankedCount: 1,
+      label: "1 banked · 0 available",
+      shortLabel: "1 banked",
+      detail: "use more quota to unlock",
+    });
+  });
+
   it("formats Codex token usage history", () => {
     const usage: ServerProviderAccountUsage = {
       source: "codex-rate-limits",

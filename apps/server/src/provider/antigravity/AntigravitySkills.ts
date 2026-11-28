@@ -44,6 +44,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 
 import type { ServerProviderSkill } from "@threadlines/contracts";
 import { fromYaml } from "@threadlines/shared/schemaYaml";
+import { compareSemverVersions } from "@threadlines/shared/semver";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -266,7 +267,11 @@ class SkillScan {
   }
 
   /** Adds the skill at `skillFile` unless a copy with its name came first. */
-  private async addSkill(skillFile: string, scope: Scope) {
+  private async addSkill(
+    skillFile: string,
+    scope: Scope,
+    options?: { readonly keepDiscoveredPath?: boolean },
+  ) {
     const head = await this.readHead(skillFile);
     const frontMatter = head === undefined ? undefined : frontMatterOf(head);
     if (frontMatter === undefined) return;
@@ -283,9 +288,12 @@ class SkillScan {
     ).trim();
     this.skills.set(name, {
       name,
-      // Where it really is: for a global skill, the user's own folder rather
-      // than the link in the profile.
-      path: (await this.realpath(skillFile)) ?? skillFile,
+      // Where it really is: for profile links, resolve through the profile link
+      // to the user's own folder; for direct roots such as `~/.agents/skills`,
+      // preserve the discovered path so symlink targets stay distinct from `~/.gemini`.
+      path: options?.keepDiscoveredPath
+        ? skillFile
+        : ((await this.realpath(skillFile)) ?? skillFile),
       scope,
       enabled: true,
       ...(description ? { description } : {}),
@@ -307,7 +315,13 @@ class SkillScan {
    * `filter` lets through, plus nested items `include_only` names. With
    * `confine`, nothing outside it is listed or opened.
    */
-  async scanFolder(dir: string, scope: Scope, filter: NameFilter, confine?: Confine) {
+  async scanFolder(
+    dir: string,
+    scope: Scope,
+    filter: NameFilter,
+    confine?: Confine,
+    options?: { readonly keepDiscoveredPath?: boolean },
+  ) {
     if (this.exhausted) return;
     if (confine && !(await confine(dir))) return;
     if (!(await this.stat(dir))?.isDirectory()) return;
@@ -316,7 +330,7 @@ class SkillScan {
     const own = await this.skillFileIn(dir, names);
     if (own) {
       if (passesFilter(basename(dir), filter) && (!confine || (await confine(own)))) {
-        await this.addSkill(own, scope);
+        await this.addSkill(own, scope, options);
       }
       return;
     }
@@ -333,7 +347,7 @@ class SkillScan {
       if (!(await this.stat(child))?.isDirectory()) continue;
       const skillFile = await this.skillFileIn(child);
       if (skillFile && (!confine || (await confine(skillFile)))) {
-        await this.addSkill(skillFile, scope);
+        await this.addSkill(skillFile, scope, options);
       }
     }
   }
@@ -422,6 +436,22 @@ async function repositoryRoot(scan: SkillScan, cwd: string): Promise<string> {
   }
 }
 
+/** Antigravity 1.5.16 added discovery of user-global cross-tool skills in `~/.agents/skills`. */
+export const ANTIGRAVITY_HOME_AGENTS_SKILLS_MIN_VERSION = "1.5.16";
+
+/**
+ * Whether an Antigravity CLI version loads `~/.agents/skills`. Returns false
+ * only when a known version is strictly older than 1.5.16 (e.g. a custom 1.5.14
+ * or 1.5.15 binary).
+ */
+export function antigravitySupportsHomeAgentsSkills(version: string | null | undefined): boolean {
+  const trimmed = version?.trim();
+  if (!trimmed) return true;
+  const match = /^v?(\d+\.\d+\.\d+)/u.exec(trimmed);
+  if (!match?.[1]) return true;
+  return compareSemverVersions(match[1], ANTIGRAVITY_HOME_AGENTS_SKILLS_MIN_VERSION) >= 0;
+}
+
 export interface ListAntigravitySkillsInput {
   /** The folder a session would run in. */
   readonly cwd: string;
@@ -429,6 +459,10 @@ export interface ListAntigravitySkillsInput {
   readonly profileDir: string;
   /** False on machine-wide views, so home-dir `.agents` / `.gemini` folders are not treated as project roots. */
   readonly includeProject?: boolean;
+  /** The user's home folder (`$HOME` / `USERPROFILE`), for `~/.agents/skills` (CLI 1.5.16+). */
+  readonly userHome?: string;
+  /** False for older binaries (< 1.5.16) that do not read `~/.agents/skills`. Defaults to true. */
+  readonly includeHomeAgentsSkills?: boolean;
 }
 
 export interface AntigravitySkillListing {
@@ -445,6 +479,10 @@ export async function listAntigravitySkillsNow(
   const cwd = resolve(input.cwd);
   const profile = resolve(input.profileDir);
   const includeProject = input.includeProject !== false;
+  const homeAgentsSkillsDir =
+    input.includeHomeAgentsSkills !== false && input.userHome?.trim()
+      ? join(resolve(input.userHome), ".agents", "skills")
+      : undefined;
   const scan = new SkillScan(
     Date.now() + (options.timeLimitMs ?? Duration.toMillis(LIST_TIME_LIMIT)),
   );
@@ -457,20 +495,27 @@ export async function listAntigravitySkillsNow(
     return real !== undefined && isInside(realRoot, real);
   };
 
-  const roots: ReadonlyArray<readonly [string, Scope]> = includeProject
-    ? [
-        [join(profile, "config", "skills"), "user"],
-        [join(cwd, ".gemini", "skills"), "project"],
-        [join(profile, "antigravity-cli", "skills"), "user"],
-        [join(cwd, ".agents", "skills"), "project"],
-        [join(cwd, ".agent", "skills"), "project"],
-      ]
-    : [
-        [join(profile, "config", "skills"), "user"],
-        [join(profile, "antigravity-cli", "skills"), "user"],
-      ];
-  for (const [dir, scope] of roots) {
-    await scan.scanFolder(dir, scope, NO_FILTER, scope === "project" ? insideProject : undefined);
+  const roots: ReadonlyArray<readonly [dir: string, scope: Scope, keepDiscoveredPath?: boolean]> = [
+    [join(profile, "config", "skills"), "user"],
+    ...(includeProject ? ([[join(cwd, ".gemini", "skills"), "project"]] as const) : []),
+    [join(profile, "antigravity-cli", "skills"), "user"],
+    ...(includeProject
+      ? ([
+          [join(cwd, ".agents", "skills"), "project"],
+          [join(cwd, ".agent", "skills"), "project"],
+        ] as const)
+      : []),
+    // CLI 1.5.16+: user-global cross-tool skills, after `~/.gemini` and project skills.
+    ...(homeAgentsSkillsDir ? ([[homeAgentsSkillsDir, "user", true]] as const) : []),
+  ];
+  for (const [dir, scope, keepDiscoveredPath] of roots) {
+    await scan.scanFolder(
+      dir,
+      scope,
+      NO_FILTER,
+      scope === "project" ? insideProject : undefined,
+      keepDiscoveredPath ? { keepDiscoveredPath: true } : undefined,
+    );
   }
 
   // The CLI skips project manifest entries leaving the project or its repository root.
@@ -511,7 +556,13 @@ export async function listAntigravitySkillsNow(
 export function makeAntigravitySkillsLister() {
   const lastComplete = new Map<string, ReadonlyArray<ServerProviderSkill>>();
   return (input: ListAntigravitySkillsInput) => {
-    const key = `${resolve(input.cwd)}\0${resolve(input.profileDir)}\0${input.includeProject !== false ? "1" : "0"}`;
+    const key = [
+      resolve(input.cwd),
+      resolve(input.profileDir),
+      input.includeProject !== false ? "1" : "0",
+      input.userHome ? resolve(input.userHome) : "",
+      input.includeHomeAgentsSkills !== false ? "1" : "0",
+    ].join("\0");
     return Effect.promise(() =>
       listAntigravitySkillsNow(input).catch((): AntigravitySkillListing => ({
         skills: [],

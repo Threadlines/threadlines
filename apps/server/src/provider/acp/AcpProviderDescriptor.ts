@@ -702,6 +702,16 @@ export interface AcpProviderDescriptor<Settings extends AcpProviderSettings> {
    */
   readonly onEphemeralSessionClosed?: (sessionId: string) => Effect.Effect<void>;
   /**
+   * Deletes on-disk conversation state for a deleted or retired thread session
+   * without spawning the agent process. `protectedSessionIds` lists session IDs
+   * still bound to other live threads on the same instance so shared records
+   * are never removed.
+   */
+  readonly deleteStoredSession?: (
+    sessionId: string,
+    protectedSessionIds: ReadonlySet<string>,
+  ) => Effect.Effect<void>;
+  /**
    * A permission option whose "always" outlives the session (Grok's
    * `always-allow` saves a grant for the whole project). Never offered or
    * chosen; "Accept for session" then appears only for a real session grant.

@@ -3949,10 +3949,18 @@ function makeStartingOverLayer() {
     /** Runs once, right after the next binding read: another writer landing then. */
     afterRead: Effect.Effect<void> | undefined;
   } = { stopping: undefined, afterRead: undefined };
+  const deleteStoredSession = vi.fn(
+    (_input: {
+      readonly resumeCursor: unknown;
+      readonly protectedCursors?: ReadonlyArray<unknown>;
+    }) => Effect.void,
+  );
+  const { deleteThread: _deleteThread, ...baseAdapter } = agent.adapter;
   const adapter = {
-    ...agent.adapter,
-    capabilities: { ...agent.adapter.capabilities, conversationRollback: "new-session" as const },
+    ...baseAdapter,
+    capabilities: { ...baseAdapter.capabilities, conversationRollback: "new-session" as const },
     whenStopped: () => Effect.suspend(() => hooks.stopping ?? Effect.void),
+    deleteStoredSession,
   };
   const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
     Layer.provide(SqlitePersistenceMemory),
@@ -3996,7 +4004,7 @@ function makeStartingOverLayer() {
       NodeServices.layer,
     ),
   );
-  return { agent, ANTIGRAVITY, hooks, layer };
+  return { agent, ANTIGRAVITY, hooks, deleteStoredSession, layer };
 }
 
 const startingOver = makeStartingOverLayer();
@@ -4354,5 +4362,58 @@ startingOver.layer("ProviderServiceLive forgetting a conversation", (it) => {
       assert.isUndefined(lastStartCursor());
       assert.isTrue(reopened.resumeFailed);
     }),
+  );
+
+  it.effect(
+    "cleans up stored session files on rollback and thread deletion while protecting sibling thread cursors",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const primary = asThreadId("thread-cleanup-primary");
+        const sibling = asThreadId("thread-cleanup-sibling");
+        const first = yield* start(primary);
+        const second = yield* start(sibling);
+        yield* startingOver.agent.stopSession(primary);
+        startingOver.agent.startSession.mockClear();
+        startingOver.deleteStoredSession.mockClear();
+
+        // Rollback cleans up the retired cursor and passes sibling's cursor as protected.
+        const rollback = yield* provider.rollbackConversation({ threadId: primary, numTurns: 1 });
+        assert.isTrue(rollback.conversationRolledBack);
+        assert.equal(startingOver.agent.startSession.mock.calls.length, 0);
+        assert.equal(startingOver.deleteStoredSession.mock.calls.length, 1);
+        const rollbackCall = startingOver.deleteStoredSession.mock.calls[0]?.[0];
+        assert.deepEqual(rollbackCall?.resumeCursor, first.resumeCursor);
+        assert.isTrue(
+          (rollbackCall?.protectedCursors ?? []).some(
+            (cursor) => JSON.stringify(cursor) === JSON.stringify(second.resumeCursor),
+          ),
+        );
+
+        // Deleting sibling cleans up its cursor without restarting it.
+        yield* startingOver.agent.stopSession(sibling);
+        startingOver.agent.startSession.mockClear();
+        startingOver.deleteStoredSession.mockClear();
+        yield* provider.deleteThread({ threadId: sibling });
+        assert.equal(startingOver.agent.startSession.mock.calls.length, 0);
+        assert.equal(startingOver.deleteStoredSession.mock.calls.length, 1);
+        assert.deepEqual(
+          startingOver.deleteStoredSession.mock.calls[0]?.[0]?.resumeCursor,
+          second.resumeCursor,
+        );
+
+        // If the runtime is already stopping (`hasSession` is false) and `whenStopped` never
+        // finishes within the timeout, deletion skips stored-file removal rather than racing.
+        const racing = asThreadId("thread-cleanup-stopping");
+        yield* start(racing);
+        yield* startingOver.agent.stopSession(racing);
+        startingOver.deleteStoredSession.mockClear();
+        startingOver.hooks.stopping = Effect.never;
+        const deleteFiber = yield* Effect.forkChild(provider.deleteThread({ threadId: racing }));
+        yield* advanceTestClock(20_000);
+        yield* Fiber.join(deleteFiber);
+        startingOver.hooks.stopping = undefined;
+        assert.equal(startingOver.deleteStoredSession.mock.calls.length, 0);
+      }),
   );
 });

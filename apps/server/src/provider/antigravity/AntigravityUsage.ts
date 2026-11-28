@@ -46,15 +46,20 @@ import type {
   ServerProviderAccountUsage,
   ServerProviderAuth,
   ServerProviderAuthCapability,
+  ServerProviderRateLimitResetCredit,
+  ServerProviderRateLimitResetCreditOutcome,
+  ServerProviderRateLimitResetCredits,
   ServerProviderScopedUsageWindow,
 } from "@threadlines/contracts";
 import { usageLimitForModel } from "@threadlines/shared/usageLimits";
 import * as Clock from "effect/Clock";
+import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FiberHandle from "effect/FiberHandle";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 
 import type { ServerProviderShape } from "../Services/ServerProvider.ts";
 
@@ -205,6 +210,15 @@ const Bucket = Schema.Struct({
   description: Schema.optional(Schema.String),
   disabled: Schema.optional(Schema.Boolean),
 });
+const BankedReset = Schema.Struct({
+  resetId: Schema.NonEmptyString,
+  displayLabel: Schema.optional(Schema.String),
+  expireTime: Schema.optional(Schema.String),
+  claimable: Schema.optional(Schema.Boolean),
+  ineligibleReason: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
+  remainingCount: Schema.optional(Schema.Number),
+  bucketIds: Schema.optional(Schema.Array(Schema.String)),
+});
 const Summary = Schema.Struct({
   groups: Schema.optional(
     Schema.Array(
@@ -215,6 +229,13 @@ const Summary = Schema.Struct({
     ),
   ),
   buckets: Schema.optional(Schema.Array(Bucket)),
+  bankedResets: Schema.optional(Schema.Array(BankedReset)),
+});
+const ClaimResponse = Schema.Struct({
+  quotaSummary: Schema.optional(Summary),
+  groups: Summary.fields.groups,
+  buckets: Summary.fields.buckets,
+  bankedResets: Summary.fields.bankedResets,
 });
 const Models = Schema.Struct({
   models: Schema.Record(
@@ -231,6 +252,7 @@ const Models = Schema.Struct({
 const UserInfo = Schema.Struct({ email: Schema.optional(Schema.String) });
 
 const decodeSummary = Schema.decodeUnknownOption(Summary);
+const decodeClaimResponse = Schema.decodeUnknownOption(ClaimResponse);
 const decodeModels = Schema.decodeUnknownOption(Models);
 const decodeUserInfo = Schema.decodeUnknownOption(UserInfo);
 
@@ -346,18 +368,115 @@ function fold(into: Map<string, QuotaWindow>, window: QuotaWindow) {
   }
 }
 
+export interface ParsedBankedReset {
+  readonly resetId: string;
+  readonly host: string;
+  readonly displayLabel: string | undefined;
+  readonly expiresAtMs: number | undefined;
+  readonly claimable: boolean;
+  readonly ineligibleReason: "usage_below_threshold" | undefined;
+  readonly remainingCount: number;
+  readonly bucketIds: ReadonlyArray<string>;
+}
+
 interface ParsedQuotaWindows {
   readonly ok: boolean;
   readonly windows: ReadonlyArray<QuotaWindow>;
+  readonly bankedResets: ReadonlyArray<ParsedBankedReset>;
 }
 
-function parseSummaryAnswer(answer: unknown, requestedAtMs: number): ParsedQuotaWindows {
+function familyForBucketId(
+  id: string,
+  options?: {
+    readonly pooled?: boolean;
+    readonly groupDisplayName?: string | undefined;
+    readonly bucketDisplayName?: string | undefined;
+  },
+): Family {
+  const pooled = options?.pooled ?? /-(?:5h|weekly)$/.test(id);
+  const sub = /^gemini-([a-z]+)-/.exec(id)?.[1];
+  return (
+    (id.startsWith("3p-")
+      ? SHARED_3P
+      : /^gemini-(5h|weekly|quota)$/.test(id)
+        ? GEMINI
+        : pooled && sub !== undefined
+          ? geminiSubfamily(sub, options?.groupDisplayName)
+          : !pooled
+            ? perModelFamily(id, options?.bucketDisplayName)
+            : undefined) ??
+    ({
+      key: `other-${id}`,
+      label: options?.groupDisplayName?.trim() || options?.bucketDisplayName?.trim() || id,
+      gemini: false,
+    } satisfies Family)
+  );
+}
+
+function parseBankedResetIneligibleReason(
+  value: string | number | undefined,
+): "usage_below_threshold" | undefined {
+  if (value === 1) return "usage_below_threshold";
+  if (typeof value === "string") {
+    const normalized = value.trim().toUpperCase();
+    if (
+      normalized === "QUOTA_SUMMARY_BANKED_RESET_INELIGIBLE_REASON_USAGE_BELOW_THRESHOLD" ||
+      normalized === "USAGE_BELOW_THRESHOLD"
+    ) {
+      return "usage_below_threshold";
+    }
+  }
+  return undefined;
+}
+
+function parseBankedResets(
+  entries: ReadonlyArray<typeof BankedReset.Type> | undefined,
+  host: string,
+): ReadonlyArray<ParsedBankedReset> {
+  if (!entries || entries.length === 0) return [];
+  const byId = new Map<string, ParsedBankedReset>();
+  for (const entry of entries) {
+    const resetId = entry.resetId.trim();
+    if (!resetId) continue;
+    const claimable = entry.claimable === true;
+    const rawCount = entry.remainingCount;
+    const remainingCount =
+      rawCount !== undefined && Number.isInteger(rawCount) && rawCount >= 0
+        ? rawCount
+        : claimable
+          ? 1
+          : 0;
+    if (remainingCount <= 0) continue;
+    const bucketIds = (entry.bucketIds ?? []).map((id) => id.trim()).filter((id) => id.length > 0);
+    byId.set(resetId, {
+      resetId,
+      host,
+      displayLabel: entry.displayLabel?.trim() || undefined,
+      expiresAtMs: parseTime(entry.expireTime),
+      claimable,
+      ineligibleReason: claimable
+        ? undefined
+        : parseBankedResetIneligibleReason(entry.ineligibleReason),
+      remainingCount,
+      bucketIds,
+    });
+  }
+  return [...byId.values()];
+}
+
+function parseSummaryAnswer(
+  answer: unknown,
+  requestedAtMs: number,
+  host = DAILY_HOST,
+): ParsedQuotaWindows {
   const decoded = decodeSummary(answer);
   if (
     decoded._tag === "None" ||
-    (decoded.value.groups === undefined && decoded.value.buckets === undefined)
+    (decoded.value.groups === undefined &&
+      decoded.value.buckets === undefined &&
+      decoded.value.bankedResets === undefined)
   ) {
-    return { ok: false, windows: [] };
+    return { ok: false, windows: [], bankedResets: [] };
   }
   const summary = decoded.value;
   const groups = summary.groups?.some((group) => group.buckets?.length)
@@ -371,23 +490,11 @@ function parseSummaryAnswer(answer: unknown, requestedAtMs: number): ParsedQuota
       if (usedPercent === undefined) continue;
       const pooled = bucket.window === "5h" || bucket.window === "weekly";
       const period: Period = pooled ? (bucket.window as Period) : "quota";
-      const id = bucket.bucketId;
-      const sub = /^gemini-([a-z]+)-/.exec(id)?.[1];
-      const family: Family =
-        (id.startsWith("3p-")
-          ? SHARED_3P
-          : /^gemini-(5h|weekly|quota)$/.test(id)
-            ? GEMINI
-            : pooled && sub !== undefined
-              ? geminiSubfamily(sub, group.displayName)
-              : !pooled
-                ? perModelFamily(id, bucket.displayName)
-                : undefined) ??
-        ({
-          key: `other-${id}`,
-          label: group.displayName?.trim() || bucket.displayName?.trim() || id,
-          gemini: false,
-        } satisfies Family);
+      const family = familyForBucketId(bucket.bucketId, {
+        pooled,
+        groupDisplayName: group.displayName,
+        bucketDisplayName: bucket.displayName,
+      });
       // A pool nobody has touched reports a reset one full window from now,
       // which is not a real reset time.
       const minutes = PERIOD_MINUTES[period];
@@ -406,7 +513,8 @@ function parseSummaryAnswer(answer: unknown, requestedAtMs: number): ParsedQuota
       });
     }
   }
-  return { ok: true, windows: [...windows.values()] };
+  const bankedResets = parseBankedResets(summary.bankedResets, host);
+  return { ok: true, windows: [...windows.values()], bankedResets };
 }
 
 /**
@@ -424,7 +532,7 @@ export function antigravitySummaryWindows(
 
 function parseModelsAnswer(answer: unknown): ParsedQuotaWindows {
   const decoded = decodeModels(answer);
-  if (decoded._tag === "None") return { ok: false, windows: [] };
+  if (decoded._tag === "None") return { ok: false, windows: [], bankedResets: [] };
   const windows = new Map<string, QuotaWindow>();
   for (const [modelId, model] of Object.entries(decoded.value.models)) {
     if (model.isInternal) continue;
@@ -439,7 +547,7 @@ function parseModelsAnswer(answer: unknown): ParsedQuotaWindows {
       fold(windows, { family, period, usedPercent, resetsAtMs: parseTime(quota?.resetTime) });
     }
   }
-  return { ok: true, windows: [...windows.values()] };
+  return { ok: true, windows: [...windows.values()], bankedResets: [] };
 }
 
 /**
@@ -484,6 +592,105 @@ function wholePercentUsed(usedPercent: number): number {
   return usedPercent >= 100 ? 100 : Math.min(99, Math.round(usedPercent));
 }
 
+function scopeForBankedReset(
+  bucketIds: ReadonlyArray<string>,
+  allFamilies: ReadonlyArray<Family>,
+): {
+  readonly label?: string;
+  readonly scopeModels?: ReadonlyArray<string>;
+  readonly scopeExcludes?: ReadonlyArray<string>;
+} {
+  if (bucketIds.length === 0) return {};
+  const covered = new Map<string, Family>();
+  for (const id of bucketIds) {
+    const family = familyForBucketId(id);
+    if (!covered.has(family.key)) covered.set(family.key, family);
+  }
+  const families = [...covered.values()];
+  if (families.length === 0) return {};
+  const label = families.map((family) => family.label).join(", ");
+  // If any covered family is unrecognized (no `models`), don't constrain model matching
+  // so we never falsely hide a valid reset on a new bucket id.
+  if (families.some((family) => !family.models || family.models.length === 0)) {
+    return { label };
+  }
+  const scopeModels = [...new Set(families.flatMap((family) => family.models ?? []))];
+  const coveredKeys = new Set(covered.keys());
+  const scopeExcludes: Array<string> = [];
+  if (coveredKeys.has("gemini")) {
+    for (const other of allFamilies) {
+      if (
+        other.gemini &&
+        !other.perModel &&
+        other.key !== "gemini" &&
+        !coveredKeys.has(other.key)
+      ) {
+        for (const model of other.models ?? []) {
+          if (!scopeExcludes.includes(model)) scopeExcludes.push(model);
+        }
+      }
+    }
+  }
+  return {
+    label,
+    ...(scopeModels.length > 0 ? { scopeModels } : {}),
+    ...(scopeExcludes.length > 0 ? { scopeExcludes } : {}),
+  };
+}
+
+/**
+ * Banked resets as the usage contract carries them. `availableCount` counts
+ * spendable (claimable, unexpired) units; threshold-locked banked resets stay
+ * in `credits` as `"unknown"` with their explanation so users can see them.
+ */
+export function antigravityRateLimitResetCredits(
+  bankedResets: ReadonlyArray<ParsedBankedReset>,
+  windows: ReadonlyArray<QuotaWindow>,
+  nowMs: number,
+): ServerProviderRateLimitResetCredits | undefined {
+  const allFamilies = [
+    ...new Map(windows.map((window) => [window.family.key, window.family])).values(),
+  ];
+  let availableCount = 0;
+  const credits: Array<ServerProviderRateLimitResetCredit> = [];
+  for (const reset of bankedResets) {
+    if (reset.remainingCount <= 0) continue;
+    if (reset.expiresAtMs !== undefined && reset.expiresAtMs <= nowMs) continue;
+    const scope = scopeForBankedReset(reset.bucketIds, allFamilies);
+    const title =
+      reset.displayLabel ?? (scope.label ? `${scope.label} reset` : "Antigravity usage reset");
+    let description: string | undefined;
+    if (!reset.claimable) {
+      const reason =
+        reset.ineligibleReason === "usage_below_threshold"
+          ? "Use more of this window before claiming"
+          : "Not currently eligible";
+      description =
+        scope.label && !title.toLowerCase().includes(scope.label.toLowerCase())
+          ? `${scope.label} · ${reason}`
+          : reason;
+    } else if (scope.label && !title.toLowerCase().includes(scope.label.toLowerCase())) {
+      description = `Refreshes ${scope.label}`;
+    }
+    if (reset.claimable) {
+      availableCount += reset.remainingCount;
+    }
+    credits.push({
+      id: reset.resetId,
+      resetType: "unknown",
+      status: reset.claimable ? "available" : "unknown",
+      ...(reset.expiresAtMs !== undefined ? { expiresAt: reset.expiresAtMs } : {}),
+      title,
+      ...(description ? { description } : {}),
+      remainingCount: reset.remainingCount,
+      ...(scope.scopeModels ? { scopeModels: scope.scopeModels } : {}),
+      ...(scope.scopeExcludes ? { scopeExcludes: scope.scopeExcludes } : {}),
+    });
+  }
+  if (credits.length === 0) return undefined;
+  return { availableCount, credits };
+}
+
 /**
  * A reading as the snapshot carries it: every window is one family's or
  * model's own (`scoped`), since a spent one never stops the others. A row
@@ -494,6 +701,8 @@ function wholePercentUsed(usedPercent: number): number {
 export function antigravityAccountUsage(
   windows: ReadonlyArray<QuotaWindow>,
   checkedAt: string,
+  bankedResets: ReadonlyArray<ParsedBankedReset> = [],
+  nowMs: number = Date.parse(checkedAt) || Date.now(),
 ): ServerProviderAccountUsage {
   const families = [
     ...new Map(windows.map((window) => [window.family.key, window.family])).values(),
@@ -542,6 +751,7 @@ export function antigravityAccountUsage(
         checkedAt: window.checkedAt ?? checkedAt,
       };
     });
+  const rateLimitResetCredits = antigravityRateLimitResetCredits(bankedResets, windows, nowMs);
   return {
     // Older clients reject a source they don't know, and with it the whole
     // config, so the reading goes under an existing one and names itself
@@ -549,6 +759,7 @@ export function antigravityAccountUsage(
     source: "grok-billing",
     checkedAt,
     primaryLimitId: "antigravity",
+    ...(rateLimitResetCredits ? { rateLimitResetCredits } : {}),
     limits: [{ limitId: "antigravity", limitName: ANTIGRAVITY_USAGE_LABEL, scoped }],
   };
 }
@@ -614,10 +825,97 @@ const requestJson = (
     }),
   );
 
-/** What a read got: its windows, and whether every request it made was answered. */
+interface ClaimHttpResponse {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly body: unknown;
+}
+
+/** Sends a claim request and keeps non-2xx JSON bodies so Google RPC statuses map cleanly. */
+const requestClaimJson = (
+  fetch: DownloadFetch,
+  url: string,
+  init: { accessToken: string; userAgent: string; body: string },
+  timeout: Duration.Input,
+) =>
+  Effect.tryPromise({
+    try: async (signal): Promise<ClaimHttpResponse> => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${init.accessToken}`,
+          "User-Agent": init.userAgent,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: init.body,
+        redirect: "manual",
+        signal,
+      });
+      const text = await response.text();
+      if (text.length > MAX_ANSWER_CHARS) {
+        if (!response.ok) return { ok: false, status: response.status, body: undefined };
+        throw new Error("answer too large");
+      }
+      let body: unknown;
+      if (text.trim().length > 0) {
+        try {
+          body = JSON.parse(text) as unknown;
+        } catch {
+          if (response.ok) throw new Error("invalid JSON");
+        }
+      }
+      return { ok: response.ok, status: response.status, body };
+    },
+    catch: (cause) => new UsageRequestError({ reason: requestFailureReason(cause) }),
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeout,
+      orElse: () => Effect.fail(new UsageRequestError({ reason: "timed out" })),
+    }),
+  );
+
+interface HostBankedResetsUpdate {
+  readonly host: string;
+  readonly answered: boolean;
+  readonly bankedResets: ReadonlyArray<ParsedBankedReset>;
+}
+
+/** What a read got: its windows, per-host banked reset inventories, and whether every request answered. */
 interface QuotaRead {
   readonly windows: ReadonlyArray<QuotaWindow>;
+  readonly bankedByHost: ReadonlyArray<HostBankedResetsUpdate>;
   readonly complete: boolean;
+}
+
+/**
+ * Replaces each answered host's banked reset inventory while retaining failed
+ * hosts' prior inventories, then deduplicates in account host order.
+ */
+function mergeBankedResetsByHost(
+  previous: Readonly<Record<string, ReadonlyArray<ParsedBankedReset>>> | undefined,
+  updates: ReadonlyArray<HostBankedResetsUpdate>,
+  hostOrder: ReadonlyArray<string>,
+): {
+  readonly byHost: Readonly<Record<string, ReadonlyArray<ParsedBankedReset>>>;
+  readonly merged: ReadonlyArray<ParsedBankedReset>;
+} {
+  const byHost: Record<string, ReadonlyArray<ParsedBankedReset>> = { ...(previous ?? {}) };
+  for (const update of updates) {
+    if (update.answered) {
+      byHost[update.host] = update.bankedResets;
+    }
+  }
+  const seen = new Set<string>();
+  const merged: Array<ParsedBankedReset> = [];
+  for (const host of hostOrder) {
+    for (const reset of byHost[host] ?? []) {
+      if (seen.has(reset.resetId)) continue;
+      seen.add(reset.resetId);
+      merged.push(reset);
+    }
+  }
+  return { byHost, merged };
 }
 
 /** One operation on every host, in the method's host order; a host that fails adds nothing. */
@@ -626,7 +924,7 @@ const askHosts = (
   method: GoogleMethod,
   accessToken: string,
   operation: "retrieveUserQuotaSummary" | "fetchAvailableModels",
-  parse: (answer: unknown, requestedAtMs: number) => ParsedQuotaWindows,
+  parse: (answer: unknown, requestedAtMs: number, host: string) => ParsedQuotaWindows,
   timeout: Duration.Input,
   project?: string,
 ) => {
@@ -642,22 +940,29 @@ const askHosts = (
           { method: "POST", accessToken, userAgent: ANTIGRAVITY_USAGE_USER_AGENT, body },
           timeout,
         );
-        const parsed = parse(answer, requestedAtMs);
+        const parsed = parse(answer, requestedAtMs, host);
         if (!parsed.ok) {
           yield* Effect.logWarning("Antigravity usage response had an unexpected shape", {
             host,
             operation,
           });
-          return { answered: false, windows: [] as const };
+          return { host, answered: false, windows: [] as const, bankedResets: [] as const };
         }
-        return { answered: true, windows: parsed.windows };
+        return {
+          host,
+          answered: true,
+          windows: parsed.windows,
+          bankedResets: parsed.bankedResets,
+        };
       }).pipe(
         Effect.catch((error) =>
           Effect.logWarning("Antigravity usage request failed", {
             host,
             operation,
             reason: error.reason,
-          }).pipe(Effect.as({ answered: false, windows: [] as const })),
+          }).pipe(
+            Effect.as({ host, answered: false, windows: [] as const, bankedResets: [] as const }),
+          ),
         ),
       ),
     { concurrency: "unbounded" },
@@ -665,6 +970,11 @@ const askHosts = (
     Effect.map((answers): QuotaRead => ({
       complete: answers.every((answer) => answer.answered),
       windows: mergeHosts(answers.map((answer) => answer.windows)),
+      bankedByHost: answers.map((answer) => ({
+        host: answer.host,
+        answered: answer.answered,
+        bankedResets: answer.bankedResets,
+      })),
     })),
   );
 };
@@ -702,10 +1012,15 @@ const readQuotaWindows = (
       project,
     );
     if (summary.windows.length === 0) {
-      return { windows: models.windows, complete: summary.complete && models.complete };
+      return {
+        windows: models.windows,
+        bankedByHost: summary.bankedByHost,
+        complete: summary.complete && models.complete,
+      };
     }
     return {
       windows: [...summary.windows, ...models.windows.filter((window) => window.family.gemini)],
+      bankedByHost: summary.bankedByHost,
       complete: summary.complete && models.complete,
     } satisfies QuotaRead;
   });
@@ -761,6 +1076,12 @@ export interface AntigravityUsageStatus {
 /** The instance's snapshot, as the reader uses it once it exists. */
 export type AntigravityUsageSnapshot = Pick<ServerProviderShape, "getSnapshot" | "patchSnapshot">;
 
+export class AntigravityBankedResetClaimError extends Data.TaggedError(
+  "AntigravityBankedResetClaimError",
+)<{
+  readonly message: string;
+}> {}
+
 export interface AntigravityUsageReader {
   /**
    * The last reading for the sign-in on disk, never waiting on Google: it
@@ -789,6 +1110,18 @@ export interface AntigravityUsageReader {
    * name) is stopped on, for Continue at reset when the agent gave no time.
    */
   readonly usageLimitFor: (model: string) => Effect.Effect<RuntimeUsageLimit | undefined>;
+  /**
+   * Claims one banked quota reset via Google's `v1internal:claimBankedQuotaReset`,
+   * updating the cached usage snapshot immediately from the returned summary.
+   */
+  readonly claimBankedReset: (input: {
+    readonly idempotencyKey: string;
+    readonly creditId?: string;
+    readonly accountId?: string;
+  }) => Effect.Effect<
+    { readonly outcome: ServerProviderRateLimitResetCreditOutcome },
+    AntigravityBankedResetClaimError
+  >;
 }
 
 export interface AntigravityUsageReaderInput {
@@ -807,7 +1140,88 @@ export interface AntigravityUsageReaderInput {
 interface Reading {
   readonly key: string;
   readonly windows: ReadonlyArray<QuotaWindow>;
+  readonly bankedByHost: Readonly<Record<string, ReadonlyArray<ParsedBankedReset>>>;
+  readonly bankedResets: ReadonlyArray<ParsedBankedReset>;
   readonly accountUsage: ServerProviderAccountUsage;
+}
+
+function googleClaimErrorOutcome(
+  status: number,
+  body: unknown,
+):
+  | { readonly kind: "outcome"; readonly outcome: ServerProviderRateLimitResetCreditOutcome }
+  | { readonly kind: "error"; readonly message: string } {
+  const err =
+    typeof body === "object" && body !== null && "error" in body
+      ? (body as { readonly error?: unknown }).error
+      : undefined;
+  const rpcStatus =
+    typeof err === "object" &&
+    err !== null &&
+    typeof (err as { status?: unknown }).status === "string"
+      ? (err as { status: string }).status.trim().toUpperCase()
+      : "";
+  const rpcMessage =
+    typeof err === "object" &&
+    err !== null &&
+    typeof (err as { message?: unknown }).message === "string"
+      ? (err as { message: string }).message.trim()
+      : "";
+  const lowerMessage = rpcMessage.toLowerCase();
+
+  if (
+    rpcStatus === "FAILED_PRECONDITION" ||
+    lowerMessage.includes("below threshold") ||
+    lowerMessage.includes("not eligible") ||
+    lowerMessage.includes("nothing to reset")
+  ) {
+    return { kind: "outcome", outcome: "nothingToReset" };
+  }
+  if (
+    rpcStatus === "ALREADY_EXISTS" ||
+    lowerMessage.includes("already claimed") ||
+    lowerMessage.includes("already redeemed")
+  ) {
+    return { kind: "outcome", outcome: "alreadyRedeemed" };
+  }
+  if (
+    rpcStatus === "NOT_FOUND" ||
+    lowerMessage.includes("no banked reset") ||
+    lowerMessage.includes("no reset") ||
+    lowerMessage.includes("expired") ||
+    lowerMessage.includes("exhausted")
+  ) {
+    return { kind: "outcome", outcome: "noCredit" };
+  }
+  if (status === 401 || rpcStatus === "UNAUTHENTICATED") {
+    return {
+      kind: "error",
+      message:
+        "Antigravity's Google sign-in has expired. Send a message in an Antigravity chat to renew it, then try again.",
+    };
+  }
+  return {
+    kind: "error",
+    message: `Antigravity couldn't claim this reset (status ${status}).`,
+  };
+}
+
+function selectClaimableBankedReset(
+  resets: ReadonlyArray<ParsedBankedReset>,
+  nowMs: number,
+): ParsedBankedReset | undefined {
+  const candidates = resets.filter(
+    (reset) =>
+      reset.claimable &&
+      reset.remainingCount > 0 &&
+      (reset.expiresAtMs === undefined || reset.expiresAtMs > nowMs),
+  );
+  if (candidates.length === 0) return undefined;
+  return candidates.toSorted((left, right) => {
+    const a = left.expiresAtMs ?? Number.POSITIVE_INFINITY;
+    const b = right.expiresAtMs ?? Number.POSITIVE_INFINITY;
+    return a - b;
+  })[0];
 }
 
 export const makeAntigravityUsageReader = (
@@ -818,6 +1232,7 @@ export const makeAntigravityUsageReader = (
       input.fetch ?? makeHttpsFetch({ allowedHosts: ANTIGRAVITY_USAGE_HOSTS, maxRedirects: 0 });
     const timeouts = input.timeouts ?? { request: REQUEST_TIMEOUT, read: READ_TIMEOUT };
     const inFlight = yield* FiberHandle.make<void, never>();
+    const claimLock = Semaphore.makeUnsafe(1);
     let reading: Reading | undefined;
     let emails = new Map<string, string>();
     /** The key, access-token hash, time and outcome of the last read started. */
@@ -828,7 +1243,7 @@ export const makeAntigravityUsageReader = (
       | undefined;
     /** Avoids repeating the same unreadable-token warning on every 5-minute probe. */
     let warnedTokenHash: string | undefined;
-    /** Bumped by `reset`: a read started before it doesn't land. */
+    /** Bumped by `reset` and claim commits: a read started before it doesn't land. */
     let generation = 0;
     let snapshot: AntigravityUsageSnapshot | undefined;
 
@@ -892,21 +1307,35 @@ export const makeAntigravityUsageReader = (
       started: number,
       read: QuotaRead,
       email: string | undefined,
+      hostOrder: ReadonlyArray<string>,
     ) =>
       Effect.gen(function* () {
         const current = yield* readToken;
         if (generation !== started || current === undefined || keyOf(current) !== key) return;
         const nowMs = yield* Clock.currentTimeMillis;
-        if (read.windows.length > 0) {
-          const windows = mergeRead(
-            reading?.key === key ? reading.windows : undefined,
-            read,
-            new Date(nowMs).toISOString(),
-          );
+        const checkedAt = new Date(nowMs).toISOString();
+        const previousForKey = reading?.key === key ? reading : undefined;
+        const nextBanked = mergeBankedResetsByHost(
+          previousForKey?.bankedByHost,
+          read.bankedByHost,
+          hostOrder,
+        );
+        const anyAnswered = read.bankedByHost.some((entry) => entry.answered);
+        const hasReadingData =
+          read.windows.length > 0 ||
+          nextBanked.merged.length > 0 ||
+          (previousForKey !== undefined && anyAnswered);
+        if (hasReadingData) {
+          const windows =
+            read.windows.length > 0
+              ? mergeRead(previousForKey?.windows, read, checkedAt)
+              : (previousForKey?.windows ?? []);
           reading = {
             key,
             windows,
-            accountUsage: antigravityAccountUsage(windows, new Date(nowMs).toISOString()),
+            bankedByHost: nextBanked.byHost,
+            bankedResets: nextBanked.merged,
+            accountUsage: antigravityAccountUsage(windows, checkedAt, nextBanked.merged, nowMs),
           };
         }
         if (email) emails.set(key, email);
@@ -917,7 +1346,7 @@ export const makeAntigravityUsageReader = (
             lastAttempt?.key === key && lastAttempt.tokenHash === tokenHash
               ? lastAttempt.atMs
               : nowMs,
-          failed: read.windows.length === 0 || !read.complete,
+          failed: (read.windows.length === 0 && nextBanked.merged.length === 0) || !read.complete,
         };
         const nextStatus = statusFor(current, key, nowMs);
         latestLanded = { accountId: accountIdOf(key), status: nextStatus };
@@ -927,6 +1356,7 @@ export const makeAntigravityUsageReader = (
     const read = (token: SavedToken, key: string, method: GoogleMethod) =>
       Effect.gen(function* () {
         const started = generation;
+        const hostOrder = HOSTS_BY_METHOD[method];
         return yield* Effect.gen(function* () {
           const [windows, email] = yield* Effect.all(
             [
@@ -943,12 +1373,19 @@ export const makeAntigravityUsageReader = (
             ],
             { concurrency: "unbounded" },
           );
-          yield* land(key, token.tokenHash, started, windows, email);
+          yield* land(key, token.tokenHash, started, windows, email, hostOrder);
         }).pipe(
           Effect.timeoutOrElse({
             duration: timeouts.read,
             orElse: () =>
-              land(key, token.tokenHash, started, { windows: [], complete: false }, undefined),
+              land(
+                key,
+                token.tokenHash,
+                started,
+                { windows: [], bankedByHost: [], complete: false },
+                undefined,
+                hostOrder,
+              ),
           }),
         );
       }).pipe(
@@ -1013,6 +1450,247 @@ export const makeAntigravityUsageReader = (
       return withAntigravityUsage(next, latestLanded.status);
     };
 
+    const claimBankedReset: AntigravityUsageReader["claimBankedReset"] = (claimInput) =>
+      claimLock.withPermits(1)(
+        Effect.gen(function* () {
+          if (!isGoogleMethod(input.method)) {
+            return yield* Effect.fail(
+              new AntigravityBankedResetClaimError({
+                message: "Banked resets are only available for Google sign-in accounts.",
+              }),
+            );
+          }
+          const method = input.method;
+          const hostOrder = HOSTS_BY_METHOD[method];
+          const project = input.project?.trim() || undefined;
+          const token = yield* readToken;
+          if (token === undefined) {
+            return yield* Effect.fail(
+              new AntigravityBankedResetClaimError({
+                message: "Sign in to Antigravity with Google before using a reset.",
+              }),
+            );
+          }
+          const nowMs = yield* Clock.currentTimeMillis;
+          if (token.expiresAtMs === undefined || token.expiresAtMs <= nowMs + EXPIRY_MARGIN_MS) {
+            return yield* Effect.fail(
+              new AntigravityBankedResetClaimError({
+                message:
+                  "Antigravity's Google sign-in has expired. Send a message in an Antigravity chat to renew it, then try again.",
+              }),
+            );
+          }
+          const expectedKey = keyOf(token);
+          if (
+            (claimInput.accountId !== undefined &&
+              accountIdOf(expectedKey) !== claimInput.accountId) ||
+            (reading !== undefined && reading.key !== expectedKey)
+          ) {
+            return yield* Effect.fail(
+              new AntigravityBankedResetClaimError({
+                message: "The signed-in Antigravity account changed. Refresh and try again.",
+              }),
+            );
+          }
+          const requestedId = claimInput.creditId?.trim() || undefined;
+          let currentResets = reading?.key === expectedKey ? reading.bankedResets : undefined;
+          if (
+            currentResets === undefined ||
+            (requestedId !== undefined &&
+              !currentResets.some((entry) => entry.resetId === requestedId))
+          ) {
+            // Capture generation before the network read so any intervening reset/claim invalidates it.
+            const started = generation;
+            const fresh = yield* readQuotaWindows(
+              fetch,
+              method,
+              token.accessToken,
+              timeouts.request,
+              project,
+            );
+            yield* land(
+              expectedKey,
+              token.tokenHash,
+              started,
+              fresh,
+              token.email ?? emails.get(expectedKey),
+              hostOrder,
+            );
+            currentResets = reading?.key === expectedKey ? reading.bankedResets : [];
+          }
+
+          const matched =
+            requestedId !== undefined
+              ? currentResets.find((entry) => entry.resetId === requestedId)
+              : selectClaimableBankedReset(currentResets, yield* Clock.currentTimeMillis);
+
+          let resetId: string;
+          let targetHost: string;
+          if (matched !== undefined) {
+            resetId = matched.resetId;
+            targetHost = matched.host;
+          } else if (requestedId !== undefined) {
+            resetId = requestedId;
+            targetHost = hostOrder[0];
+          } else {
+            const checkMs = yield* Clock.currentTimeMillis;
+            const hasIneligible = currentResets.some(
+              (entry) =>
+                entry.remainingCount > 0 &&
+                (entry.expiresAtMs === undefined || entry.expiresAtMs > checkMs),
+            );
+            return {
+              outcome: hasIneligible ? ("nothingToReset" as const) : ("noCredit" as const),
+            };
+          }
+
+          // Confirm the profile still holds the same valid Google sign-in right before POSTing.
+          const latestToken = yield* readToken;
+          const beforePostMs = yield* Clock.currentTimeMillis;
+          if (
+            latestToken === undefined ||
+            keyOf(latestToken) !== expectedKey ||
+            (claimInput.accountId !== undefined &&
+              accountIdOf(keyOf(latestToken)) !== claimInput.accountId)
+          ) {
+            return yield* Effect.fail(
+              new AntigravityBankedResetClaimError({
+                message: "The signed-in Antigravity account changed. Refresh and try again.",
+              }),
+            );
+          }
+          if (
+            latestToken.expiresAtMs === undefined ||
+            latestToken.expiresAtMs <= beforePostMs + EXPIRY_MARGIN_MS
+          ) {
+            return yield* Effect.fail(
+              new AntigravityBankedResetClaimError({
+                message:
+                  "Antigravity's Google sign-in has expired. Send a message in an Antigravity chat to renew it, then try again.",
+              }),
+            );
+          }
+
+          const requestBody = JSON.stringify({
+            ...(project ? { project } : {}),
+            resetId,
+            requestId: claimInput.idempotencyKey,
+          });
+          const response = yield* requestClaimJson(
+            fetch,
+            `https://${targetHost}/v1internal:claimBankedQuotaReset`,
+            {
+              accessToken: latestToken.accessToken,
+              userAgent: ANTIGRAVITY_USAGE_USER_AGENT,
+              body: requestBody,
+            },
+            timeouts.request,
+          ).pipe(
+            Effect.mapError(
+              (error) =>
+                new AntigravityBankedResetClaimError({
+                  message:
+                    error.reason === "timed out"
+                      ? "Antigravity didn't respond in time while claiming this reset. Try again to confirm."
+                      : `Antigravity couldn't claim this reset (${error.reason}).`,
+                }),
+            ),
+          );
+
+          if (!response.ok) {
+            const mapped = googleClaimErrorOutcome(response.status, response.body);
+            if (mapped.kind === "outcome") {
+              return { outcome: mapped.outcome };
+            }
+            return yield* Effect.fail(
+              new AntigravityBankedResetClaimError({ message: mapped.message }),
+            );
+          }
+
+          // Invalidate any pre-claim background poll so it cannot overwrite the claim result.
+          generation += 1;
+          yield* FiberHandle.clear(inFlight);
+
+          const afterMs = yield* Clock.currentTimeMillis;
+          const checkedAt = new Date(afterMs).toISOString();
+          const decodedClaim = decodeClaimResponse(response.body);
+          const summaryPayload =
+            decodedClaim._tag === "Some"
+              ? (decodedClaim.value.quotaSummary ?? decodedClaim.value)
+              : undefined;
+          const parsedSummary =
+            summaryPayload !== undefined
+              ? parseSummaryAnswer(summaryPayload, afterMs, targetHost)
+              : undefined;
+
+          const postToken = yield* readToken;
+          if (postToken !== undefined && keyOf(postToken) === expectedKey) {
+            if (parsedSummary?.ok) {
+              const previousForKey = reading?.key === expectedKey ? reading : undefined;
+              // Drop the claimed resetId from other hosts' stale cached inventories so
+              // an exhausted credit cannot resurface from a sibling host's older poll,
+              // while keeping unrelated credits on other hosts intact.
+              const prunedPreviousByHost =
+                previousForKey?.bankedByHost !== undefined
+                  ? Object.fromEntries(
+                      Object.entries(previousForKey.bankedByHost).map(([host, entries]) => [
+                        host,
+                        host === targetHost
+                          ? entries
+                          : entries.filter((entry) => entry.resetId !== resetId),
+                      ]),
+                    )
+                  : undefined;
+              const hostUpdates: ReadonlyArray<HostBankedResetsUpdate> = [
+                { host: targetHost, answered: true, bankedResets: parsedSummary.bankedResets },
+              ];
+              const nextBanked = mergeBankedResetsByHost(
+                prunedPreviousByHost,
+                hostUpdates,
+                hostOrder,
+              );
+              const nextWindows =
+                parsedSummary.windows.length > 0
+                  ? mergeRead(
+                      previousForKey?.windows,
+                      {
+                        windows: parsedSummary.windows,
+                        bankedByHost: hostUpdates,
+                        complete: false,
+                      },
+                      checkedAt,
+                    )
+                  : (previousForKey?.windows ?? []);
+              reading = {
+                key: expectedKey,
+                windows: nextWindows,
+                bankedByHost: nextBanked.byHost,
+                bankedResets: nextBanked.merged,
+                accountUsage: antigravityAccountUsage(
+                  nextWindows,
+                  checkedAt,
+                  nextBanked.merged,
+                  afterMs,
+                ),
+              };
+              lastAttempt = {
+                key: expectedKey,
+                tokenHash: postToken.tokenHash,
+                atMs: afterMs,
+                failed: false,
+              };
+              const nextStatus = statusFor(postToken, expectedKey, afterMs);
+              latestLanded = { accountId: accountIdOf(expectedKey), status: nextStatus };
+              yield* publishStatus(nextStatus);
+            } else {
+              // No refreshed summary returned: let the next status refresh re-read immediately.
+              lastAttempt = undefined;
+            }
+          }
+          return { outcome: "reset" as const };
+        }),
+      );
+
     /** A picker slug's model name, from the instance's model list; a name passes through. */
     const modelName = (model: string) =>
       snapshot
@@ -1051,6 +1729,7 @@ export const makeAntigravityUsageReader = (
             yield* Clock.currentTimeMillis,
           );
         }).pipe(Effect.catchCause(() => Effect.succeed(undefined))),
+      claimBankedReset,
     } satisfies AntigravityUsageReader;
   });
 

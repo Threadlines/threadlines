@@ -4,9 +4,12 @@ import { ProviderDriverKind } from "@threadlines/contracts";
 import {
   canUseProviderRateLimitResetCredit,
   canRequestProviderRateLimitResetCredit,
+  canViewProviderRateLimitResetCredits,
+  doesProviderRateLimitResetCreditCoverModel,
   formatProviderRateLimitResetCreditDate,
   formatProviderRateLimitResetCreditRelativeExpiration,
   formatProviderRateLimitResetCreditTooltip,
+  hasClaimableResetCreditForModel,
   isProviderUsageLimitErrorMessage,
   sortProviderRateLimitResetCreditsByExpiration,
   toastForProviderRateLimitResetCreditOutcome,
@@ -104,5 +107,57 @@ describe("ProviderRateLimitResetCredit", () => {
       type: "warning",
       title: "No reset credit available",
     });
+  });
+
+  it("allows viewing threshold-locked banked resets and gates thread reset buttons by model scope", () => {
+    const nowMs = Date.UTC(2026, 6, 14);
+    const antigravity = { driver: ProviderDriverKind.make("antigravity") };
+    const lockedOnly = {
+      availableCount: 0,
+      credits: [
+        {
+          id: "locked-1",
+          resetType: "unknown" as const,
+          status: "unknown" as const,
+          expiresAt: Math.floor((nowMs + 86_400_000) / 1000),
+          title: "Gemini reset",
+          scopeModels: ["Gemini"],
+        },
+      ],
+    };
+    expect(canViewProviderRateLimitResetCredits(antigravity, lockedOnly, nowMs)).toBe(true);
+    expect(hasClaimableResetCreditForModel(lockedOnly, "Gemini 3.1 Pro (High)", nowMs)).toBe(false);
+
+    const geminiOnly = {
+      availableCount: 2,
+      credits: [
+        {
+          id: "gemini-1",
+          resetType: "unknown" as const,
+          status: "available" as const,
+          remainingCount: 2,
+          expiresAt: Math.floor((nowMs + 86_400_000) / 1000),
+          title: "Gemini reset",
+          scopeModels: ["Gemini"],
+        },
+      ],
+    };
+    expect(hasClaimableResetCreditForModel(geminiOnly, "Gemini 3.1 Pro (High)", nowMs)).toBe(true);
+    expect(hasClaimableResetCreditForModel(geminiOnly, "Claude Opus 4.6 (Thinking)", nowMs)).toBe(
+      false,
+    );
+    expect(
+      doesProviderRateLimitResetCreditCoverModel(geminiOnly.credits[0]!, "Gemini 3.1 Pro (High)"),
+    ).toBe(true);
+    expect(
+      doesProviderRateLimitResetCreditCoverModel(
+        geminiOnly.credits[0]!,
+        "Claude Opus 4.6 (Thinking)",
+      ),
+    ).toBe(false);
+
+    expect(formatProviderRateLimitResetCreditTooltip(1, "Antigravity", { scoped: true })).toBe(
+      "Use your reset credit to refresh the current Antigravity usage limits.",
+    );
   });
 });

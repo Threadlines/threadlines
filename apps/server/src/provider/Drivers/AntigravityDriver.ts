@@ -248,6 +248,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       });
       return {
         ...instance,
+        ...(signIn.method === "oauth-personal" || signIn.method === "oauth-business"
+          ? {
+              accountUsage: {
+                consumeRateLimitResetCredit: (claimInput) => usage.claimBankedReset(claimInput),
+              },
+            }
+          : {}),
         authFlows: {
           ...authFlows,
           // A sign-in or sign-out cancels a limits read and forgets the old

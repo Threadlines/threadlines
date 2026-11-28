@@ -148,6 +148,7 @@ const googleRoute =
   (answers: {
     summary?: Answer | ((host: string) => Answer);
     models?: Answer | ((host: string) => Answer);
+    claim?: Answer | ((host: string) => Answer);
     userinfo?: Answer;
   }): Route =>
   (url) => {
@@ -155,6 +156,7 @@ const googleRoute =
       typeof answer === "function" ? answer(url.host) : (answer ?? { status: 404 });
     if (url.pathname.endsWith(":retrieveUserQuotaSummary")) return pick(answers.summary);
     if (url.pathname.endsWith(":fetchAvailableModels")) return pick(answers.models);
+    if (url.pathname.endsWith(":claimBankedQuotaReset")) return pick(answers.claim);
     if (url.pathname === "/oauth2/v2/userinfo") return answers.userinfo ?? { status: 403 };
     return { status: 404 };
   };
@@ -953,5 +955,271 @@ describe("Antigravity plan limits", () => {
         );
         assert.equal(reader.reconcile(switchedSnapshot).accountUsage, undefined);
       }),
+  );
+
+  it.effect(
+    "parses banked quota resets (claimable, threshold-locked, multi-unit, scoped, reset-only) and tracks them per host",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-10-09T12:00:00Z"));
+        let prodDown = false;
+        const { readOnce } = yield* setup({
+          route: googleRoute({
+            summary: (host) =>
+              host === "daily-cloudcode-pa.googleapis.com"
+                ? {
+                    // Reset-only response (no groups/buckets) still counts as valid summary data.
+                    body: {
+                      bankedResets: [
+                        {
+                          resetId: "reset-gemini-2",
+                          displayLabel: "Gemini reset",
+                          expireTime: "2026-10-15T00:00:00Z",
+                          claimable: true,
+                          remainingCount: 2,
+                          bucketIds: ["gemini-5h", "gemini-weekly"],
+                        },
+                      ],
+                    },
+                  }
+                : prodDown
+                  ? { status: 503 }
+                  : {
+                      body: {
+                        ...SUMMARY_WITHOUT_GEMINI,
+                        bankedResets: [
+                          {
+                            resetId: "reset-3p-locked",
+                            displayLabel: "Claude & GPT reset",
+                            expireTime: "2026-10-20T00:00:00Z",
+                            claimable: false,
+                            ineligibleReason:
+                              "QUOTA_SUMMARY_BANKED_RESET_INELIGIBLE_REASON_USAGE_BELOW_THRESHOLD",
+                            remainingCount: 1,
+                            bucketIds: ["3p-5h", "3p-weekly"],
+                          },
+                          {
+                            resetId: "reset-expired",
+                            displayLabel: "Old reset",
+                            expireTime: "2026-10-01T00:00:00Z",
+                            claimable: true,
+                            remainingCount: 3,
+                            bucketIds: ["3p-5h"],
+                          },
+                        ],
+                      },
+                    },
+          }),
+        });
+
+        const first = yield* readOnce;
+        const resets = first.accountUsage?.rateLimitResetCredits;
+        assert.isDefined(resets);
+        // Only the 2 claimable unexpired units count toward availableCount.
+        assert.equal(resets?.availableCount, 2);
+        assert.deepEqual(
+          resets?.credits?.map((credit) => ({
+            id: credit.id,
+            status: credit.status,
+            remainingCount: credit.remainingCount,
+            scopeModels: credit.scopeModels,
+            description: credit.description,
+          })),
+          [
+            {
+              id: "reset-gemini-2",
+              status: "available",
+              remainingCount: 2,
+              scopeModels: ["Gemini"],
+              description: undefined,
+            },
+            {
+              id: "reset-3p-locked",
+              status: "unknown",
+              remainingCount: 1,
+              scopeModels: ["Claude", "GPT"],
+              description: "Use more of this window before claiming",
+            },
+          ],
+        );
+
+        // When prod fails on the next poll, prod's banked reset is retained while daily's is refreshed.
+        prodDown = true;
+        yield* TestClock.adjust("3 minutes");
+        const second = yield* readOnce;
+        assert.deepEqual(
+          second.accountUsage?.rateLimitResetCredits?.credits?.map((credit) => credit.id),
+          ["reset-gemini-2", "reset-3p-locked"],
+        );
+      }),
+  );
+
+  it.effect(
+    "claims a banked quota reset, forwards requestId and project, updates snapshot, and maps RPC errors",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-10-09T12:00:00Z"));
+        let claimAnswer: Answer = {
+          body: {
+            quotaSummary: {
+              ...SUMMARY,
+              bankedResets: [
+                {
+                  resetId: "reset-1",
+                  displayLabel: "Gemini reset",
+                  expireTime: "2026-10-15T00:00:00Z",
+                  claimable: true,
+                  remainingCount: 1,
+                  bucketIds: ["gemini-5h"],
+                },
+              ],
+            },
+          },
+        };
+        const { readOnce, reader, google, current } = yield* setup({
+          method: "oauth-business",
+          project: "acme-proj",
+          route: googleRoute({
+            summary: {
+              body: {
+                ...SUMMARY,
+                bankedResets: [
+                  {
+                    resetId: "reset-1",
+                    displayLabel: "Gemini reset",
+                    expireTime: "2026-10-15T00:00:00Z",
+                    claimable: true,
+                    remainingCount: 2,
+                    bucketIds: ["gemini-5h"],
+                  },
+                ],
+              },
+            },
+            claim: () => claimAnswer,
+          }),
+        });
+
+        const before = yield* readOnce;
+        assert.equal(before.accountUsage?.rateLimitResetCredits?.availableCount, 2);
+
+        const ok = yield* reader.claimBankedReset({
+          idempotencyKey: "req-123",
+          creditId: "reset-1",
+        });
+        assert.deepEqual(ok, { outcome: "reset" });
+        const claimPost = google.sent.find((request) =>
+          request.url.endsWith(":claimBankedQuotaReset"),
+        );
+        assert.deepEqual(JSON.parse(claimPost?.body ?? "{}"), {
+          project: "acme-proj",
+          resetId: "reset-1",
+          requestId: "req-123",
+        });
+        // Snapshot updated immediately from quotaSummary without waiting for a poll.
+        assert.equal((yield* current).accountUsage?.rateLimitResetCredits?.availableCount, 1);
+
+        // Claiming the final unit removes reset-1 even though both hosts previously advertised it.
+        claimAnswer = { body: { quotaSummary: { ...SUMMARY, bankedResets: [] } } };
+        assert.deepEqual(
+          yield* reader.claimBankedReset({
+            idempotencyKey: "req-last",
+            creditId: "reset-1",
+            ...(before.auth.accountId ? { accountId: before.auth.accountId } : {}),
+          }),
+          { outcome: "reset" },
+        );
+        assert.isUndefined((yield* current).accountUsage?.rateLimitResetCredits);
+
+        // Google RPC error status mappings.
+        claimAnswer = {
+          status: 400,
+          body: { error: { code: 400, status: "FAILED_PRECONDITION", message: "below threshold" } },
+        };
+        assert.deepEqual(
+          yield* reader.claimBankedReset({ idempotencyKey: "req-2", creditId: "reset-1" }),
+          { outcome: "nothingToReset" },
+        );
+
+        claimAnswer = {
+          status: 404,
+          body: { error: { code: 404, status: "NOT_FOUND", message: "missing" } },
+        };
+        assert.deepEqual(
+          yield* reader.claimBankedReset({ idempotencyKey: "req-3", creditId: "reset-1" }),
+          { outcome: "noCredit" },
+        );
+
+        claimAnswer = {
+          status: 409,
+          body: { error: { code: 409, status: "ALREADY_EXISTS", message: "already claimed" } },
+        };
+        assert.deepEqual(
+          yield* reader.claimBankedReset({ idempotencyKey: "req-4", creditId: "reset-1" }),
+          { outcome: "alreadyRedeemed" },
+        );
+      }),
+  );
+
+  it.effect("refuses to claim when token expired or account switched before claiming", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-10-09T12:00:00Z"));
+      const { readOnce, reader, profileDir, google } = yield* setup({
+        route: googleRoute({
+          summary: {
+            body: {
+              ...SUMMARY,
+              bankedResets: [
+                {
+                  resetId: "reset-1",
+                  claimable: true,
+                  remainingCount: 1,
+                  bucketIds: ["gemini-5h"],
+                },
+              ],
+            },
+          },
+          claim: { body: { quotaSummary: SUMMARY } },
+        }),
+      });
+      const accountASnapshot = yield* readOnce;
+      const accountAId = accountASnapshot.auth.accountId;
+      assert.isDefined(accountAId);
+
+      // Switch to a different account on disk before claiming.
+      yield* writeToken(profileDir, {
+        refresh: "1//other-account",
+        email: "other@example.com",
+        expiry: "2026-10-09T13:00:00Z",
+      });
+      const switchedErr = yield* reader
+        .claimBankedReset({ idempotencyKey: "req-switch", creditId: "reset-1" })
+        .pipe(Effect.flip);
+      assert.match(switchedErr.message, /account changed/i);
+      assert.isFalse(google.sent.some((request) => request.url.endsWith(":claimBankedQuotaReset")));
+
+      // Even after an intervening poll lands for Account B, a claim carrying Account A's accountId is rejected.
+      yield* TestClock.adjust("3 minutes");
+      const accountBSnapshot = yield* readOnce;
+      assert.notEqual(accountBSnapshot.auth.accountId, accountAId);
+      const staleDialogErr = yield* reader
+        .claimBankedReset({
+          idempotencyKey: "req-stale-dialog",
+          creditId: "reset-1",
+          accountId: accountAId,
+        })
+        .pipe(Effect.flip);
+      assert.match(staleDialogErr.message, /account changed/i);
+      assert.isFalse(google.sent.some((request) => request.url.endsWith(":claimBankedQuotaReset")));
+
+      // Expired token fails cleanly without issuing a claim POST.
+      yield* writeToken(profileDir, {
+        refresh: REFRESH_TOKEN,
+        expiry: "2026-10-09T11:00:00Z",
+      });
+      const expiredErr = yield* reader
+        .claimBankedReset({ idempotencyKey: "req-exp", creditId: "reset-1" })
+        .pipe(Effect.flip);
+      assert.match(expiredErr.message, /expired/i);
+    }),
   );
 });

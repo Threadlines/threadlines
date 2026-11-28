@@ -1085,7 +1085,8 @@ function ProviderUsageMeter(props: {
 }) {
   const lines = compactUsageMeters(props.usage);
   const resetCount = props.usage.resetCredits?.availableCount ?? 0;
-  const canReset = props.onResetAccountUsage !== undefined && resetCount > 0;
+  const bankedCount = props.usage.resetCredits?.bankedCount ?? 0;
+  const canReset = props.onResetAccountUsage !== undefined && (resetCount > 0 || bankedCount > 0);
   // A notice with no meters to hang it on is said on the row itself.
   const unavailable = lines.length === 0 ? props.usage.notice : undefined;
   if (lines.length === 0 && !canReset && !unavailable) return null;
@@ -1100,11 +1101,17 @@ function ProviderUsageMeter(props: {
           className="h-6 px-1.5 text-[11.5px] font-normal text-muted-foreground hover:text-foreground"
           disabled={props.accountUsageResetInFlight === true}
           onClick={props.onResetAccountUsage}
-          aria-label={`Choose a reset credit for ${props.displayName} usage`}
+          aria-label={
+            resetCount > 0
+              ? `Choose a reset credit for ${props.displayName} usage`
+              : `View banked resets for ${props.displayName} usage`
+          }
         >
           {props.accountUsageResetInFlight
             ? "Using reset"
-            : `${resetCount} ${resetCount === 1 ? "reset" : "resets"}`}
+            : resetCount > 0
+              ? `${resetCount} ${resetCount === 1 ? "reset" : "resets"}`
+              : `${bankedCount} banked`}
         </Button>
       ) : null}
       {lines.length > 0 ? (
